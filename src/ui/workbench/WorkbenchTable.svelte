@@ -8,9 +8,11 @@
   interface Props {
     api: CoreTaskAPI;
     openFile: (path: string) => void;
+    openCreateTaskModal: () => void;
+    openCreateSubtaskModal: (record: TaskRecord) => void;
   }
 
-  let { api, openFile }: Props = $props();
+  let { api, openFile, openCreateTaskModal, openCreateSubtaskModal }: Props = $props();
 
   // State
   let records: TaskRecord[] = $state([]);
@@ -135,18 +137,8 @@
     }
   }
 
-  async function addSubtask(record: TaskRecord) {
-    const title = prompt('サブタスク名を入力してください');
-    if (!title?.trim()) return;
-    const key = `st_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const result = await api.updateTaskItem({
-      path: record.path,
-      expectedRevision: record.revision,
-      newSubtasks: [{ key, title: title.trim() }],
-    });
-    if (!result.ok) {
-      new Notice(`サブタスクの追加に失敗しました: ${result.error.code}`);
-    }
+  function addSubtask(record: TaskRecord) {
+    openCreateSubtaskModal(record);
   }
 
   async function handleKeyDown(e: KeyboardEvent) {
@@ -172,6 +164,7 @@
       />
       完了を表示
     </label>
+    <button class="vg-add-task-btn" onclick={openCreateTaskModal}>＋ タスク追加</button>
   </div>
 
   <div class="vg-workbench-table-wrapper">
@@ -418,5 +411,20 @@
 
   button:hover {
     color: var(--interactive-accent);
+  }
+
+  .vg-add-task-btn {
+    margin-left: auto;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-radius: 4px;
+    padding: 0.2rem 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .vg-add-task-btn:hover {
+    background: var(--interactive-accent-hover);
+    color: var(--text-on-accent);
   }
 </style>

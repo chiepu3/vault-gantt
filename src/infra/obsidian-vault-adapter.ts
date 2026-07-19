@@ -85,6 +85,12 @@ export class ObsidianVaultAdapter implements VaultAdapterPort {
     frontmatter: Record<string, unknown>,
     body: string
   ): Promise<TaskFileRecord> {
+    // Ensure the parent folder exists before creating the file.
+    const folderPath = path.includes('/') ? path.split('/').slice(0, -1).join('/') : '';
+    if (folderPath && !this.app.vault.getAbstractFileByPath(folderPath)) {
+      await this.app.vault.createFolder(folderPath);
+    }
+
     const file = await this.app.vault.create(path, body);
 
     await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {

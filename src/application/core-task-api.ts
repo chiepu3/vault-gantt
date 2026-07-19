@@ -137,18 +137,25 @@ export class CoreTaskAPI {
   private undoStack: UndoStack;
   private changeNotifier: ChangeNotifier;
   private now: () => string;
+  private taskFolder: string;
   /** Serializes mutating calls so their validate-then-write phases never interleave. */
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     vaultAdapter: VaultAdapterPort,
-    options?: { undoStack?: UndoStack; notifier?: ChangeNotifier; now?: () => string }
+    options?: { undoStack?: UndoStack; notifier?: ChangeNotifier; now?: () => string; taskFolder?: string }
   ) {
     this.vaultAdapter = vaultAdapter;
     this.parseCache = new Map();
     this.undoStack = options?.undoStack ?? new UndoStack();
     this.changeNotifier = options?.notifier ?? new ChangeNotifier();
     this.now = options?.now ?? (() => new Date().toISOString().slice(0, 10));
+    this.taskFolder = options?.taskFolder ?? 'tasks';
+  }
+
+  /** Update the folder used for new task file paths (called when settings change). */
+  setTaskFolder(folder: string): void {
+    this.taskFolder = folder.trim() || 'tasks';
   }
 
   /** Run `fn` after every previously-enqueued mutation has settled. */
@@ -239,14 +246,14 @@ export class CoreTaskAPI {
 
     const today = this.now();
 
-    // Path scheme: slugified displayName + a short random suffix to avoid collisions.
+    // Path scheme: <taskFolder>/<slugified displayName>-<random suffix>.md
     const slug =
       input.displayName
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '') || 'task';
     const suffix = Math.random().toString(36).slice(2, 8);
-    const path = `${slug}-${suffix}.md`;
+    const path = `${this.taskFolder}/${slug}-${suffix}.md`;
 
     const note: TaskNote = {
       displayName: input.displayName,
