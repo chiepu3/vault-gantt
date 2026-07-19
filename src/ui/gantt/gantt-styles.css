@@ -1,0 +1,230 @@
+/* === Gantt View === */
+.vg-gantt {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  font-size: var(--font-ui-small);
+}
+
+.vg-gantt-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  flex-shrink: 0;
+}
+
+.vg-gantt-title {
+  font-weight: 600;
+  flex: 1;
+}
+
+.vg-gantt-toolbar-btn {
+  background: none;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 3px;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+}
+
+.vg-gantt-toolbar-btn:hover {
+  background: var(--background-secondary);
+  color: var(--interactive-accent);
+}
+
+.vg-gantt-scroll-wrap {
+  flex: 1;
+  overflow: auto;
+}
+
+.vg-gantt-root {
+  display: inline-block;
+  min-width: 100%;
+  position: relative;
+}
+
+.vg-gantt-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vg-gantt-header-left {
+  display: inline-block;
+  vertical-align: top;
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.vg-gantt-header-timeline {
+  display: inline-block;
+  position: relative;
+}
+
+.vg-gantt-month-row,
+.vg-gantt-day-row,
+.vg-gantt-dow-row {
+  display: flex;
+}
+
+.vg-gantt-date-cell {
+  display: inline-block;
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+  border-right: 1px solid var(--background-modifier-border);
+  padding: 0.25rem 0;
+  line-height: 1.2;
+}
+
+.vg-gantt-date-cell.is-weekend {
+  background: var(--background-secondary);
+  color: var(--text-muted);
+}
+
+.vg-gantt-date-cell.is-today {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.vg-gantt-body {
+  position: relative;
+}
+
+.vg-gantt-row {
+  display: flex;
+  border-bottom: 1px solid var(--background-modifier-border);
+  min-height: 48px;
+}
+
+.vg-gantt-row-left {
+  flex-shrink: 0;
+  border-right: 1px solid var(--background-modifier-border);
+  padding: 0.25rem 0.5rem;
+  overflow: hidden;
+  background: var(--background-primary);
+  display: flex;
+  align-items: center;
+}
+
+.vg-gantt-parent-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--font-ui-small);
+}
+
+.vg-gantt-timeline {
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.vg-gantt-bar {
+  position: absolute;
+  border-radius: 3px;
+  background: var(--interactive-accent);
+  opacity: 0.85;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--interactive-accent);
+  transition: opacity 0.15s;
+}
+
+.vg-gantt-bar:hover {
+  opacity: 1;
+}
+
+.vg-gantt-bar.is-dragging {
+  opacity: 0.6;
+  cursor: grabbing;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.vg-gantt-bar-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-on-accent);
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  pointer-events: none;
+}
+
+.vg-gantt-bar-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.vg-gantt-bar:hover .vg-gantt-bar-handle {
+  opacity: 1;
+}
+
+.vg-gantt-bar-handle.is-start {
+  left: 0;
+}
+
+.vg-gantt-bar-handle.is-end {
+  right: 0;
+}
+
+.vg-gantt-bg-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.vg-gantt-bg-col.is-weekend {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.vg-gantt-bg-col.is-today {
+  background: rgba(100, 100, 200, 0.1);
+}
+
+.vg-gantt-drag-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: var(--font-ui-smaller);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+  white-space: nowrap;
+}
+
+.vg-gantt-drag-tooltip.is-visible {
+  opacity: 1;
+}
+
+.vg-gantt-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-muted);
+}

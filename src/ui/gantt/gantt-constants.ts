@@ -1,0 +1,12 @@
+export const HEADER_HEIGHT = 54;
+export const BAR_HEIGHT = 24;
+export const LANE_BASE_HEIGHT = 44;
+export const PARENT_COL_WIDTH = 320;
+export const DEFAULT_DAY_WIDTH = 28;
+export const MIN_DAY_WIDTH = 14;
+export const MAX_DAY_WIDTH = 80;
+export const OVERSCAN_DAYS = 21;
+export const RANGE_EXTEND_DAYS = 60;
+export const RANGE_EXTEND_THRESHOLD_PX = 240;
+export const BAR_RESIZE_HANDLE_WIDTH = 8;
+export const DRAG_FRAME_MS = 16;

@@ -7,6 +7,7 @@ import { InputModal } from './ui/shared/InputModal';
 import { ObsidianVaultAdapter } from './infra/obsidian-vault-adapter';
 import { CoreTaskAPI } from './application/core-task-api';
 import { WorkbenchView, WORKBENCH_VIEW_TYPE, setWorkbenchViewApi } from './ui/workbench/WorkbenchView';
+import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi } from './ui/gantt/GanttView';
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 
 export default class VaultGanttPlugin extends Plugin {
@@ -22,9 +23,12 @@ export default class VaultGanttPlugin extends Plugin {
     const adapter = new ObsidianVaultAdapter(this.app);
     this.api = new CoreTaskAPI(adapter, { taskFolder: this.settings.taskFolder });
 
-    // Register workbench view (set api before registering view factory)
+    // Register workbench and gantt views (set api before registering view factory)
     setWorkbenchViewApi(this.api);
     this.registerView(WORKBENCH_VIEW_TYPE, (leaf) => new WorkbenchView(leaf));
+
+    setGanttViewApi(this.api);
+    this.registerView(GANTT_VIEW_TYPE, (leaf) => new GanttView(leaf));
 
     // The Core API's ChangeNotifier only fires for this plugin's own mutations.
     // External changes — cloud sync, manual edits, and metadataCache finishing
@@ -60,8 +64,9 @@ export default class VaultGanttPlugin extends Plugin {
     const statusBarEl = this.addStatusBarItem();
     this.statusBarBadge = mount(PluginBadge as Component, { target: statusBarEl });
 
-    // Ribbon icon
+    // Ribbon icons
     this.addRibbonIcon('table', 'タスク一覧を開く', () => this.openWorkbench());
+    this.addRibbonIcon('gantt-chart', 'Ganttビューを開く', () => void this.openGantt());
 
     // Settings tab
     this.addSettingTab(new VaultGanttSettingsTab(this.app, this));
@@ -97,6 +102,12 @@ export default class VaultGanttPlugin extends Plugin {
         }
       },
     });
+
+    this.addCommand({
+      id: 'open-gantt',
+      name: 'Ganttビューを開く',
+      callback: () => void this.openGantt(),
+    });
   }
 
   private async openWorkbench(): Promise<void> {
@@ -105,6 +116,16 @@ export default class VaultGanttPlugin extends Plugin {
     if (!leaf) {
       leaf = workspace.getLeaf('tab');
       await leaf.setViewState({ type: WORKBENCH_VIEW_TYPE, active: true });
+    }
+    workspace.revealLeaf(leaf);
+  }
+
+  private async openGantt(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(GANTT_VIEW_TYPE)[0] ?? null;
+    if (!leaf) {
+      leaf = workspace.getLeaf('tab');
+      await leaf.setViewState({ type: GANTT_VIEW_TYPE, active: true });
     }
     workspace.revealLeaf(leaf);
   }
@@ -120,6 +141,7 @@ export default class VaultGanttPlugin extends Plugin {
   onunload(): void {
     console.log(`Unloading plugin: ${PLUGIN_ID}`);
     this.app.workspace.detachLeavesOfType(WORKBENCH_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(GANTT_VIEW_TYPE);
     if (this.statusBarBadge) {
       unmount(this.statusBarBadge);
     }
