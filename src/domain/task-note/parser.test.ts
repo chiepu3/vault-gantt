@@ -48,6 +48,52 @@ Initial notes`;
       }
     });
 
+    it('should coerce YAML-mangled scalar types instead of dropping the note', () => {
+      // Obsidian's YAML round trip: unquoted "123" becomes a number, unquoted
+      // "2026-07-01" may become a Date. A hard reject here silently hides the
+      // whole task from every list — coerce instead.
+      const frontmatter = {
+        type: 'task',
+        displayName: 123,
+        createdAt: new Date('2026-07-01T00:00:00Z'),
+        updatedAt: '2026-07-02',
+      };
+
+      const body = `# 123
+> [!info]- タスク情報
+
+## Current Status
+
+## Notes
+`;
+
+      const result = parseTaskNote(frontmatter, body);
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.note.displayName).toBe('123');
+        expect(result.note.createdAt).toBe('2026-07-01');
+        expect(result.note.updatedAt).toBe('2026-07-02');
+      }
+    });
+
+    it('should coerce a Date-typed dueDate to a YYYY-MM-DD string', () => {
+      const frontmatter = {
+        type: 'task',
+        displayName: 'Test',
+        createdAt: '2026-07-01',
+        updatedAt: '2026-07-01',
+        dueDate: new Date('2026-07-31T00:00:00Z'),
+      };
+
+      const result = parseTaskNote(frontmatter, '# Test\n\n## Current Status\n\n## Notes\n');
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.note.dueDate).toBe('2026-07-31');
+      }
+    });
+
     it('should reject frontmatter without type', () => {
       const frontmatter = {
         displayName: 'Test Task',

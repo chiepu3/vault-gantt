@@ -26,6 +26,36 @@ export default class VaultGanttPlugin extends Plugin {
     setWorkbenchViewApi(this.api);
     this.registerView(WORKBENCH_VIEW_TYPE, (leaf) => new WorkbenchView(leaf));
 
+    // The Core API's ChangeNotifier only fires for this plugin's own mutations.
+    // External changes — cloud sync, manual edits, and metadataCache finishing
+    // its (async) indexing of freshly created files — must be fed in here, or
+    // the table goes permanently stale / misses just-created tasks.
+    this.registerEvent(
+      this.app.metadataCache.on('changed', (file, _data, cache) => {
+        if (cache.frontmatter?.type === 'task') {
+          this.api.notifyExternalChange({ type: 'updated', path: file.path });
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on('delete', (file) => {
+        this.api.notifyExternalChange({ type: 'deleted', path: file.path });
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on('rename', (file, oldPath) => {
+        this.api.notifyExternalChange({ type: 'deleted', path: oldPath });
+        this.api.notifyExternalChange({ type: 'updated', path: file.path });
+      })
+    );
+    // One-shot refresh once the metadata cache finishes initial vault indexing;
+    // before that, listTaskFilePaths() sees only partially indexed frontmatter.
+    const resolvedRef = this.app.metadataCache.on('resolved', () => {
+      this.app.metadataCache.offref(resolvedRef);
+      this.api.notifyExternalChange({ type: 'updated', path: '' });
+    });
+    this.registerEvent(resolvedRef);
+
     // Status bar badge
     const statusBarEl = this.addStatusBarItem();
     this.statusBarBadge = mount(PluginBadge as Component, { target: statusBarEl });

@@ -69,4 +69,18 @@ describe('splitFrontmatterBlock', () => {
     const result = splitFrontmatterBlock(raw);
     expect(result.body).toBe('Line 1\n\nLine 3\n\n\nLine 6\n');
   });
+
+  it('recognizes frontmatter delimiters in a CRLF file (Windows/OneDrive sync)', () => {
+    const raw = '---\r\ntype: task\r\ndisplayName: Test\r\n---\r\n# Test\r\nBody line\r\n';
+    const result = splitFrontmatterBlock(raw);
+    expect(result.frontmatterBlock).toBe('---\ntype: task\ndisplayName: Test\n---\n');
+    expect(result.body).toBe('# Test\nBody line\n');
+  });
+
+  it('normalizes CRLF even when there is no frontmatter block', () => {
+    const raw = 'Just text\r\nSecond line\r\n';
+    const result = splitFrontmatterBlock(raw);
+    expect(result.frontmatterBlock).toBe('');
+    expect(result.body).toBe('Just text\nSecond line\n');
+  });
 });

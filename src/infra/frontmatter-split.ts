@@ -7,10 +7,14 @@
  * interpreting frontmatter content ourselves, not locating its delimiters.
  */
 export function splitFrontmatterBlock(raw: string): { frontmatterBlock: string; body: string } {
-  const lines = raw.split('\n');
+  // Files synced across Windows machines can carry CRLF line endings; a "---\r"
+  // first line must still be recognized as a frontmatter delimiter, otherwise
+  // the entire file is misclassified as body and the note fails to parse.
+  const normalized = raw.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
 
   if (lines[0] !== '---') {
-    return { frontmatterBlock: '', body: raw };
+    return { frontmatterBlock: '', body: normalized };
   }
 
   // Find the next line that is exactly "---", starting after the opening delimiter.
@@ -24,7 +28,7 @@ export function splitFrontmatterBlock(raw: string): { frontmatterBlock: string; 
 
   if (closingIndex === -1) {
     // No closing delimiter found: treat the whole thing as body (malformed/no frontmatter).
-    return { frontmatterBlock: '', body: raw };
+    return { frontmatterBlock: '', body: normalized };
   }
 
   // frontmatterBlock is everything up to and including the closing "---" line,

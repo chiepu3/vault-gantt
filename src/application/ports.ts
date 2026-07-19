@@ -12,7 +12,8 @@ export interface TaskFileRecord {
 
 export type WriteResult =
   | { ok: true; revision: string }
-  | { ok: false; error: 'REVISION_CONFLICT'; currentRevision: string };
+  | { ok: false; error: 'REVISION_CONFLICT'; currentRevision: string }
+  | { ok: false; error: 'WRITE_FAILED'; message: string };
 
 /**
  * listTaskFilePaths stays synchronous (Obsidian's vault.getMarkdownFiles() is sync,

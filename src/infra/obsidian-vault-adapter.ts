@@ -27,7 +27,9 @@ export class ObsidianVaultAdapter implements VaultAdapterPort {
     if (!(file instanceof TFile)) return null;
 
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
-    const raw = await this.app.vault.cachedRead(file);
+    // Normalize CRLF at the ingestion boundary so every downstream string
+    // comparison (headings, delimiters) sees LF-only content.
+    const raw = (await this.app.vault.cachedRead(file)).replace(/\r\n/g, '\n');
     const { body } = splitFrontmatterBlock(raw);
     const revision = computeRevision(file.stat.mtime, file.stat.size);
 
@@ -57,18 +59,34 @@ export class ObsidianVaultAdapter implements VaultAdapterPort {
       return { ok: false, error: 'REVISION_CONFLICT', currentRevision };
     }
 
+    // Two-phase write: if phase 2 (processFrontMatter) fails after phase 1
+    // (vault.modify) succeeded, the file would be left frontmatter-less and
+    // permanently invisible to listTaskFilePaths. Snapshot the original
+    // content first so we can roll back.
+    const originalRaw = await this.app.vault.cachedRead(file);
+
     // Replace the entire file content with the new body (the old frontmatter
     // block, if any, is discarded here — that's intentional, see step 2).
     await this.app.vault.modify(file, body);
 
     // Re-add a fresh, correctly-serialized frontmatter block prepended to the
     // body just written. Obsidian handles YAML serialization internally.
-    await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-      for (const key of Object.keys(fm)) {
-        delete fm[key];
+    try {
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        for (const key of Object.keys(fm)) {
+          delete fm[key];
+        }
+        Object.assign(fm, frontmatter);
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await this.app.vault.modify(file, originalRaw);
+      } catch (restoreErr) {
+        console.error(`[vault-gantt] rollback failed for "${path}" — file may be missing its frontmatter`, restoreErr);
       }
-      Object.assign(fm, frontmatter);
-    });
+      return { ok: false, error: 'WRITE_FAILED', message };
+    }
 
     // Don't trust a possibly-stale .stat on a reference held across awaits;
     // re-fetch the file to compute the new revision.

@@ -37,18 +37,36 @@
   let filteredSorted = $derived(sortTaskRecords(filterTaskRecords(records, filter), sort));
   let rows = $derived(buildWorkbenchRows(filteredSorted, collapsed));
 
-  // Load data on mount
+  let unreadableCount = $state(0);
+
+  // Load data on mount; refresh (debounced) on any change notification.
   $effect(() => {
     let live = true;
-    api.listTasks().then((r) => {
-      if (live) records = r;
-    });
-    const unsub = api.subscribe(async () => {
-      const r = await api.listTasks();
-      if (live) records = r;
+    let debounceTimer: number | undefined;
+
+    const reload = async () => {
+      try {
+        const r = await api.listTasks();
+        if (live) {
+          records = r;
+          unreadableCount = api.getUnreadableFiles().length;
+        }
+      } catch (err) {
+        console.error('[vault-gantt] タスク一覧の読み込みに失敗:', err);
+        if (live) new Notice('タスク一覧の読み込みに失敗しました');
+      }
+    };
+
+    void reload();
+    const unsub = api.subscribe(() => {
+      // External events (metadataCache/vault) can fire in bursts during sync;
+      // trailing debounce collapses them into one listTasks call.
+      window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => void reload(), 250);
     });
     return () => {
       live = false;
+      window.clearTimeout(debounceTimer);
       unsub();
     };
   });
@@ -166,6 +184,12 @@
     </label>
     <button class="vg-add-task-btn" onclick={openCreateTaskModal}>＋ タスク追加</button>
   </div>
+
+  {#if unreadableCount > 0}
+    <div class="vg-unreadable-banner">
+      ⚠ {unreadableCount}件のタスクノートを読み込めませんでした（詳細は開発者コンソール）
+    </div>
+  {/if}
 
   <div class="vg-workbench-table-wrapper">
     <table class="vg-workbench-table">
@@ -426,5 +450,14 @@
   .vg-add-task-btn:hover {
     background: var(--interactive-accent-hover);
     color: var(--text-on-accent);
+  }
+
+  .vg-unreadable-banner {
+    padding: 0.35rem 0.75rem;
+    background: var(--background-modifier-error);
+    color: var(--text-error);
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+    font-size: var(--font-ui-smaller);
   }
 </style>

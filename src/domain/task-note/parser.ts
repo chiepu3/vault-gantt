@@ -9,15 +9,24 @@ export type ParseResult =
  * Type coercion helpers for safely extracting and validating frontmatter fields.
  */
 
+/**
+ * Obsidian's YAML round trip can turn our string fields into other scalar
+ * types: an unquoted `2026-07-19` may come back as a Date, and a numeric-
+ * looking displayName like "123" comes back as a number. Coerce instead of
+ * rejecting — a hard reject here makes the whole task note silently invisible.
+ */
 function asString(value: unknown): string | null {
   if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
   return null;
 }
 
 function asStringOrNull(value: unknown): string | null {
   if (value === null || value === undefined || value === '') return null;
-  if (typeof value === 'string') return value;
-  return null;
+  return asString(value);
 }
 
 function asNumber(value: unknown): number | null {

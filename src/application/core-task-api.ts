@@ -138,6 +138,8 @@ export class CoreTaskAPI {
   private changeNotifier: ChangeNotifier;
   private now: () => string;
   private taskFolder: string;
+  /** path → parse errors, for files with `type: task` that failed to load. */
+  private unreadableFiles: Map<string, string[]> = new Map();
   /** Serializes mutating calls so their validate-then-write phases never interleave. */
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
@@ -220,12 +222,40 @@ export class CoreTaskAPI {
   ): Promise<TaskNote | null> {
     const cached = this.parseCache.get(path);
     if (cached && cached.revision === record.revision) {
+      this.unreadableFiles.delete(path);
       return cached.note;
     }
     const parseResult = parseTaskNote(record.frontmatter, record.body);
-    if (!parseResult.ok) return null;
+    if (!parseResult.ok) {
+      // A silently dropped note is indistinguishable from a deleted one to the
+      // user — always leave a trail and keep the path queryable via
+      // getUnreadableFiles() so the UI can surface a warning.
+      this.unreadableFiles.set(path, parseResult.errors);
+      console.error(`[vault-gantt] タスクノートを読み込めません: ${path}`, parseResult.errors);
+      return null;
+    }
+    this.unreadableFiles.delete(path);
     this.parseCache.set(path, { revision: record.revision, note: parseResult.note });
     return parseResult.note;
+  }
+
+  /** Files that exist and carry `type: task` but failed to parse on last read. */
+  getUnreadableFiles(): { path: string; errors: string[] }[] {
+    return [...this.unreadableFiles.entries()].map(([path, errors]) => ({ path, errors }));
+  }
+
+  /**
+   * External change ingestion (metadataCache/vault events, e.g. cloud sync or
+   * manual edits). Invalidates the cache for the path and re-broadcasts so
+   * subscribed views refresh — our ChangeNotifier otherwise only fires for
+   * this plugin's own API mutations.
+   */
+  notifyExternalChange(event: ChangeEvent): void {
+    if (event.type === 'deleted') {
+      this.parseCache.delete(event.path);
+      this.unreadableFiles.delete(event.path);
+    }
+    this.changeNotifier.notify(event);
   }
 
   /** Create a new task. */
@@ -500,7 +530,10 @@ export class CoreTaskAPI {
       const writeResult = await this.vaultAdapter.writeTaskFile(path, frontmatter, body, record.revision);
 
       if (!writeResult.ok) {
-        writeFailure = { code: 'REVISION_CONFLICT', path, currentRevision: writeResult.currentRevision };
+        writeFailure =
+          writeResult.error === 'REVISION_CONFLICT'
+            ? { code: 'REVISION_CONFLICT', path, currentRevision: writeResult.currentRevision }
+            : { code: 'VALIDATION_ERROR', errors: [`Write failed for "${path}": ${writeResult.message}`] };
         break;
       }
 
@@ -586,7 +619,12 @@ export class CoreTaskAPI {
       for (const file of entry.recreatedFiles) {
         const record = await this.vaultAdapter.createTaskFile(file.path, file.frontmatter, file.body);
         const parseResult = parseTaskNote(record.frontmatter, record.body);
-        if (!parseResult.ok) continue;
+        if (!parseResult.ok) {
+          // The file WAS recreated on disk; only the in-memory record is missing.
+          console.error(`[vault-gantt] undo: 復元したファイルを読み込めません: ${file.path}`, parseResult.errors);
+          this.changeNotifier.notify({ type: 'created', path: file.path });
+          continue;
+        }
         this.parseCache.set(file.path, { revision: record.revision, note: parseResult.note });
         results.push({
           path: file.path,
