@@ -64,3 +64,25 @@ export function buildDateRange(rangeStart: string, rangeDays: number): string[] 
   }
   return dates;
 }
+
+/** Advance to the nearest weekday >= dateStr (skip Saturday → Monday, Sunday → Monday). */
+export function snapForward(dateStr: string): string {
+  let d = dateStr;
+  let iterations = 0;
+  while (isWeekend(d) && iterations < 7) {
+    d = addDays(d, 1);
+    iterations++;
+  }
+  return d;
+}
+
+/** Retreat to the nearest weekday <= dateStr (skip Sunday → Friday, Saturday → Friday). */
+export function snapBackward(dateStr: string): string {
+  let d = dateStr;
+  let iterations = 0;
+  while (isWeekend(d) && iterations < 7) {
+    d = addDays(d, -1);
+    iterations++;
+  }
+  return d;
+}

@@ -1,5 +1,5 @@
 import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
-import { addDays } from './gantt-date-utils';
+import { addDays, diffDays, snapForward, snapBackward } from './gantt-date-utils';
 import type { GanttViewState } from './gantt-view-state';
 
 interface DragState {
@@ -13,9 +13,11 @@ interface DragState {
   startWidth: number;
   startDate: string;
   endDate: string;
+  originalDuration: number;
   previewDeltaPx: number;
   tooltipEl: HTMLElement | null;
   rafId: number | null;
+  pointerMoveHandler: (e: PointerEvent) => void;
 }
 
 /**
@@ -45,8 +47,10 @@ export class GanttDragController {
    */
   detach(): void {
     this.getRecord = null;
-    if (this.dragState?.rafId) {
-      cancelAnimationFrame(this.dragState.rafId);
+    if (this.dragState) {
+      if (this.dragState.rafId) cancelAnimationFrame(this.dragState.rafId);
+      this.dragState.barEl.removeEventListener('pointermove', this.dragState.pointerMoveHandler);
+      this.dragState.tooltipEl?.remove();
     }
     this.dragState = null;
   }
@@ -87,6 +91,8 @@ export class GanttDragController {
     evt.preventDefault();
     barEl.setPointerCapture((evt as PointerEvent).pointerId);
 
+    const pointerMoveHandler = (evt2: PointerEvent) => this.handlePointerMove(evt2);
+
     this.dragState = {
       mode,
       parentPath,
@@ -98,9 +104,11 @@ export class GanttDragController {
       startWidth: barEl.offsetWidth,
       startDate,
       endDate,
+      originalDuration: diffDays(startDate, endDate),
       previewDeltaPx: 0,
       tooltipEl: null,
       rafId: null,
+      pointerMoveHandler,
     };
 
     // Create tooltip
@@ -116,7 +124,7 @@ export class GanttDragController {
 
     barEl.classList.add('is-dragging');
 
-    barEl.addEventListener('pointermove', (evt2) => this.handlePointerMove(evt2 as PointerEvent));
+    barEl.addEventListener('pointermove', pointerMoveHandler);
     barEl.addEventListener('pointerup', (evt2) => void this.handlePointerUp(evt2 as PointerEvent), { once: true });
     barEl.addEventListener('pointercancel', (evt2) => void this.handlePointerUp(evt2 as PointerEvent), { once: true });
   }
@@ -172,10 +180,13 @@ export class GanttDragController {
     const dragState = this.dragState;
     this.dragState = null;
 
-    const { barEl, mode, previewDeltaPx, startDate, endDate, tooltipEl, parentPath, subtaskKey, parentRevision } =
-      dragState;
+    const {
+      barEl, mode, previewDeltaPx, startDate, endDate, originalDuration,
+      tooltipEl, parentPath, subtaskKey, parentRevision, pointerMoveHandler,
+    } = dragState;
 
     // Clean up
+    barEl.removeEventListener('pointermove', pointerMoveHandler);
     barEl.classList.remove('is-dragging');
     if (tooltipEl) {
       tooltipEl.remove();
@@ -196,12 +207,14 @@ export class GanttDragController {
     let newEnd = endDate;
 
     if (mode === 'bar-move') {
-      newStart = addDays(startDate, deltaDays);
-      newEnd = addDays(endDate, deltaDays);
+      // Snap start to next business day, then preserve original calendar duration
+      const rawStart = addDays(startDate, deltaDays);
+      newStart = snapForward(rawStart);
+      newEnd = addDays(newStart, originalDuration);
     } else if (mode === 'resize-start') {
-      newStart = addDays(startDate, deltaDays);
+      newStart = snapForward(addDays(startDate, deltaDays));
     } else if (mode === 'resize-end') {
-      newEnd = addDays(endDate, deltaDays);
+      newEnd = snapBackward(addDays(endDate, deltaDays));
     }
 
     // Guard: start must not exceed end (minimum 1-day bar)
