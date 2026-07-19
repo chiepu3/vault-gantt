@@ -1,0 +1,31 @@
+{
+  "name": "vault-gantt",
+  "version": "0.1.0",
+  "description": "Markdownノートを唯一の真実源とするタスク管理・ガントチャートプラグイン",
+  "main": "main.js",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "node esbuild.plugin.mjs production && node esbuild.viewer.mjs production",
+    "dev": "node esbuild.plugin.mjs",
+    "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.28.0",
+    "esbuild-svelte": "^0.9.5",
+    "eslint": "^8.57.0",
+    "eslint-plugin-svelte": "^3.21.0",
+    "obsidian": "^1.5.0",
+    "svelte": "^5.56.0",
+    "svelte-check": "^4.7.0",
+    "svelte-eslint-parser": "^1.8.0",
+    "svelte-preprocess": "^6.0.0",
+    "typescript": "^5.3.0",
+    "typescript-eslint": "^7.0.0",
+    "vitest": "^4.1.0"
+  }
+}
