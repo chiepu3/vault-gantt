@@ -1,14 +1,32 @@
 import * as esbuild from 'esbuild';
 import sveltePlugin from 'esbuild-svelte';
-import { rename } from 'node:fs/promises';
+import { rename, copyFile, mkdir } from 'node:fs/promises';
 
 const production = process.argv.includes('production');
+
+const DEPLOY_TARGETS = [
+  '/mnt/d/vault-gantt-plugin',
+  '/mnt/c/Users/ryory/Obsidian/Obsidian Vault/.obsidian/plugins/vault-gantt',
+];
+const DEPLOY_FILES = ['main.js', 'styles.css', 'manifest.json'];
 
 async function renameCssOutput() {
   try {
     await rename('main.css', 'styles.css');
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
+  }
+}
+
+async function deployToDrives() {
+  for (const dest of DEPLOY_TARGETS) {
+    try {
+      await mkdir(dest, { recursive: true });
+      await Promise.all(DEPLOY_FILES.map((f) => copyFile(f, `${dest}/${f}`)));
+      console.log(`Deployed → ${dest}`);
+    } catch (err) {
+      console.warn(`Deploy skipped (${dest}): ${err.message}`);
+    }
   }
 }
 
@@ -36,9 +54,12 @@ const options = {
   plugins: [
     sveltePlugin(),
     {
-      name: 'rename-css-to-styles',
+      name: 'rename-and-deploy',
       setup(build) {
-        build.onEnd(renameCssOutput);
+        build.onEnd(async () => {
+          await renameCssOutput();
+          await deployToDrives();
+        });
       },
     },
   ],
