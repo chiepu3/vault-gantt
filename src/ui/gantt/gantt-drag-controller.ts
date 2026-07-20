@@ -17,12 +17,11 @@ interface DragState {
   previewDeltaPx: number;
   tooltipEl: HTMLElement | null;
   rafId: number | null;
-  pointerMoveHandler: (e: PointerEvent) => void;
+  // Document-level handlers stored for cleanup
+  docMoveHandler: (e: PointerEvent) => void;
+  docUpHandler: (e: PointerEvent) => void;
 }
 
-/**
- * GanttDragController handles pointer-based drag interactions for bar movement and resizing.
- */
 export class GanttDragController {
   private dragState: DragState | null = null;
   private getRecord: ((path: string) => TaskRecord | undefined) | null = null;
@@ -33,46 +32,39 @@ export class GanttDragController {
     private onDragEnd: () => void
   ) {}
 
-  /**
-   * Attach drag controller to a container element with event delegation.
-   */
   attach(containerEl: HTMLElement, getRecord: (path: string) => TaskRecord | undefined): void {
     this.getRecord = getRecord;
-
     containerEl.addEventListener('pointerdown', (evt) => this.handlePointerDown(evt));
   }
 
-  /**
-   * Detach drag controller and clean up event listeners.
-   */
   detach(): void {
     this.getRecord = null;
     if (this.dragState) {
-      if (this.dragState.rafId) cancelAnimationFrame(this.dragState.rafId);
-      this.dragState.barEl.removeEventListener('pointermove', this.dragState.pointerMoveHandler);
-      this.dragState.tooltipEl?.remove();
+      const { rafId, tooltipEl, docMoveHandler, docUpHandler } = this.dragState;
+      if (rafId) cancelAnimationFrame(rafId);
+      tooltipEl?.remove();
+      document.removeEventListener('pointermove', docMoveHandler);
+      document.removeEventListener('pointerup', docUpHandler);
+      document.removeEventListener('pointercancel', docUpHandler);
     }
     this.dragState = null;
   }
 
   private handlePointerDown(evt: PointerEvent): void {
-    if (this.dragState) return; // Already dragging
+    if (this.dragState) return;
 
     const target = evt.target as HTMLElement;
     const barEl = target.closest('.vg-gantt-bar') as HTMLElement | null;
-
     if (!barEl) return;
 
     const parentPath = barEl.getAttribute('data-path');
     const subtaskKey = barEl.getAttribute('data-key');
-
     if (!parentPath || !subtaskKey) return;
 
     const record = this.getRecord?.(parentPath);
     if (!record) return;
 
     let mode: 'bar-move' | 'resize-start' | 'resize-end' | null = null;
-
     if (target.closest('.vg-gantt-bar-handle.is-start')) {
       mode = 'resize-start';
     } else if (target.closest('.vg-gantt-bar-handle.is-end')) {
@@ -80,18 +72,31 @@ export class GanttDragController {
     } else if (target.closest('.vg-gantt-bar')) {
       mode = 'bar-move';
     }
-
     if (!mode) return;
 
     const startDate = barEl.dataset.startDate;
     const endDate = barEl.dataset.endDate;
-
     if (!startDate || !endDate) return;
 
+    // preventDefault stops text-selection / scroll on drag.
+    // Do NOT call setPointerCapture on barEl — Chromium scrolls the element
+    // into view when capturing on a partially-off-screen element, which causes
+    // the "click jumps timeline to the left" bug. We use document-level
+    // listeners instead so we track the pointer regardless of where it moves.
     evt.preventDefault();
-    barEl.setPointerCapture((evt as PointerEvent).pointerId);
 
-    const pointerMoveHandler = (evt2: PointerEvent) => this.handlePointerMove(evt2);
+    const docMoveHandler = (e: PointerEvent): void => this.handlePointerMove(e);
+    const docUpHandler   = (): void => void this.handlePointerUp();
+
+    document.addEventListener('pointermove', docMoveHandler);
+    document.addEventListener('pointerup',   docUpHandler);
+    document.addEventListener('pointercancel', docUpHandler);
+
+    const tooltip = document.createElement('div');
+    tooltip.className = 'vg-gantt-drag-tooltip';
+    document.body.appendChild(tooltip);
+
+    barEl.classList.add('is-dragging');
 
     this.dragState = {
       mode,
@@ -106,27 +111,11 @@ export class GanttDragController {
       endDate,
       originalDuration: diffDays(startDate, endDate),
       previewDeltaPx: 0,
-      tooltipEl: null,
+      tooltipEl: tooltip,
       rafId: null,
-      pointerMoveHandler,
+      docMoveHandler,
+      docUpHandler,
     };
-
-    // Create tooltip
-    const tooltip = document.createElement('div');
-    tooltip.className = 'vg-gantt-drag-tooltip';
-    tooltip.style.position = 'fixed';
-    tooltip.style.zIndex = '9999';
-    tooltip.style.pointerEvents = 'none';
-    tooltip.style.opacity = '0';
-    tooltip.style.transition = 'opacity 0.1s';
-    document.body.appendChild(tooltip);
-    this.dragState.tooltipEl = tooltip;
-
-    barEl.classList.add('is-dragging');
-
-    barEl.addEventListener('pointermove', pointerMoveHandler);
-    barEl.addEventListener('pointerup', (evt2) => void this.handlePointerUp(evt2 as PointerEvent), { once: true });
-    barEl.addEventListener('pointercancel', (evt2) => void this.handlePointerUp(evt2 as PointerEvent), { once: true });
   }
 
   private handlePointerMove(evt: PointerEvent): void {
@@ -138,7 +127,6 @@ export class GanttDragController {
     if (this.dragState.rafId !== null) {
       cancelAnimationFrame(this.dragState.rafId);
     }
-
     this.dragState.rafId = requestAnimationFrame(() => this.applyPreview());
   }
 
@@ -147,7 +135,6 @@ export class GanttDragController {
 
     const { barEl, mode, previewDeltaPx, startLeft, startWidth, startDate, endDate, tooltipEl } =
       this.dragState;
-
     if (!tooltipEl) return;
 
     const deltaDays = Math.round(previewDeltaPx / this.viewState.dayWidth);
@@ -167,14 +154,13 @@ export class GanttDragController {
       barEl.style.width = `${Math.max(8, startWidth + previewDeltaPx)}px`;
     }
 
-    // Update tooltip
     tooltipEl.style.left = `${this.dragState.startClientX + previewDeltaPx}px`;
-    tooltipEl.style.top = `${barEl.getBoundingClientRect().top - 30}px`;
-    tooltipEl.textContent = `${previewStart} - ${previewEnd}`;
+    tooltipEl.style.top  = `${barEl.getBoundingClientRect().top - 30}px`;
+    tooltipEl.textContent = `${previewStart} — ${previewEnd}`;
     tooltipEl.classList.add('is-visible');
   }
 
-  private async handlePointerUp(evt: PointerEvent): Promise<void> {
+  private async handlePointerUp(): Promise<void> {
     if (!this.dragState) return;
 
     const dragState = this.dragState;
@@ -182,14 +168,18 @@ export class GanttDragController {
 
     const {
       barEl, mode, previewDeltaPx, startDate, endDate, originalDuration,
-      tooltipEl, parentPath, subtaskKey, parentRevision, pointerMoveHandler,
+      tooltipEl, parentPath, subtaskKey, parentRevision,
+      docMoveHandler, docUpHandler, rafId,
     } = dragState;
 
-    // Clean up drag state and pointer capture
-    barEl.removeEventListener('pointermove', pointerMoveHandler);
+    // Clean up document-level handlers and animation frame
+    document.removeEventListener('pointermove', docMoveHandler);
+    document.removeEventListener('pointerup',   docUpHandler);
+    document.removeEventListener('pointercancel', docUpHandler);
+    if (rafId !== null) cancelAnimationFrame(rafId);
+
     barEl.classList.remove('is-dragging');
-    if (tooltipEl) tooltipEl.remove();
-    barEl.releasePointerCapture(evt.pointerId);
+    tooltipEl?.remove();
 
     const deltaDays = Math.round(previewDeltaPx / this.viewState.dayWidth);
 
@@ -203,7 +193,6 @@ export class GanttDragController {
     let newEnd = endDate;
 
     if (mode === 'bar-move') {
-      // Snap start to next business day, then preserve original calendar duration
       const rawStart = addDays(startDate, deltaDays);
       newStart = snapForward(rawStart);
       newEnd = addDays(newStart, originalDuration);
@@ -226,18 +215,13 @@ export class GanttDragController {
     });
 
     if (!result.ok) {
-      // On failure: reset bar to CSS-driven position and force a reload so the
-      // Gantt stays consistent with the vault (REVISION_CONFLICT, etc.).
+      // Force reload on failure so the timeline stays consistent with the vault.
       barEl.style.left = '';
       barEl.style.width = '';
       this.onDragEnd();
-      return;
     }
-
-    // On success: leave the inline preview styles in place. The API write
-    // notifies subscribers which fire a debounced reload that rebuilds the
-    // timeline naturally, clearing the inline styles. Calling onDragEnd()
-    // here would trigger a second redundant render that caused the
-    // position:sticky flash on the left column.
+    // On success: leave inline preview styles in place.
+    // The API write notifies subscribers → debounced reload clears them naturally.
+    // Calling onDragEnd() here would cause a double-render.
   }
 }
