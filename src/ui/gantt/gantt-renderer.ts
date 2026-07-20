@@ -347,37 +347,57 @@ export class GanttRenderer {
     leftDiv.addEventListener('mouseleave', removeHover);
 
     this.rowMap.set(record.path, { rowEl: timelineDiv, leftEl: leftDiv, timelineEl: timelineDiv });
-    this.renderBars(timelineDiv, record, dates);
-    // Sync left panel row height to timeline row height set by renderBars (may vary by laneCount)
-    leftDiv.style.height = timelineDiv.style.height;
+    this.renderBarsAndCache(timelineDiv, leftDiv, record, dates);
   }
 
   /**
    * Update an existing parent row.
-   * Updates both the left panel row and the timeline row.
+   * Skips bar re-render when revision + base date + zoom are unchanged to
+   * prevent the clear→redraw flash that occurs on unrelated file saves.
    */
   updateParentRow(record: TaskRecord, dates: string[]): void {
     const row = this.rowMap.get(record.path);
     if (!row) return;
 
-    // Sync the left-column title in case the task was renamed.
-    const titleEl = row.leftEl.querySelector('.vg-gantt-parent-title');
-    if (titleEl) {
-      const span = titleEl.querySelector('span');
-      if (span && span.textContent !== record.note.displayName) {
-        span.textContent = record.note.displayName;
-      }
+    const { timelineEl, leftEl } = row;
+    const cachedRev = timelineEl.dataset.revision;
+    const cachedBase = timelineEl.dataset.baseDate;
+    const cachedZoom = timelineEl.dataset.dayWidth;
+    const currentZoom = String(this.viewState.dayWidth);
+
+    // Title sync is always cheap — do it unconditionally
+    const span = leftEl.querySelector('.vg-gantt-parent-title span');
+    if (span && span.textContent !== record.note.displayName) {
+      (span as HTMLElement).textContent = record.note.displayName;
     }
 
-    // Clear bars and re-render
-    const { timelineEl } = row;
-    // Remove all bars and background columns, but keep the timeline div
-    const barsToRemove = timelineEl.querySelectorAll('.vg-gantt-bar, .vg-gantt-bg-col');
-    barsToRemove.forEach((el) => el.remove());
+    // Skip bar re-render when nothing that affects the visual has changed
+    if (
+      cachedRev === record.revision &&
+      cachedBase === dates[0] &&
+      cachedZoom === currentZoom
+    ) {
+      return;
+    }
 
+    // Clear bars and bg-cols, then redraw
+    const toRemove = timelineEl.querySelectorAll('.vg-gantt-bar, .vg-gantt-bg-col');
+    toRemove.forEach((el) => el.remove());
+    this.renderBarsAndCache(timelineEl, leftEl, record, dates);
+  }
+
+  /** Render bars and write the render-cache keys onto the timeline element. */
+  private renderBarsAndCache(
+    timelineEl: HTMLElement,
+    leftEl: HTMLElement,
+    record: TaskRecord,
+    dates: string[],
+  ): void {
     this.renderBars(timelineEl, record, dates);
-    // Sync left panel row height in case laneCount changed
-    row.leftEl.style.height = timelineEl.style.height;
+    leftEl.style.height = timelineEl.style.height;
+    timelineEl.dataset.revision = record.revision;
+    timelineEl.dataset.baseDate = dates[0];
+    timelineEl.dataset.dayWidth = String(this.viewState.dayWidth);
   }
 
   /**
