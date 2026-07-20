@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Subtask } from '../../domain/task-note/types';
 
 // Mock gantt-date-utils before importing layout-engine, since diffDays uses
@@ -16,17 +16,21 @@ function makeSubtask(title: string, start: string, end: string): Subtask {
   return {
     key: title,
     title,
+    statusLabel: 'not-started',
+    createdAt: '2026-07-01',
+    updatedAt: '2026-07-01',
+    dueDate: null,
     plannedStartDate: start,
     plannedEndDate: end,
-    actualStartDate: null,
-    actualEndDate: null,
-    statusLabel: 'not-started',
-    completed: false,
+    workloadPlan: {},
+    workloadActual: {},
     priority: 0,
-    plannedHours: null,
-    actualHours: null,
-    dailyHours: {},
+    priorityMode: 'auto',
     tags: [],
+    completed: false,
+    markers: [],
+    currentStatus: '',
+    notes: '',
   };
 }
 
