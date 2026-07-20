@@ -1,12 +1,14 @@
-import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Menu, Notice, WorkspaceLeaf } from 'obsidian';
 import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
+import { InputModal } from '../shared/InputModal';
 import { GanttViewState } from './gantt-view-state';
 import { GanttRenderer } from './gantt-renderer';
 import { GanttDragController } from './gantt-drag-controller';
-import { todayStr } from './gantt-date-utils';
+import { todayStr, addDays, snapForward } from './gantt-date-utils';
 import {
   RANGE_EXTEND_THRESHOLD_PX,
   RANGE_EXTEND_DAYS,
+  PARENT_COL_WIDTH,
 } from './gantt-constants';
 import './gantt-styles.css';
 
@@ -68,6 +70,8 @@ export class GanttView extends ItemView {
       this.renderer.rootEl!,
       (path) => this.tasks.find((t) => t.path === path)
     );
+
+    this.renderer.rootEl!.addEventListener('contextmenu', (evt) => this.handleContextMenu(evt));
 
     this.unsubscribe = apiInstance.subscribe(() => {
       window.clearTimeout(this.debounceTimer);
@@ -146,6 +150,54 @@ export class GanttView extends ItemView {
       console.error('[vault-gantt] Gantt reload error:', err);
       new Notice('Ganttの読み込みに失敗しました');
     }
+  }
+
+  private handleContextMenu(evt: MouseEvent): void {
+    const target = evt.target as HTMLElement;
+    // Bars get their own future right-click menu; skip here.
+    if (target.closest('.vg-gantt-bar')) return;
+    // Find the row and its parent task path
+    const rowEl = target.closest('[data-path]') as HTMLElement | null;
+    if (!rowEl) return;
+    const parentPath = rowEl.dataset.path;
+    if (!parentPath) return;
+
+    // Compute the clicked date from mouse x position relative to the scroll container
+    const scrollEl = this.viewState.scrollEl;
+    if (!scrollEl) return;
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const xInTimeline = evt.clientX - scrollRect.left - PARENT_COL_WIDTH + scrollEl.scrollLeft;
+    if (xInTimeline < 0) return; // clicked on the left column, not the timeline
+    const dayIndex = Math.floor(xInTimeline / this.viewState.dayWidth);
+    const dates = this.viewState.buildDates();
+    const clickedDate = dates[Math.max(0, Math.min(dayIndex, dates.length - 1))];
+    if (!clickedDate) return;
+
+    evt.preventDefault();
+
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item.setTitle(`「${clickedDate}」にサブタスクを追加`);
+      item.setIcon('plus');
+      item.onClick(() => {
+        new InputModal(this.app, 'サブタスクを追加', 'サブタスク名を入力...', async (title) => {
+          const record = this.tasks.find((t) => t.path === parentPath);
+          if (!record) return;
+          const key = `st_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const endDate = snapForward(addDays(clickedDate, 4));
+          const result = await apiInstance.updateTaskItem({
+            path: parentPath,
+            expectedRevision: record.revision,
+            newSubtasks: [{ key, title }],
+            subtasks: [{ key, fields: { plannedStartDate: clickedDate, plannedEndDate: endDate } }],
+          });
+          if (!result.ok) {
+            new Notice(`サブタスクの追加に失敗しました: ${result.error.code}`);
+          }
+        }).open();
+      });
+    });
+    menu.showAtMouseEvent(evt);
   }
 
   private async fullRender(): Promise<void> {

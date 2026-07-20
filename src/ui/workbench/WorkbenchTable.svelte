@@ -33,6 +33,13 @@
     value: string;
   } | null = $state(null);
 
+  let subtaskEdit: {
+    parentPath: string;
+    subtaskKey: string;
+    field: 'title' | 'statusLabel' | 'plannedStartDate' | 'plannedEndDate' | 'dueDate';
+    value: string;
+  } | null = $state(null);
+
   // Derived state
   let filteredSorted = $derived(sortTaskRecords(filterTaskRecords(records, filter), sort));
   let rows = $derived(buildWorkbenchRows(filteredSorted, collapsed));
@@ -155,6 +162,37 @@
     }
   }
 
+  function isEditingSubtask(parentPath: string, key: string, field: string): boolean {
+    return subtaskEdit?.parentPath === parentPath && subtaskEdit?.subtaskKey === key && subtaskEdit?.field === field;
+  }
+
+  function startEditSubtask(parentPath: string, subtask: { key: string; title: string; statusLabel: string; plannedStartDate: string | null; plannedEndDate: string | null; dueDate: string | null }, field: 'title' | 'statusLabel' | 'plannedStartDate' | 'plannedEndDate' | 'dueDate') {
+    const value = field === 'title' ? subtask.title
+      : field === 'statusLabel' ? subtask.statusLabel
+      : field === 'plannedStartDate' ? (subtask.plannedStartDate ?? '')
+      : field === 'plannedEndDate' ? (subtask.plannedEndDate ?? '')
+      : (subtask.dueDate ?? '');
+    subtaskEdit = { parentPath, subtaskKey: subtask.key, field, value };
+  }
+
+  async function commitSubtaskEdit(parentPath: string, subtaskKey: string, rawValue: string) {
+    if (!subtaskEdit) return;
+    const field = subtaskEdit.field;
+    subtaskEdit = null;
+    const val = (field === 'plannedStartDate' || field === 'plannedEndDate' || field === 'dueDate')
+      ? (rawValue || null)
+      : rawValue;
+    await patchSubtask(parentPath, subtaskKey, { [field]: val });
+  }
+
+  function handleSubtaskEditKey(e: KeyboardEvent, parentPath: string, subtaskKey: string) {
+    if (e.key === 'Escape') { e.preventDefault(); subtaskEdit = null; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitSubtaskEdit(parentPath, subtaskKey, (e.target as HTMLInputElement).value);
+    }
+  }
+
   function addSubtask(record: TaskRecord) {
     openCreateSubtaskModal(record);
   }
@@ -203,6 +241,8 @@
           <th onclick={() => sortBy('createdAt')}>作成日</th>
           <th onclick={() => sortBy('updatedAt')}>更新日</th>
           <th onclick={() => sortBy('dueDate')}>期限</th>
+          <th>予定開始</th>
+          <th>予定終了</th>
           <th>タグ</th>
           <th>完了</th>
           <th>Gantt</th>
@@ -275,6 +315,8 @@
                   {row.record.note.dueDate ?? ''}
                 {/if}
               </td>
+              <td></td>
+              <td></td>
               <td class="col-tags">{row.record.note.tags.join(', ')}</td>
               <td class="col-check">
                 <input
@@ -302,23 +344,60 @@
           {:else}
             <tr class="vg-row-subtask" class:vg-completed={row.subtask.completed}>
               <td></td>
-              <td class="col-name col-subtask-name">{row.subtask.title}</td>
+              <td class="col-name col-subtask-name" ondblclick={() => startEditSubtask(row.parentPath, row.subtask, 'title')}>
+                {#if isEditingSubtask(row.parentPath, row.subtask.key, 'title')}
+                  <input type="text" value={subtaskEdit!.value}
+                    oninput={(e) => { subtaskEdit = { ...subtaskEdit!, value: (e.target as HTMLInputElement).value }; }}
+                    onkeydown={(e) => handleSubtaskEditKey(e, row.parentPath, row.subtask.key)}
+                    onblur={(e) => commitSubtaskEdit(row.parentPath, row.subtask.key, (e.target as HTMLInputElement).value)}
+                    autofocus />
+                {:else}
+                  {row.subtask.title}
+                {/if}
+              </td>
               <td>{row.subtask.priority}</td>
-              <td>{statusLabel(row.subtask.statusLabel)}</td>
+              <td ondblclick={() => startEditSubtask(row.parentPath, row.subtask, 'statusLabel')}>
+                {#if isEditingSubtask(row.parentPath, row.subtask.key, 'statusLabel')}
+                  <select value={subtaskEdit!.value}
+                    onchange={(e) => commitSubtaskEdit(row.parentPath, row.subtask.key, (e.target as HTMLSelectElement).value)}
+                    onkeydown={(e) => { if (e.key === 'Escape') subtaskEdit = null; }}
+                    autofocus>
+                    {#each DEFAULT_STATUSES as s}
+                      <option value={s.key}>{s.label}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  {statusLabel(row.subtask.statusLabel)}
+                {/if}
+              </td>
               <td title={row.subtask.currentStatus}>{truncate(row.subtask.currentStatus, 30)}</td>
               <td>{row.subtask.createdAt}</td>
               <td>{row.subtask.updatedAt}</td>
               <td>{row.subtask.dueDate ?? ''}</td>
+              <td ondblclick={() => startEditSubtask(row.parentPath, row.subtask, 'plannedStartDate')}>
+                {#if isEditingSubtask(row.parentPath, row.subtask.key, 'plannedStartDate')}
+                  <input type="date" value={subtaskEdit!.value}
+                    onchange={(e) => commitSubtaskEdit(row.parentPath, row.subtask.key, (e.target as HTMLInputElement).value)}
+                    onkeydown={(e) => handleSubtaskEditKey(e, row.parentPath, row.subtask.key)}
+                    autofocus />
+                {:else}
+                  {row.subtask.plannedStartDate ?? ''}
+                {/if}
+              </td>
+              <td ondblclick={() => startEditSubtask(row.parentPath, row.subtask, 'plannedEndDate')}>
+                {#if isEditingSubtask(row.parentPath, row.subtask.key, 'plannedEndDate')}
+                  <input type="date" value={subtaskEdit!.value}
+                    onchange={(e) => commitSubtaskEdit(row.parentPath, row.subtask.key, (e.target as HTMLInputElement).value)}
+                    onkeydown={(e) => handleSubtaskEditKey(e, row.parentPath, row.subtask.key)}
+                    autofocus />
+                {:else}
+                  {row.subtask.plannedEndDate ?? ''}
+                {/if}
+              </td>
               <td>{row.subtask.tags.join(', ')}</td>
               <td class="col-check">
-                <input
-                  type="checkbox"
-                  checked={row.subtask.completed}
-                  onchange={(e) =>
-                    patchSubtask(row.parentPath, row.subtask.key, {
-                      completed: (e.target as HTMLInputElement).checked,
-                    })}
-                />
+                <input type="checkbox" checked={row.subtask.completed}
+                  onchange={(e) => patchSubtask(row.parentPath, row.subtask.key, { completed: (e.target as HTMLInputElement).checked })} />
               </td>
               <td></td>
               <td></td>

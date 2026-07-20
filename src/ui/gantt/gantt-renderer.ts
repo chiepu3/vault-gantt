@@ -186,6 +186,7 @@ export class GanttRenderer {
     if (!this.bodyEl) return;
 
     const rowDiv = this.bodyEl.createDiv({ cls: 'vg-gantt-row' });
+    rowDiv.setAttribute('data-path', record.path);
     rowDiv.style.display = 'flex';
     rowDiv.style.borderBottom = '1px solid var(--background-modifier-border)';
 
