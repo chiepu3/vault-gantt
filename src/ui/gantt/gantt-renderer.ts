@@ -25,6 +25,7 @@ import type { GanttViewState } from './gantt-view-state';
  * It maintains a row map for efficient diff updates.
  */
 export class GanttRenderer {
+  ganttEl: HTMLElement | null = null;
   rootEl: HTMLElement | null = null;
   headerEl: HTMLElement | null = null;
   headerLeftEl: HTMLElement | null = null;
@@ -63,6 +64,7 @@ export class GanttRenderer {
     containerEl.empty();
 
     const ganttDiv = containerEl.createDiv({ cls: 'vg-gantt' });
+    this.ganttEl = ganttDiv;
     ganttDiv.style.display = 'flex';
     ganttDiv.style.flexDirection = 'column';
     ganttDiv.style.height = '100%';
@@ -76,20 +78,11 @@ export class GanttRenderer {
     this.headerEl.style.position = 'relative';
     this.headerEl.style.flexShrink = '0';
 
-    // Header left panel (fixed width, shows "タスク名")
+    // Header left panel (fixed width) — single merged cell showing "タスク名"
     this.headerLeftEl = this.headerEl.createDiv({ cls: 'vg-gantt-header-left' });
-    this.headerLeftEl.style.width = `${PARENT_COL_WIDTH}px`;
-    this.headerLeftEl.style.flexShrink = '0';
-    this.headerLeftEl.style.position = 'relative';
-    this.headerLeftEl.style.zIndex = '20';
-    this.headerLeftEl.style.borderRight = '1px solid var(--background-modifier-border)';
-    this.headerLeftEl.style.display = 'flex';
-    this.headerLeftEl.style.alignItems = 'stretch';
 
-    // Create 3 rows in header left (stacked vertically, sharing the space)
-    this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-left-row vg-gantt-header-left-month' });
-    this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-left-row vg-gantt-header-left-day' });
-    this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-left-row vg-gantt-header-left-dow' });
+    const titleCell = this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-title-cell' });
+    titleCell.createSpan({ text: 'タスク名' });
 
     // Header scroll clip (scrollable portion, no scroll itself)
     const headerScrollClip = this.headerEl.createDiv({ cls: 'vg-gantt-header-scroll-clip' });

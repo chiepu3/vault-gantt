@@ -61,7 +61,7 @@ export class GanttView extends ItemView {
     );
 
     this.renderer.mount(container);
-    this.addToolbar(container);
+    this.addToolbar(this.renderer.ganttEl!);
 
     this.viewState.scrollEl?.addEventListener('scroll', () => this.onScroll());
 
@@ -100,38 +100,64 @@ export class GanttView extends ItemView {
     this.viewState.scrollToToday();
   }
 
-  private addToolbar(container: HTMLElement): void {
-    const toolbar = container.createEl('div', { cls: 'vg-gantt-toolbar' });
-    toolbar.style.display = 'flex';
-    toolbar.style.gap = '0.5rem';
-    toolbar.style.alignItems = 'center';
-    toolbar.style.padding = '0.5rem';
-    toolbar.style.borderBottom = '1px solid var(--background-modifier-border)';
+  private zoomDisplayEl: HTMLElement | null = null;
 
-    const title = toolbar.createEl('span', { cls: 'vg-gantt-title', text: 'Ganttビュー' });
-    title.style.fontWeight = '600';
-    title.style.flex = '1';
+  private addToolbar(ganttEl: HTMLElement): void {
+    const toolbar = ganttEl.createEl('div', { cls: 'vg-gantt-toolbar' });
 
-    const zoomIn = toolbar.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: '＋' });
-    zoomIn.title = 'ズームイン';
-    zoomIn.addEventListener('click', () => {
-      this.viewState.zoom(1);
-      void this.fullRender();
+    // Left group: Workbench link + add button
+    const leftGroup = toolbar.createDiv({ cls: 'vg-gantt-toolbar-left' });
+
+    const wbBtn = leftGroup.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: 'Workbench' });
+    wbBtn.title = 'Workbenchを開く';
+    wbBtn.addEventListener('click', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.app as any).commands.executeCommandById('vault-gantt:open-workbench');
     });
 
-    const zoomOut = toolbar.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: '－' });
-    zoomOut.title = 'ズームアウト';
-    zoomOut.addEventListener('click', () => {
-      this.viewState.zoom(-1);
-      void this.fullRender();
+    const addBtn = leftGroup.createEl('button', { cls: 'vg-gantt-toolbar-btn vg-gantt-toolbar-add', text: '＋ タスク追加' });
+    addBtn.title = '新規親タスクを作成';
+    addBtn.addEventListener('click', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.app as any).commands.executeCommandById('vault-gantt:create-new-task');
     });
 
-    const toToday = toolbar.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: '今日' });
+    // Right group: zoom controls + today
+    const rightGroup = toolbar.createDiv({ cls: 'vg-gantt-toolbar-right' });
+
+    const toToday = rightGroup.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: '今日' });
     toToday.title = '今日へスクロール';
     toToday.addEventListener('click', () => this.viewState.scrollToToday());
 
-    // createEl already appended toolbar; move it before the gantt scroll wrap
-    container.prepend(toolbar);
+    const zoomOut = rightGroup.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: '－' });
+    zoomOut.title = 'ズームアウト';
+    zoomOut.addEventListener('click', () => {
+      this.viewState.zoom(-1);
+      this.updateZoomDisplay();
+      void this.fullRender();
+    });
+
+    this.zoomDisplayEl = rightGroup.createEl('span', {
+      cls: 'vg-gantt-zoom-display',
+      text: `${this.viewState.dayWidth}px/日`,
+    });
+
+    const zoomIn = rightGroup.createEl('button', { cls: 'vg-gantt-toolbar-btn', text: '＋' });
+    zoomIn.title = 'ズームイン';
+    zoomIn.addEventListener('click', () => {
+      this.viewState.zoom(1);
+      this.updateZoomDisplay();
+      void this.fullRender();
+    });
+
+    // Prepend toolbar so it appears before header and body (which mount() already created)
+    ganttEl.prepend(toolbar);
+  }
+
+  private updateZoomDisplay(): void {
+    if (this.zoomDisplayEl) {
+      this.zoomDisplayEl.textContent = `${this.viewState.dayWidth}px/日`;
+    }
   }
 
   private onScroll(): void {

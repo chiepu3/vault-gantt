@@ -1,6 +1,5 @@
 /* === Gantt View === */
 
-/* Main container */
 .vg-gantt {
   display: flex;
   flex-direction: column;
@@ -10,86 +9,102 @@
   background: var(--background-primary);
 }
 
-/* Toolbar */
+/* ===== Toolbar ===== */
 .vg-gantt-toolbar {
   display: flex;
-  gap: 0.5rem;
   align-items: center;
-  padding: 0.5rem;
+  justify-content: space-between;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
+  background: var(--background-secondary);
   flex-shrink: 0;
+  gap: 8px;
+  min-height: 34px;
 }
 
-.vg-gantt-title {
-  font-weight: 600;
-  flex: 1;
+.vg-gantt-toolbar-left,
+.vg-gantt-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .vg-gantt-toolbar-btn {
-  background: none;
+  background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 3px;
-  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  padding: 3px 8px;
   cursor: pointer;
   color: var(--text-normal);
   font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .vg-gantt-toolbar-btn:hover {
-  background: var(--background-secondary);
-  color: var(--interactive-accent);
+  background: var(--interactive-hover);
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
 }
 
-/* === Header Section === */
+.vg-gantt-toolbar-add {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+  font-weight: 500;
+}
+
+.vg-gantt-toolbar-add:hover {
+  background: var(--interactive-accent-hover);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent-hover);
+}
+
+.vg-gantt-zoom-display {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  min-width: 52px;
+  text-align: center;
+  user-select: none;
+}
+
+/* ===== Header ===== */
 .vg-gantt-header {
   display: flex;
-  border-bottom: 1px solid var(--background-modifier-border);
+  border-bottom: 2px solid var(--background-modifier-border);
   z-index: 20;
   position: relative;
   flex-shrink: 0;
-  background: var(--background-primary);
+  background: var(--background-secondary);
   height: 54px;
 }
 
+/* Left fixed cell — single merged "タスク名" label */
 .vg-gantt-header-left {
   width: 320px;
   flex-shrink: 0;
   position: relative;
   z-index: 20;
-  border-right: 1px solid var(--background-modifier-border);
-  display: flex;
-  flex-direction: column;
-  background: var(--background-primary);
-}
-
-.vg-gantt-header-left-row {
-  flex: 1;
+  border-right: 2px solid var(--background-modifier-border);
   display: flex;
   align-items: center;
-  padding: 0 0.5rem;
-  border-bottom: 1px solid var(--background-modifier-border);
-  overflow: hidden;
+  background: var(--background-secondary);
 }
 
-.vg-gantt-header-left-row:last-child {
-  border-bottom: none;
-}
-
-.vg-gantt-header-left-month {
+.vg-gantt-header-title-cell {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  width: 100%;
   font-weight: 600;
   font-size: var(--font-ui-small);
-}
-
-.vg-gantt-header-left-day {
-  font-weight: 500;
-}
-
-.vg-gantt-header-left-dow {
-  font-size: var(--font-ui-smaller);
   color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  user-select: none;
 }
 
+/* Scroll-clipped timeline header */
 .vg-gantt-header-scroll-clip {
   flex: 1;
   overflow: hidden;
@@ -103,6 +118,7 @@
   will-change: transform;
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
 
 .vg-gantt-month-row,
@@ -110,36 +126,61 @@
 .vg-gantt-dow-row {
   display: flex;
   flex: 1;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vg-gantt-dow-row {
+  border-bottom: none;
 }
 
 .vg-gantt-date-cell {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--font-ui-smaller);
+  font-size: 10px;
   border-right: 1px solid var(--background-modifier-border);
   padding: 0;
-  line-height: 1.2;
+  line-height: 1;
   text-align: center;
-  color: var(--text-normal);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  user-select: none;
 }
 
 .vg-gantt-date-cell span {
   pointer-events: none;
 }
 
+/* Month cells: bold, larger */
+.vg-gantt-month-row .vg-gantt-date-cell {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-normal);
+  justify-content: flex-start;
+  padding-left: 4px;
+}
+
+/* Day cells: normal */
+.vg-gantt-day-row .vg-gantt-date-cell {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+/* Weekend header cells */
 .vg-gantt-date-cell.is-weekend {
-  background: var(--background-secondary);
+  background: rgba(0, 0, 0, 0.06);
   color: var(--text-muted);
 }
 
+/* Today header cell */
 .vg-gantt-date-cell.is-today {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
-  font-weight: 600;
+  font-weight: 700;
 }
 
-/* === Body Section === */
+/* ===== Body ===== */
 .vg-gantt-body-wrapper {
   display: flex;
   flex: 1;
@@ -153,7 +194,7 @@
   overflow: hidden;
   position: relative;
   z-index: 10;
-  border-right: 1px solid var(--background-modifier-border);
+  border-right: 2px solid var(--background-modifier-border);
   background: var(--background-primary);
 }
 
@@ -175,16 +216,17 @@
   background: var(--background-primary);
 }
 
-/* Individual row in left panel */
+/* Left panel rows */
 .vg-gantt-row-left {
   position: relative;
   height: 44px;
   border-bottom: 1px solid var(--background-modifier-border);
-  padding: 0 0.5rem;
+  padding: 0 10px;
   overflow: hidden;
   display: flex;
   align-items: center;
   background: var(--background-primary);
+  cursor: default;
 }
 
 .vg-gantt-row-left:nth-child(even) {
@@ -192,8 +234,7 @@
 }
 
 .vg-gantt-row-left.is-hover {
-  background: var(--background-secondary);
-  opacity: 0.9;
+  background: var(--background-modifier-hover);
 }
 
 .vg-gantt-parent-title {
@@ -205,7 +246,7 @@
   color: var(--text-normal);
 }
 
-/* Individual row in timeline */
+/* Timeline rows */
 .vg-gantt-timeline {
   position: relative;
   overflow: hidden;
@@ -221,10 +262,10 @@
 }
 
 .vg-gantt-timeline.is-hover {
-  opacity: 0.9;
+  background: var(--background-modifier-hover);
 }
 
-/* Background columns (weekends, today) */
+/* Weekend/today column backgrounds inside rows */
 .vg-gantt-bg-col {
   position: absolute;
   top: 0;
@@ -234,60 +275,62 @@
 }
 
 .vg-gantt-bg-col.is-weekend {
-  background: rgba(0, 0, 0, 0.04);
+  background: rgba(0, 0, 0, 0.055);
 }
 
 .vg-gantt-bg-col.is-today {
-  background: rgba(100, 100, 200, 0.1);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
 }
 
-/* Today line (vertical) */
+/* Today vertical line */
 .vg-gantt-today-line {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 2px;
   background: var(--interactive-accent);
-  opacity: 0.6;
+  opacity: 0.7;
   pointer-events: none;
-  z-index: 3;
+  z-index: 5;
 }
 
-/* Bars (subtasks) */
+/* ===== Bars ===== */
 .vg-gantt-bar {
   position: absolute;
-  border-radius: 4px;
+  border-radius: 3px;
   background: var(--interactive-accent);
-  opacity: 0.85;
   cursor: grab;
   display: flex;
   align-items: center;
   overflow: hidden;
   box-sizing: border-box;
-  border: 1px solid var(--interactive-accent);
-  transition: opacity 0.15s;
-  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.2);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: filter 0.1s, box-shadow 0.1s;
+  z-index: 2;
 }
 
 .vg-gantt-bar:hover {
-  opacity: 1;
+  filter: brightness(1.08);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
 }
 
 .vg-gantt-bar.is-dragging {
-  opacity: 0.6;
+  opacity: 0.75;
   cursor: grabbing;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .vg-gantt-bar-label {
-  font-size: var(--font-ui-smaller);
+  font-size: 11px;
   color: var(--text-on-accent);
-  padding: 0 4px;
+  padding: 0 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   pointer-events: none;
+  font-weight: 500;
+  letter-spacing: 0.01em;
 }
 
 .vg-gantt-bar-handle {
@@ -296,24 +339,19 @@
   bottom: 0;
   width: 8px;
   cursor: ew-resize;
-  z-index: 2;
+  z-index: 3;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity 0.1s;
 }
 
 .vg-gantt-bar:hover .vg-gantt-bar-handle {
   opacity: 1;
 }
 
-.vg-gantt-bar-handle.is-start {
-  left: 0;
-}
+.vg-gantt-bar-handle.is-start { left: 0; }
+.vg-gantt-bar-handle.is-end   { right: 0; }
 
-.vg-gantt-bar-handle.is-end {
-  right: 0;
-}
-
-/* Drag tooltip */
+/* ===== Drag tooltip ===== */
 .vg-gantt-drag-tooltip {
   position: fixed;
   z-index: 9999;
@@ -321,18 +359,19 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 4px;
   padding: 2px 8px;
-  font-size: var(--font-ui-smaller);
+  font-size: 11px;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.1s;
   white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .vg-gantt-drag-tooltip.is-visible {
   opacity: 1;
 }
 
-/* Empty state */
+/* ===== Empty state ===== */
 .vg-gantt-empty {
   padding: 2rem;
   text-align: center;
@@ -342,4 +381,5 @@
   left: 50%;
   transform: translate(-50%, -50%);
   white-space: nowrap;
+  font-size: var(--font-ui-small);
 }
