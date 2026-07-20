@@ -171,11 +171,25 @@ export class GanttRenderer {
       }
     }
 
-    // Re-order DOM to match sort order (ganttOrder may have changed)
-    for (const record of sortedTasks) {
-      if (!record.note.ganttEnabled) continue;
-      const row = this.rowMap.get(record.path);
-      if (row) this.bodyEl.appendChild(row.rowEl);
+    // Re-order DOM only when the order has actually changed.
+    // Calling appendChild even on an already-correctly-placed row briefly
+    // detaches and re-attaches it, which causes position:sticky to flash
+    // to the element's natural (leftmost) position for one paint frame.
+    const visiblePaths = sortedTasks
+      .filter((r) => r.note.ganttEnabled)
+      .map((r) => r.path);
+    const domPaths = Array.from(this.bodyEl.children).map(
+      (el) => (el as HTMLElement).dataset.path ?? ''
+    );
+    const needsReorder =
+      domPaths.length !== visiblePaths.length ||
+      visiblePaths.some((p, i) => p !== domPaths[i]);
+    if (needsReorder) {
+      for (const record of sortedTasks) {
+        if (!record.note.ganttEnabled) continue;
+        const row = this.rowMap.get(record.path);
+        if (row) this.bodyEl.appendChild(row.rowEl);
+      }
     }
   }
 
@@ -219,6 +233,15 @@ export class GanttRenderer {
   updateParentRow(record: TaskRecord, dates: string[]): void {
     const row = this.rowMap.get(record.path);
     if (!row) return;
+
+    // Sync the left-column title in case the task was renamed.
+    const titleEl = row.leftEl.querySelector('.vg-gantt-parent-title');
+    if (titleEl) {
+      const span = titleEl.querySelector('span');
+      if (span && span.textContent !== record.note.displayName) {
+        span.textContent = record.note.displayName;
+      }
+    }
 
     const { timelineEl } = row;
     timelineEl.empty();

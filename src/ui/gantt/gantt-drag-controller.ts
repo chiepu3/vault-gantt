@@ -185,22 +185,18 @@ export class GanttDragController {
       tooltipEl, parentPath, subtaskKey, parentRevision, pointerMoveHandler,
     } = dragState;
 
-    // Clean up
+    // Clean up drag state and pointer capture
     barEl.removeEventListener('pointermove', pointerMoveHandler);
     barEl.classList.remove('is-dragging');
-    if (tooltipEl) {
-      tooltipEl.remove();
-    }
+    if (tooltipEl) tooltipEl.remove();
     barEl.releasePointerCapture(evt.pointerId);
-
-    // Reset styles
-    barEl.style.left = '';
-    barEl.style.width = '';
 
     const deltaDays = Math.round(previewDeltaPx / this.viewState.dayWidth);
 
     if (deltaDays === 0) {
-      return; // No-op
+      barEl.style.left = '';
+      barEl.style.width = '';
+      return;
     }
 
     let newStart = startDate;
@@ -217,32 +213,31 @@ export class GanttDragController {
       newEnd = snapBackward(addDays(endDate, deltaDays));
     }
 
-    // Guard: start must not exceed end (minimum 1-day bar)
-    if (newStart > newEnd) return;
+    if (newStart > newEnd) {
+      barEl.style.left = '';
+      barEl.style.width = '';
+      return;
+    }
 
-    // Update via API
     const result = await this.api.updateTaskItem({
       path: parentPath,
       expectedRevision: parentRevision,
-      subtasks: [
-        {
-          key: subtaskKey,
-          fields: {
-            plannedStartDate: newStart,
-            plannedEndDate: newEnd,
-          },
-        },
-      ],
+      subtasks: [{ key: subtaskKey, fields: { plannedStartDate: newStart, plannedEndDate: newEnd } }],
     });
 
     if (!result.ok) {
-      // Force a reload in all failure cases so the view stays consistent with the vault.
-      // REVISION_CONFLICT: another write raced us — reload shows the true current state.
-      // Other errors: reset bar position to match the unmodified note.
+      // On failure: reset bar to CSS-driven position and force a reload so the
+      // Gantt stays consistent with the vault (REVISION_CONFLICT, etc.).
+      barEl.style.left = '';
+      barEl.style.width = '';
       this.onDragEnd();
       return;
     }
 
-    this.onDragEnd();
+    // On success: leave the inline preview styles in place. The API write
+    // notifies subscribers which fire a debounced reload that rebuilds the
+    // timeline naturally, clearing the inline styles. Calling onDragEnd()
+    // here would trigger a second redundant render that caused the
+    // position:sticky flash on the left column.
   }
 }
