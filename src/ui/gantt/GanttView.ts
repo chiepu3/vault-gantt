@@ -15,9 +15,19 @@ import './gantt-styles.css';
 export const GANTT_VIEW_TYPE = 'vault-gantt-gantt';
 
 let apiInstance: CoreTaskAPI;
+let saveZoomFn: ((v: number) => void) | null = null;
+let loadZoomFn: (() => number) | null = null;
 
 export function setGanttViewApi(api: CoreTaskAPI): void {
   apiInstance = api;
+}
+
+export function setGanttZoomCallbacks(
+  save: (v: number) => void,
+  load: () => number,
+): void {
+  saveZoomFn = save;
+  loadZoomFn = load;
 }
 
 export class GanttView extends ItemView {
@@ -54,6 +64,9 @@ export class GanttView extends ItemView {
     container.empty();
 
     this.viewState = new GanttViewState(todayStr());
+    // Restore persisted zoom
+    if (loadZoomFn) this.viewState.dayWidth = loadZoomFn();
+
     this.renderer = new GanttRenderer(this.viewState);
     this.dragController = new GanttDragController(
       this.viewState,
@@ -119,6 +132,7 @@ export class GanttView extends ItemView {
     zoomOut.addEventListener('click', () => {
       this.viewState.zoom(-1);
       this.updateZoomDisplay();
+      saveZoomFn?.(this.viewState.dayWidth);
       void this.fullRender();
     });
 
@@ -132,10 +146,11 @@ export class GanttView extends ItemView {
     zoomIn.addEventListener('click', () => {
       this.viewState.zoom(1);
       this.updateZoomDisplay();
+      saveZoomFn?.(this.viewState.dayWidth);
       void this.fullRender();
     });
 
-    // Prepend toolbar so it appears before header and body (which mount() already created)
+    // Prepend toolbar so it appears before wrapEl
     ganttEl.prepend(toolbar);
   }
 
@@ -183,22 +198,25 @@ export class GanttView extends ItemView {
 
   private handleContextMenu(evt: MouseEvent): void {
     const target = evt.target as HTMLElement;
-    // Bars get their own future right-click menu; skip here.
-    if (target.closest('.vg-gantt-bar')) return;
-    // Find the row and its parent task path
+
+    // Bar right-click menu
+    const barEl = target.closest('.vg-gantt-bar') as HTMLElement | null;
+    if (barEl) {
+      this.handleBarContextMenu(evt, barEl);
+      return;
+    }
+
+    // Empty timeline area: add subtask at clicked date
     const rowEl = target.closest('[data-path]') as HTMLElement | null;
     if (!rowEl) return;
     const parentPath = rowEl.dataset.path;
     if (!parentPath) return;
 
-    // Compute the clicked date from mouse x position relative to the scroll container
     const scrollEl = this.viewState.scrollEl;
     if (!scrollEl) return;
     const scrollRect = scrollEl.getBoundingClientRect();
-    // scrollEl = wrapEl which contains both sticky-left and timeline.
-    // Subtract PARENT_COL_WIDTH to get x relative to the timeline content.
     const xInTimeline = evt.clientX - scrollRect.left + scrollEl.scrollLeft - PARENT_COL_WIDTH;
-    if (xInTimeline < 0) return; // clicked on the left column, not the timeline
+    if (xInTimeline < 0) return;
     const dayIndex = Math.floor(xInTimeline / this.viewState.dayWidth);
     const dates = this.viewState.buildDates();
     const clickedDate = dates[Math.max(0, Math.min(dayIndex, dates.length - 1))];
@@ -228,6 +246,81 @@ export class GanttView extends ItemView {
         }).open();
       });
     });
+    menu.showAtMouseEvent(evt);
+  }
+
+  private handleBarContextMenu(evt: MouseEvent, barEl: HTMLElement): void {
+    const parentPath = barEl.getAttribute('data-path');
+    const subtaskKey = barEl.getAttribute('data-key');
+    if (!parentPath || !subtaskKey) return;
+
+    const record = this.tasks.find((t) => t.path === parentPath);
+    if (!record) return;
+    const subtask = record.note.subtasks.find((s) => s.key === subtaskKey);
+    if (!subtask) return;
+
+    evt.preventDefault();
+    const menu = new Menu();
+
+    menu.addItem((item) => {
+      item.setTitle('ノートを開く');
+      item.setIcon('file-text');
+      item.onClick(() => {
+        void this.app.workspace.openLinkText(parentPath, '');
+      });
+    });
+
+    if (!subtask.completed) {
+      menu.addItem((item) => {
+        item.setTitle('完了にする');
+        item.setIcon('check-circle-2');
+        item.onClick(async () => {
+          const r = this.tasks.find((t) => t.path === parentPath);
+          if (!r) return;
+          await apiInstance.updateTaskItem({
+            path: parentPath,
+            expectedRevision: r.revision,
+            subtasks: [{ key: subtaskKey, fields: { completed: true } }],
+          });
+        });
+      });
+    }
+
+    menu.addItem((item) => {
+      item.setTitle('ガントから外す');
+      item.setIcon('calendar-x');
+      item.onClick(async () => {
+        const r = this.tasks.find((t) => t.path === parentPath);
+        if (!r) return;
+        await apiInstance.updateTaskItem({
+          path: parentPath,
+          expectedRevision: r.revision,
+          subtasks: [{ key: subtaskKey, fields: { plannedStartDate: null, plannedEndDate: null } }],
+        });
+      });
+    });
+
+    menu.addSeparator();
+
+    menu.addItem((item) => {
+      item.setTitle('サブタスクを削除');
+      item.setIcon('trash-2');
+      item.onClick(async () => {
+        const confirmed = confirm(`「${subtask.title}」を削除しますか？`);
+        if (!confirmed) return;
+        const r = this.tasks.find((t) => t.path === parentPath);
+        if (!r) return;
+        const result = await apiInstance.updateTaskItem({
+          path: parentPath,
+          expectedRevision: r.revision,
+          deleteSubtaskKeys: [subtaskKey],
+        });
+        if (!result.ok) {
+          new Notice(`削除に失敗しました: ${result.error.code}`);
+        }
+      });
+    });
+
     menu.showAtMouseEvent(evt);
   }
 
