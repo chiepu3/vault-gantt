@@ -27,7 +27,13 @@ import type { GanttViewState } from './gantt-view-state';
 export class GanttRenderer {
   rootEl: HTMLElement | null = null;
   headerEl: HTMLElement | null = null;
+  headerLeftEl: HTMLElement | null = null;
+  headerInnerEl: HTMLElement | null = null;
   bodyEl: HTMLElement | null = null;
+  bodyLeftPanelEl: HTMLElement | null = null;
+  leftPanelInnerEl: HTMLElement | null = null;
+  scrollWrapEl: HTMLElement | null = null;
+  todayLineEl: HTMLElement | null = null;
 
   private rowMap = new Map<string, { rowEl: HTMLElement; leftEl: HTMLElement; timelineEl: HTMLElement }>();
 
@@ -35,7 +41,23 @@ export class GanttRenderer {
 
   /**
    * Mount the Gantt view into a container element.
-   * Creates the full DOM structure.
+   * Creates the full DOM structure with separate left panel and scrollable timeline.
+   *
+   * Structure:
+   * .vg-gantt (flex column, full height)
+   *   .vg-gantt-header (flex row, sticky top)
+   *     .vg-gantt-header-left (fixed width, position: relative)
+   *       [3 rows: month, day, dow]
+   *     .vg-gantt-header-scroll-clip (flex: 1, overflow hidden)
+   *       .vg-gantt-header-inner (position: absolute, will-change: transform)
+   *         [3 rows]
+   *   .vg-gantt-body (flex row, flex: 1, overflow hidden)
+   *     .vg-gantt-left-panel (fixed width, position: relative, z-index: 10)
+   *       .vg-gantt-left-panel-inner (position: relative, will-change: transform)
+   *         [one row per task]
+   *     .vg-gantt-scroll-wrap (flex: 1, overflow auto) ← THE ONLY SCROLL CONTAINER
+   *       .vg-gantt-body-inner (position relative, display block)
+   *         [one timeline row per task, stacked]
    */
   mount(containerEl: HTMLElement): void {
     containerEl.empty();
@@ -46,55 +68,103 @@ export class GanttRenderer {
     ganttDiv.style.height = '100%';
     ganttDiv.style.overflow = 'hidden';
 
-    const scrollWrap = ganttDiv.createDiv({ cls: 'vg-gantt-scroll-wrap' });
-    scrollWrap.style.flex = '1';
-    scrollWrap.style.overflow = 'auto';
-    this.viewState.scrollEl = scrollWrap;
-
-    const rootDiv = scrollWrap.createDiv({ cls: 'vg-gantt-root' });
-    rootDiv.style.display = 'inline-block';
-    rootDiv.style.minWidth = '100%';
-    rootDiv.style.position = 'relative';
-    this.rootEl = rootDiv;
-
-    // Header
-    this.headerEl = rootDiv.createDiv({ cls: 'vg-gantt-header' });
-    this.headerEl.style.position = 'sticky';
-    this.headerEl.style.top = '0';
-    this.headerEl.style.zIndex = '10';
+    // ===== Header =====
+    this.headerEl = ganttDiv.createDiv({ cls: 'vg-gantt-header' });
     this.headerEl.style.display = 'flex';
+    this.headerEl.style.borderBottom = '1px solid var(--background-modifier-border)';
+    this.headerEl.style.zIndex = '20';
+    this.headerEl.style.position = 'relative';
+    this.headerEl.style.flexShrink = '0';
 
-    const headerLeft = this.headerEl.createDiv({ cls: 'vg-gantt-header-left' });
-    headerLeft.style.width = `${PARENT_COL_WIDTH}px`;
-    headerLeft.style.display = 'inline-block';
-    headerLeft.style.verticalAlign = 'top';
-    headerLeft.createSpan({ text: '親タスク' });
+    // Header left panel (fixed width, shows "タスク名")
+    this.headerLeftEl = this.headerEl.createDiv({ cls: 'vg-gantt-header-left' });
+    this.headerLeftEl.style.width = `${PARENT_COL_WIDTH}px`;
+    this.headerLeftEl.style.flexShrink = '0';
+    this.headerLeftEl.style.position = 'relative';
+    this.headerLeftEl.style.zIndex = '20';
+    this.headerLeftEl.style.borderRight = '1px solid var(--background-modifier-border)';
+    this.headerLeftEl.style.display = 'flex';
+    this.headerLeftEl.style.alignItems = 'stretch';
 
-    const headerTimeline = this.headerEl.createDiv({ cls: 'vg-gantt-header-timeline' });
-    headerTimeline.style.display = 'inline-block';
-    headerTimeline.style.position = 'relative';
+    // Create 3 rows in header left (stacked vertically, sharing the space)
+    this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-left-row vg-gantt-header-left-month' });
+    this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-left-row vg-gantt-header-left-day' });
+    this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-left-row vg-gantt-header-left-dow' });
 
-    headerTimeline.createDiv({ cls: 'vg-gantt-month-row' });
-    headerTimeline.createDiv({ cls: 'vg-gantt-day-row' });
-    headerTimeline.createDiv({ cls: 'vg-gantt-dow-row' });
+    // Header scroll clip (scrollable portion, no scroll itself)
+    const headerScrollClip = this.headerEl.createDiv({ cls: 'vg-gantt-header-scroll-clip' });
+    headerScrollClip.style.flex = '1';
+    headerScrollClip.style.overflow = 'hidden';
+    headerScrollClip.style.position = 'relative';
 
-    // Body
-    this.bodyEl = rootDiv.createDiv({ cls: 'vg-gantt-body' });
-    this.bodyEl.style.position = 'relative';
+    // Header inner (positioned absolutely, moved via transform on scroll)
+    this.headerInnerEl = headerScrollClip.createDiv({ cls: 'vg-gantt-header-inner' });
+    this.headerInnerEl.style.position = 'absolute';
+    this.headerInnerEl.style.top = '0';
+    this.headerInnerEl.style.left = '0';
+    this.headerInnerEl.style.willChange = 'transform';
+    this.headerInnerEl.style.display = 'flex';
+    this.headerInnerEl.style.flexDirection = 'column';
+
+    this.headerInnerEl.createDiv({ cls: 'vg-gantt-month-row' });
+    this.headerInnerEl.createDiv({ cls: 'vg-gantt-day-row' });
+    this.headerInnerEl.createDiv({ cls: 'vg-gantt-dow-row' });
+
+    // ===== Body =====
+    const bodyWrapper = ganttDiv.createDiv({ cls: 'vg-gantt-body-wrapper' });
+    bodyWrapper.style.display = 'flex';
+    bodyWrapper.style.flex = '1';
+    bodyWrapper.style.overflow = 'hidden';
+    bodyWrapper.style.position = 'relative';
+
+    // Left panel (fixed width, vertical scrolling synced from main scroll)
+    this.bodyLeftPanelEl = bodyWrapper.createDiv({ cls: 'vg-gantt-left-panel' });
+    this.bodyLeftPanelEl.style.width = `${PARENT_COL_WIDTH}px`;
+    this.bodyLeftPanelEl.style.flexShrink = '0';
+    this.bodyLeftPanelEl.style.overflow = 'hidden';
+    this.bodyLeftPanelEl.style.position = 'relative';
+    this.bodyLeftPanelEl.style.zIndex = '10';
+    this.bodyLeftPanelEl.style.borderRight = '1px solid var(--background-modifier-border)';
+
+    this.leftPanelInnerEl = this.bodyLeftPanelEl.createDiv({ cls: 'vg-gantt-left-panel-inner' });
+    this.leftPanelInnerEl.style.position = 'relative';
+    this.leftPanelInnerEl.style.willChange = 'transform';
+
+    // Scroll container (ONLY scrollable element)
+    this.scrollWrapEl = bodyWrapper.createDiv({ cls: 'vg-gantt-scroll-wrap' });
+    this.scrollWrapEl.style.flex = '1';
+    this.scrollWrapEl.style.overflow = 'auto';
+    this.viewState.scrollEl = this.scrollWrapEl;
+
+    const bodyInner = this.scrollWrapEl.createDiv({ cls: 'vg-gantt-body-inner' });
+    bodyInner.style.position = 'relative';
+    bodyInner.style.display = 'block';
+    bodyInner.style.minHeight = '100%';
+    this.bodyEl = bodyInner;
+
+    // Today line (absolutely positioned, full height, z-index: 3)
+    this.todayLineEl = this.scrollWrapEl.createDiv({ cls: 'vg-gantt-today-line' });
+    this.todayLineEl.style.position = 'absolute';
+    this.todayLineEl.style.top = '0';
+    this.todayLineEl.style.bottom = '0';
+    this.todayLineEl.style.width = '2px';
+    this.todayLineEl.style.pointerEvents = 'none';
+    this.todayLineEl.style.zIndex = '3';
+
+    // rootEl now points to the body inner (for drag controller attachment and context menu)
+    this.rootEl = bodyInner;
   }
 
   /**
    * Render header rows (month, day, day-of-week).
+   * Renders into the header-inner (scrollable portion), which gets translated on scroll.
    */
   renderHeader(dates: string[]): void {
-    if (!this.headerEl) return;
+    if (!this.headerInnerEl) return;
 
-    const headerTimeline = this.headerEl.querySelector('.vg-gantt-header-timeline') as HTMLElement;
-    if (!headerTimeline) return;
-
-    const monthRow = headerTimeline.querySelector('.vg-gantt-month-row') as HTMLElement;
-    const dayRow = headerTimeline.querySelector('.vg-gantt-day-row') as HTMLElement;
-    const dowRow = headerTimeline.querySelector('.vg-gantt-dow-row') as HTMLElement;
+    const monthRow = this.headerInnerEl.querySelector('.vg-gantt-month-row') as HTMLElement;
+    const dayRow = this.headerInnerEl.querySelector('.vg-gantt-day-row') as HTMLElement;
+    const dowRow = this.headerInnerEl.querySelector('.vg-gantt-dow-row') as HTMLElement;
 
     if (!monthRow || !dayRow || !dowRow) return;
 
@@ -138,7 +208,7 @@ export class GanttRenderer {
    * Render or update all task rows.
    */
   renderAll(tasks: TaskRecord[], dates: string[]): void {
-    if (!this.bodyEl) return;
+    if (!this.bodyEl || !this.leftPanelInnerEl) return;
 
     // Mark which paths exist in the task list
     const existingPaths = new Set(tasks.map((t) => t.path));
@@ -172,15 +242,12 @@ export class GanttRenderer {
     }
 
     // Re-order DOM only when the order has actually changed.
-    // Calling appendChild even on an already-correctly-placed row briefly
-    // detaches and re-attaches it, which causes position:sticky to flash
-    // to the element's natural (leftmost) position for one paint frame.
     const visiblePaths = sortedTasks
       .filter((r) => r.note.ganttEnabled)
       .map((r) => r.path);
-    const domPaths = Array.from(this.bodyEl.children).map(
-      (el) => (el as HTMLElement).dataset.path ?? ''
-    );
+    const domPaths = Array.from(this.bodyEl.children)
+      .filter((el) => (el as HTMLElement).classList.contains('vg-gantt-timeline'))
+      .map((el) => (el as HTMLElement).dataset.path ?? '');
     const needsReorder =
       domPaths.length !== visiblePaths.length ||
       visiblePaths.some((p, i) => p !== domPaths[i]);
@@ -190,45 +257,111 @@ export class GanttRenderer {
         const row = this.rowMap.get(record.path);
         if (row) this.bodyEl.appendChild(row.rowEl);
       }
+
+      // Also reorder in left panel
+      const leftPaths = Array.from(this.leftPanelInnerEl.children)
+        .map((el) => (el as HTMLElement).dataset.path ?? '');
+      const leftNeedsReorder =
+        leftPaths.length !== visiblePaths.length ||
+        visiblePaths.some((p, i) => p !== leftPaths[i]);
+      if (leftNeedsReorder) {
+        for (const record of sortedTasks) {
+          if (!record.note.ganttEnabled) continue;
+          const row = this.rowMap.get(record.path);
+          if (row) this.leftPanelInnerEl.appendChild(row.leftEl);
+        }
+      }
+    }
+
+    // Show/hide empty state
+    if (visiblePaths.length === 0) {
+      this.showEmptyState();
+    } else {
+      this.hideEmptyState();
+    }
+  }
+
+  /**
+   * Show empty state message.
+   */
+  private showEmptyState(): void {
+    if (!this.bodyEl) return;
+
+    let emptyEl = this.bodyEl.querySelector('.vg-gantt-empty') as HTMLElement | null;
+    if (!emptyEl) {
+      emptyEl = this.bodyEl.createDiv({ cls: 'vg-gantt-empty' });
+      emptyEl.style.position = 'absolute';
+      emptyEl.style.top = '50%';
+      emptyEl.style.left = '50%';
+      emptyEl.style.transform = 'translate(-50%, -50%)';
+      emptyEl.createSpan({ text: 'タスクがありません' });
+    }
+    emptyEl.style.display = 'block';
+  }
+
+  /**
+   * Hide empty state message.
+   */
+  private hideEmptyState(): void {
+    if (!this.bodyEl) return;
+
+    const emptyEl = this.bodyEl.querySelector('.vg-gantt-empty') as HTMLElement | null;
+    if (emptyEl) {
+      emptyEl.style.display = 'none';
     }
   }
 
   /**
    * Create a new parent row.
+   * Creates two separate row elements: one in the left panel, one in the timeline.
    */
   createParentRow(record: TaskRecord, dates: string[]): void {
-    if (!this.bodyEl) return;
+    if (!this.bodyEl || !this.leftPanelInnerEl) return;
 
-    const rowDiv = this.bodyEl.createDiv({ cls: 'vg-gantt-row' });
-    rowDiv.setAttribute('data-path', record.path);
-    rowDiv.style.display = 'flex';
-    rowDiv.style.borderBottom = '1px solid var(--background-modifier-border)';
+    // Create timeline row in body
+    const timelineDiv = this.bodyEl.createDiv({ cls: 'vg-gantt-timeline' });
+    timelineDiv.setAttribute('data-path', record.path);
+    timelineDiv.style.position = 'relative';
+    timelineDiv.style.overflow = 'hidden';
+    timelineDiv.style.borderBottom = '1px solid var(--background-modifier-border)';
+    timelineDiv.style.display = 'flex';
+    timelineDiv.style.alignItems = 'stretch';
 
-    const leftDiv = rowDiv.createDiv({ cls: 'vg-gantt-row-left' });
-    leftDiv.style.flexShrink = '0';
-    leftDiv.style.width = `${PARENT_COL_WIDTH}px`;
-    leftDiv.style.borderRight = '1px solid var(--background-modifier-border)';
-    leftDiv.style.padding = '0.25rem 0.5rem';
+    // Create left panel row (positioned absolutely)
+    const leftDiv = this.leftPanelInnerEl.createDiv({ cls: 'vg-gantt-row-left' });
+    leftDiv.setAttribute('data-path', record.path);
+    leftDiv.style.position = 'relative';
+    leftDiv.style.borderBottom = '1px solid var(--background-modifier-border)';
+    leftDiv.style.padding = '0 0.5rem';
     leftDiv.style.overflow = 'hidden';
+    leftDiv.style.display = 'flex';
+    leftDiv.style.alignItems = 'center';
 
     const titleDiv = leftDiv.createDiv({ cls: 'vg-gantt-parent-title' });
     titleDiv.style.fontWeight = '500';
     titleDiv.style.whiteSpace = 'nowrap';
     titleDiv.style.overflow = 'hidden';
     titleDiv.style.textOverflow = 'ellipsis';
+    titleDiv.style.fontSize = 'var(--font-ui-small)';
     titleDiv.createSpan({ text: record.note.displayName });
 
-    const timelineDiv = rowDiv.createDiv({ cls: 'vg-gantt-timeline' });
-    timelineDiv.style.position = 'relative';
-    timelineDiv.style.overflow = 'hidden';
-    timelineDiv.style.flex = '1';
+    // Wire up hover state sync between left panel and timeline (both directions)
+    const addHover = (): void => { leftDiv.addClass('is-hover'); timelineDiv.addClass('is-hover'); };
+    const removeHover = (): void => { leftDiv.removeClass('is-hover'); timelineDiv.removeClass('is-hover'); };
+    timelineDiv.addEventListener('mouseenter', addHover);
+    timelineDiv.addEventListener('mouseleave', removeHover);
+    leftDiv.addEventListener('mouseenter', addHover);
+    leftDiv.addEventListener('mouseleave', removeHover);
 
-    this.rowMap.set(record.path, { rowEl: rowDiv, leftEl: leftDiv, timelineEl: timelineDiv });
+    this.rowMap.set(record.path, { rowEl: timelineDiv, leftEl: leftDiv, timelineEl: timelineDiv });
     this.renderBars(timelineDiv, record, dates);
+    // Sync left panel row height to timeline row height set by renderBars (may vary by laneCount)
+    leftDiv.style.height = timelineDiv.style.height;
   }
 
   /**
    * Update an existing parent row.
+   * Updates both the left panel row and the timeline row.
    */
   updateParentRow(record: TaskRecord, dates: string[]): void {
     const row = this.rowMap.get(record.path);
@@ -243,9 +376,15 @@ export class GanttRenderer {
       }
     }
 
+    // Clear bars and re-render
     const { timelineEl } = row;
-    timelineEl.empty();
+    // Remove all bars and background columns, but keep the timeline div
+    const barsToRemove = timelineEl.querySelectorAll('.vg-gantt-bar, .vg-gantt-bg-col');
+    barsToRemove.forEach((el) => el.remove());
+
     this.renderBars(timelineEl, record, dates);
+    // Sync left panel row height in case laneCount changed
+    row.leftEl.style.height = timelineEl.style.height;
   }
 
   /**
@@ -327,20 +466,38 @@ export class GanttRenderer {
   }
 
   /**
-   * Set the width of all timeline elements.
+   * Set the width of all timeline elements and position the today line.
    */
   setTimelineWidth(dates: string[]): void {
-    if (!this.headerEl) return;
+    if (!this.headerInnerEl) return;
 
     const totalWidth = dates.length * this.viewState.dayWidth;
 
-    const headerTimeline = this.headerEl.querySelector('.vg-gantt-header-timeline') as HTMLElement;
-    if (headerTimeline) {
-      headerTimeline.style.width = `${totalWidth}px`;
-    }
+    this.headerInnerEl.style.width = `${totalWidth}px`;
 
     for (const { timelineEl } of this.rowMap.values()) {
       timelineEl.style.width = `${totalWidth}px`;
+    }
+
+    // Position today line
+    this.updateTodayLine(dates);
+  }
+
+  /**
+   * Update the position of the today vertical line.
+   */
+  private updateTodayLine(dates: string[]): void {
+    if (!this.todayLineEl) return;
+
+    const today = todayStr();
+    const todayIndex = dates.indexOf(today);
+
+    if (todayIndex >= 0) {
+      const todayX = todayIndex * this.viewState.dayWidth;
+      this.todayLineEl.style.left = `${todayX}px`;
+      this.todayLineEl.style.visibility = 'visible';
+    } else {
+      this.todayLineEl.style.visibility = 'hidden';
     }
   }
 
@@ -352,6 +509,7 @@ export class GanttRenderer {
     if (!row) return;
 
     row.rowEl.remove();
+    row.leftEl.remove();
     this.rowMap.delete(path);
   }
 }

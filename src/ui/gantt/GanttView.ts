@@ -8,7 +8,6 @@ import { todayStr, addDays, snapForward } from './gantt-date-utils';
 import {
   RANGE_EXTEND_THRESHOLD_PX,
   RANGE_EXTEND_DAYS,
-  PARENT_COL_WIDTH,
 } from './gantt-constants';
 import './gantt-styles.css';
 
@@ -65,6 +64,25 @@ export class GanttView extends ItemView {
     this.addToolbar(container);
 
     this.viewState.scrollEl?.addEventListener('scroll', () => this.onScroll());
+
+    // Wire up scroll synchronization: translate header and left panel on scroll
+    this.viewState.scrollEl?.addEventListener('scroll', () => {
+      const scrollEl = this.viewState.scrollEl;
+      if (!scrollEl) return;
+
+      const scrollLeft = scrollEl.scrollLeft;
+      const scrollTop = scrollEl.scrollTop;
+
+      // Translate header horizontally
+      if (this.renderer.headerInnerEl) {
+        this.renderer.headerInnerEl.style.transform = `translateX(-${scrollLeft}px)`;
+      }
+
+      // Translate left panel vertically
+      if (this.renderer.leftPanelInnerEl) {
+        this.renderer.leftPanelInnerEl.style.transform = `translateY(-${scrollTop}px)`;
+      }
+    });
 
     this.dragController.attach(
       this.renderer.rootEl!,
@@ -166,7 +184,7 @@ export class GanttView extends ItemView {
     const scrollEl = this.viewState.scrollEl;
     if (!scrollEl) return;
     const scrollRect = scrollEl.getBoundingClientRect();
-    const xInTimeline = evt.clientX - scrollRect.left - PARENT_COL_WIDTH + scrollEl.scrollLeft;
+    const xInTimeline = evt.clientX - scrollRect.left + scrollEl.scrollLeft;
     if (xInTimeline < 0) return; // clicked on the left column, not the timeline
     const dayIndex = Math.floor(xInTimeline / this.viewState.dayWidth);
     const dates = this.viewState.buildDates();

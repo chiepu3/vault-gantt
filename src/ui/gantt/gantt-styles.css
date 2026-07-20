@@ -1,12 +1,16 @@
 /* === Gantt View === */
+
+/* Main container */
 .vg-gantt {
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
   font-size: var(--font-ui-small);
+  background: var(--background-primary);
 }
 
+/* Toolbar */
 .vg-gantt-toolbar {
   display: flex;
   gap: 0.5rem;
@@ -37,56 +41,91 @@
   color: var(--interactive-accent);
 }
 
-.vg-gantt-scroll-wrap {
-  flex: 1;
-  overflow: auto;
-}
-
-.vg-gantt-root {
-  display: inline-block;
-  min-width: 100%;
-  position: relative;
-}
-
+/* === Header Section === */
 .vg-gantt-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
   display: flex;
-  background: var(--background-primary);
   border-bottom: 1px solid var(--background-modifier-border);
+  z-index: 20;
+  position: relative;
+  flex-shrink: 0;
+  background: var(--background-primary);
+  height: 54px;
 }
 
 .vg-gantt-header-left {
-  display: inline-block;
-  vertical-align: top;
-  font-weight: 600;
-  padding: 0.25rem 0.5rem;
+  width: 320px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 20;
   border-right: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
   background: var(--background-primary);
-  position: sticky;
-  left: 0;
-  z-index: 2;
 }
 
-.vg-gantt-header-timeline {
-  display: inline-block;
+.vg-gantt-header-left-row {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.vg-gantt-header-left-row:last-child {
+  border-bottom: none;
+}
+
+.vg-gantt-header-left-month {
+  font-weight: 600;
+  font-size: var(--font-ui-small);
+}
+
+.vg-gantt-header-left-day {
+  font-weight: 500;
+}
+
+.vg-gantt-header-left-dow {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.vg-gantt-header-scroll-clip {
+  flex: 1;
+  overflow: hidden;
   position: relative;
+}
+
+.vg-gantt-header-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  display: flex;
+  flex-direction: column;
 }
 
 .vg-gantt-month-row,
 .vg-gantt-day-row,
 .vg-gantt-dow-row {
   display: flex;
+  flex: 1;
 }
 
 .vg-gantt-date-cell {
-  display: inline-block;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: var(--font-ui-smaller);
   border-right: 1px solid var(--background-modifier-border);
-  padding: 0.25rem 0;
+  padding: 0;
   line-height: 1.2;
+  text-align: center;
+  color: var(--text-normal);
+}
+
+.vg-gantt-date-cell span {
+  pointer-events: none;
 }
 
 .vg-gantt-date-cell.is-weekend {
@@ -97,29 +136,64 @@
 .vg-gantt-date-cell.is-today {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
+  font-weight: 600;
 }
 
-.vg-gantt-body {
+/* === Body Section === */
+.vg-gantt-body-wrapper {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
   position: relative;
 }
 
-.vg-gantt-row {
-  display: flex;
-  border-bottom: 1px solid var(--background-modifier-border);
-  min-height: 48px;
+.vg-gantt-left-panel {
+  width: 320px;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+  z-index: 10;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
 }
 
-.vg-gantt-row-left {
-  flex-shrink: 0;
-  border-right: 1px solid var(--background-modifier-border);
-  padding: 0.25rem 0.5rem;
-  overflow: hidden;
+.vg-gantt-left-panel-inner {
+  position: relative;
+  will-change: transform;
+}
+
+.vg-gantt-scroll-wrap {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.vg-gantt-body-inner {
+  position: relative;
+  display: block;
+  min-height: 100%;
   background: var(--background-primary);
+}
+
+/* Individual row in left panel */
+.vg-gantt-row-left {
+  position: relative;
+  height: 44px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 0 0.5rem;
+  overflow: hidden;
   display: flex;
   align-items: center;
-  position: sticky;
-  left: 0;
-  z-index: 5;
+  background: var(--background-primary);
+}
+
+.vg-gantt-row-left:nth-child(even) {
+  background: var(--background-secondary);
+}
+
+.vg-gantt-row-left.is-hover {
+  background: var(--background-secondary);
+  opacity: 0.9;
 }
 
 .vg-gantt-parent-title {
@@ -128,19 +202,61 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: var(--font-ui-small);
+  color: var(--text-normal);
 }
 
+/* Individual row in timeline */
 .vg-gantt-timeline {
   position: relative;
   overflow: hidden;
-  flex: 1;
+  height: 44px;
+  border-bottom: 1px solid var(--background-modifier-border);
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  background: var(--background-primary);
 }
 
+.vg-gantt-timeline:nth-child(even) {
+  background: var(--background-secondary);
+}
+
+.vg-gantt-timeline.is-hover {
+  opacity: 0.9;
+}
+
+/* Background columns (weekends, today) */
+.vg-gantt-bg-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.vg-gantt-bg-col.is-weekend {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.vg-gantt-bg-col.is-today {
+  background: rgba(100, 100, 200, 0.1);
+}
+
+/* Today line (vertical) */
+.vg-gantt-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--interactive-accent);
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Bars (subtasks) */
 .vg-gantt-bar {
   position: absolute;
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--interactive-accent);
   opacity: 0.85;
   cursor: grab;
@@ -150,6 +266,7 @@
   box-sizing: border-box;
   border: 1px solid var(--interactive-accent);
   transition: opacity 0.15s;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.2);
 }
 
 .vg-gantt-bar:hover {
@@ -179,7 +296,7 @@
   bottom: 0;
   width: 8px;
   cursor: ew-resize;
-  z-index: 1;
+  z-index: 2;
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -196,21 +313,7 @@
   right: 0;
 }
 
-.vg-gantt-bg-col {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  pointer-events: none;
-}
-
-.vg-gantt-bg-col.is-weekend {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.vg-gantt-bg-col.is-today {
-  background: rgba(100, 100, 200, 0.1);
-}
-
+/* Drag tooltip */
 .vg-gantt-drag-tooltip {
   position: fixed;
   z-index: 9999;
@@ -229,8 +332,14 @@
   opacity: 1;
 }
 
+/* Empty state */
 .vg-gantt-empty {
   padding: 2rem;
   text-align: center;
   color: var(--text-muted);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
 }
