@@ -144,7 +144,7 @@ export class GanttDragController {
     if (mode === 'bar-move') {
       previewStart = addDays(startDate, deltaDays);
       previewEnd = addDays(endDate, deltaDays);
-      barEl.style.left = `${startLeft + previewDeltaPx}px`;
+      barEl.style.transform = `translateX(${previewDeltaPx}px)`;
     } else if (mode === 'resize-start') {
       previewStart = addDays(startDate, deltaDays);
       barEl.style.left = `${startLeft + previewDeltaPx}px`;
@@ -184,6 +184,7 @@ export class GanttDragController {
     const deltaDays = Math.round(previewDeltaPx / this.viewState.dayWidth);
 
     if (deltaDays === 0) {
+      barEl.style.transform = '';
       barEl.style.left = '';
       barEl.style.width = '';
       return;
@@ -203,6 +204,7 @@ export class GanttDragController {
     }
 
     if (newStart > newEnd) {
+      barEl.style.transform = '';
       barEl.style.left = '';
       barEl.style.width = '';
       return;
@@ -216,6 +218,7 @@ export class GanttDragController {
 
     if (!result.ok) {
       // Force reload on failure so the timeline stays consistent with the vault.
+      barEl.style.transform = '';
       barEl.style.left = '';
       barEl.style.width = '';
       this.onDragEnd();

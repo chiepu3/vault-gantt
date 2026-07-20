@@ -1,25 +1,23 @@
 /* === Gantt View === */
 
-.vg-gantt {
+.vg-gantt-container {
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden;
-  font-size: var(--font-ui-small);
-  background: var(--background-primary);
+  gap: 0;
+  padding: 0;
 }
 
 /* ===== Toolbar ===== */
 .vg-gantt-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
   padding: 4px 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
   flex-shrink: 0;
-  gap: 8px;
-  min-height: 34px;
 }
 
 .vg-gantt-toolbar-left,
@@ -61,203 +59,159 @@
 }
 
 .vg-gantt-zoom-display {
-  font-size: var(--font-ui-smaller);
   color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
   min-width: 52px;
   text-align: center;
   user-select: none;
 }
 
-/* ===== Header ===== */
-.vg-gantt-header {
-  display: flex;
-  border-bottom: 2px solid var(--background-modifier-border);
-  z-index: 20;
-  position: relative;
-  flex-shrink: 0;
-  background: var(--background-secondary);
-  height: 54px;
+/* ===== Scroll Container (THE ONLY ONE) ===== */
+.vg-gantt-wrap {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  margin: 6px 8px 8px;
 }
 
-/* Left fixed cell — single merged "タスク名" label */
+/* ===== CSS Grid (sticky-left + timeline) ===== */
+.vg-gantt-grid {
+  display: grid;
+  grid-template-columns: var(--vg-left-width) 1fr;
+  align-items: start;
+  align-content: start;
+  grid-auto-rows: max-content;
+  position: relative;
+}
+
+/* ===== Sticky Left Column ===== */
+.vg-gantt-left {
+  position: sticky;
+  left: 0;
+  z-index: 20;
+  background: var(--background-primary);
+  border-right: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+  box-sizing: border-box;
+  width: var(--vg-left-width);
+  align-self: start;
+  padding: 6px 8px;
+  overflow: hidden;
+}
+
+.vg-gantt-left.is-even {
+  background: var(--background-secondary);
+}
+
+.vg-gantt-left.is-hover {
+  background: var(--background-modifier-hover);
+}
+
+/* ===== Header Rows ===== */
 .vg-gantt-header-left {
-  width: 320px;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 20;
-  border-right: 2px solid var(--background-modifier-border);
-  display: flex;
-  align-items: center;
-  background: var(--background-secondary);
-}
-
-.vg-gantt-header-title-cell {
+  top: 0;
+  z-index: 50;
+  height: var(--vg-header-height);
   display: flex;
   align-items: center;
   padding: 0 10px;
-  width: 100%;
-  font-weight: 600;
+  font-weight: 700;
   font-size: var(--font-ui-small);
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  user-select: none;
 }
 
-/* Scroll-clipped timeline header */
-.vg-gantt-header-scroll-clip {
-  flex: 1;
-  overflow: hidden;
-  position: relative;
-}
-
-.vg-gantt-header-inner {
-  position: absolute;
+.vg-gantt-header-timeline {
+  position: sticky;
   top: 0;
-  left: 0;
-  will-change: transform;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+  z-index: 10;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow: hidden;
+  height: var(--vg-header-height);
 }
 
+/* Floating month (inside header-timeline) */
+.vg-gantt-floating-month {
+  position: sticky;
+  left: 4px;
+  z-index: 12;
+  width: max-content;
+  max-width: 160px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--background-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+  height: var(--vg-header-height);
+  display: flex;
+  align-items: center;
+}
+
+/* Date header rows */
 .vg-gantt-month-row,
 .vg-gantt-day-row,
 .vg-gantt-dow-row {
   display: flex;
-  flex: 1;
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.vg-gantt-dow-row {
-  border-bottom: none;
+  height: 18px;
+  line-height: 18px;
 }
 
 .vg-gantt-date-cell {
+  box-sizing: border-box;
+  border-right: 1px solid var(--background-modifier-border);
+  text-align: center;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
-  border-right: 1px solid var(--background-modifier-border);
-  padding: 0;
-  line-height: 1;
-  text-align: center;
-  color: var(--text-muted);
-  flex-shrink: 0;
-  user-select: none;
 }
 
-.vg-gantt-date-cell span {
-  pointer-events: none;
-}
-
-/* Month cells: bold, larger */
-.vg-gantt-month-row .vg-gantt-date-cell {
-  font-size: var(--font-ui-smaller);
-  font-weight: 600;
-  color: var(--text-normal);
-  justify-content: flex-start;
+.vg-gantt-month-cell {
+  text-align: left;
   padding-left: 4px;
+  font-weight: 700;
 }
 
-/* Day cells: normal */
-.vg-gantt-day-row .vg-gantt-date-cell {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-normal);
-}
-
-/* Weekend header cells */
 .vg-gantt-date-cell.is-weekend {
-  background: rgba(0, 0, 0, 0.06);
-  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
 }
 
-/* Today header cell */
 .vg-gantt-date-cell.is-today {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   font-weight: 700;
 }
 
-/* ===== Body ===== */
-.vg-gantt-body-wrapper {
-  display: flex;
-  flex: 1;
+/* ===== Parent Row Left ===== */
+.vg-gantt-parent-left {
   overflow: hidden;
-  position: relative;
-}
-
-.vg-gantt-left-panel {
-  width: 320px;
-  flex-shrink: 0;
-  overflow: hidden;
-  position: relative;
-  z-index: 10;
-  border-right: 2px solid var(--background-modifier-border);
-  background: var(--background-primary);
-}
-
-.vg-gantt-left-panel-inner {
-  position: relative;
-  will-change: transform;
-}
-
-.vg-gantt-scroll-wrap {
-  flex: 1;
-  overflow: auto;
-  position: relative;
-}
-
-.vg-gantt-body-inner {
-  position: relative;
-  display: block;
-  min-height: 100%;
-  background: var(--background-primary);
-}
-
-/* Left panel rows */
-.vg-gantt-row-left {
-  position: relative;
-  height: 44px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  padding: 0 10px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  background: var(--background-primary);
   cursor: default;
 }
 
-.vg-gantt-row-left:nth-child(even) {
-  background: var(--background-secondary);
-}
-
-.vg-gantt-row-left.is-hover {
-  background: var(--background-modifier-hover);
-}
-
 .vg-gantt-parent-title {
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
   font-size: var(--font-ui-small);
   color: var(--text-normal);
 }
 
-/* Timeline rows */
+/* ===== Timeline Rows ===== */
 .vg-gantt-timeline {
   position: relative;
-  overflow: hidden;
-  height: 44px;
   border-bottom: 1px solid var(--background-modifier-border);
-  display: flex;
-  align-items: stretch;
   background: var(--background-primary);
+  overflow: hidden;
 }
 
-.vg-gantt-timeline:nth-child(even) {
+.vg-gantt-timeline.is-even {
   background: var(--background-secondary);
 }
 
@@ -265,48 +219,42 @@
   background: var(--background-modifier-hover);
 }
 
-/* Weekend/today column backgrounds inside rows */
+/* ===== Background Columns ===== */
 .vg-gantt-bg-col {
   position: absolute;
   top: 0;
   bottom: 0;
   pointer-events: none;
-  z-index: 1;
 }
 
 .vg-gantt-bg-col.is-weekend {
-  background: rgba(0, 0, 0, 0.055);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
 }
 
 .vg-gantt-bg-col.is-today {
-  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
-}
-
-/* Today vertical line */
-.vg-gantt-today-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--interactive-accent);
-  opacity: 0.7;
-  pointer-events: none;
-  z-index: 5;
+  width: 2px !important;
+  background: var(--text-error);
+  opacity: 0.9;
+  z-index: 2;
 }
 
 /* ===== Bars ===== */
 .vg-gantt-bar {
   position: absolute;
-  border-radius: 3px;
+  height: 24px;
+  border-radius: 6px;
   background: var(--interactive-accent);
-  cursor: grab;
+  color: var(--text-on-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  overflow: visible;
   display: flex;
   align-items: center;
-  overflow: hidden;
+  padding: 0 8px;
   box-sizing: border-box;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  z-index: 3;
+  cursor: grab;
   transition: filter 0.1s, box-shadow 0.1s;
-  z-index: 2;
+  will-change: transform;
 }
 
 .vg-gantt-bar:hover {
@@ -315,31 +263,30 @@
 }
 
 .vg-gantt-bar.is-dragging {
-  opacity: 0.75;
+  opacity: 0.65;
   cursor: grabbing;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: none;
 }
 
 .vg-gantt-bar-label {
-  font-size: 11px;
-  color: var(--text-on-accent);
-  padding: 0 5px;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  font-size: 12px;
   pointer-events: none;
   font-weight: 500;
-  letter-spacing: 0.01em;
 }
 
+/* Resize handles */
 .vg-gantt-bar-handle {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 8px;
   cursor: ew-resize;
-  z-index: 3;
+  z-index: 4;
   opacity: 0;
   transition: opacity 0.1s;
 }
@@ -348,11 +295,17 @@
   opacity: 1;
 }
 
-.vg-gantt-bar-handle.is-start { left: 0; }
-.vg-gantt-bar-handle.is-end   { right: 0; }
+.vg-gantt-bar-handle.is-start {
+  left: 0;
+}
 
-/* ===== Drag tooltip ===== */
+.vg-gantt-bar-handle.is-end {
+  right: 0;
+}
+
+/* ===== Drag Tooltip ===== */
 .vg-gantt-drag-tooltip {
+  display: none;
   position: fixed;
   z-index: 9999;
   background: var(--background-modifier-form-field);
@@ -361,25 +314,18 @@
   padding: 2px 8px;
   font-size: 11px;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.1s;
   white-space: nowrap;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .vg-gantt-drag-tooltip.is-visible {
-  opacity: 1;
+  display: block;
 }
 
-/* ===== Empty state ===== */
+/* ===== Empty State ===== */
 .vg-gantt-empty {
-  padding: 2rem;
-  text-align: center;
+  grid-column: 1 / span 2;
+  padding: 20px;
   color: var(--text-muted);
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  white-space: nowrap;
-  font-size: var(--font-ui-small);
+  text-align: center;
 }

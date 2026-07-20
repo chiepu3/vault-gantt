@@ -4,6 +4,7 @@ import {
   BAR_HEIGHT,
   PARENT_COL_WIDTH,
   BAR_RESIZE_HANDLE_WIDTH,
+  HEADER_HEIGHT,
 } from './gantt-constants';
 import {
   packSubtasksIntoLanes,
@@ -21,372 +22,246 @@ import {
 import type { GanttViewState } from './gantt-view-state';
 
 /**
- * GanttRenderer is responsible for creating and updating the DOM tree for the Gantt view.
- * It maintains a row map for efficient diff updates.
+ * GanttRenderer renders the Gantt chart using CSS Grid with sticky columns.
+ * Architecture:
+ * - containerEl (passed to mount) = vg-gantt-container
+ *   - toolbar (added by GanttView)
+ *   - wrapEl (scroll container, THE ONLY ONE)
+ *     - gridEl (CSS Grid: 2 columns)
+ *       - header-left (sticky left, top)
+ *       - header-timeline (sticky top)
+ *         - floating-month
+ *         - month-row, day-row, dow-row
+ *       - For each task:
+ *         - leftEl (sticky left)
+ *         - timelineEl (position: relative, contains bars)
  */
 export class GanttRenderer {
-  ganttEl: HTMLElement | null = null;
-  rootEl: HTMLElement | null = null;
-  headerEl: HTMLElement | null = null;
-  headerLeftEl: HTMLElement | null = null;
-  headerInnerEl: HTMLElement | null = null;
-  bodyEl: HTMLElement | null = null;
-  bodyLeftPanelEl: HTMLElement | null = null;
-  leftPanelInnerEl: HTMLElement | null = null;
-  scrollWrapEl: HTMLElement | null = null;
-  todayLineEl: HTMLElement | null = null;
+  ganttEl: HTMLElement | null = null;       // = containerEl (toolbar mounted inside)
+  wrapEl: HTMLElement | null = null;        // scroll container
+  gridEl: HTMLElement | null = null;        // CSS Grid
+  floatingMonthEl: HTMLElement | null = null;
+  rootEl: HTMLElement | null = null;        // = gridEl (for drag controller + contextmenu)
+  dragTooltipEl: HTMLElement | null = null; // fixed tooltip inside document.body
 
-  private rowMap = new Map<string, { rowEl: HTMLElement; leftEl: HTMLElement; timelineEl: HTMLElement }>();
+  private rowMap = new Map<string, {
+    leftEl: HTMLElement;
+    timelineEl: HTMLElement;
+  }>();
+  private rowIndex = 0; // for alternating row colors
 
   constructor(private viewState: GanttViewState) {}
 
-  /**
-   * Mount the Gantt view into a container element.
-   * Creates the full DOM structure with separate left panel and scrollable timeline.
-   *
-   * Structure:
-   * .vg-gantt (flex column, full height)
-   *   .vg-gantt-header (flex row, sticky top)
-   *     .vg-gantt-header-left (fixed width, position: relative)
-   *       [3 rows: month, day, dow]
-   *     .vg-gantt-header-scroll-clip (flex: 1, overflow hidden)
-   *       .vg-gantt-header-inner (position: absolute, will-change: transform)
-   *         [3 rows]
-   *   .vg-gantt-body (flex row, flex: 1, overflow hidden)
-   *     .vg-gantt-left-panel (fixed width, position: relative, z-index: 10)
-   *       .vg-gantt-left-panel-inner (position: relative, will-change: transform)
-   *         [one row per task]
-   *     .vg-gantt-scroll-wrap (flex: 1, overflow auto) ← THE ONLY SCROLL CONTAINER
-   *       .vg-gantt-body-inner (position relative, display block)
-   *         [one timeline row per task, stacked]
-   */
   mount(containerEl: HTMLElement): void {
     containerEl.empty();
+    containerEl.addClass('vg-gantt-container');
+    this.ganttEl = containerEl;
 
-    const ganttDiv = containerEl.createDiv({ cls: 'vg-gantt' });
-    this.ganttEl = ganttDiv;
-    ganttDiv.style.display = 'flex';
-    ganttDiv.style.flexDirection = 'column';
-    ganttDiv.style.height = '100%';
-    ganttDiv.style.overflow = 'hidden';
+    // Scroll container (THE ONLY ONE)
+    this.wrapEl = containerEl.createDiv({ cls: 'vg-gantt-wrap' });
+    this.viewState.scrollEl = this.wrapEl;
 
-    // ===== Header =====
-    this.headerEl = ganttDiv.createDiv({ cls: 'vg-gantt-header' });
-    this.headerEl.style.display = 'flex';
-    this.headerEl.style.borderBottom = '1px solid var(--background-modifier-border)';
-    this.headerEl.style.zIndex = '20';
-    this.headerEl.style.position = 'relative';
-    this.headerEl.style.flexShrink = '0';
+    // CSS Grid container
+    this.gridEl = this.wrapEl.createDiv({ cls: 'vg-gantt-grid' });
+    this.gridEl.style.setProperty('--vg-left-width', `${PARENT_COL_WIDTH}px`);
+    this.gridEl.style.setProperty('--vg-header-height', `${HEADER_HEIGHT}px`);
+    this.rootEl = this.gridEl;
 
-    // Header left panel (fixed width) — single merged cell showing "タスク名"
-    this.headerLeftEl = this.headerEl.createDiv({ cls: 'vg-gantt-header-left' });
-
-    const titleCell = this.headerLeftEl.createDiv({ cls: 'vg-gantt-header-title-cell' });
-    titleCell.createSpan({ text: 'タスク名' });
-
-    // Header scroll clip (scrollable portion, no scroll itself)
-    const headerScrollClip = this.headerEl.createDiv({ cls: 'vg-gantt-header-scroll-clip' });
-    headerScrollClip.style.flex = '1';
-    headerScrollClip.style.overflow = 'hidden';
-    headerScrollClip.style.position = 'relative';
-
-    // Header inner (positioned absolutely, moved via transform on scroll)
-    this.headerInnerEl = headerScrollClip.createDiv({ cls: 'vg-gantt-header-inner' });
-    this.headerInnerEl.style.position = 'absolute';
-    this.headerInnerEl.style.top = '0';
-    this.headerInnerEl.style.left = '0';
-    this.headerInnerEl.style.willChange = 'transform';
-    this.headerInnerEl.style.display = 'flex';
-    this.headerInnerEl.style.flexDirection = 'column';
-
-    this.headerInnerEl.createDiv({ cls: 'vg-gantt-month-row' });
-    this.headerInnerEl.createDiv({ cls: 'vg-gantt-day-row' });
-    this.headerInnerEl.createDiv({ cls: 'vg-gantt-dow-row' });
-
-    // ===== Body =====
-    const bodyWrapper = ganttDiv.createDiv({ cls: 'vg-gantt-body-wrapper' });
-    bodyWrapper.style.display = 'flex';
-    bodyWrapper.style.flex = '1';
-    bodyWrapper.style.overflow = 'hidden';
-    bodyWrapper.style.position = 'relative';
-
-    // Left panel (fixed width, vertical scrolling synced from main scroll)
-    this.bodyLeftPanelEl = bodyWrapper.createDiv({ cls: 'vg-gantt-left-panel' });
-    this.bodyLeftPanelEl.style.width = `${PARENT_COL_WIDTH}px`;
-    this.bodyLeftPanelEl.style.flexShrink = '0';
-    this.bodyLeftPanelEl.style.overflow = 'hidden';
-    this.bodyLeftPanelEl.style.position = 'relative';
-    this.bodyLeftPanelEl.style.zIndex = '10';
-    this.bodyLeftPanelEl.style.borderRight = '1px solid var(--background-modifier-border)';
-
-    this.leftPanelInnerEl = this.bodyLeftPanelEl.createDiv({ cls: 'vg-gantt-left-panel-inner' });
-    this.leftPanelInnerEl.style.position = 'relative';
-    this.leftPanelInnerEl.style.willChange = 'transform';
-
-    // Scroll container (ONLY scrollable element)
-    this.scrollWrapEl = bodyWrapper.createDiv({ cls: 'vg-gantt-scroll-wrap' });
-    this.scrollWrapEl.style.flex = '1';
-    this.scrollWrapEl.style.overflow = 'auto';
-    this.viewState.scrollEl = this.scrollWrapEl;
-
-    const bodyInner = this.scrollWrapEl.createDiv({ cls: 'vg-gantt-body-inner' });
-    bodyInner.style.position = 'relative';
-    bodyInner.style.display = 'block';
-    bodyInner.style.minHeight = '100%';
-    this.bodyEl = bodyInner;
-
-    // Today line (absolutely positioned, full height, z-index: 3)
-    this.todayLineEl = this.scrollWrapEl.createDiv({ cls: 'vg-gantt-today-line' });
-    this.todayLineEl.style.position = 'absolute';
-    this.todayLineEl.style.top = '0';
-    this.todayLineEl.style.bottom = '0';
-    this.todayLineEl.style.width = '2px';
-    this.todayLineEl.style.pointerEvents = 'none';
-    this.todayLineEl.style.zIndex = '3';
-
-    // rootEl now points to the body inner (for drag controller attachment and context menu)
-    this.rootEl = bodyInner;
+    // Drag tooltip (fixed, outside scroll hierarchy)
+    this.dragTooltipEl = document.body.createDiv({ cls: 'vg-gantt-drag-tooltip' });
   }
 
-  /**
-   * Render header rows (month, day, day-of-week).
-   * Renders into the header-inner (scrollable portion), which gets translated on scroll.
-   */
+  unmount(): void {
+    this.dragTooltipEl?.remove();
+    this.dragTooltipEl = null;
+  }
+
   renderHeader(dates: string[]): void {
-    if (!this.headerInnerEl) return;
+    if (!this.gridEl) return;
 
-    const monthRow = this.headerInnerEl.querySelector('.vg-gantt-month-row') as HTMLElement;
-    const dayRow = this.headerInnerEl.querySelector('.vg-gantt-day-row') as HTMLElement;
-    const dowRow = this.headerInnerEl.querySelector('.vg-gantt-dow-row') as HTMLElement;
+    // Remove existing header cells
+    this.gridEl.querySelector('.vg-gantt-header-left')?.remove();
+    this.gridEl.querySelector('.vg-gantt-header-timeline')?.remove();
 
-    if (!monthRow || !dayRow || !dowRow) return;
+    // Header left (sticky top + left)
+    const headerLeft = this.gridEl.createDiv({ cls: 'vg-gantt-left vg-gantt-header-left' });
+    headerLeft.createSpan({ text: '親タスク', cls: 'vg-gantt-header-left-label' });
+    this.gridEl.prepend(headerLeft); // must be first child
 
-    monthRow.empty();
-    dayRow.empty();
-    dowRow.empty();
+    // Header timeline (sticky top)
+    const headerTimeline = this.gridEl.createDiv({ cls: 'vg-gantt-header-timeline' });
+    headerTimeline.style.width = `${dates.length * this.viewState.dayWidth}px`;
+    this.gridEl.insertBefore(headerTimeline, headerLeft.nextSibling);
+
+    // Floating month (inside header-timeline)
+    this.floatingMonthEl = headerTimeline.createDiv({ cls: 'vg-gantt-floating-month' });
+
+    // Create header rows
+    const monthRow = headerTimeline.createDiv({ cls: 'vg-gantt-month-row' });
+    const dayRow = headerTimeline.createDiv({ cls: 'vg-gantt-day-row' });
+    const dowRow = headerTimeline.createDiv({ cls: 'vg-gantt-dow-row' });
 
     const today = todayStr();
     for (let i = 0; i < dates.length; i++) {
       const date = dates[i];
-      const isWeekendDay = isWeekendDate(date);
+      const weekend = isWeekendDate(date);
+      const w = this.viewState.dayWidth;
 
-      // Month row
+      // Month cell
+      const monthCell = monthRow.createDiv({ cls: 'vg-gantt-date-cell vg-gantt-month-cell' });
+      monthCell.style.width = `${w}px`;
       if (isMonthStart(date, i)) {
-        const monthCell = monthRow.createDiv({ cls: 'vg-gantt-date-cell' });
-        monthCell.style.width = `${this.viewState.dayWidth}px`;
-        if (isWeekendDay) monthCell.addClass('is-weekend');
         monthCell.createSpan({ text: monthTitle(date) });
-      } else {
-        const emptyCell = monthRow.createDiv({ cls: 'vg-gantt-date-cell' });
-        emptyCell.style.width = `${this.viewState.dayWidth}px`;
-        if (isWeekendDay) emptyCell.addClass('is-weekend');
       }
+      if (weekend) monthCell.addClass('is-weekend');
 
-      // Day row
+      // Day cell
       const dayCell = dayRow.createDiv({ cls: 'vg-gantt-date-cell' });
-      dayCell.style.width = `${this.viewState.dayWidth}px`;
-      if (isWeekendDay) dayCell.addClass('is-weekend');
-      if (date === today) dayCell.addClass('is-today');
+      dayCell.style.width = `${w}px`;
       dayCell.createSpan({ text: dateLabel(date, 'D') });
+      if (weekend) dayCell.addClass('is-weekend');
+      if (date === today) dayCell.addClass('is-today');
 
-      // Day-of-week row
+      // Day-of-week cell
       const dowCell = dowRow.createDiv({ cls: 'vg-gantt-date-cell' });
-      dowCell.style.width = `${this.viewState.dayWidth}px`;
-      if (isWeekendDay) dowCell.addClass('is-weekend');
+      dowCell.style.width = `${w}px`;
       dowCell.createSpan({ text: dateLabel(date, 'dd') });
+      if (weekend) dowCell.addClass('is-weekend');
     }
+
+    this.updateFloatingMonth(dates);
   }
 
-  /**
-   * Render or update all task rows.
-   */
   renderAll(tasks: TaskRecord[], dates: string[]): void {
-    if (!this.bodyEl || !this.leftPanelInnerEl) return;
+    if (!this.gridEl) return;
 
-    // Mark which paths exist in the task list
     const existingPaths = new Set(tasks.map((t) => t.path));
 
     // Remove rows for tasks no longer in the list
     for (const path of Array.from(this.rowMap.keys())) {
-      if (!existingPaths.has(path)) {
-        this.removeParentRow(path);
-      }
+      if (!existingPaths.has(path)) this.removeRow(path);
     }
 
-    // Sort tasks by ganttOrder then displayName
-    const sortedTasks = [...tasks].sort((a, b) => {
-      const orderCmp = a.note.ganttOrder - b.note.ganttOrder;
-      if (orderCmp !== 0) return orderCmp;
-      return a.note.displayName.localeCompare(b.note.displayName);
-    });
+    // Sort tasks
+    const sorted = [...tasks]
+      .filter((t) => t.note.ganttEnabled)
+      .sort((a, b) => {
+        const o = a.note.ganttOrder - b.note.ganttOrder;
+        return o !== 0 ? o : a.note.displayName.localeCompare(b.note.displayName);
+      });
 
-    // Upsert rows
-    for (const record of sortedTasks) {
-      if (!record.note.ganttEnabled) {
-        this.removeParentRow(record.path);
-        continue;
-      }
+    // Remove disabled tasks
+    for (const t of tasks) {
+      if (!t.note.ganttEnabled) this.removeRow(t.path);
+    }
 
+    this.rowIndex = 0;
+    for (const record of sorted) {
       if (this.rowMap.has(record.path)) {
-        this.updateParentRow(record, dates);
+        this.updateRow(record, dates);
       } else {
-        this.createParentRow(record, dates);
+        this.createRow(record, dates);
       }
+      this.rowIndex++;
     }
 
-    // Re-order DOM only when the order has actually changed.
-    const visiblePaths = sortedTasks
-      .filter((r) => r.note.ganttEnabled)
-      .map((r) => r.path);
-    const domPaths = Array.from(this.bodyEl.children)
-      .filter((el) => (el as HTMLElement).classList.contains('vg-gantt-timeline'))
-      .map((el) => (el as HTMLElement).dataset.path ?? '');
-    const needsReorder =
-      domPaths.length !== visiblePaths.length ||
-      visiblePaths.some((p, i) => p !== domPaths[i]);
-    if (needsReorder) {
-      for (const record of sortedTasks) {
-        if (!record.note.ganttEnabled) continue;
-        const row = this.rowMap.get(record.path);
-        if (row) this.bodyEl.appendChild(row.rowEl);
-      }
-
-      // Also reorder in left panel
-      const leftPaths = Array.from(this.leftPanelInnerEl.children)
-        .map((el) => (el as HTMLElement).dataset.path ?? '');
-      const leftNeedsReorder =
-        leftPaths.length !== visiblePaths.length ||
-        visiblePaths.some((p, i) => p !== leftPaths[i]);
-      if (leftNeedsReorder) {
-        for (const record of sortedTasks) {
-          if (!record.note.ganttEnabled) continue;
-          const row = this.rowMap.get(record.path);
-          if (row) this.leftPanelInnerEl.appendChild(row.leftEl);
-        }
-      }
+    // Re-order DOM rows to match sorted order
+    const headerLeft = this.gridEl.querySelector('.vg-gantt-header-left');
+    const headerTimeline = this.gridEl.querySelector('.vg-gantt-header-timeline');
+    for (const record of sorted) {
+      const row = this.rowMap.get(record.path);
+      if (!row) continue;
+      this.gridEl.appendChild(row.leftEl);
+      this.gridEl.appendChild(row.timelineEl);
+    }
+    // Keep headers first
+    if (headerLeft) this.gridEl.prepend(headerLeft);
+    if (headerTimeline && headerLeft) {
+      headerLeft.after(headerTimeline);
     }
 
     // Show/hide empty state
-    if (visiblePaths.length === 0) {
-      this.showEmptyState();
+    if (sorted.length === 0) {
+      if (!this.gridEl.querySelector('.vg-gantt-empty')) {
+        this.gridEl.createDiv({ cls: 'vg-gantt-empty', text: 'タスクがありません' });
+      }
     } else {
-      this.hideEmptyState();
+      this.gridEl.querySelector('.vg-gantt-empty')?.remove();
     }
   }
 
-  /**
-   * Show empty state message.
-   */
-  private showEmptyState(): void {
-    if (!this.bodyEl) return;
-
-    let emptyEl = this.bodyEl.querySelector('.vg-gantt-empty') as HTMLElement | null;
-    if (!emptyEl) {
-      emptyEl = this.bodyEl.createDiv({ cls: 'vg-gantt-empty' });
-      emptyEl.style.position = 'absolute';
-      emptyEl.style.top = '50%';
-      emptyEl.style.left = '50%';
-      emptyEl.style.transform = 'translate(-50%, -50%)';
-      emptyEl.createSpan({ text: 'タスクがありません' });
-    }
-    emptyEl.style.display = 'block';
-  }
-
-  /**
-   * Hide empty state message.
-   */
-  private hideEmptyState(): void {
-    if (!this.bodyEl) return;
-
-    const emptyEl = this.bodyEl.querySelector('.vg-gantt-empty') as HTMLElement | null;
-    if (emptyEl) {
-      emptyEl.style.display = 'none';
+  setTimelineWidth(dates: string[]): void {
+    const w = dates.length * this.viewState.dayWidth;
+    const headerTimeline = this.gridEl?.querySelector('.vg-gantt-header-timeline') as HTMLElement | null;
+    if (headerTimeline) headerTimeline.style.width = `${w}px`;
+    for (const { timelineEl } of this.rowMap.values()) {
+      timelineEl.style.width = `${w}px`;
     }
   }
 
-  /**
-   * Create a new parent row.
-   * Creates two separate row elements: one in the left panel, one in the timeline.
-   */
-  createParentRow(record: TaskRecord, dates: string[]): void {
-    if (!this.bodyEl || !this.leftPanelInnerEl) return;
+  private createRow(record: TaskRecord, dates: string[]): void {
+    if (!this.gridEl) return;
+    const even = this.rowIndex % 2 === 1;
 
-    // Create timeline row in body
-    const timelineDiv = this.bodyEl.createDiv({ cls: 'vg-gantt-timeline' });
-    timelineDiv.setAttribute('data-path', record.path);
-    timelineDiv.style.position = 'relative';
-    timelineDiv.style.overflow = 'hidden';
-    timelineDiv.style.borderBottom = '1px solid var(--background-modifier-border)';
-    timelineDiv.style.display = 'flex';
-    timelineDiv.style.alignItems = 'stretch';
+    // Left column (sticky)
+    const leftEl = this.gridEl.createDiv({ cls: `vg-gantt-left vg-gantt-parent-left${even ? ' is-even' : ''}` });
+    leftEl.setAttribute('data-path', record.path);
+    leftEl.createDiv({ cls: 'vg-gantt-parent-title', text: record.note.displayName });
 
-    // Create left panel row (positioned absolutely)
-    const leftDiv = this.leftPanelInnerEl.createDiv({ cls: 'vg-gantt-row-left' });
-    leftDiv.setAttribute('data-path', record.path);
-    leftDiv.style.position = 'relative';
-    leftDiv.style.borderBottom = '1px solid var(--background-modifier-border)';
-    leftDiv.style.padding = '0 0.5rem';
-    leftDiv.style.overflow = 'hidden';
-    leftDiv.style.display = 'flex';
-    leftDiv.style.alignItems = 'center';
+    // Timeline column
+    const timelineEl = this.gridEl.createDiv({ cls: `vg-gantt-timeline${even ? ' is-even' : ''}` });
+    timelineEl.setAttribute('data-path', record.path);
 
-    const titleDiv = leftDiv.createDiv({ cls: 'vg-gantt-parent-title' });
-    titleDiv.style.fontWeight = '500';
-    titleDiv.style.whiteSpace = 'nowrap';
-    titleDiv.style.overflow = 'hidden';
-    titleDiv.style.textOverflow = 'ellipsis';
-    titleDiv.style.fontSize = 'var(--font-ui-small)';
-    titleDiv.createSpan({ text: record.note.displayName });
+    // Hover sync
+    const addHover = () => {
+      leftEl.addClass('is-hover');
+      timelineEl.addClass('is-hover');
+    };
+    const removeHover = () => {
+      leftEl.removeClass('is-hover');
+      timelineEl.removeClass('is-hover');
+    };
+    leftEl.addEventListener('mouseenter', addHover);
+    leftEl.addEventListener('mouseleave', removeHover);
+    timelineEl.addEventListener('mouseenter', addHover);
+    timelineEl.addEventListener('mouseleave', removeHover);
 
-    // Wire up hover state sync between left panel and timeline (both directions)
-    const addHover = (): void => { leftDiv.addClass('is-hover'); timelineDiv.addClass('is-hover'); };
-    const removeHover = (): void => { leftDiv.removeClass('is-hover'); timelineDiv.removeClass('is-hover'); };
-    timelineDiv.addEventListener('mouseenter', addHover);
-    timelineDiv.addEventListener('mouseleave', removeHover);
-    leftDiv.addEventListener('mouseenter', addHover);
-    leftDiv.addEventListener('mouseleave', removeHover);
-
-    this.rowMap.set(record.path, { rowEl: timelineDiv, leftEl: leftDiv, timelineEl: timelineDiv });
-    this.renderBarsAndCache(timelineDiv, leftDiv, record, dates);
+    this.rowMap.set(record.path, { leftEl, timelineEl });
+    this.renderBarsAndCache(timelineEl, leftEl, record, dates);
   }
 
-  /**
-   * Update an existing parent row.
-   * Skips bar re-render when revision + base date + zoom are unchanged to
-   * prevent the clear→redraw flash that occurs on unrelated file saves.
-   */
-  updateParentRow(record: TaskRecord, dates: string[]): void {
+  private updateRow(record: TaskRecord, dates: string[]): void {
     const row = this.rowMap.get(record.path);
     if (!row) return;
+    const { leftEl, timelineEl } = row;
 
-    const { timelineEl, leftEl } = row;
+    // Update even/odd class
+    const even = this.rowIndex % 2 === 1;
+    leftEl.toggleClass('is-even', even);
+    timelineEl.toggleClass('is-even', even);
+
+    // Title sync (cheap)
+    const titleEl = leftEl.querySelector('.vg-gantt-parent-title') as HTMLElement | null;
+    if (titleEl && titleEl.textContent !== record.note.displayName) {
+      titleEl.textContent = record.note.displayName;
+    }
+
+    // Skip bar re-render when nothing visual changed
     const cachedRev = timelineEl.dataset.revision;
     const cachedBase = timelineEl.dataset.baseDate;
     const cachedZoom = timelineEl.dataset.dayWidth;
-    const currentZoom = String(this.viewState.dayWidth);
-
-    // Title sync is always cheap — do it unconditionally
-    const span = leftEl.querySelector('.vg-gantt-parent-title span');
-    if (span && span.textContent !== record.note.displayName) {
-      (span as HTMLElement).textContent = record.note.displayName;
-    }
-
-    // Skip bar re-render when nothing that affects the visual has changed
     if (
       cachedRev === record.revision &&
       cachedBase === dates[0] &&
-      cachedZoom === currentZoom
+      cachedZoom === String(this.viewState.dayWidth)
     ) {
       return;
     }
 
-    // Clear bars and bg-cols, then redraw
-    const toRemove = timelineEl.querySelectorAll('.vg-gantt-bar, .vg-gantt-bg-col');
-    toRemove.forEach((el) => el.remove());
+    timelineEl.querySelectorAll('.vg-gantt-bar, .vg-gantt-bg-col').forEach((el) => el.remove());
     this.renderBarsAndCache(timelineEl, leftEl, record, dates);
   }
 
-  /** Render bars and write the render-cache keys onto the timeline element. */
   private renderBarsAndCache(
     timelineEl: HTMLElement,
     leftEl: HTMLElement,
@@ -400,38 +275,27 @@ export class GanttRenderer {
     timelineEl.dataset.dayWidth = String(this.viewState.dayWidth);
   }
 
-  /**
-   * Render bars (subtasks) into a timeline element.
-   */
   private renderBars(timelineEl: HTMLElement, record: TaskRecord, dates: string[]): void {
     const { bars, laneCount } = packSubtasksIntoLanes(record.note.subtasks);
-
-    // Background highlights for weekends and today only (skip plain weekdays)
     const today = todayStr();
+
+    // Background columns (weekends and today)
     for (let i = 0; i < dates.length; i++) {
       const date = dates[i];
       const weekend = isWeekendDate(date);
       if (!weekend && date !== today) continue;
-      const bgCol = timelineEl.createDiv({ cls: 'vg-gantt-bg-col' });
-      bgCol.style.position = 'absolute';
-      bgCol.style.left = `${i * this.viewState.dayWidth}px`;
-      bgCol.style.width = `${this.viewState.dayWidth}px`;
-      bgCol.style.top = '0';
-      bgCol.style.bottom = '0';
-      bgCol.style.pointerEvents = 'none';
-      if (weekend) bgCol.addClass('is-weekend');
-      if (date === today) bgCol.addClass('is-today');
+      const col = timelineEl.createDiv({ cls: `vg-gantt-bg-col${weekend ? ' is-weekend' : ''}${date === today ? ' is-today' : ''}` });
+      col.style.left = `${i * this.viewState.dayWidth}px`;
+      col.style.width = `${this.viewState.dayWidth}px`;
     }
 
-    // Render bars
+    // Render bars (subtasks)
     for (const bar of bars) {
       const left = barLeftPx(dates[0], bar.start, this.viewState.dayWidth);
       const width = barWidthPx(bar.start, bar.end, this.viewState.dayWidth);
-      const top =
-        laneTopPx(bar.lane, LANE_BASE_HEIGHT) + (LANE_BASE_HEIGHT - BAR_HEIGHT) / 2;
+      const top = laneTopPx(bar.lane, LANE_BASE_HEIGHT) + (LANE_BASE_HEIGHT - BAR_HEIGHT) / 2;
 
       const barEl = timelineEl.createDiv({ cls: 'vg-gantt-bar' });
-      barEl.style.position = 'absolute';
       barEl.style.left = `${left}px`;
       barEl.style.width = `${width}px`;
       barEl.style.top = `${top}px`;
@@ -442,88 +306,31 @@ export class GanttRenderer {
       barEl.dataset.endDate = bar.end;
 
       // Label
-      const labelEl = barEl.createDiv({ cls: 'vg-gantt-bar-label' });
-      labelEl.style.fontSize = 'var(--font-ui-smaller)';
-      labelEl.style.color = 'var(--text-on-accent)';
-      labelEl.style.padding = '0 4px';
-      labelEl.style.overflow = 'hidden';
-      labelEl.style.textOverflow = 'ellipsis';
-      labelEl.style.whiteSpace = 'nowrap';
-      labelEl.style.flex = '1';
-      labelEl.style.pointerEvents = 'none';
-      labelEl.createSpan({ text: bar.subtask.title });
+      barEl.createDiv({ cls: 'vg-gantt-bar-label', text: bar.subtask.title });
 
-      // Left resize handle
-      const handleStart = barEl.createDiv({ cls: 'vg-gantt-bar-handle is-start' });
-      handleStart.style.position = 'absolute';
-      handleStart.style.top = '0';
-      handleStart.style.bottom = '0';
-      handleStart.style.left = '0';
-      handleStart.style.width = `${BAR_RESIZE_HANDLE_WIDTH}px`;
-      handleStart.style.cursor = 'ew-resize';
-      handleStart.style.zIndex = '1';
-
-      // Right resize handle
-      const handleEnd = barEl.createDiv({ cls: 'vg-gantt-bar-handle is-end' });
-      handleEnd.style.position = 'absolute';
-      handleEnd.style.top = '0';
-      handleEnd.style.bottom = '0';
-      handleEnd.style.right = '0';
-      handleEnd.style.width = `${BAR_RESIZE_HANDLE_WIDTH}px`;
-      handleEnd.style.cursor = 'ew-resize';
-      handleEnd.style.zIndex = '1';
+      // Resize handles
+      const hs = barEl.createDiv({ cls: 'vg-gantt-bar-handle is-start' });
+      hs.style.width = `${BAR_RESIZE_HANDLE_WIDTH}px`;
+      const he = barEl.createDiv({ cls: 'vg-gantt-bar-handle is-end' });
+      he.style.width = `${BAR_RESIZE_HANDLE_WIDTH}px`;
     }
 
-    // Set timeline height based on lane count
+    // Set timeline row height
     timelineEl.style.height = `${laneTopPx(laneCount, LANE_BASE_HEIGHT) + 16}px`;
   }
 
-  /**
-   * Set the width of all timeline elements and position the today line.
-   */
-  setTimelineWidth(dates: string[]): void {
-    if (!this.headerInnerEl) return;
-
-    const totalWidth = dates.length * this.viewState.dayWidth;
-
-    this.headerInnerEl.style.width = `${totalWidth}px`;
-
-    for (const { timelineEl } of this.rowMap.values()) {
-      timelineEl.style.width = `${totalWidth}px`;
-    }
-
-    // Position today line
-    this.updateTodayLine(dates);
-  }
-
-  /**
-   * Update the position of the today vertical line.
-   */
-  private updateTodayLine(dates: string[]): void {
-    if (!this.todayLineEl) return;
-
-    const today = todayStr();
-    const todayIndex = dates.indexOf(today);
-
-    if (todayIndex >= 0) {
-      const todayX = todayIndex * this.viewState.dayWidth;
-      this.todayLineEl.style.left = `${todayX}px`;
-      this.todayLineEl.style.visibility = 'visible';
-    } else {
-      this.todayLineEl.style.visibility = 'hidden';
-    }
-  }
-
-  /**
-   * Remove a parent row from the DOM and rowMap.
-   */
-  removeParentRow(path: string): void {
+  removeRow(path: string): void {
     const row = this.rowMap.get(path);
     if (!row) return;
-
-    row.rowEl.remove();
     row.leftEl.remove();
+    row.timelineEl.remove();
     this.rowMap.delete(path);
   }
-}
 
+  updateFloatingMonth(dates: string[]): void {
+    if (!this.floatingMonthEl || !this.wrapEl) return;
+    const idx = Math.max(0, Math.min(dates.length - 1, Math.floor(this.wrapEl.scrollLeft / this.viewState.dayWidth)));
+    const title = monthTitle(dates[idx]);
+    if (this.floatingMonthEl.textContent !== title) this.floatingMonthEl.textContent = title;
+  }
+}
