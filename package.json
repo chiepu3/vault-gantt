@@ -11,7 +11,8 @@
     "dev": "node esbuild.plugin.mjs",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify": "npm run typecheck && npm run lint && npm run test"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

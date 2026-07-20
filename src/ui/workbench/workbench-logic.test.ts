@@ -331,7 +331,7 @@ describe('workbench-logic', () => {
 
       expect(rows).toHaveLength(1);
       expect(rows[0].kind).toBe('parent');
-      expect((rows[0] as any).expanded).toBe(false);
+      expect((rows[0] as unknown as { expanded: boolean }).expanded).toBe(false);
     });
 
     it('should respect subtaskOrder', () => {
@@ -346,9 +346,9 @@ describe('workbench-logic', () => {
       const rows = buildWorkbenchRows([record], new Set());
 
       expect(rows).toHaveLength(4);
-      expect((rows[1] as any).subtask.key).toBe('st3');
-      expect((rows[2] as any).subtask.key).toBe('st1');
-      expect((rows[3] as any).subtask.key).toBe('st2');
+      expect((rows[1] as unknown as { subtask: Subtask }).subtask.key).toBe('st3');
+      expect((rows[2] as unknown as { subtask: Subtask }).subtask.key).toBe('st1');
+      expect((rows[3] as unknown as { subtask: Subtask }).subtask.key).toBe('st2');
     });
 
     it('should set expanded flag correctly', () => {
@@ -360,8 +360,8 @@ describe('workbench-logic', () => {
       const rows = buildWorkbenchRows(records, new Set(['task1.md']));
 
       const parentRows = rows.filter((r) => r.kind === 'parent');
-      expect((parentRows[0] as any).expanded).toBe(false);
-      expect((parentRows[1] as any).expanded).toBe(true);
+      expect((parentRows[0] as unknown as { expanded: boolean }).expanded).toBe(false);
+      expect((parentRows[1] as unknown as { expanded: boolean }).expanded).toBe(true);
     });
 
     it('should handle mixed collapsed/expanded records', () => {
@@ -376,9 +376,9 @@ describe('workbench-logic', () => {
 
       expect(rows).toHaveLength(3);
       expect(rows[0].kind).toBe('parent');
-      expect((rows[0] as any).expanded).toBe(false);
+      expect((rows[0] as unknown as { expanded: boolean }).expanded).toBe(false);
       expect(rows[1].kind).toBe('parent');
-      expect((rows[1] as any).expanded).toBe(true);
+      expect((rows[1] as unknown as { expanded: boolean }).expanded).toBe(true);
       expect(rows[2].kind).toBe('subtask');
     });
 
@@ -393,7 +393,7 @@ describe('workbench-logic', () => {
       const rows = buildWorkbenchRows([record], new Set());
 
       expect(rows).toHaveLength(2);
-      expect((rows[1] as any).subtask.title).toBe('Subtask One');
+      expect((rows[1] as unknown as { subtask: Subtask }).subtask.title).toBe('Subtask One');
     });
 
     it('should output empty list when given empty records', () => {

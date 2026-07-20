@@ -59,18 +59,21 @@ export class ObsidianVaultAdapter implements VaultAdapterPort {
       return { ok: false, error: 'REVISION_CONFLICT', currentRevision };
     }
 
-    // Two-phase write: if phase 2 (processFrontMatter) fails after phase 1
-    // (vault.modify) succeeded, the file would be left frontmatter-less and
-    // permanently invisible to listTaskFilePaths. Snapshot the original
-    // content first so we can roll back.
-    const originalRaw = await this.app.vault.cachedRead(file);
+    // Snapshot the original content from disk (not cachedRead, to avoid stale
+    // data) so we can roll back if either phase fails. This ensures we always
+    // have an unmodified starting point for recovery.
+    const originalRaw = await this.app.vault.read(file);
 
-    // Replace the entire file content with the new body (the old frontmatter
-    // block, if any, is discarded here — that's intentional, see step 2).
-    await this.app.vault.modify(file, body);
+    // Two-phase write, designed to maintain the invariant: the file must NEVER
+    // be frontmatter-less on disk. Obsidian's metadataCache continuously reindexes
+    // files; if it sees a file without `type: task` frontmatter (even for a few
+    // hundred ms), it declassifies the file as a non-task, listTaskFilePaths()
+    // drops it, and the UI removes the row. By writing frontmatter FIRST, we
+    // ensure the file is always classifiable as a task.
 
-    // Re-add a fresh, correctly-serialized frontmatter block prepended to the
-    // body just written. Obsidian handles YAML serialization internally.
+    // Phase 1: Update the frontmatter in-place via processFrontMatter. This
+    // preserves the file's classification. Obsidian atomically rewrites the
+    // frontmatter block and reindexes immediately.
     try {
       await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
         for (const key of Object.keys(fm)) {
@@ -78,6 +81,39 @@ export class ObsidianVaultAdapter implements VaultAdapterPort {
         }
         Object.assign(fm, frontmatter);
       });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await this.app.vault.modify(file, originalRaw);
+      } catch (restoreErr) {
+        console.error(`[vault-gantt] rollback failed for "${path}" — file may be missing its frontmatter`, restoreErr);
+      }
+      return { ok: false, error: 'WRITE_FAILED', message };
+    }
+
+    // Phase 2: Re-read the file from disk (not cache) to get the just-written
+    // frontmatter block exactly as Obsidian serialized it, then replace only
+    // the body portion. This ensures the body matches what the caller requested
+    // while preserving the exact frontmatter formatting and YAML syntax that
+    // processFrontMatter produced.
+    let updatedRaw: string;
+    try {
+      updatedRaw = await this.app.vault.read(file);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await this.app.vault.modify(file, originalRaw);
+      } catch (restoreErr) {
+        console.error(`[vault-gantt] rollback failed for "${path}" — file may be missing its frontmatter`, restoreErr);
+      }
+      return { ok: false, error: 'WRITE_FAILED', message };
+    }
+
+    const { frontmatterBlock } = splitFrontmatterBlock(updatedRaw);
+    const finalContent = frontmatterBlock + body;
+
+    try {
+      await this.app.vault.modify(file, finalContent);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       try {

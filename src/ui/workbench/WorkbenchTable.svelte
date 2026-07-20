@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Notice } from 'obsidian';
+  import { SvelteSet } from 'svelte/reactivity';
   import { DEFAULT_STATUSES } from '../../domain/status';
   import { filterTaskRecords, sortTaskRecords, buildWorkbenchRows } from './workbench-logic';
   import type { WorkbenchFilter, WorkbenchSort } from './workbench-logic';
@@ -26,7 +27,7 @@
     field: 'displayName',
     direction: 'asc',
   });
-  let collapsed: Set<string> = $state(new Set());
+  let collapsed = new SvelteSet<string>();
   let editingCell: {
     path: string;
     field: 'displayName' | 'statusLabel' | 'dueDate';
@@ -96,13 +97,11 @@
   }
 
   function toggleCollapse(path: string) {
-    const next = new Set(collapsed);
-    if (next.has(path)) {
-      next.delete(path);
+    if (collapsed.has(path)) {
+      collapsed.delete(path);
     } else {
-      next.add(path);
+      collapsed.add(path);
     }
-    collapsed = next;
   }
 
   function isEditing(path: string, field: string): boolean {
@@ -289,7 +288,7 @@
                     {#if !DEFAULT_STATUSES.some((s) => s.key === editingCell!.value)}
                       <option value={editingCell!.value}>{editingCell!.value}</option>
                     {/if}
-                    {#each DEFAULT_STATUSES as s}
+                    {#each DEFAULT_STATUSES as s (s.key)}
                       <option value={s.key}>{s.label}</option>
                     {/each}
                   </select>
@@ -362,7 +361,7 @@
                     onchange={(e) => commitSubtaskEdit(row.parentPath, row.subtask.key, (e.target as HTMLSelectElement).value)}
                     onkeydown={(e) => { if (e.key === 'Escape') subtaskEdit = null; }}
                     autofocus>
-                    {#each DEFAULT_STATUSES as s}
+                    {#each DEFAULT_STATUSES as s (s.key)}
                       <option value={s.key}>{s.label}</option>
                     {/each}
                   </select>
@@ -464,8 +463,11 @@
   }
 
   .vg-row-subtask td {
-    padding-left: 1.5rem;
     background: var(--background-secondary);
+  }
+
+  .vg-row-subtask .col-subtask-name {
+    padding-left: 1.5rem;
   }
 
   .vg-completed {
