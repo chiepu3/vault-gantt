@@ -4,6 +4,6 @@ export interface VaultGanttSettings {
 }
 
 export const DEFAULT_SETTINGS: VaultGanttSettings = {
-  taskFolder: 'tasks',
+  taskFolder: 'vault-gantt',
   ganttZoom: 28,
 };

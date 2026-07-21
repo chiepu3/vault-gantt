@@ -44,6 +44,9 @@
   // Derived state
   let filteredSorted = $derived(sortTaskRecords(filterTaskRecords(records, filter), sort));
   let rows = $derived(buildWorkbenchRows(filteredSorted, collapsed));
+  let allTags = $derived(
+    Array.from(new Set(records.flatMap((r) => r.note.tags))).sort()
+  );
 
   let unreadableCount = $state(0);
 
@@ -243,6 +246,21 @@
         <option value={s.key}>{s.label}</option>
       {/each}
     </select>
+    {#if allTags.length > 0}
+      <select
+        class="vg-status-filter"
+        value={filter.tags[0] ?? ''}
+        onchange={(e) => {
+          const val = (e.target as HTMLSelectElement).value;
+          filter = { ...filter, tags: val ? [val] : [] };
+        }}
+      >
+        <option value="">すべてのタグ</option>
+        {#each allTags as tag (tag)}
+          <option value={tag}>{tag}</option>
+        {/each}
+      </select>
+    {/if}
     <label class="vg-filter-label">
       <input type="checkbox" bind:checked={filter.showCompleted} />
       完了を表示
@@ -299,7 +317,13 @@
                     autofocus
                   />
                 {:else}
-                  {row.record.note.displayName}
+                  <span class="vg-task-name">{row.record.note.displayName}</span>
+                  {#if row.previewSubtask}
+                    <span class="vg-preview-chip" title={row.previewSubtask.title}>
+                      {truncate(row.previewSubtask.title, 24)}
+                      {#if row.previewSubtask.dueDate}<span class="vg-preview-due">{row.previewSubtask.dueDate}</span>{/if}
+                    </span>
+                  {/if}
                 {/if}
               </td>
               <td class="col-priority">{row.record.note.priority}</td>
@@ -600,6 +624,35 @@
   .vg-overdue-cell {
     color: var(--text-error);
     font-weight: 600;
+  }
+
+  /* Collapsed preview chip */
+  .vg-task-name {
+    display: inline;
+  }
+
+  .vg-preview-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--background-modifier-border);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: normal;
+    vertical-align: middle;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .vg-preview-due {
+    color: var(--text-accent);
+    font-weight: 600;
+    flex-shrink: 0;
   }
 
   /* ===== Inline edit inputs ===== */

@@ -11,15 +11,11 @@ import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks } fr
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 import { migrateLegacyTaskNote } from './domain/task-note/migrate-legacy';
 import { splitFrontmatterBlock } from './infra/frontmatter-split';
-import { calculateAutoPriority } from './domain/priority';
-import { todayStr } from './ui/gantt/gantt-date-utils';
 
 export default class VaultGanttPlugin extends Plugin {
   private statusBarBadge: ReturnType<typeof mount> | undefined;
   api!: CoreTaskAPI;
   settings!: VaultGanttSettings;
-  private lastRefreshDate: string = '';
-
   async onload(): Promise<void> {
     console.log(`Loading plugin: ${PLUGIN_ID}`);
 
@@ -69,22 +65,8 @@ export default class VaultGanttPlugin extends Plugin {
     });
     this.registerEvent(resolvedRef);
 
-    // B5: Priority refresh on load (after vault indexing settles)
-    this.lastRefreshDate = todayStr();
-    setTimeout(() => {
-      void this.refreshAllPriorities();
-    }, 2000);
-
-    // B5: Daily priority refresh (hourly check if date changed)
-    this.registerInterval(
-      window.setInterval(() => {
-        const today = todayStr();
-        if (today !== this.lastRefreshDate) {
-          this.lastRefreshDate = today;
-          void this.refreshAllPriorities();
-        }
-      }, 60 * 60 * 1000)
-    );
+    // B5: Priority is computed dynamically in the UI layer (calculateAutoPriority at render time).
+    // We intentionally do NOT write computed priority back to disk to avoid silent file mutations.
 
     // Status bar badge
     const statusBarEl = this.addStatusBarItem();
@@ -168,46 +150,6 @@ export default class VaultGanttPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
-  }
-
-  /**
-   * Refresh priorities for all tasks with priorityMode === 'auto'.
-   * For each task, recalculate the priority based on today's date.
-   * If the computed priority differs from the stored priority, update it silently.
-   * Logs count of refreshed tasks to console only.
-   */
-  private async refreshAllPriorities(): Promise<void> {
-    try {
-      const today = todayStr();
-      const tasks = await this.api.listTasks();
-      let refreshedCount = 0;
-
-      for (const record of tasks) {
-        if (record.note.priorityMode === 'auto') {
-          // listTasks() returns already-projected notes, so record.note.priority equals
-          // calculateAutoPriority() — comparing them would always be equal. Write unconditionally
-          // so the on-disk value stays in sync with the auto-computed value.
-          const newPriority = calculateAutoPriority(record.note.dueDate, today);
-          const result = await this.api.updateTaskItem({
-            path: record.path,
-            expectedRevision: record.revision,
-            parent: { priority: newPriority },
-          });
-          if (result.ok) {
-            refreshedCount++;
-          } else {
-            console.warn(`[vault-gantt] 優先度更新スキップ(競合): ${record.path}`);
-          }
-        }
-      }
-
-      if (refreshedCount > 0) {
-        console.log(`[vault-gantt] 優先度更新完了: ${refreshedCount}件`);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[vault-gantt] 優先度更新中にエラーが発生しました:`, message);
-    }
   }
 
   private async migrateLegacyNotes(): Promise<void> {

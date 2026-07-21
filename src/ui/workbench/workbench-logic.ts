@@ -14,7 +14,7 @@ export interface WorkbenchSort {
 }
 
 export type WorkbenchRow =
-  | { kind: 'parent'; record: TaskRecord; expanded: boolean }
+  | { kind: 'parent'; record: TaskRecord; expanded: boolean; previewSubtask: Subtask | null }
   | { kind: 'subtask'; parentPath: string; subtask: Subtask };
 
 /**
@@ -124,6 +124,23 @@ export function sortTaskRecords(records: TaskRecord[], sort: WorkbenchSort): Tas
 }
 
 /**
+ * Pick the best preview subtask for a collapsed parent row.
+ * Priority: incomplete first, then earliest dueDate, then earliest createdAt, then name.
+ */
+function pickPreviewSubtask(record: TaskRecord): Subtask | null {
+  const candidates = record.note.subtasks.filter((s) => !s.completed);
+  if (candidates.length === 0) return record.note.subtasks[0] ?? null;
+
+  return candidates.slice().sort((a, b) => {
+    if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+    const ca = a.createdAt.localeCompare(b.createdAt);
+    return ca !== 0 ? ca : a.title.localeCompare(b.title);
+  })[0];
+}
+
+/**
  * Build flat row list from filtered/sorted records.
  * For each record, output a 'parent' row; if not collapsed, output its subtasks in subtaskOrder.
  */
@@ -132,11 +149,15 @@ export function buildWorkbenchRows(records: TaskRecord[], collapsed: ReadonlySet
 
   for (const record of records) {
     const expanded = !collapsed.has(record.path);
+    const previewSubtask = !expanded && record.note.subtasks.length > 0
+      ? pickPreviewSubtask(record)
+      : null;
 
     rows.push({
       kind: 'parent',
       record,
       expanded,
+      previewSubtask,
     });
 
     if (expanded) {

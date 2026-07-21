@@ -29,7 +29,8 @@ export class GanttDragController {
   constructor(
     private viewState: GanttViewState,
     private api: CoreTaskAPI,
-    private onDragEnd: () => void
+    private onDragEnd: () => void,
+    private onBarClick?: (parentPath: string, subtaskKey: string, barEl: HTMLElement) => void
   ) {}
 
   attach(containerEl: HTMLElement, getRecord: (path: string) => TaskRecord | undefined): void {
@@ -187,6 +188,10 @@ export class GanttDragController {
       barEl.style.transform = '';
       barEl.style.left = '';
       barEl.style.width = '';
+      // No actual movement = treat as a click on the bar body (not resize handles)
+      if (mode === 'bar-move') {
+        this.onBarClick?.(parentPath, subtaskKey, barEl);
+      }
       return;
     }
 

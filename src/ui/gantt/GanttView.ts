@@ -4,6 +4,7 @@ import { InputModal } from '../shared/InputModal';
 import { GanttViewState } from './gantt-view-state';
 import { GanttRenderer } from './gantt-renderer';
 import { GanttDragController } from './gantt-drag-controller';
+import { GanttPopover } from './gantt-popover';
 import { todayStr, addDays, snapForward } from './gantt-date-utils';
 import {
   RANGE_EXTEND_THRESHOLD_PX,
@@ -34,6 +35,7 @@ export class GanttView extends ItemView {
   private viewState!: GanttViewState;
   private renderer!: GanttRenderer;
   private dragController!: GanttDragController;
+  private popover!: GanttPopover;
   private unsubscribe?: () => void;
   private tasks: TaskRecord[] = [];
   private debounceTimer: number | undefined;
@@ -68,10 +70,18 @@ export class GanttView extends ItemView {
     if (loadZoomFn) this.viewState.dayWidth = loadZoomFn();
 
     this.renderer = new GanttRenderer(this.viewState);
+    this.popover = new GanttPopover(
+      apiInstance,
+      (path) => this.tasks.find((t) => t.path === path),
+      this.app
+    );
     this.dragController = new GanttDragController(
       this.viewState,
       apiInstance,
-      () => void this.reload()
+      () => { this.popover.close(); void this.reload(); },
+      (parentPath, subtaskKey, barEl) => {
+        this.popover.open(parentPath, subtaskKey, barEl);
+      }
     );
 
     this.renderer.mount(container);
@@ -335,6 +345,7 @@ export class GanttView extends ItemView {
     window.clearTimeout(this.debounceTimer);
     this.unsubscribe?.();
     this.dragController.detach();
+    this.popover.close();
     this.renderer.unmount();
   }
 }
