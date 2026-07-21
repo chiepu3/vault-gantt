@@ -92,7 +92,7 @@ export function addBusinessDays(dateStr: string, count: number): string {
   let guard = 0;
   while (remaining > 0 && guard < 365) {
     d = addDays(d, 1);
-    if (!isWeekend(d)) remaining--;
+    if (!isNonWorkday(d)) remaining--;
     guard++;
   }
   return d;

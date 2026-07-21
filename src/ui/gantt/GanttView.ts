@@ -202,14 +202,21 @@ export class GanttView extends ItemView {
 
     this.tagFilterSelectEl.style.display = '';
     const currentVal = this.tagFilterSelectEl.value;
+    const tagStillExists = allTags.includes(currentVal);
     this.tagFilterSelectEl.empty();
 
+    // Reset filter when the previously selected tag no longer exists
+    if (currentVal && !tagStillExists) {
+      this.ganttTagFilter = null;
+      this.renderer.tagFilter = null;
+    }
+
     const allOpt = this.tagFilterSelectEl.createEl('option', { value: '', text: '全タグ' });
-    allOpt.selected = !currentVal;
+    allOpt.selected = !currentVal || !tagStillExists;
 
     for (const tag of allTags) {
       const opt = this.tagFilterSelectEl.createEl('option', { value: tag, text: `# ${tag}` });
-      opt.selected = tag === currentVal;
+      opt.selected = tag === currentVal && tagStillExists;
     }
   }
 
@@ -369,7 +376,7 @@ export class GanttView extends ItemView {
         new InputModal(this.app, 'マーカーを追加', 'マーカー名（省略可）...', async (title) => {
           const r = this.tasks.find((t) => t.path === parentPath);
           if (!r) return;
-          const today = new Date().toISOString().slice(0, 10);
+          const today = todayStr();
           const existing = r.note.subtasks.find((s) => s.key === subtaskKey);
           if (!existing) return;
           const markerKey = `mk_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;

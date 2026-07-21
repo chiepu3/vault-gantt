@@ -383,7 +383,10 @@ export class GanttRenderer {
       dueLine.createSpan({ cls: 'vg-gantt-due-star', text: '★' });
     }
 
-    const hasMarkers = bars.some((b) => b.subtask.markers.length > 0);
+    const hasMarkers = bars.some(
+      (b) => b.subtask.markers.length > 0 &&
+             (!this.tagFilter || b.subtask.tags.includes(this.tagFilter))
+    );
 
     // Render bars (subtasks)
     for (const bar of bars) {
