@@ -29,12 +29,20 @@ export function filterTaskRecords(records: TaskRecord[], filter: WorkbenchFilter
   return records.filter((record) => {
     const note = record.note;
 
-    // Query filter: case-insensitive substring match
+    // Query filter: case-insensitive substring across all text fields
     if (filter.query.length > 0) {
       const lowerQuery = filter.query.toLowerCase();
-      if (!note.displayName.toLowerCase().includes(lowerQuery)) {
-        return false;
-      }
+      const haystack = [
+        note.displayName,
+        note.currentStatus,
+        note.notes,
+        record.path,
+        ...note.tags,
+        ...note.subtasks.map((s) => s.title),
+        ...note.subtasks.map((s) => s.currentStatus),
+        ...note.subtasks.flatMap((s) => s.tags),
+      ].join('\n').toLowerCase();
+      if (!haystack.includes(lowerQuery)) return false;
     }
 
     // Status filter: empty means show all

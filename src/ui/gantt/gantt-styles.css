@@ -4,19 +4,16 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  gap: 0;
-  padding: 0;
+  gap: 8px;
+  padding: 10px;
 }
 
 /* ===== Toolbar ===== */
 .vg-gantt-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
   flex-shrink: 0;
 }
 
@@ -71,9 +68,8 @@
   flex: 1;
   overflow: auto;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+  border-radius: 10px;
   background: var(--background-primary);
-  margin: 6px 8px 8px;
 }
 
 /* ===== CSS Grid (sticky-left + timeline) ===== */
@@ -126,7 +122,7 @@
   position: sticky;
   top: 0;
   z-index: 10;
-  background: var(--background-secondary);
+  background: var(--background-primary);
   border-bottom: 1px solid var(--background-modifier-border);
   overflow: hidden;
   height: var(--vg-header-height);
@@ -196,7 +192,7 @@
 }
 
 .vg-gantt-parent-title {
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.35;
   word-break: break-word;
   font-size: var(--font-ui-small);
@@ -242,19 +238,20 @@
 .vg-gantt-bar {
   position: absolute;
   height: 24px;
-  border-radius: 6px;
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
+  border-radius: 8px;
+  background: #4da3ff;
+  color: white;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
   overflow: visible;
   display: flex;
   align-items: center;
+  gap: 4px;
   padding: 0 8px;
   box-sizing: border-box;
   z-index: 3;
   cursor: grab;
-  transition: filter 0.1s, box-shadow 0.1s;
-  will-change: transform;
+  transition: left 90ms linear, width 90ms linear, transform 90ms linear;
+  will-change: left, width, transform;
 }
 
 .vg-gantt-bar:hover {
@@ -262,11 +259,38 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
 }
 
+.vg-gantt-bar.is-completed {
+  background: var(--text-muted);
+  opacity: 0.7;
+}
+
 .vg-gantt-bar.is-dragging {
   opacity: 0.65;
   cursor: grabbing;
   transition: none;
 }
+
+/* Hover date labels above bar */
+.vg-gantt-bar-date-start,
+.vg-gantt-bar-date-end {
+  display: none;
+  position: absolute;
+  top: -18px;
+  z-index: 5;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.vg-gantt-bar-date-start { left: 0; }
+.vg-gantt-bar-date-end { right: 0; }
+.vg-gantt-bar:hover .vg-gantt-bar-date-start,
+.vg-gantt-bar:hover .vg-gantt-bar-date-end { display: inline-block; }
 
 .vg-gantt-bar-label {
   flex: 1;

@@ -305,6 +305,12 @@ export class GanttRenderer {
       barEl.dataset.startDate = bar.start;
       barEl.dataset.endDate = bar.end;
 
+      // Hover date labels
+      const dateStart = barEl.createDiv({ cls: 'vg-gantt-bar-date-start', text: bar.start });
+      dateStart.style.left = '0';
+      const dateEnd = barEl.createDiv({ cls: 'vg-gantt-bar-date-end', text: bar.end });
+      dateEnd.style.right = '0';
+
       // Label
       barEl.createDiv({ cls: 'vg-gantt-bar-label', text: bar.subtask.title });
 
