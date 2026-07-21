@@ -15,11 +15,16 @@ import {
 import {
   dateLabel,
   isWeekend as isWeekendDate,
+  isHoliday,
   isMonthStart,
   monthTitle,
   todayStr,
 } from './gantt-date-utils';
+import { tagColor } from './gantt-tag-colors';
 import type { GanttViewState } from './gantt-view-state';
+
+const MIN_LABEL_WIDTH = 52; // px — narrower bars get external label
+const MARKER_H = 12;        // px — extra height per row when markers are present
 
 /**
  * GanttRenderer renders the Gantt chart using CSS Grid with sticky columns.
@@ -46,6 +51,12 @@ export class GanttRenderer {
 
   /** Called when parent rows are reordered via DnD. Receives new ordered array of paths. */
   onRowReorder?: (orderedPaths: string[]) => void;
+
+  /** When set, only render bars whose subtask.tags includes this tag (others are hidden). */
+  tagFilter: string | null = null;
+
+  /** When true, render Japanese holidays like weekends (grey background). */
+  enableHolidays = true;
 
   private rowMap = new Map<string, {
     leftEl: HTMLElement;
@@ -111,26 +122,30 @@ export class GanttRenderer {
       const weekend = isWeekendDate(date);
       const w = this.viewState.dayWidth;
 
+      const holiday = this.enableHolidays && isHoliday(date);
+      const nonwork = weekend || holiday;
+
       // Month cell
       const monthCell = monthRow.createDiv({ cls: 'vg-gantt-date-cell vg-gantt-month-cell' });
       monthCell.style.width = `${w}px`;
       if (isMonthStart(date, i)) {
         monthCell.createSpan({ text: monthTitle(date) });
       }
-      if (weekend) monthCell.addClass('is-weekend');
+      if (nonwork) monthCell.addClass('is-weekend');
 
       // Day cell
       const dayCell = dayRow.createDiv({ cls: 'vg-gantt-date-cell' });
       dayCell.style.width = `${w}px`;
       dayCell.createSpan({ text: dateLabel(date, 'D') });
-      if (weekend) dayCell.addClass('is-weekend');
+      if (nonwork) dayCell.addClass('is-weekend');
       if (date === today) dayCell.addClass('is-today');
+      if (holiday) dayCell.addClass('is-holiday');
 
       // Day-of-week cell
       const dowCell = dowRow.createDiv({ cls: 'vg-gantt-date-cell' });
       dowCell.style.width = `${w}px`;
       dowCell.createSpan({ text: dateLabel(date, 'dd') });
-      if (weekend) dowCell.addClass('is-weekend');
+      if (nonwork) dowCell.addClass('is-weekend');
     }
 
     this.updateFloatingMonth(dates);
@@ -307,15 +322,19 @@ export class GanttRenderer {
     const cachedRev = timelineEl.dataset.revision;
     const cachedBase = timelineEl.dataset.baseDate;
     const cachedZoom = timelineEl.dataset.dayWidth;
+    const cachedTag = timelineEl.dataset.tagFilter ?? '';
     if (
       cachedRev === record.revision &&
       cachedBase === dates[0] &&
-      cachedZoom === String(this.viewState.dayWidth)
+      cachedZoom === String(this.viewState.dayWidth) &&
+      cachedTag === (this.tagFilter ?? '')
     ) {
       return;
     }
 
-    timelineEl.querySelectorAll('.vg-gantt-bar, .vg-gantt-bg-col').forEach((el) => el.remove());
+    timelineEl.querySelectorAll(
+      '.vg-gantt-bar, .vg-gantt-bg-col, .vg-gantt-bar-ext-label, .vg-gantt-marker, .vg-gantt-due-line'
+    ).forEach((el) => el.remove());
     this.renderBarsAndCache(timelineEl, leftEl, record, dates);
   }
 
@@ -330,27 +349,51 @@ export class GanttRenderer {
     timelineEl.dataset.revision = record.revision;
     timelineEl.dataset.baseDate = dates[0];
     timelineEl.dataset.dayWidth = String(this.viewState.dayWidth);
+    timelineEl.dataset.tagFilter = this.tagFilter ?? '';
   }
 
   private renderBars(timelineEl: HTMLElement, record: TaskRecord, dates: string[]): void {
     const { bars, laneCount } = packSubtasksIntoLanes(record.note.subtasks);
     const today = todayStr();
+    const lastDate = dates[dates.length - 1] ?? dates[0];
 
-    // Background columns (weekends and today)
+    // Background columns (weekends, holidays, today)
     for (let i = 0; i < dates.length; i++) {
       const date = dates[i];
       const weekend = isWeekendDate(date);
-      if (!weekend && date !== today) continue;
-      const col = timelineEl.createDiv({ cls: `vg-gantt-bg-col${weekend ? ' is-weekend' : ''}${date === today ? ' is-today' : ''}` });
+      const holiday = this.enableHolidays && isHoliday(date);
+      const isToday = date === today;
+      if (!weekend && !holiday && !isToday) continue;
+      const cls = [
+        'vg-gantt-bg-col',
+        (weekend || holiday) ? 'is-weekend' : '',
+        isToday ? 'is-today' : '',
+      ].filter(Boolean).join(' ');
+      const col = timelineEl.createDiv({ cls });
       col.style.left = `${i * this.viewState.dayWidth}px`;
       col.style.width = `${this.viewState.dayWidth}px`;
     }
 
+    // Parent due date ★ vertical line
+    if (record.note.dueDate && record.note.dueDate >= dates[0] && record.note.dueDate <= lastDate) {
+      const dueLeft = barLeftPx(dates[0], record.note.dueDate, this.viewState.dayWidth);
+      const dueLine = timelineEl.createDiv({ cls: 'vg-gantt-due-line' });
+      dueLine.style.left = `${dueLeft}px`;
+      dueLine.title = `期限: ${record.note.dueDate}`;
+      dueLine.createSpan({ cls: 'vg-gantt-due-star', text: '★' });
+    }
+
+    const hasMarkers = bars.some((b) => b.subtask.markers.length > 0);
+
     // Render bars (subtasks)
     for (const bar of bars) {
+      // Tag filter: skip bars that don't match
+      if (this.tagFilter && !bar.subtask.tags.includes(this.tagFilter)) continue;
+
       const left = barLeftPx(dates[0], bar.start, this.viewState.dayWidth);
       const width = barWidthPx(bar.start, bar.end, this.viewState.dayWidth);
       const top = laneTopPx(bar.lane, LANE_BASE_HEIGHT) + (LANE_BASE_HEIGHT - BAR_HEIGHT) / 2;
+      const isNarrow = width < MIN_LABEL_WIDTH;
 
       const barEl = timelineEl.createDiv({ cls: 'vg-gantt-bar' });
       barEl.style.left = `${left}px`;
@@ -362,24 +405,61 @@ export class GanttRenderer {
       barEl.dataset.startDate = bar.start;
       barEl.dataset.endDate = bar.end;
 
-      // Hover date labels
-      const dateStart = barEl.createDiv({ cls: 'vg-gantt-bar-date-start', text: bar.start });
-      dateStart.style.left = '0';
-      const dateEnd = barEl.createDiv({ cls: 'vg-gantt-bar-date-end', text: bar.end });
-      dateEnd.style.right = '0';
+      // Tag color
+      if (!bar.subtask.completed && bar.subtask.tags.length > 0) {
+        barEl.style.background = tagColor(bar.subtask.tags[0]);
+      }
+      if (bar.subtask.completed) barEl.addClass('is-completed');
 
-      // Label
-      barEl.createDiv({ cls: 'vg-gantt-bar-label', text: bar.subtask.title });
+      // Hover date labels
+      barEl.createDiv({ cls: 'vg-gantt-bar-date-start', text: bar.start });
+      barEl.createDiv({ cls: 'vg-gantt-bar-date-end', text: bar.end });
+
+      if (!isNarrow) {
+        // Label inside bar
+        barEl.createDiv({ cls: 'vg-gantt-bar-label', text: bar.subtask.title });
+        // Additional tag dots (for tags beyond first)
+        if (!bar.subtask.completed && bar.subtask.tags.length > 1 && width >= 100) {
+          const dots = barEl.createDiv({ cls: 'vg-gantt-bar-dots' });
+          bar.subtask.tags.slice(1, 3).forEach((tag) => {
+            const dot = dots.createDiv({ cls: 'vg-gantt-bar-dot' });
+            dot.style.background = tagColor(tag);
+            dot.title = tag;
+          });
+        }
+      } else {
+        // Narrow bar: external label (not inside barEl, so it's always visible)
+        const extLabel = timelineEl.createDiv({ cls: 'vg-gantt-bar-ext-label' });
+        extLabel.textContent = bar.subtask.title;
+        extLabel.style.left = `${left + width + 3}px`;
+        extLabel.style.top = `${top + (BAR_HEIGHT - 12) / 2}px`;
+      }
 
       // Resize handles
       const hs = barEl.createDiv({ cls: 'vg-gantt-bar-handle is-start' });
       hs.style.width = `${BAR_RESIZE_HANDLE_WIDTH}px`;
       const he = barEl.createDiv({ cls: 'vg-gantt-bar-handle is-end' });
       he.style.width = `${BAR_RESIZE_HANDLE_WIDTH}px`;
+
+      // Milestone markers (▲) below this bar
+      for (const marker of bar.subtask.markers) {
+        if (!marker.date || marker.date < dates[0] || marker.date > lastDate) continue;
+        const ml = barLeftPx(dates[0], marker.date, this.viewState.dayWidth) + this.viewState.dayWidth / 2 - 6;
+        const mt = top + BAR_HEIGHT + 3;
+        const markerEl = timelineEl.createDiv({ cls: 'vg-gantt-marker' });
+        markerEl.textContent = '▲';
+        markerEl.style.left = `${ml}px`;
+        markerEl.style.top = `${mt}px`;
+        markerEl.setAttribute('data-path', record.path);
+        markerEl.setAttribute('data-key', bar.subtask.key);
+        markerEl.setAttribute('data-marker-key', marker.key);
+        markerEl.title = marker.title ? `${marker.title} (${marker.date})` : marker.date;
+      }
     }
 
-    // Set timeline row height
-    timelineEl.style.height = `${laneTopPx(laneCount, LANE_BASE_HEIGHT) + 16}px`;
+    // Set timeline row height (add space for markers if needed)
+    const extraH = hasMarkers ? MARKER_H + 4 : 0;
+    timelineEl.style.height = `${laneTopPx(laneCount, LANE_BASE_HEIGHT) + 16 + extraH}px`;
   }
 
   removeRow(path: string): void {

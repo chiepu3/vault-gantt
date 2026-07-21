@@ -536,3 +536,151 @@
   color: var(--text-muted);
   text-align: center;
 }
+
+/* ===== Tag dots on bars ===== */
+.vg-gantt-bar-dots {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+  align-items: center;
+  pointer-events: none;
+}
+
+.vg-gantt-bar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  opacity: 0.85;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+/* ===== Narrow bar external label ===== */
+.vg-gantt-bar-ext-label {
+  position: absolute;
+  font-size: 11px;
+  color: var(--text-normal);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 4;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 12px;
+}
+
+/* ===== Milestone markers (▲) ===== */
+.vg-gantt-marker {
+  position: absolute;
+  font-size: 10px;
+  color: var(--text-accent, var(--interactive-accent));
+  pointer-events: auto;
+  cursor: default;
+  z-index: 4;
+  line-height: 1;
+  user-select: none;
+}
+.vg-gantt-marker:hover {
+  color: var(--text-error);
+}
+
+/* ===== Parent due date ★ line ===== */
+.vg-gantt-due-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px dashed var(--text-error);
+  opacity: 0.7;
+  pointer-events: auto;
+  z-index: 2;
+  cursor: default;
+}
+.vg-gantt-due-line:hover {
+  opacity: 1;
+}
+.vg-gantt-due-star {
+  position: absolute;
+  top: 1px;
+  left: -7px;
+  font-size: 11px;
+  color: var(--text-error);
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* ===== Header holiday cell ===== */
+.vg-gantt-date-cell.is-holiday {
+  color: var(--text-error);
+}
+
+/* ===== Toolbar tag filter select ===== */
+.vg-gantt-toolbar-select {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}
+.vg-gantt-toolbar-select:hover {
+  border-color: var(--interactive-accent);
+}
+
+/* ===== Task Finder Modal ===== */
+.vg-task-finder-title {
+  margin-bottom: 10px;
+}
+.vg-task-finder-input {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-modifier-form-field);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  box-sizing: border-box;
+}
+.vg-task-finder-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+.vg-task-finder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  cursor: pointer;
+  gap: 8px;
+}
+.vg-task-finder-item:hover,
+.vg-task-finder-item.is-selected {
+  background: var(--background-modifier-hover);
+}
+.vg-task-finder-name {
+  flex: 1;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vg-task-finder-name strong {
+  color: var(--interactive-accent);
+  font-weight: 700;
+}
+.vg-task-finder-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.vg-task-finder-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}

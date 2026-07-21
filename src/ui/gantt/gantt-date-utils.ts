@@ -1,3 +1,6 @@
+import { isHoliday } from './holiday-service';
+export { isHoliday };
+
 // Obsidian bundles moment.js and exposes it as window.moment at runtime.
 declare const moment: (
   date?: string | Date,
@@ -95,22 +98,26 @@ export function addBusinessDays(dateStr: string, count: number): string {
   return d;
 }
 
-/** Advance to the nearest weekday >= dateStr (skip Saturday → Monday, Sunday → Monday). */
+function isNonWorkday(d: string): boolean {
+  return isWeekend(d) || isHoliday(d);
+}
+
+/** Advance to the nearest workday >= dateStr (skip weekends and Japanese holidays). */
 export function snapForward(dateStr: string): string {
   let d = dateStr;
   let iterations = 0;
-  while (isWeekend(d) && iterations < 7) {
+  while (isNonWorkday(d) && iterations < 14) {
     d = addDays(d, 1);
     iterations++;
   }
   return d;
 }
 
-/** Retreat to the nearest weekday <= dateStr (skip Sunday → Friday, Saturday → Friday). */
+/** Retreat to the nearest workday <= dateStr (skip weekends and Japanese holidays). */
 export function snapBackward(dateStr: string): string {
   let d = dateStr;
   let iterations = 0;
-  while (isWeekend(d) && iterations < 7) {
+  while (isNonWorkday(d) && iterations < 14) {
     d = addDays(d, -1);
     iterations++;
   }

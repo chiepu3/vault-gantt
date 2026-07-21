@@ -4,10 +4,11 @@ import { PLUGIN_ID } from './domain/version';
 import PluginBadge from './ui/shared/PluginBadge.svelte';
 import { VaultGanttSettingsTab } from './ui/shared/SettingsTab';
 import { InputModal } from './ui/shared/InputModal';
+import { TaskFinderModal } from './ui/shared/TaskFinderModal';
 import { ObsidianVaultAdapter } from './infra/obsidian-vault-adapter';
 import { CoreTaskAPI } from './application/core-task-api';
 import { WorkbenchView, WORKBENCH_VIEW_TYPE, setWorkbenchViewApi } from './ui/workbench/WorkbenchView';
-import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks } from './ui/gantt/GanttView';
+import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks, setGanttSettingsGetter } from './ui/gantt/GanttView';
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 import { migrateLegacyTaskNote } from './domain/task-note/migrate-legacy';
 import { splitFrontmatterBlock } from './infra/frontmatter-split';
@@ -33,6 +34,7 @@ export default class VaultGanttPlugin extends Plugin {
       (v) => { this.settings.ganttZoom = v; void this.saveSettings(); },
       () => this.settings.ganttZoom,
     );
+    setGanttSettingsGetter(() => this.settings);
     this.registerView(GANTT_VIEW_TYPE, (leaf) => new GanttView(leaf));
 
     // The Core API's ChangeNotifier only fires for this plugin's own mutations.
@@ -121,6 +123,47 @@ export default class VaultGanttPlugin extends Plugin {
       id: 'migrate-legacy-notes',
       name: '「タスク」フォルダの旧形式ノートを移行',
       callback: () => void this.migrateLegacyNotes(),
+    });
+
+    this.addCommand({
+      id: 'open-task-finder',
+      name: 'タスクを検索して開く',
+      hotkeys: [],
+      callback: () => {
+        new TaskFinderModal(this.app, this.api).open();
+      },
+    });
+
+    this.addCommand({
+      id: 'add-subtask-to-current-note',
+      name: '現在のノートにサブタスクを追加',
+      hotkeys: [],
+      callback: async () => {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (!activeFile) {
+          new Notice('アクティブなノートがありません');
+          return;
+        }
+        const tasks = await this.api.listTasks();
+        const record = tasks.find((t) => t.path === activeFile.path);
+        if (!record) {
+          new Notice('現在のノートはタスクではありません');
+          return;
+        }
+        new InputModal(this.app, 'サブタスクを追加', 'サブタスク名を入力...', async (title) => {
+          const key = `st_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const result = await this.api.updateTaskItem({
+            path: record.path,
+            expectedRevision: record.revision,
+            newSubtasks: [{ key, title }],
+          });
+          if (!result.ok) {
+            new Notice(`サブタスクの追加に失敗しました: ${result.error.code}`);
+          } else {
+            new Notice(`「${title}」を追加しました`);
+          }
+        }).open();
+      },
     });
   }
 

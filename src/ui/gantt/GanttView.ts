@@ -11,6 +11,7 @@ import {
   RANGE_EXTEND_DAYS,
   PARENT_COL_WIDTH,
 } from './gantt-constants';
+import type { VaultGanttSettings } from '../../settings';
 import './gantt-styles.css';
 
 export const GANTT_VIEW_TYPE = 'vault-gantt-gantt';
@@ -18,6 +19,7 @@ export const GANTT_VIEW_TYPE = 'vault-gantt-gantt';
 let apiInstance: CoreTaskAPI;
 let saveZoomFn: ((v: number) => void) | null = null;
 let loadZoomFn: (() => number) | null = null;
+let getSettingsFn: (() => VaultGanttSettings) | null = null;
 
 export function setGanttViewApi(api: CoreTaskAPI): void {
   apiInstance = api;
@@ -31,6 +33,10 @@ export function setGanttZoomCallbacks(
   loadZoomFn = load;
 }
 
+export function setGanttSettingsGetter(fn: () => VaultGanttSettings): void {
+  getSettingsFn = fn;
+}
+
 export class GanttView extends ItemView {
   private viewState!: GanttViewState;
   private renderer!: GanttRenderer;
@@ -40,6 +46,8 @@ export class GanttView extends ItemView {
   private tasks: TaskRecord[] = [];
   private debounceTimer: number | undefined;
   private isExtendingRange = false;
+  private ganttTagFilter: string | null = null;
+  private tagFilterSelectEl: HTMLSelectElement | null = null;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -70,6 +78,9 @@ export class GanttView extends ItemView {
     if (loadZoomFn) this.viewState.dayWidth = loadZoomFn();
 
     this.renderer = new GanttRenderer(this.viewState);
+    if (getSettingsFn) {
+      this.renderer.enableHolidays = getSettingsFn().enableHolidays;
+    }
     this.popover = new GanttPopover(
       apiInstance,
       (path) => this.tasks.find((t) => t.path === path),
@@ -131,6 +142,17 @@ export class GanttView extends ItemView {
       (this.app as any).commands.executeCommandById('vault-gantt:create-new-task');
     });
 
+    // Tag filter dropdown (populated after first load)
+    this.tagFilterSelectEl = leftGroup.createEl('select', { cls: 'vg-gantt-toolbar-select' });
+    this.tagFilterSelectEl.style.display = 'none'; // hidden until tags exist
+    this.tagFilterSelectEl.title = 'タグで絞り込む';
+    this.tagFilterSelectEl.addEventListener('change', () => {
+      const val = this.tagFilterSelectEl?.value ?? '';
+      this.ganttTagFilter = val || null;
+      this.renderer.tagFilter = this.ganttTagFilter;
+      void this.fullRender();
+    });
+
     // Right group: zoom controls + today
     const rightGroup = toolbar.createDiv({ cls: 'vg-gantt-toolbar-right' });
 
@@ -165,6 +187,31 @@ export class GanttView extends ItemView {
     ganttEl.prepend(toolbar);
   }
 
+  private updateTagFilterDropdown(): void {
+    if (!this.tagFilterSelectEl) return;
+
+    const allTags = Array.from(
+      new Set(this.tasks.flatMap((t) => t.note.subtasks.flatMap((s) => s.tags)))
+    ).sort();
+
+    if (allTags.length === 0) {
+      this.tagFilterSelectEl.style.display = 'none';
+      return;
+    }
+
+    this.tagFilterSelectEl.style.display = '';
+    const currentVal = this.tagFilterSelectEl.value;
+    this.tagFilterSelectEl.empty();
+
+    const allOpt = this.tagFilterSelectEl.createEl('option', { value: '', text: '全タグ' });
+    allOpt.selected = !currentVal;
+
+    for (const tag of allTags) {
+      const opt = this.tagFilterSelectEl.createEl('option', { value: tag, text: `# ${tag}` });
+      opt.selected = tag === currentVal;
+    }
+  }
+
   private updateZoomDisplay(): void {
     if (this.zoomDisplayEl) {
       this.zoomDisplayEl.textContent = `${this.viewState.dayWidth}px/日`;
@@ -197,6 +244,7 @@ export class GanttView extends ItemView {
   private async reload(): Promise<void> {
     try {
       this.tasks = await apiInstance.listTasks();
+      this.updateTagFilterDropdown();
       const dates = this.viewState.buildDates();
       this.renderer.renderHeader(dates);
       this.renderer.renderAll(this.tasks, dates);
@@ -312,6 +360,30 @@ export class GanttView extends ItemView {
     });
 
     menu.addSeparator();
+
+    menu.addItem((item) => {
+      item.setTitle('マーカーを追加 ▲');
+      item.setIcon('map-pin');
+      item.onClick(() => {
+        new InputModal(this.app, 'マーカーを追加', 'マーカー名（省略可）...', async (title) => {
+          const r = this.tasks.find((t) => t.path === parentPath);
+          if (!r) return;
+          const today = new Date().toISOString().slice(0, 10);
+          const existing = r.note.subtasks.find((s) => s.key === subtaskKey);
+          if (!existing) return;
+          const markerKey = `mk_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+          const newMarkers = [
+            ...existing.markers,
+            { key: markerKey, title: title.trim(), date: today, tags: [] },
+          ];
+          await apiInstance.updateTaskItem({
+            path: parentPath,
+            expectedRevision: r.revision,
+            subtasks: [{ key: subtaskKey, fields: { markers: newMarkers } }],
+          });
+        }).open();
+      });
+    });
 
     menu.addItem((item) => {
       item.setTitle('サブタスクを削除');
