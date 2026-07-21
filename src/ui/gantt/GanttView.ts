@@ -84,7 +84,8 @@ export class GanttView extends ItemView {
     this.popover = new GanttPopover(
       apiInstance,
       (path) => this.tasks.find((t) => t.path === path),
-      this.app
+      this.app,
+      () => getSettingsFn?.()?.currentStatusRows ?? 3,
     );
     this.dragController = new GanttDragController(
       this.viewState,

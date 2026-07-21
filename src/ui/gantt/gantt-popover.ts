@@ -21,7 +21,8 @@ export class GanttPopover {
   constructor(
     private api: CoreTaskAPI,
     private getRecord: (path: string) => TaskRecord | undefined,
-    private app: App
+    private app: App,
+    private getRows: () => number = () => 3,
   ) {}
 
   open(parentPath: string, subtaskKey: string, anchorEl: HTMLElement): void {
@@ -195,7 +196,7 @@ export class GanttPopover {
     // currentStatus textarea
     this.el.createDiv({ cls: 'vg-popover-cs-label', text: '現在のステータス' });
     const textarea = this.el.createEl('textarea', { cls: 'vg-popover-textarea' });
-    textarea.rows = 3;
+    textarea.rows = this.getRows();
     textarea.value = subtask.currentStatus;
     this.currentStatusEl = textarea;
 
