@@ -1,9 +1,13 @@
 {
   "name": "vault-gantt",
   "version": "0.1.0",
-  "description": "Markdownノートを唯一の真実源とするタスク管理・ガントチャートプラグイン",
+  "description": "Task management and Gantt chart plugin for Obsidian — Markdown notes as single source of truth",
   "main": "main.js",
-  "private": true,
+  "author": "chiepu3",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chiepu3/vault-gantt.git"
+  },
   "type": "module",
   "license": "MIT",
   "scripts": {
@@ -12,7 +16,8 @@
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "verify": "npm run typecheck && npm run lint && npm run test"
+    "verify": "npm run typecheck && npm run lint && npm run test",
+    "version": "node scripts/bump-version.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

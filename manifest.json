@@ -3,7 +3,8 @@
   "name": "Vault Gantt",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Markdownノートを唯一の真実源とするタスク管理・ガントチャートプラグイン",
-  "author": "TODO: your name/handle",
+  "description": "Task management and Gantt chart plugin — Markdown notes as single source of truth",
+  "author": "chiepu3",
+  "authorUrl": "https://github.com/chiepu3",
   "isDesktopOnly": false
 }
