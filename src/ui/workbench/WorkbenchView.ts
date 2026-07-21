@@ -9,9 +9,14 @@ export const WORKBENCH_VIEW_TYPE = 'vault-gantt-workbench';
 // Module-level singleton set before registerView; safe because setWorkbenchViewApi
 // is always called in onload() before any leaf is constructed.
 let apiInstance: CoreTaskAPI;
+let getHideCompleted: (() => boolean) | null = null;
 
 export function setWorkbenchViewApi(api: CoreTaskAPI): void {
   apiInstance = api;
+}
+
+export function setWorkbenchHideCompletedGetter(fn: () => boolean): void {
+  getHideCompleted = fn;
 }
 
 export class WorkbenchView extends ItemView {
@@ -37,6 +42,7 @@ export class WorkbenchView extends ItemView {
       target: this.contentEl,
       props: {
         api,
+        hideCompletedByDefault: getHideCompleted?.() ?? false,
         openFile: (path: string) => {
           app.workspace.openLinkText(path, '', false);
         },

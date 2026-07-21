@@ -7,7 +7,7 @@ import { InputModal } from './ui/shared/InputModal';
 import { TaskFinderModal } from './ui/shared/TaskFinderModal';
 import { ObsidianVaultAdapter } from './infra/obsidian-vault-adapter';
 import { CoreTaskAPI } from './application/core-task-api';
-import { WorkbenchView, WORKBENCH_VIEW_TYPE, setWorkbenchViewApi } from './ui/workbench/WorkbenchView';
+import { WorkbenchView, WORKBENCH_VIEW_TYPE, setWorkbenchViewApi, setWorkbenchHideCompletedGetter } from './ui/workbench/WorkbenchView';
 import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks, setGanttSettingsGetter } from './ui/gantt/GanttView';
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 import { migrateLegacyTaskNote } from './domain/task-note/migrate-legacy';
@@ -27,6 +27,7 @@ export default class VaultGanttPlugin extends Plugin {
 
     // Register workbench and gantt views (set api before registering view factory)
     setWorkbenchViewApi(this.api);
+    setWorkbenchHideCompletedGetter(() => this.settings.hideCompletedByDefault);
     this.registerView(WORKBENCH_VIEW_TYPE, (leaf) => new WorkbenchView(leaf));
 
     setGanttViewApi(this.api);

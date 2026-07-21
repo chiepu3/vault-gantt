@@ -11,16 +11,17 @@
     openFile: (path: string) => void;
     openCreateTaskModal: () => void;
     openCreateSubtaskModal: (record: TaskRecord) => void;
+    hideCompletedByDefault?: boolean;
   }
 
-  let { api, openFile, openCreateTaskModal, openCreateSubtaskModal }: Props = $props();
+  let { api, openFile, openCreateTaskModal, openCreateSubtaskModal, hideCompletedByDefault = false }: Props = $props();
 
   // State
   let records: TaskRecord[] = $state([]);
   let filter: WorkbenchFilter = $state({
     query: '',
     statusKeys: [],
-    showCompleted: true,
+    showCompleted: !hideCompletedByDefault,
     tags: [],
   });
   let sort: WorkbenchSort = $state({
