@@ -1,5 +1,5 @@
 import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
-import { addDays, diffDays, snapForward, snapBackward } from './gantt-date-utils';
+import { addDays, snapForward, snapBackward, countBusinessDaysInSpan, addBusinessDays } from './gantt-date-utils';
 import type { GanttViewState } from './gantt-view-state';
 
 interface DragState {
@@ -110,7 +110,7 @@ export class GanttDragController {
       startWidth: barEl.offsetWidth,
       startDate,
       endDate,
-      originalDuration: diffDays(startDate, endDate),
+      originalDuration: countBusinessDaysInSpan(startDate, endDate) - 1,
       previewDeltaPx: 0,
       tooltipEl: tooltip,
       rafId: null,
@@ -201,7 +201,7 @@ export class GanttDragController {
     if (mode === 'bar-move') {
       const rawStart = addDays(startDate, deltaDays);
       newStart = snapForward(rawStart);
-      newEnd = addDays(newStart, originalDuration);
+      newEnd = addBusinessDays(newStart, originalDuration);
     } else if (mode === 'resize-start') {
       newStart = snapForward(addDays(startDate, deltaDays));
     } else if (mode === 'resize-end') {

@@ -189,6 +189,28 @@
 .vg-gantt-parent-left {
   overflow: hidden;
   cursor: default;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.vg-gantt-drag-handle {
+  flex-shrink: 0;
+  cursor: grab;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+  padding: 1px 0;
+  user-select: none;
+}
+.vg-gantt-drag-handle:hover { color: var(--text-muted); }
+
+.vg-gantt-parent-left.is-dnd-dragging {
+  opacity: 0.45;
+}
+
+.vg-gantt-parent-left.is-dnd-over {
+  border-top: 2px solid var(--interactive-accent);
 }
 
 .vg-gantt-parent-title {

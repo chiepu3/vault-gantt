@@ -2,7 +2,7 @@
   import { Notice } from 'obsidian';
   import { SvelteSet } from 'svelte/reactivity';
   import { DEFAULT_STATUSES } from '../../domain/status';
-  import { filterTaskRecords, sortTaskRecords, buildWorkbenchRows } from './workbench-logic';
+  import { filterTaskRecords, sortTaskRecords, buildWorkbenchRows, buildFlatRows } from './workbench-logic';
   import type { WorkbenchFilter, WorkbenchSort } from './workbench-logic';
   import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
 
@@ -41,9 +41,12 @@
     value: string;
   } | null = $state(null);
 
+  let flatView = $state(false);
+
   // Derived state
   let filteredSorted = $derived(sortTaskRecords(filterTaskRecords(records, filter), sort));
   let rows = $derived(buildWorkbenchRows(filteredSorted, collapsed));
+  let flatRows = $derived(buildFlatRows(filteredSorted, filter.showCompleted));
   let allTags = $derived(
     Array.from(new Set(records.flatMap((r) => r.note.tags))).sort()
   );
@@ -265,6 +268,12 @@
       <input type="checkbox" bind:checked={filter.showCompleted} />
       完了を表示
     </label>
+    <button
+      class="vg-flat-view-btn"
+      class:is-active={flatView}
+      onclick={() => { flatView = !flatView; }}
+      title="サブタスクを期限順にフラット表示"
+    >一覧</button>
     <button class="vg-add-task-btn" onclick={openCreateTaskModal}>＋ タスク追加</button>
   </div>
 
@@ -275,6 +284,40 @@
   {/if}
 
   <div class="vg-workbench-table-wrapper">
+    {#if flatView}
+      <table class="vg-workbench-table">
+        <thead>
+          <tr>
+            <th class="col-name">親タスク</th>
+            <th class="col-name">サブタスク</th>
+            <th class="col-status">状態</th>
+            <th class="col-date">期限</th>
+            <th class="col-date">予定開始</th>
+            <th class="col-date">予定終了</th>
+            <th class="col-check">完了</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each flatRows as fr (fr.record.path + '/' + fr.subtask.key)}
+            <tr class="vg-row-subtask" class:vg-completed={fr.subtask.completed}>
+              <td class="col-name vg-flat-parent-name">{fr.record.note.displayName}</td>
+              <td class="col-name">{fr.subtask.title}</td>
+              <td class="col-status">{statusLabel(fr.subtask.statusLabel)}</td>
+              <td class="col-date" class:vg-overdue-cell={!fr.subtask.completed && !!fr.subtask.dueDate && fr.subtask.dueDate < todayStr()}>{fr.subtask.dueDate ?? ''}</td>
+              <td class="col-date">{fr.subtask.plannedStartDate ?? ''}</td>
+              <td class="col-date">{fr.subtask.plannedEndDate ?? ''}</td>
+              <td class="col-check">
+                <input type="checkbox" checked={fr.subtask.completed}
+                  onchange={(e) => patchSubtask(fr.record.path, fr.subtask.key, { completed: (e.target as HTMLInputElement).checked })} />
+              </td>
+            </tr>
+          {/each}
+          {#if flatRows.length === 0}
+            <tr><td colspan="7" class="vg-flat-empty">サブタスクがありません</td></tr>
+          {/if}
+        </tbody>
+      </table>
+    {:else}
     <table class="vg-workbench-table">
       <thead>
         <tr>
@@ -485,6 +528,7 @@
         {/each}
       </tbody>
     </table>
+    {/if}
   </div>
 </div>
 
@@ -688,6 +732,33 @@
 
   button:hover {
     color: var(--interactive-accent);
+  }
+
+  /* ===== Unreadable banner ===== */
+  /* ===== Flat view ===== */
+  .vg-flat-view-btn {
+    background: none;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .vg-flat-view-btn.is-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+  }
+  .vg-flat-parent-name {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+  }
+  .vg-flat-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 20px;
   }
 
   /* ===== Unreadable banner ===== */

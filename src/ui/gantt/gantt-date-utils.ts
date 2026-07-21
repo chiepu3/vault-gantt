@@ -65,6 +65,36 @@ export function buildDateRange(rangeStart: string, rangeDays: number): string[] 
   return dates;
 }
 
+/**
+ * Count business days (Mon-Fri) from start to end, inclusive both.
+ * Returns 0 if start > end.
+ */
+export function countBusinessDaysInSpan(start: string, end: string): number {
+  const days = diffDays(start, end);
+  if (days < 0) return 0;
+  let count = 0;
+  for (let i = 0; i <= days; i++) {
+    if (!isWeekend(addDays(start, i))) count++;
+  }
+  return count;
+}
+
+/**
+ * Add `count` business days after dateStr (not counting dateStr itself).
+ * count must be >= 0.
+ */
+export function addBusinessDays(dateStr: string, count: number): string {
+  let d = dateStr;
+  let remaining = count;
+  let guard = 0;
+  while (remaining > 0 && guard < 365) {
+    d = addDays(d, 1);
+    if (!isWeekend(d)) remaining--;
+    guard++;
+  }
+  return d;
+}
+
 /** Advance to the nearest weekday >= dateStr (skip Saturday → Monday, Sunday → Monday). */
 export function snapForward(dateStr: string): string {
   let d = dateStr;

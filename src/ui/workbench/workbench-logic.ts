@@ -17,6 +17,40 @@ export type WorkbenchRow =
   | { kind: 'parent'; record: TaskRecord; expanded: boolean; previewSubtask: Subtask | null }
   | { kind: 'subtask'; parentPath: string; subtask: Subtask };
 
+export interface WorkbenchFlatRow {
+  record: TaskRecord;
+  subtask: Subtask;
+  effectiveDueDate: string | null;
+}
+
+/**
+ * Build a flat list of all subtasks across all filtered records, sorted by dueDate.
+ * Each row includes the parent record for context display.
+ */
+export function buildFlatRows(records: TaskRecord[], showCompleted: boolean): WorkbenchFlatRow[] {
+  const rows: WorkbenchFlatRow[] = [];
+
+  for (const record of records) {
+    for (const subtask of record.note.subtasks) {
+      if (!showCompleted && subtask.completed) continue;
+      rows.push({
+        record,
+        subtask,
+        effectiveDueDate: subtask.dueDate ?? subtask.plannedEndDate ?? null,
+      });
+    }
+  }
+
+  rows.sort((a, b) => {
+    if (!a.effectiveDueDate && !b.effectiveDueDate) return 0;
+    if (!a.effectiveDueDate) return 1;
+    if (!b.effectiveDueDate) return -1;
+    return a.effectiveDueDate.localeCompare(b.effectiveDueDate);
+  });
+
+  return rows;
+}
+
 /**
  * Filter task records based on query, status, completion, and tags.
  * A task matches if:

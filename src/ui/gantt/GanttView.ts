@@ -85,6 +85,7 @@ export class GanttView extends ItemView {
     );
 
     this.renderer.mount(container);
+    this.renderer.onRowReorder = (orderedPaths) => void this.handleRowReorder(orderedPaths);
     this.addToolbar(this.renderer.ganttEl!);
 
     this.viewState.scrollEl?.addEventListener('scroll', () => {
@@ -332,6 +333,28 @@ export class GanttView extends ItemView {
     });
 
     menu.showAtMouseEvent(evt);
+  }
+
+  private async handleRowReorder(orderedPaths: string[]): Promise<void> {
+    // Assign new ganttOrder = (index + 1) * 1000, batch update all reordered tasks
+    const updates = orderedPaths
+      .map((path, i) => ({ path, order: (i + 1) * 1000 }))
+      .filter(({ path, order }) => {
+        const t = this.tasks.find((r) => r.path === path);
+        return t && t.note.ganttOrder !== order;
+      });
+
+    await Promise.all(
+      updates.map(({ path, order }) => {
+        const t = this.tasks.find((r) => r.path === path);
+        if (!t) return Promise.resolve();
+        return apiInstance.updateTaskItem({
+          path,
+          expectedRevision: t.revision,
+          parent: { ganttOrder: order },
+        });
+      })
+    );
   }
 
   private async fullRender(): Promise<void> {

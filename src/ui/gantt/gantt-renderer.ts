@@ -44,11 +44,15 @@ export class GanttRenderer {
   rootEl: HTMLElement | null = null;        // = gridEl (for drag controller + contextmenu)
   dragTooltipEl: HTMLElement | null = null; // fixed tooltip inside document.body
 
+  /** Called when parent rows are reordered via DnD. Receives new ordered array of paths. */
+  onRowReorder?: (orderedPaths: string[]) => void;
+
   private rowMap = new Map<string, {
     leftEl: HTMLElement;
     timelineEl: HTMLElement;
   }>();
   private rowIndex = 0; // for alternating row colors
+  private dndDragPath: string | null = null; // path being dragged
 
   constructor(private viewState: GanttViewState) {}
 
@@ -206,6 +210,10 @@ export class GanttRenderer {
     // Left column (sticky)
     const leftEl = this.gridEl.createDiv({ cls: `vg-gantt-left vg-gantt-parent-left${even ? ' is-even' : ''}` });
     leftEl.setAttribute('data-path', record.path);
+
+    // Drag handle + title
+    const dragHandle = leftEl.createDiv({ cls: 'vg-gantt-drag-handle', attr: { title: 'ドラッグで並べ替え' } });
+    dragHandle.textContent = '⠿';
     leftEl.createDiv({ cls: 'vg-gantt-parent-title', text: record.note.displayName });
 
     // Timeline column
@@ -226,8 +234,57 @@ export class GanttRenderer {
     timelineEl.addEventListener('mouseenter', addHover);
     timelineEl.addEventListener('mouseleave', removeHover);
 
+    // Row DnD reorder
+    leftEl.setAttribute('draggable', 'true');
+    leftEl.addEventListener('dragstart', (e) => {
+      this.dndDragPath = record.path;
+      leftEl.addClass('is-dnd-dragging');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    });
+    leftEl.addEventListener('dragend', () => {
+      this.dndDragPath = null;
+      this.clearDndOver();
+      leftEl.removeClass('is-dnd-dragging');
+    });
+    leftEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (this.dndDragPath && this.dndDragPath !== record.path) {
+        this.clearDndOver();
+        leftEl.addClass('is-dnd-over');
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      }
+    });
+    leftEl.addEventListener('dragleave', () => leftEl.removeClass('is-dnd-over'));
+    leftEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      leftEl.removeClass('is-dnd-over');
+      if (!this.dndDragPath || this.dndDragPath === record.path) return;
+      this.fireReorder(this.dndDragPath, record.path);
+      this.dndDragPath = null;
+    });
+
     this.rowMap.set(record.path, { leftEl, timelineEl });
     this.renderBarsAndCache(timelineEl, leftEl, record, dates);
+  }
+
+  private clearDndOver(): void {
+    this.gridEl?.querySelectorAll('.is-dnd-over').forEach((el) => el.classList.remove('is-dnd-over'));
+  }
+
+  private fireReorder(draggedPath: string, targetPath: string): void {
+    if (!this.onRowReorder) return;
+    // Build current order from DOM child order
+    const orderedPaths: string[] = [];
+    for (const [path] of this.rowMap) {
+      orderedPaths.push(path);
+    }
+    // Move draggedPath to before targetPath in the array
+    const fromIdx = orderedPaths.indexOf(draggedPath);
+    const toIdx = orderedPaths.indexOf(targetPath);
+    if (fromIdx === -1 || toIdx === -1) return;
+    orderedPaths.splice(fromIdx, 1);
+    orderedPaths.splice(toIdx, 0, draggedPath);
+    this.onRowReorder(orderedPaths);
   }
 
   private updateRow(record: TaskRecord, dates: string[]): void {
