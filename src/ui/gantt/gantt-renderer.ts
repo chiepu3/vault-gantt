@@ -128,6 +128,7 @@ export class GanttRenderer {
       // Month cell
       const monthCell = monthRow.createDiv({ cls: 'vg-gantt-date-cell vg-gantt-month-cell' });
       monthCell.style.width = `${w}px`;
+      monthCell.dataset.date = date;
       if (isMonthStart(date, i)) {
         monthCell.createSpan({ text: monthTitle(date) });
       }
@@ -136,6 +137,7 @@ export class GanttRenderer {
       // Day cell
       const dayCell = dayRow.createDiv({ cls: 'vg-gantt-date-cell' });
       dayCell.style.width = `${w}px`;
+      dayCell.dataset.date = date;
       dayCell.createSpan({ text: dateLabel(date, 'D') });
       if (nonwork) dayCell.addClass('is-weekend');
       if (date === today) dayCell.addClass('is-today');
@@ -144,6 +146,7 @@ export class GanttRenderer {
       // Day-of-week cell
       const dowCell = dowRow.createDiv({ cls: 'vg-gantt-date-cell' });
       dowCell.style.width = `${w}px`;
+      dowCell.dataset.date = date;
       dowCell.createSpan({ text: dateLabel(date, 'dd') });
       if (nonwork) dowCell.addClass('is-weekend');
     }

@@ -7,7 +7,7 @@ import { GanttViewState } from './gantt-view-state';
 import { GanttRenderer } from './gantt-renderer';
 import { GanttDragController } from './gantt-drag-controller';
 import { GanttPopover } from './gantt-popover';
-import { todayStr, addDays, snapForward, diffDays } from './gantt-date-utils';
+import { todayStr, addDays, snapForward, diffDays, isWeekend as isWeekendDate, isHoliday, isNationalHoliday, toggleManualHoliday, getManualHolidays } from './gantt-date-utils';
 import {
   RANGE_EXTEND_THRESHOLD_PX,
   RANGE_EXTEND_DAYS,
@@ -22,6 +22,7 @@ let apiInstance: CoreTaskAPI;
 let saveZoomFn: ((v: number) => void) | null = null;
 let loadZoomFn: (() => number) | null = null;
 let getSettingsFn: (() => VaultGanttSettings) | null = null;
+let pluginInstance: { settings: VaultGanttSettings; saveSettings: () => Promise<void> } | null = null;
 
 export function setGanttViewApi(api: CoreTaskAPI): void {
   apiInstance = api;
@@ -37,6 +38,10 @@ export function setGanttZoomCallbacks(
 
 export function setGanttSettingsGetter(fn: () => VaultGanttSettings): void {
   getSettingsFn = fn;
+}
+
+export function setGanttPlugin(plugin: typeof pluginInstance): void {
+  pluginInstance = plugin;
 }
 
 export class GanttView extends ItemView {
@@ -115,6 +120,7 @@ export class GanttView extends ItemView {
     this.renderer.rootEl!.addEventListener('contextmenu', (evt) => this.handleContextMenu(evt));
     this.renderer.rootEl!.addEventListener('pointerdown', (evt) => this.handleMarkerOrDueLineDrag(evt));
     this.renderer.rootEl!.addEventListener('dblclick', (evt) => this.handleDblClick(evt));
+    this.renderer.rootEl!.addEventListener('click', (evt) => this.handleDateHeaderClick(evt));
 
     this.unsubscribe = apiInstance.subscribe(() => {
       window.clearTimeout(this.debounceTimer);
@@ -390,6 +396,50 @@ export class GanttView extends ItemView {
       });
       if (!result.ok) new Notice(`更新に失敗しました: ${result.error.code}`);
     }).open();
+  }
+
+  private async handleDateHeaderClick(evt: MouseEvent): Promise<void> {
+    const target = evt.target as HTMLElement;
+    const dateCell = target.closest('.vg-gantt-date-cell') as HTMLElement | null;
+    if (!dateCell) return;
+
+    const date = dateCell.dataset.date;
+    if (!date) return;
+
+    // Check if it's a weekend (protected)
+    if (isWeekendDate(date)) {
+      new Notice('週末は休日として保護されています');
+      return;
+    }
+
+    // Check if it's a national holiday (protected)
+    if (isNationalHoliday(date)) {
+      new Notice('国民の祝日は保護されています');
+      return;
+    }
+
+    // Check if already a manual holiday
+    const isNowHoliday = isHoliday(date);
+
+    // Toggle and save
+    toggleManualHoliday(date);
+    if (!pluginInstance) {
+      new Notice('プラグイン未初期化');
+      return;
+    }
+
+    pluginInstance.settings.manualHolidays = getManualHolidays();
+    await pluginInstance.saveSettings();
+
+    // Re-render header
+    await this.fullRender();
+
+    // Show notice
+    if (isNowHoliday) {
+      new Notice(`${date} の休日を解除しました`);
+    } else {
+      new Notice(`${date} を休日に設定しました`);
+    }
   }
 
   private handleParentLeftColumnMenu(evt: MouseEvent, parentPath: string): void {

@@ -31,11 +31,48 @@ const STATIC_HOLIDAYS = new Set([
 // Dynamic holidays populated from CSV fetch
 let dynamicHolidays: Set<string> | null = null;
 
+// Manual holidays toggled by user
+let manualHolidays: Set<string> = new Set();
+
 /** Set the dynamically fetched holidays from CSV. */
 export function setDynamicHolidays(dates: Set<string>): void {
   dynamicHolidays = dates;
 }
 
-export function isHoliday(date: string): boolean {
+/** Set manual holidays from settings. */
+export function setManualHolidays(dates: string[]): void {
+  manualHolidays = new Set(dates);
+}
+
+/**
+ * Toggle a manual holiday for the given date.
+ * Returns true if now a holiday, false if removed.
+ * Protected: cannot toggle off national/weekend holidays.
+ */
+export function toggleManualHoliday(date: string): boolean {
+  if (manualHolidays.has(date)) {
+    manualHolidays.delete(date);
+    return false;
+  } else {
+    manualHolidays.add(date);
+    return true;
+  }
+}
+
+/** Get current manual holidays as array. */
+export function getManualHolidays(): string[] {
+  return Array.from(manualHolidays).sort();
+}
+
+/**
+ * Check if date is a national holiday (not including manual).
+ * Used to determine if a date is protected from toggling.
+ */
+export function isNationalHoliday(date: string): boolean {
   return (dynamicHolidays ?? STATIC_HOLIDAYS).has(date);
+}
+
+/** Check if date is a holiday (national, dynamic, or manual). */
+export function isHoliday(date: string): boolean {
+  return isNationalHoliday(date) || manualHolidays.has(date);
 }

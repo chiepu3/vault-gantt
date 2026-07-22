@@ -8,11 +8,12 @@ import { TaskFinderModal } from './ui/shared/TaskFinderModal';
 import { ObsidianVaultAdapter } from './infra/obsidian-vault-adapter';
 import { CoreTaskAPI } from './application/core-task-api';
 import { WorkbenchView, WORKBENCH_VIEW_TYPE, setWorkbenchViewApi, setWorkbenchHideCompletedGetter } from './ui/workbench/WorkbenchView';
-import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks, setGanttSettingsGetter } from './ui/gantt/GanttView';
+import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks, setGanttSettingsGetter, setGanttPlugin } from './ui/gantt/GanttView';
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 import { migrateLegacyTaskNote } from './domain/task-note/migrate-legacy';
 import { splitFrontmatterBlock } from './infra/frontmatter-split';
 import { initHolidays, type HolidayCache } from './ui/gantt/holiday-fetcher';
+import { setManualHolidays } from './ui/gantt/gantt-date-utils';
 
 export default class VaultGanttPlugin extends Plugin {
   private statusBarBadge: ReturnType<typeof mount> | undefined;
@@ -50,6 +51,8 @@ export default class VaultGanttPlugin extends Plugin {
       () => this.settings.ganttZoom,
     );
     setGanttSettingsGetter(() => this.settings);
+    setGanttPlugin(this);
+    setManualHolidays(this.settings.manualHolidays ?? []);
     this.registerView(GANTT_VIEW_TYPE, (leaf) => new GanttView(leaf));
 
     // The Core API's ChangeNotifier only fires for this plugin's own mutations.

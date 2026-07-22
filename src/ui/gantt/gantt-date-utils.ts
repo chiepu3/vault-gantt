@@ -1,5 +1,5 @@
-import { isHoliday } from './holiday-service';
-export { isHoliday };
+import { isHoliday, isNationalHoliday, toggleManualHoliday, getManualHolidays, setManualHolidays } from './holiday-service';
+export { isHoliday, isNationalHoliday, toggleManualHoliday, getManualHolidays, setManualHolidays };
 
 // Obsidian bundles moment.js and exposes it as window.moment at runtime.
 declare const moment: (
