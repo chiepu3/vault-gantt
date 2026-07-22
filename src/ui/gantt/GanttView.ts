@@ -588,6 +588,49 @@ export class GanttView extends ItemView {
 
     menu.addSeparator();
 
+    // Tag management
+    if (subtask.tags.length > 0) {
+      for (const tag of subtask.tags) {
+        menu.addItem((item) => {
+          item.setTitle(`🏷 ${tag} を削除`);
+          item.setIcon('tag');
+          item.onClick(async () => {
+            const r = this.tasks.find((t) => t.path === parentPath);
+            if (!r) return;
+            const st = r.note.subtasks.find((s) => s.key === subtaskKey);
+            if (!st) return;
+            await apiInstance.updateTaskItem({
+              path: parentPath,
+              expectedRevision: r.revision,
+              subtasks: [{ key: subtaskKey, fields: { tags: st.tags.filter((t) => t !== tag) } }],
+            });
+          });
+        });
+      }
+    }
+    menu.addItem((item) => {
+      item.setTitle('タグを追加...');
+      item.setIcon('tag');
+      item.onClick(() => {
+        new InputModal(this.app, 'タグを追加', 'タグ名（例: #urgent）', async (rawTag) => {
+          const tag = rawTag.startsWith('#') ? rawTag.slice(1) : rawTag;
+          if (!tag) return;
+          const r = this.tasks.find((t) => t.path === parentPath);
+          if (!r) return;
+          const st = r.note.subtasks.find((s) => s.key === subtaskKey);
+          if (!st) return;
+          if (st.tags.includes(tag)) return;
+          await apiInstance.updateTaskItem({
+            path: parentPath,
+            expectedRevision: r.revision,
+            subtasks: [{ key: subtaskKey, fields: { tags: [...st.tags, tag] } }],
+          });
+        }).open();
+      });
+    });
+
+    menu.addSeparator();
+
     // Batch move option: only show if subtask has a planned start date
     if (subtask.plannedStartDate) {
       menu.addItem((item) => {
