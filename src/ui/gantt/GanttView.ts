@@ -1,6 +1,7 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf } from 'obsidian';
 import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
 import { InputModal } from '../shared/InputModal';
+import { MarkerModal } from '../shared/MarkerModal';
 import { GanttViewState } from './gantt-view-state';
 import { GanttRenderer } from './gantt-renderer';
 import { GanttDragController } from './gantt-drag-controller';
@@ -283,7 +284,11 @@ export class GanttView extends ItemView {
     if (!scrollEl) return;
     const scrollRect = scrollEl.getBoundingClientRect();
     const xInTimeline = evt.clientX - scrollRect.left + scrollEl.scrollLeft - PARENT_COL_WIDTH;
-    if (xInTimeline < 0) return;
+    if (xInTimeline < 0) {
+      evt.preventDefault();
+      this.handleParentLeftColumnMenu(evt, parentPath);
+      return;
+    }
     const dayIndex = Math.floor(xInTimeline / this.viewState.dayWidth);
     const dates = this.viewState.buildDates();
     const clickedDate = dates[Math.max(0, Math.min(dayIndex, dates.length - 1))];
@@ -313,6 +318,55 @@ export class GanttView extends ItemView {
         }).open();
       });
     });
+    menu.showAtMouseEvent(evt);
+  }
+
+  private handleParentLeftColumnMenu(evt: MouseEvent, parentPath: string): void {
+    const record = this.tasks.find((t) => t.path === parentPath);
+    if (!record) return;
+
+    const menu = new Menu();
+
+    menu.addItem((item) => {
+      item.setTitle('ノートを開く');
+      item.setIcon('file-text');
+      item.onClick(() => {
+        void this.app.workspace.openLinkText(parentPath, '');
+      });
+    });
+
+    menu.addItem((item) => {
+      const enabled = record.note.ganttEnabled;
+      item.setTitle(enabled ? 'ガントから除外する' : 'ガントに表示する');
+      item.setIcon(enabled ? 'calendar-x' : 'calendar-check');
+      item.onClick(async () => {
+        const r = this.tasks.find((t) => t.path === parentPath);
+        if (!r) return;
+        await apiInstance.updateTaskItem({
+          path: parentPath,
+          expectedRevision: r.revision,
+          parent: { ganttEnabled: !r.note.ganttEnabled },
+        });
+      });
+    });
+
+    menu.addSeparator();
+
+    menu.addItem((item) => {
+      item.setTitle('タスクを削除');
+      item.setIcon('trash-2');
+      item.onClick(async () => {
+        const confirmed = confirm(`「${record.note.displayName}」を削除しますか？\nこの操作は元に戻せません。`);
+        if (!confirmed) return;
+        const r = this.tasks.find((t) => t.path === parentPath);
+        if (!r) return;
+        const result = await apiInstance.deleteTask(r.path, r.revision);
+        if (!result.ok) {
+          new Notice(`削除に失敗しました: ${result.error.code}`);
+        }
+      });
+    });
+
     menu.showAtMouseEvent(evt);
   }
 
@@ -373,16 +427,15 @@ export class GanttView extends ItemView {
       item.setTitle('マーカーを追加 ▲');
       item.setIcon('map-pin');
       item.onClick(() => {
-        new InputModal(this.app, 'マーカーを追加', 'マーカー名（省略可）...', async (title) => {
+        new MarkerModal(this.app, todayStr(), async ({ date, label }) => {
           const r = this.tasks.find((t) => t.path === parentPath);
           if (!r) return;
-          const today = todayStr();
           const existing = r.note.subtasks.find((s) => s.key === subtaskKey);
           if (!existing) return;
           const markerKey = `mk_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
           const newMarkers = [
             ...existing.markers,
-            { key: markerKey, title: title.trim(), date: today, tags: [] },
+            { key: markerKey, title: label, date, tags: [] },
           ];
           await apiInstance.updateTaskItem({
             path: parentPath,
