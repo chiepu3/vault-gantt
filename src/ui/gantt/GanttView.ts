@@ -13,7 +13,7 @@ import {
   RANGE_EXTEND_DAYS,
   PARENT_COL_WIDTH,
 } from './gantt-constants';
-import type { VaultGanttSettings } from '../../settings';
+import type { VaultGanttSettings, GanttEvent } from '../../settings';
 import './gantt-styles.css';
 
 export const GANTT_VIEW_TYPE = 'vault-gantt-gantt';
@@ -265,6 +265,9 @@ export class GanttView extends ItemView {
       this.updateTagFilterDropdown();
       const dates = this.viewState.buildDates();
       this.renderer.renderHeader(dates);
+      const events = getSettingsFn?.()?.ganttEvents ?? [];
+      this.renderer.showEventRow = events.length > 0;
+      this.renderer.renderEventRow(dates, events);
       this.renderer.renderAll(this.tasks, dates);
       this.renderer.setTimelineWidth(dates);
     } catch (err) {
@@ -275,6 +278,22 @@ export class GanttView extends ItemView {
 
   private handleContextMenu(evt: MouseEvent): void {
     const target = evt.target as HTMLElement;
+
+    // Event chip right-click: edit or delete
+    const chip = target.closest('.vg-gantt-event-chip') as HTMLElement | null;
+    if (chip) {
+      evt.preventDefault();
+      this.handleEventChipContextMenu(evt, chip);
+      return;
+    }
+
+    // Event row empty area right-click: add new event
+    const eventTimeline = target.closest('.vg-gantt-event-row-timeline') as HTMLElement | null;
+    if (eventTimeline) {
+      evt.preventDefault();
+      this.handleEventRowContextMenu(evt, eventTimeline);
+      return;
+    }
 
     // Bar right-click menu
     const barEl = target.closest('.vg-gantt-bar') as HTMLElement | null;
@@ -440,6 +459,73 @@ export class GanttView extends ItemView {
     } else {
       new Notice(`${date} を休日に設定しました`);
     }
+  }
+
+  private handleEventChipContextMenu(evt: MouseEvent, chip: HTMLElement): void {
+    const key = chip.dataset.eventKey;
+    if (!key || !pluginInstance) return;
+    const events = pluginInstance.settings.ganttEvents;
+    const event = events.find((e) => e.key === key);
+    if (!event) return;
+
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item.setTitle('イベントを編集');
+      item.setIcon('pencil');
+      item.onClick(() => {
+        new InputModal(this.app, 'イベント名を変更', event.title, async (title) => {
+          if (!pluginInstance) return;
+          pluginInstance.settings.ganttEvents = pluginInstance.settings.ganttEvents.map(
+            (e) => e.key === key ? { ...e, title } : e
+          );
+          await pluginInstance.saveSettings();
+          void this.fullRender();
+        }).open();
+      });
+    });
+    menu.addItem((item) => {
+      item.setTitle('イベントを削除');
+      item.setIcon('trash-2');
+      item.onClick(async () => {
+        if (!pluginInstance) return;
+        pluginInstance.settings.ganttEvents = pluginInstance.settings.ganttEvents.filter(
+          (e) => e.key !== key
+        );
+        await pluginInstance.saveSettings();
+        void this.fullRender();
+      });
+    });
+    menu.showAtMouseEvent(evt);
+  }
+
+  private handleEventRowContextMenu(evt: MouseEvent, timelineEl: HTMLElement): void {
+    if (!pluginInstance) return;
+    // Calculate clicked date using the scroll container (same pattern as handleContextMenu)
+    const scrollEl = this.renderer.wrapEl!;
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const x = evt.clientX - scrollRect.left + scrollEl.scrollLeft - PARENT_COL_WIDTH;
+    const dayIdx = Math.max(0, Math.floor(x / this.viewState.dayWidth));
+    const startDate = timelineEl.dataset.startDate ?? todayStr();
+    const clickedDate = addDays(startDate, dayIdx);
+
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item.setTitle(`${clickedDate} にイベントを追加`);
+      item.setIcon('calendar-plus');
+      item.onClick(() => {
+        new InputModal(this.app, 'イベント名', 'イベント名を入力...', async (title) => {
+          if (!pluginInstance) return;
+          const key = `ev_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          pluginInstance.settings.ganttEvents = [
+            ...pluginInstance.settings.ganttEvents,
+            { key, title, date: clickedDate },
+          ];
+          await pluginInstance.saveSettings();
+          void this.fullRender();
+        }).open();
+      });
+    });
+    menu.showAtMouseEvent(evt);
   }
 
   private handleParentLeftColumnMenu(evt: MouseEvent, parentPath: string): void {
@@ -745,6 +831,9 @@ export class GanttView extends ItemView {
   private async fullRender(): Promise<void> {
     const dates = this.viewState.buildDates();
     this.renderer.renderHeader(dates);
+    const events = getSettingsFn?.()?.ganttEvents ?? [];
+    this.renderer.showEventRow = events.length > 0;
+    this.renderer.renderEventRow(dates, events);
     this.renderer.renderAll(this.tasks, dates);
     this.renderer.setTimelineWidth(dates);
   }

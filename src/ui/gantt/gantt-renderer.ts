@@ -1,4 +1,5 @@
 import type { TaskRecord } from '../../application/core-task-api';
+import type { GanttEvent } from '../../settings';
 import {
   LANE_BASE_HEIGHT,
   BAR_HEIGHT,
@@ -57,6 +58,9 @@ export class GanttRenderer {
 
   /** When true, render Japanese holidays like weekends (grey background). */
   enableHolidays = true;
+
+  /** Controls whether the event row is shown even with zero events. Default: false. */
+  showEventRow = false;
 
   private rowMap = new Map<string, {
     leftEl: HTMLElement;
@@ -474,6 +478,59 @@ export class GanttRenderer {
     row.leftEl.remove();
     row.timelineEl.remove();
     this.rowMap.delete(path);
+  }
+
+  renderEventRow(dates: string[], events: GanttEvent[]): void {
+    if (!this.gridEl) return;
+
+    // Remove existing event row
+    this.gridEl.querySelector('.vg-gantt-event-row-left')?.remove();
+    this.gridEl.querySelector('.vg-gantt-event-row-timeline')?.remove();
+
+    if (events.length === 0 && !this.showEventRow) return; // always show if explicitly enabled
+
+    const w = this.viewState.dayWidth;
+
+    // Left label cell (sticky)
+    const leftEl = this.gridEl.createDiv({ cls: 'vg-gantt-left vg-gantt-event-row-left' });
+    leftEl.createSpan({ text: 'イベント', cls: 'vg-gantt-event-row-label' });
+
+    // Timeline cell
+    const timelineEl = this.gridEl.createDiv({ cls: 'vg-gantt-event-row-timeline' });
+    timelineEl.style.width = `${dates.length * w}px`;
+    timelineEl.style.position = 'relative';
+    timelineEl.style.height = '28px';
+
+    // Store date range for click-to-add
+    timelineEl.dataset.startDate = dates[0];
+    timelineEl.dataset.endDate = dates[dates.length - 1];
+
+    // Render each event as a ◆ chip
+    for (const event of events) {
+      const idx = dates.indexOf(event.date);
+      if (idx < 0) continue; // outside visible range
+
+      const chip = timelineEl.createDiv({ cls: 'vg-gantt-event-chip' });
+      chip.style.left = `${idx * w}px`;
+      chip.dataset.eventKey = event.key;
+      chip.title = `${event.date} ${event.title}`;
+      if (event.color) chip.style.color = event.color;
+
+      // ◆ diamond + label
+      chip.createSpan({ text: '◆', cls: 'vg-gantt-event-diamond' });
+      chip.createSpan({ text: event.title, cls: 'vg-gantt-event-label' });
+    }
+
+    // Insert event row right after the header (before task rows)
+    const headerTimeline = this.gridEl.querySelector('.vg-gantt-header-timeline');
+    const headerLeft = this.gridEl.querySelector('.vg-gantt-header-left');
+    if (headerTimeline && headerLeft) {
+      headerTimeline.after(leftEl);
+      leftEl.after(timelineEl);
+    } else {
+      this.gridEl.prepend(timelineEl);
+      this.gridEl.prepend(leftEl);
+    }
   }
 
   updateFloatingMonth(dates: string[]): void {

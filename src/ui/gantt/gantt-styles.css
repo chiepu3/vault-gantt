@@ -185,6 +185,58 @@
   font-weight: 700;
 }
 
+/* ===== Event Row ===== */
+.vg-gantt-event-row-left {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.vg-gantt-event-row-label {
+  font-weight: 600;
+}
+
+.vg-gantt-event-row-timeline {
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  overflow: visible;
+}
+
+.vg-gantt-event-chip {
+  position: absolute;
+  top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-accent, var(--interactive-accent));
+  white-space: nowrap;
+}
+
+.vg-gantt-event-chip:hover {
+  opacity: 0.8;
+}
+
+.vg-gantt-event-diamond {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.vg-gantt-event-label {
+  background: var(--background-secondary);
+  border-radius: 3px;
+  padding: 0 3px;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
 /* ===== Parent Row Left ===== */
 .vg-gantt-parent-left {
   overflow: hidden;
