@@ -1,7 +1,6 @@
 import { requestUrl } from 'obsidian';
 import { setDynamicHolidays } from './holiday-service';
 
-const CACHE_KEY = 'vault-gantt-holidays';
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export interface HolidayCache {

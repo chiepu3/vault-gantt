@@ -13,7 +13,7 @@ import {
   RANGE_EXTEND_DAYS,
   PARENT_COL_WIDTH,
 } from './gantt-constants';
-import type { VaultGanttSettings, GanttEvent } from '../../settings';
+import type { VaultGanttSettings } from '../../settings';
 import './gantt-styles.css';
 
 export const GANTT_VIEW_TYPE = 'vault-gantt-gantt';

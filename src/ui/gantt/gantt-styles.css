@@ -278,7 +278,7 @@
   position: relative;
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-primary);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .vg-gantt-timeline.is-even {
@@ -620,6 +620,21 @@
   line-height: 12px;
 }
 
+/* ===== Narrow bar SVG connector ===== */
+.vg-gantt-bar-ext-connector {
+  position: absolute;
+  pointer-events: none;
+  z-index: 3;
+  overflow: visible;
+}
+.vg-gantt-bar-ext-connector polyline {
+  fill: none;
+  stroke: var(--text-accent, var(--interactive-accent));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
 /* ===== Milestone markers (▲) ===== */
 .vg-gantt-marker {
   position: absolute;
@@ -633,6 +648,30 @@
 }
 .vg-gantt-marker:hover {
   color: var(--text-error);
+}
+
+/* Date bubble shown on marker hover or parent-row hover */
+.vg-gantt-marker-date {
+  display: none;
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  border: 1px solid var(--background-modifier-border);
+}
+.vg-gantt-marker:hover .vg-gantt-marker-date,
+.vg-gantt-marker.is-parent-hover .vg-gantt-marker-date {
+  display: block;
 }
 
 /* ===== Parent due date ★ line ===== */

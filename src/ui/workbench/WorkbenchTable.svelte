@@ -35,9 +35,7 @@
     value: string;
   } | null = $state(null);
 
-  // Moment is available as a global in Obsidian at runtime
-  declare const moment: { (): { format(fmt: string): string } };
-  const todayIso = moment().format('YYYY-MM-DD');
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   let subtaskEdit: {
     parentPath: string;

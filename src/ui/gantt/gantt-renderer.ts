@@ -20,7 +20,6 @@ import {
   isMonthStart,
   monthTitle,
   todayStr,
-  addDays,
 } from './gantt-date-utils';
 import { tagColor } from './gantt-tag-colors';
 import type { GanttViewState } from './gantt-view-state';
@@ -247,10 +246,12 @@ export class GanttRenderer {
     const addHover = () => {
       leftEl.addClass('is-hover');
       timelineEl.addClass('is-hover');
+      timelineEl.querySelectorAll<HTMLElement>('.vg-gantt-marker').forEach((m) => m.classList.add('is-parent-hover'));
     };
     const removeHover = () => {
       leftEl.removeClass('is-hover');
       timelineEl.removeClass('is-hover');
+      timelineEl.querySelectorAll<HTMLElement>('.vg-gantt-marker').forEach((m) => m.classList.remove('is-parent-hover'));
     };
     leftEl.addEventListener('mouseenter', addHover);
     leftEl.addEventListener('mouseleave', removeHover);
@@ -341,7 +342,7 @@ export class GanttRenderer {
     }
 
     timelineEl.querySelectorAll(
-      '.vg-gantt-bar, .vg-gantt-bg-col, .vg-gantt-bar-ext-label, .vg-gantt-marker, .vg-gantt-due-line'
+      '.vg-gantt-bar, .vg-gantt-bg-col, .vg-gantt-bar-ext-label, .vg-gantt-bar-ext-connector, .vg-gantt-marker, .vg-gantt-due-line'
     ).forEach((el) => el.remove());
     this.renderBarsAndCache(timelineEl, leftEl, record, dates);
   }
@@ -439,11 +440,27 @@ export class GanttRenderer {
           });
         }
       } else {
-        // Narrow bar: external label (not inside barEl, so it's always visible)
+        // Narrow bar: external label with SVG connector
+        const labelGap = 8;
+        const labelLeft = left + width + labelGap;
+        const labelTop = top + (BAR_HEIGHT - 12) / 2;
         const extLabel = timelineEl.createDiv({ cls: 'vg-gantt-bar-ext-label' });
         extLabel.textContent = bar.subtask.title;
-        extLabel.style.left = `${left + width + 3}px`;
-        extLabel.style.top = `${top + (BAR_HEIGHT - 12) / 2}px`;
+        extLabel.style.left = `${labelLeft}px`;
+        extLabel.style.top = `${labelTop}px`;
+
+        // Horizontal polyline: bar right edge → label left edge (always same Y because labelTop+6 = barCenterY)
+        const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svgEl.setAttribute('class', 'vg-gantt-bar-ext-connector');
+        svgEl.style.left = `${left + width}px`;
+        svgEl.style.top = `${top + BAR_HEIGHT / 2 - 2}px`;
+        svgEl.setAttribute('width', `${labelGap}`);
+        svgEl.setAttribute('height', '4');
+        svgEl.setAttribute('viewBox', `0 0 ${labelGap} 4`);
+        const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        poly.setAttribute('points', `0,2 ${labelGap},2`);
+        svgEl.appendChild(poly);
+        timelineEl.appendChild(svgEl);
       }
 
       // Resize handles
@@ -462,9 +479,11 @@ export class GanttRenderer {
         markerEl.style.left = `${ml}px`;
         markerEl.style.top = `${mt}px`;
         markerEl.setAttribute('data-path', record.path);
-        markerEl.setAttribute('data-key', bar.subtask.key);
+        markerEl.setAttribute('data-subtask-key', bar.subtask.key);
         markerEl.setAttribute('data-marker-key', marker.key);
-        markerEl.title = marker.title ? `${marker.title} (${marker.date})` : marker.date;
+        // Date bubble (shown on hover or parent-row hover)
+        const dateBubbleText = marker.title ? `${marker.title} (${marker.date})` : marker.date;
+        markerEl.createDiv({ cls: 'vg-gantt-marker-date', text: dateBubbleText });
       }
     }
 
