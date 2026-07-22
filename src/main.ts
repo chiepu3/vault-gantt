@@ -12,6 +12,7 @@ import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks, set
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 import { migrateLegacyTaskNote } from './domain/task-note/migrate-legacy';
 import { splitFrontmatterBlock } from './infra/frontmatter-split';
+import { initHolidays, type HolidayCache } from './ui/gantt/holiday-fetcher';
 
 export default class VaultGanttPlugin extends Plugin {
   private statusBarBadge: ReturnType<typeof mount> | undefined;
@@ -21,6 +22,19 @@ export default class VaultGanttPlugin extends Plugin {
     console.log(`Loading plugin: ${PLUGIN_ID}`);
 
     await this.loadSettings();
+
+    // Initialize holidays from CSV (with static fallback)
+    await initHolidays(
+      async () => {
+        const data = await this.loadData();
+        return (data?.holidayCache as HolidayCache | null) ?? null;
+      },
+      async (cache) => {
+        const data = (await this.loadData()) ?? {};
+        await this.saveData({ ...data, holidayCache: cache });
+      },
+      this.settings.enableHolidays,
+    );
 
     const adapter = new ObsidianVaultAdapter(this.app);
     this.api = new CoreTaskAPI(adapter, { taskFolder: this.settings.taskFolder });

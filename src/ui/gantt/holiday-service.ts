@@ -1,5 +1,5 @@
-/** Japanese national holidays 2024-2028 (内閣府公表ベース). */
-const HOLIDAYS = new Set([
+/** Japanese national holidays 2024-2028 (内閣府公表ベース) - static fallback. */
+const STATIC_HOLIDAYS = new Set([
   // 2024
   '2024-01-01','2024-01-08','2024-02-11','2024-02-12','2024-02-23',
   '2024-03-20','2024-04-29','2024-05-03','2024-05-04','2024-05-05',
@@ -28,6 +28,14 @@ const HOLIDAYS = new Set([
   '2028-11-03','2028-11-23',
 ]);
 
+// Dynamic holidays populated from CSV fetch
+let dynamicHolidays: Set<string> | null = null;
+
+/** Set the dynamically fetched holidays from CSV. */
+export function setDynamicHolidays(dates: Set<string>): void {
+  dynamicHolidays = dates;
+}
+
 export function isHoliday(date: string): boolean {
-  return HOLIDAYS.has(date);
+  return (dynamicHolidays ?? STATIC_HOLIDAYS).has(date);
 }
