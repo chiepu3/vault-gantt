@@ -2,6 +2,7 @@ import { ItemView, Menu, Notice, WorkspaceLeaf } from 'obsidian';
 import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
 import { InputModal } from '../shared/InputModal';
 import { MarkerModal } from '../shared/MarkerModal';
+import { DateInputModal } from '../shared/DateInputModal';
 import { GanttViewState } from './gantt-view-state';
 import { GanttRenderer } from './gantt-renderer';
 import { GanttDragController } from './gantt-drag-controller';
@@ -358,6 +359,15 @@ export class GanttView extends ItemView {
     menu.showAtMouseEvent(evt);
   }
 
+  /** Shift all date keys in a workload record by a delta. */
+  private shiftDateKeys(obj: Record<string, number>, delta: number): Record<string, number> {
+    const result: Record<string, number> = {};
+    for (const [key, val] of Object.entries(obj)) {
+      result[addDays(key, delta)] = val;
+    }
+    return result;
+  }
+
   private handleParentLeftColumnMenu(evt: MouseEvent, parentPath: string): void {
     const record = this.tasks.find((t) => t.path === parentPath);
     if (!record) return;
@@ -501,6 +511,94 @@ export class GanttView extends ItemView {
         }
       });
     });
+
+    menu.addSeparator();
+
+    // Batch move option: only show if subtask has a planned start date
+    if (subtask.plannedStartDate) {
+      menu.addItem((item) => {
+        item.setTitle('これ以降を纏めて移動');
+        item.setIcon('move');
+        item.onClick(() => {
+          new DateInputModal(
+            this.app,
+            '移動後の開始日',
+            subtask.plannedStartDate!,
+            async (newStartDate) => {
+              const r = this.tasks.find((t) => t.path === parentPath);
+              if (!r) return;
+
+              // Calculate day delta
+              const dayDelta = diffDays(subtask.plannedStartDate!, newStartDate);
+              if (dayDelta === 0) return; // No change
+
+              // Find all subtasks >= anchor's plannedStartDate
+              const affectedSubtasks = r.note.subtasks.filter(
+                (s) => s.plannedStartDate && s.plannedStartDate >= subtask.plannedStartDate!
+              );
+
+              // Check if any have workloadActual entries
+              const hasWorkloadActual = affectedSubtasks.some(
+                (s) => Object.keys(s.workloadActual).length > 0
+              );
+
+              if (hasWorkloadActual) {
+                const confirmed = confirm(
+                  '実績時間が入力済みのサブタスクが含まれています。移動しますか？\n（workload実績の日付もシフトされます）'
+                );
+                if (!confirmed) return;
+              }
+
+              // Build patches for all affected subtasks
+              const patches = affectedSubtasks.map((s) => {
+                const fields: Record<string, unknown> = {};
+
+                if (s.plannedStartDate) {
+                  fields.plannedStartDate = addDays(s.plannedStartDate, dayDelta);
+                }
+                if (s.plannedEndDate) {
+                  fields.plannedEndDate = addDays(s.plannedEndDate, dayDelta);
+                }
+                if (s.dueDate) {
+                  fields.dueDate = addDays(s.dueDate, dayDelta);
+                }
+
+                // Shift marker dates
+                if (s.markers.length > 0) {
+                  fields.markers = s.markers.map((m) => ({
+                    ...m,
+                    date: addDays(m.date, dayDelta),
+                  }));
+                }
+
+                // Shift workload plan dates
+                if (Object.keys(s.workloadPlan).length > 0) {
+                  fields.workloadPlan = this.shiftDateKeys(s.workloadPlan, dayDelta);
+                }
+
+                // Shift workload actual dates
+                if (Object.keys(s.workloadActual).length > 0) {
+                  fields.workloadActual = this.shiftDateKeys(s.workloadActual, dayDelta);
+                }
+
+                return { key: s.key, fields };
+              });
+
+              // Send single batch update
+              const result = await apiInstance.updateTaskItem({
+                path: parentPath,
+                expectedRevision: r.revision,
+                subtasks: patches,
+              });
+
+              if (!result.ok) {
+                new Notice(`一括移動に失敗しました: ${result.error.code}`);
+              }
+            }
+          ).open();
+        });
+      });
+    }
 
     menu.showAtMouseEvent(evt);
   }
