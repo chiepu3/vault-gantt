@@ -2,6 +2,7 @@ import { App, Notice } from 'obsidian';
 import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
 import type { Subtask } from '../../domain/task-note/types';
 import { DEFAULT_STATUSES } from '../../domain/status';
+import { isWeekend, isHoliday, addDays } from './gantt-date-utils';
 
 /**
  * Rich click popover for Gantt bars.
@@ -223,6 +224,73 @@ export class GanttPopover {
     });
 
     this.el.createDiv({ cls: 'vg-popover-hint', text: 'Ctrl+Enter で保存' });
+
+    // Workload section — only if subtask has a planned date range
+    if (subtask.plannedStartDate && subtask.plannedEndDate) {
+      this.el.createEl('hr', { cls: 'vg-popover-divider' });
+      this.el.createDiv({ cls: 'vg-popover-cs-label', text: '作業時間 (h)' });
+
+      const grid = this.el.createDiv({ cls: 'vg-popover-workload-grid' });
+
+      // Header row
+      grid.createDiv({ cls: 'vg-popover-wl-date', text: '日付' });
+      grid.createDiv({ cls: 'vg-popover-wl-cell', text: '計画' });
+      grid.createDiv({ cls: 'vg-popover-wl-cell', text: '実績' });
+
+      // Local mutable copies — shared across all closures in this popover session.
+      // Using local copies avoids mutating the in-memory cache (which would interfere
+      // with expectedRevision reads in subsequent saves before the next reload).
+      const localPlan: Record<string, number> = { ...subtask.workloadPlan };
+      const localActual: Record<string, number> = { ...subtask.workloadActual };
+
+      // Enumerate workdays in planned range
+      let cur = subtask.plannedStartDate;
+      const end = subtask.plannedEndDate;
+      const MAX_DAYS = 30; // cap at 30 calendar days to protect against huge ranges
+      let count = 0;
+
+      while (cur <= end && count < MAX_DAYS) {
+        const date = cur;
+        // Skip weekends and holidays
+        if (!isWeekend(date) && !isHoliday(date)) {
+          const planVal = localPlan[date] ?? 0;
+          const actVal = localActual[date] ?? 0;
+
+          grid.createDiv({ cls: 'vg-popover-wl-date', text: date.slice(5) }); // "MM-DD"
+
+          // Plan input
+          const planInp = grid.createEl('input', { cls: 'vg-popover-wl-input', type: 'number' });
+          planInp.min = '0';
+          planInp.max = '24';
+          planInp.step = '0.5';
+          planInp.value = planVal > 0 ? String(planVal) : '';
+          planInp.placeholder = '0';
+          planInp.addEventListener('change', () => {
+            const v = parseFloat(planInp.value) || 0;
+            if (v > 0) localPlan[date] = v;
+            else delete localPlan[date];
+            void this.save({ workloadPlan: { ...localPlan } });
+          });
+
+          // Actual input
+          const actInp = grid.createEl('input', { cls: 'vg-popover-wl-input', type: 'number' });
+          actInp.min = '0';
+          actInp.max = '24';
+          actInp.step = '0.5';
+          actInp.value = actVal > 0 ? String(actVal) : '';
+          actInp.placeholder = '0';
+          actInp.addEventListener('change', () => {
+            const v = parseFloat(actInp.value) || 0;
+            if (v > 0) localActual[date] = v;
+            else delete localActual[date];
+            void this.save({ workloadActual: { ...localActual } });
+          });
+        }
+
+        cur = addDays(cur, 1);
+        count++;
+      }
+    }
 
     // Footer
     const footer = this.el.createDiv({ cls: 'vg-popover-footer' });

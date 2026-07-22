@@ -268,6 +268,7 @@ export class GanttView extends ItemView {
       const events = getSettingsFn?.()?.ganttEvents ?? [];
       this.renderer.showEventRow = events.length > 0;
       this.renderer.renderEventRow(dates, events);
+      this.renderer.renderWorkloadRow(dates, this.tasks);
       this.renderer.renderAll(this.tasks, dates);
       this.renderer.setTimelineWidth(dates);
     } catch (err) {
@@ -834,6 +835,7 @@ export class GanttView extends ItemView {
     const events = getSettingsFn?.()?.ganttEvents ?? [];
     this.renderer.showEventRow = events.length > 0;
     this.renderer.renderEventRow(dates, events);
+    this.renderer.renderWorkloadRow(dates, this.tasks);
     this.renderer.renderAll(this.tasks, dates);
     this.renderer.setTimelineWidth(dates);
   }

@@ -20,6 +20,7 @@ import {
   isMonthStart,
   monthTitle,
   todayStr,
+  addDays,
 } from './gantt-date-utils';
 import { tagColor } from './gantt-tag-colors';
 import type { GanttViewState } from './gantt-view-state';
@@ -525,6 +526,81 @@ export class GanttRenderer {
     const headerTimeline = this.gridEl.querySelector('.vg-gantt-header-timeline');
     const headerLeft = this.gridEl.querySelector('.vg-gantt-header-left');
     if (headerTimeline && headerLeft) {
+      headerTimeline.after(leftEl);
+      leftEl.after(timelineEl);
+    } else {
+      this.gridEl.prepend(timelineEl);
+      this.gridEl.prepend(leftEl);
+    }
+  }
+
+  renderWorkloadRow(dates: string[], tasks: TaskRecord[]): void {
+    if (!this.gridEl) return;
+
+    // Remove existing workload row
+    this.gridEl.querySelector('.vg-gantt-workload-row-left')?.remove();
+    this.gridEl.querySelector('.vg-gantt-workload-row-timeline')?.remove();
+
+    // Compute daily plan totals (only for gantt-enabled tasks)
+    const enabledTasks = tasks.filter((t) => t.note.ganttEnabled);
+    if (enabledTasks.length === 0) return;
+
+    // Check if any task has workload data at all
+    const hasAnyWorkload = enabledTasks.some((t) =>
+      t.note.subtasks.some((s) => Object.keys(s.workloadPlan).length > 0)
+    );
+    if (!hasAnyWorkload) return; // Don't show row if no data
+
+    const totals = new Map<string, number>();
+    for (const date of dates) {
+      let sum = 0;
+      for (const t of enabledTasks) {
+        for (const s of t.note.subtasks) {
+          sum += s.workloadPlan[date] ?? 0;
+        }
+      }
+      if (sum > 0) totals.set(date, sum);
+    }
+
+    const w = this.viewState.dayWidth;
+
+    // Left label
+    const leftEl = this.gridEl.createDiv({ cls: 'vg-gantt-left vg-gantt-workload-row-left' });
+    leftEl.createSpan({ text: '計画時間', cls: 'vg-gantt-workload-row-label' });
+
+    // Timeline
+    const timelineEl = this.gridEl.createDiv({ cls: 'vg-gantt-workload-row-timeline' });
+    timelineEl.style.width = `${dates.length * w}px`;
+    timelineEl.style.position = 'relative';
+    timelineEl.style.height = '24px';
+
+    // Render each day's total as a colored chip
+    for (let i = 0; i < dates.length; i++) {
+      const date = dates[i];
+      const total = totals.get(date);
+      if (!total) continue;
+
+      const chip = timelineEl.createDiv({ cls: 'vg-gantt-workload-chip' });
+      chip.style.left = `${i * w}px`;
+      chip.style.width = `${w}px`;
+      chip.title = `${date}: ${total}h`;
+      chip.createSpan({ text: String(total) });
+
+      // Color based on load
+      if (total >= 8) chip.addClass('is-overload');
+      else if (total >= 6) chip.addClass('is-heavy');
+      else chip.addClass('is-normal');
+    }
+
+    // Insert after event row (or after header if no event row)
+    const eventTimeline = this.gridEl.querySelector('.vg-gantt-event-row-timeline');
+    const eventLeft = this.gridEl.querySelector('.vg-gantt-event-row-left');
+    const headerTimeline = this.gridEl.querySelector('.vg-gantt-header-timeline');
+
+    if (eventTimeline && eventLeft) {
+      eventTimeline.after(leftEl);
+      leftEl.after(timelineEl);
+    } else if (headerTimeline) {
       headerTimeline.after(leftEl);
       leftEl.after(timelineEl);
     } else {
