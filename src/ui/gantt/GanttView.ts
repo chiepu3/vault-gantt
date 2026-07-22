@@ -6,7 +6,7 @@ import { GanttViewState } from './gantt-view-state';
 import { GanttRenderer } from './gantt-renderer';
 import { GanttDragController } from './gantt-drag-controller';
 import { GanttPopover } from './gantt-popover';
-import { todayStr, addDays, snapForward } from './gantt-date-utils';
+import { todayStr, addDays, snapForward, diffDays } from './gantt-date-utils';
 import {
   RANGE_EXTEND_THRESHOLD_PX,
   RANGE_EXTEND_DAYS,
@@ -112,6 +112,7 @@ export class GanttView extends ItemView {
     );
 
     this.renderer.rootEl!.addEventListener('contextmenu', (evt) => this.handleContextMenu(evt));
+    this.renderer.rootEl!.addEventListener('pointerdown', (evt) => this.handleMarkerOrDueLineDrag(evt));
 
     this.unsubscribe = apiInstance.subscribe(() => {
       window.clearTimeout(this.debounceTimer);
@@ -296,6 +297,7 @@ export class GanttView extends ItemView {
 
     evt.preventDefault();
 
+    const record = this.tasks.find((t) => t.path === parentPath);
     const menu = new Menu();
     menu.addItem((item) => {
       item.setTitle(`「${clickedDate}」にサブタスクを追加`);
@@ -318,6 +320,41 @@ export class GanttView extends ItemView {
         }).open();
       });
     });
+
+    menu.addSeparator();
+
+    if (record) {
+      menu.addItem((item) => {
+        item.setTitle(`「${clickedDate}」を親の期限に設定`);
+        item.setIcon('calendar');
+        item.onClick(async () => {
+          const r = this.tasks.find((t) => t.path === parentPath);
+          if (!r) return;
+          await apiInstance.updateTaskItem({
+            path: parentPath,
+            expectedRevision: r.revision,
+            parent: { dueDate: clickedDate },
+          });
+        });
+      });
+    }
+
+    if (record && record.note.dueDate) {
+      menu.addItem((item) => {
+        item.setTitle('親の期限を削除');
+        item.setIcon('calendar-x');
+        item.onClick(async () => {
+          const r = this.tasks.find((t) => t.path === parentPath);
+          if (!r) return;
+          await apiInstance.updateTaskItem({
+            path: parentPath,
+            expectedRevision: r.revision,
+            parent: { dueDate: null },
+          });
+        });
+      });
+    }
+
     menu.showAtMouseEvent(evt);
   }
 
@@ -495,6 +532,166 @@ export class GanttView extends ItemView {
     this.renderer.renderHeader(dates);
     this.renderer.renderAll(this.tasks, dates);
     this.renderer.setTimelineWidth(dates);
+  }
+
+  private handleMarkerOrDueLineDrag(evt: PointerEvent): void {
+    const target = evt.target as HTMLElement;
+
+    // Handle marker drag (▲)
+    const markerEl = target.closest('.vg-gantt-marker') as HTMLElement | null;
+    if (markerEl) {
+      this.startMarkerDrag(evt, markerEl);
+      return;
+    }
+
+    // Handle due date line drag (★)
+    const dueLineEl = target.closest('.vg-gantt-due-line') as HTMLElement | null;
+    if (dueLineEl) {
+      this.startDueLineDrag(evt, dueLineEl);
+      return;
+    }
+  }
+
+  private startMarkerDrag(evt: PointerEvent, markerEl: HTMLElement): void {
+    const markerKey = markerEl.dataset.markerKey;
+    const subtaskKey = markerEl.dataset.subtaskKey;
+    const parentPath = markerEl.dataset.path;
+
+    if (!markerKey || !subtaskKey || !parentPath) return;
+
+    const record = this.tasks.find((t) => t.path === parentPath);
+    if (!record) return;
+
+    const subtask = record.note.subtasks.find((s) => s.key === subtaskKey);
+    if (!subtask) return;
+
+    const marker = subtask.markers.find((m) => m.key === markerKey);
+    if (!marker) return;
+
+    const startX = evt.clientX;
+    const originalDate = marker.date;
+
+    markerEl.setPointerCapture(evt.pointerId);
+
+    const moveHandler = (e: PointerEvent): void => {
+      const dx = e.clientX - startX;
+      const dayDelta = Math.round(dx / this.viewState.dayWidth);
+      let newDate = addDays(originalDate, dayDelta);
+
+      // Clamp to subtask start/end if both exist
+      if (subtask.plannedStartDate && subtask.plannedEndDate) {
+        if (newDate < subtask.plannedStartDate) newDate = subtask.plannedStartDate;
+        if (newDate > subtask.plannedEndDate) newDate = subtask.plannedEndDate;
+      }
+
+      const daysFromStart = diffDays(this.viewState.rangeStart, newDate);
+      const markerLeft = daysFromStart * this.viewState.dayWidth;
+      markerEl.style.left = markerLeft + 'px';
+    };
+
+    const upHandler = async (e: PointerEvent): Promise<void> => {
+      markerEl.removeEventListener('pointermove', moveHandler);
+      document.removeEventListener('pointerup', upHandler);
+      document.removeEventListener('pointercancel', upHandler);
+
+      const finalDx = e.clientX - startX;
+      const finalDelta = Math.round(finalDx / this.viewState.dayWidth);
+
+      if (finalDelta === 0) {
+        // Reset visual position
+        const origDaysFromStart = diffDays(this.viewState.rangeStart, originalDate);
+        const origMarkerLeft = origDaysFromStart * this.viewState.dayWidth;
+        markerEl.style.left = origMarkerLeft + 'px';
+        return;
+      }
+
+      let finalDate = addDays(originalDate, finalDelta);
+
+      // Clamp to subtask start/end if both exist
+      if (subtask.plannedStartDate && subtask.plannedEndDate) {
+        if (finalDate < subtask.plannedStartDate) finalDate = subtask.plannedStartDate;
+        if (finalDate > subtask.plannedEndDate) finalDate = subtask.plannedEndDate;
+      }
+
+      // Update the marker in the subtask
+      const updatedMarkers = subtask.markers.map((m) =>
+        m.key === markerKey ? { ...m, date: finalDate } : m
+      );
+
+      const r = this.tasks.find((t) => t.path === parentPath);
+      if (!r) return;
+
+      await apiInstance.updateTaskItem({
+        path: parentPath,
+        expectedRevision: r.revision,
+        subtasks: [{ key: subtaskKey, fields: { markers: updatedMarkers } }],
+      });
+    };
+
+    markerEl.addEventListener('pointermove', moveHandler);
+    document.addEventListener('pointerup', upHandler);
+    document.addEventListener('pointercancel', upHandler);
+  }
+
+  private startDueLineDrag(evt: PointerEvent, dueLineEl: HTMLElement): void {
+    const parentPath = dueLineEl.dataset.path;
+    if (!parentPath) return;
+
+    const record = this.tasks.find((t) => t.path === parentPath);
+    if (!record || !record.note.dueDate) return;
+
+    const startX = evt.clientX;
+    const originalDueDate = record.note.dueDate;
+
+    dueLineEl.setPointerCapture(evt.pointerId);
+
+    const moveHandler = (e: PointerEvent): void => {
+      const dx = e.clientX - startX;
+      const dayDelta = Math.round(dx / this.viewState.dayWidth);
+      let newDate = addDays(originalDueDate, dayDelta);
+      newDate = snapForward(newDate);
+
+      const daysFromStart = diffDays(this.viewState.rangeStart, newDate);
+      const dueLeft = daysFromStart * this.viewState.dayWidth;
+      dueLineEl.style.left = dueLeft + 'px';
+    };
+
+    const upHandler = async (e: PointerEvent): Promise<void> => {
+      dueLineEl.removeEventListener('pointermove', moveHandler);
+      document.removeEventListener('pointerup', upHandler);
+      document.removeEventListener('pointercancel', upHandler);
+
+      const finalDx = e.clientX - startX;
+      const finalDelta = Math.round(finalDx / this.viewState.dayWidth);
+
+      if (finalDelta === 0) {
+        // Reset visual position
+        const origDaysFromStart = diffDays(this.viewState.rangeStart, originalDueDate);
+        const origDueLeft = origDaysFromStart * this.viewState.dayWidth;
+        dueLineEl.style.left = origDueLeft + 'px';
+        return;
+      }
+
+      const finalDate = snapForward(addDays(originalDueDate, finalDelta));
+
+      if (finalDate === originalDueDate) {
+        // No effective change after snapping
+        return;
+      }
+
+      const r = this.tasks.find((t) => t.path === parentPath);
+      if (!r) return;
+
+      await apiInstance.updateTaskItem({
+        path: parentPath,
+        expectedRevision: r.revision,
+        parent: { dueDate: finalDate },
+      });
+    };
+
+    dueLineEl.addEventListener('pointermove', moveHandler);
+    document.addEventListener('pointerup', upHandler);
+    document.addEventListener('pointercancel', upHandler);
   }
 
   async onClose(): Promise<void> {
