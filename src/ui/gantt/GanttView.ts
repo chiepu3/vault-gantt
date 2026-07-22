@@ -114,6 +114,7 @@ export class GanttView extends ItemView {
 
     this.renderer.rootEl!.addEventListener('contextmenu', (evt) => this.handleContextMenu(evt));
     this.renderer.rootEl!.addEventListener('pointerdown', (evt) => this.handleMarkerOrDueLineDrag(evt));
+    this.renderer.rootEl!.addEventListener('dblclick', (evt) => this.handleDblClick(evt));
 
     this.unsubscribe = apiInstance.subscribe(() => {
       window.clearTimeout(this.debounceTimer);
@@ -366,6 +367,29 @@ export class GanttView extends ItemView {
       result[addDays(key, delta)] = val;
     }
     return result;
+  }
+
+  private handleDblClick(evt: MouseEvent): void {
+    const target = evt.target as HTMLElement;
+    const titleEl = target.closest('.vg-gantt-parent-title') as HTMLElement | null;
+    if (!titleEl) return;
+    const leftEl = titleEl.closest('[data-path]') as HTMLElement | null;
+    if (!leftEl) return;
+    const parentPath = leftEl.dataset.path;
+    if (!parentPath) return;
+    const record = this.tasks.find((t) => t.path === parentPath);
+    if (!record) return;
+
+    new InputModal(this.app, '親タスク名を編集', record.note.displayName, async (newName) => {
+      const r = this.tasks.find((t) => t.path === parentPath);
+      if (!r) return;
+      const result = await apiInstance.updateTaskItem({
+        path: parentPath,
+        expectedRevision: r.revision,
+        parent: { displayName: newName },
+      });
+      if (!result.ok) new Notice(`更新に失敗しました: ${result.error.code}`);
+    }).open();
   }
 
   private handleParentLeftColumnMenu(evt: MouseEvent, parentPath: string): void {
