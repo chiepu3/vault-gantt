@@ -9,6 +9,7 @@ import { ObsidianVaultAdapter } from './infra/obsidian-vault-adapter';
 import { CoreTaskAPI } from './application/core-task-api';
 import { WorkbenchView, WORKBENCH_VIEW_TYPE, setWorkbenchViewApi, setWorkbenchHideCompletedGetter } from './ui/workbench/WorkbenchView';
 import { GanttView, GANTT_VIEW_TYPE, setGanttViewApi, setGanttZoomCallbacks, setGanttSettingsGetter, setGanttPlugin } from './ui/gantt/GanttView';
+import { setEmbedApi, setEmbedSettingsGetter, renderGanttEmbed } from './ui/gantt/GanttEmbed';
 import { DEFAULT_SETTINGS, type VaultGanttSettings } from './settings';
 import { migrateLegacyTaskNote } from './domain/task-note/migrate-legacy';
 import { splitFrontmatterBlock } from './infra/frontmatter-split';
@@ -54,6 +55,14 @@ export default class VaultGanttPlugin extends Plugin {
     setGanttPlugin(this);
     setManualHolidays(this.settings.manualHolidays ?? []);
     this.registerView(GANTT_VIEW_TYPE, (leaf) => new GanttView(leaf));
+
+    // Register vault-gantt-embed markdown processor
+    setEmbedApi(this.api);
+    setEmbedSettingsGetter(() => this.settings);
+    this.registerMarkdownCodeBlockProcessor(
+      'vault-gantt-embed',
+      (source, el, ctx) => void renderGanttEmbed(source, el, ctx)
+    );
 
     // The Core API's ChangeNotifier only fires for this plugin's own mutations.
     // External changes — cloud sync, manual edits, and metadataCache finishing

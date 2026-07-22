@@ -822,3 +822,19 @@
   color: var(--text-error, #f44336);
   font-weight: bold;
 }
+
+/* ===== Embed block ===== */
+.vg-embed-container {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  overflow: hidden;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.vg-embed-error,
+.vg-embed-empty {
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
