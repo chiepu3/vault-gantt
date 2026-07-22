@@ -1,5 +1,14 @@
 import type { TaskRecord } from '../../application/core-task-api';
 import type { Subtask } from '../../domain/task-note/types';
+import { calculateAutoPriority } from '../../domain/priority';
+
+/** Returns the effective display/sort priority: auto-computed from dueDate when priorityMode='auto'. */
+export function effectivePriority(record: TaskRecord, today: string): number {
+  if (record.note.priorityMode === 'auto') {
+    return calculateAutoPriority(record.note.dueDate, today);
+  }
+  return record.note.priority;
+}
 
 export interface WorkbenchFilter {
   query: string;           // case-insensitive substring match on displayName
@@ -105,7 +114,7 @@ export function filterTaskRecords(records: TaskRecord[], filter: WorkbenchFilter
  * Sort task records by the specified field and direction.
  * Null dates sort to the end regardless of direction.
  */
-export function sortTaskRecords(records: TaskRecord[], sort: WorkbenchSort): TaskRecord[] {
+export function sortTaskRecords(records: TaskRecord[], sort: WorkbenchSort, today = ''): TaskRecord[] {
   const sorted = [...records];
 
   sorted.sort((a, b) => {
@@ -120,8 +129,8 @@ export function sortTaskRecords(records: TaskRecord[], sort: WorkbenchSort): Tas
         bVal = b.note.displayName.toLowerCase();
         break;
       case 'priority':
-        aVal = a.note.priority;
-        bVal = b.note.priority;
+        aVal = today ? effectivePriority(a, today) : a.note.priority;
+        bVal = today ? effectivePriority(b, today) : b.note.priority;
         break;
       case 'statusLabel':
         aVal = a.note.statusLabel;

@@ -2,7 +2,7 @@
   import { Notice } from 'obsidian';
   import { SvelteSet } from 'svelte/reactivity';
   import { DEFAULT_STATUSES } from '../../domain/status';
-  import { filterTaskRecords, sortTaskRecords, buildWorkbenchRows, buildFlatRows } from './workbench-logic';
+  import { filterTaskRecords, sortTaskRecords, buildWorkbenchRows, buildFlatRows, effectivePriority } from './workbench-logic';
   import type { WorkbenchFilter, WorkbenchSort } from './workbench-logic';
   import type { CoreTaskAPI, TaskRecord } from '../../application/core-task-api';
 
@@ -31,9 +31,13 @@
   let collapsed = new SvelteSet<string>();
   let editingCell: {
     path: string;
-    field: 'displayName' | 'statusLabel' | 'dueDate' | 'currentStatus' | 'tags';
+    field: 'displayName' | 'statusLabel' | 'dueDate' | 'currentStatus' | 'tags' | 'priority';
     value: string;
   } | null = $state(null);
+
+  // Moment is available as a global in Obsidian at runtime
+  declare const moment: { (): { format(fmt: string): string } };
+  const todayIso = moment().format('YYYY-MM-DD');
 
   let subtaskEdit: {
     parentPath: string;
@@ -45,7 +49,7 @@
   let flatView = $state(false);
 
   // Derived state
-  let filteredSorted = $derived(sortTaskRecords(filterTaskRecords(records, filter), sort));
+  let filteredSorted = $derived(sortTaskRecords(filterTaskRecords(records, filter), sort, todayIso));
   let rows = $derived(buildWorkbenchRows(filteredSorted, collapsed));
   let flatRows = $derived(buildFlatRows(filteredSorted, filter.showCompleted));
   let allTags = $derived(
@@ -118,12 +122,13 @@
     return editingCell?.path === path && editingCell?.field === field;
   }
 
-  function startEdit(record: TaskRecord, field: 'displayName' | 'statusLabel' | 'dueDate' | 'currentStatus' | 'tags') {
+  function startEdit(record: TaskRecord, field: 'displayName' | 'statusLabel' | 'dueDate' | 'currentStatus' | 'tags' | 'priority') {
     const value: string =
       field === 'displayName' ? record.note.displayName
       : field === 'statusLabel' ? record.note.statusLabel
       : field === 'dueDate' ? (record.note.dueDate ?? '')
       : field === 'currentStatus' ? record.note.currentStatus
+      : field === 'priority' ? String(effectivePriority(record, todayIso))
       : record.note.tags.join(', ');
     editingCell = { path: record.path, field, value };
   }
@@ -141,6 +146,10 @@
       val = rawValue || null;
     } else if (field === 'tags') {
       val = rawValue.split(',').map((t) => t.trim()).filter(Boolean);
+    } else if (field === 'priority') {
+      const n = Math.max(0, Math.min(5, parseInt(rawValue, 10) || 0));
+      await patchParent(record, { priority: n, priorityMode: 'manual' });
+      return;
     } else {
       val = rawValue;
     }
@@ -383,7 +392,26 @@
                   {/if}
                 {/if}
               </td>
-              <td class="col-priority">{row.record.note.priority}</td>
+              <td class="col-priority" ondblclick={() => startEdit(row.record, 'priority')}>
+                {#if isEditing(row.record.path, 'priority')}
+                  <select
+                    value={editingCell!.value}
+                    onchange={(e) => commitEdit(row.record, (e.target as HTMLSelectElement).value)}
+                    onkeydown={(e) => { if (e.key === 'Escape') cancelEdit(); }}
+                    autofocus
+                  >
+                    <option value="0">0 – なし</option>
+                    <option value="1">1 – 低</option>
+                    <option value="2">2 – 普通</option>
+                    <option value="3">3 – やや高</option>
+                    <option value="4">4 – 高</option>
+                    <option value="5">5 – 最高</option>
+                  </select>
+                {:else}
+                  {effectivePriority(row.record, todayIso)}
+                  {#if row.record.note.priorityMode === 'auto'}<span class="vg-auto-badge">auto</span>{/if}
+                {/if}
+              </td>
               <td class="col-status" ondblclick={() => startEdit(row.record, 'statusLabel')}>
                 {#if isEditing(row.record.path, 'statusLabel')}
                   <select
