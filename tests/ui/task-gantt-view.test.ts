@@ -9,7 +9,7 @@
 
 
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import moment from "moment";
 import { Menu } from "obsidian";
 import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
@@ -364,6 +364,20 @@ async function flush(times = 30): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await Promise.resolve();
   }
+}
+
+/**
+ * Pins only Date (timers/rAF stay real) to a Friday for the current test, so
+ * fixtures built on `moment()` / dateOffset() do not behave differently on
+ * weekends (non-working days snap forward to Monday). Real time is restored
+ * when the test finishes.
+ */
+function useFridayClock(): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
 }
 
 async function openView(
@@ -2285,6 +2299,7 @@ describe("TaskGanttView", () => {
     });
 
     it("renders one classified fixed background cell per visible date behind each fixed-row content layer", async () => {
+      useFridayClock();
       const holiday = addDays(todayStr(), 3);
       const { container, view } = await openView([], {
         ganttManualHolidays: [holiday],
@@ -5155,6 +5170,7 @@ describe("rich popover behavior", () => {
 
 
   it("a committed Bulk-Move closes both popovers", async () => {
+    useFridayClock();
     const parent = withChildren(makeParent({ ganttEnabled: true }), [
       makeSubtask("s1", {
         plannedStartDate: dateOffset(0),
@@ -5187,6 +5203,7 @@ describe("rich popover behavior", () => {
   });
 
   it("a cancelled Bulk-Move keeps both popovers open", async () => {
+    useFridayClock();
     const parent = withChildren(makeParent({ ganttEnabled: true }), [
       makeSubtask("s1", {
         plannedStartDate: dateOffset(0),
