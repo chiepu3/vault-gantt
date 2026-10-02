@@ -1483,6 +1483,87 @@ describe("TaskWorkbenchView", () => {
       }
     });
 
+    describe("IME composition", () => {
+      it("parent: Ctrl+Enter and Escape during composition neither save nor cancel", async () => {
+        const { container, view, h } = await startNameEdit([
+          makeParent({ displayName: "Parent One" }),
+        ]);
+        const area = byClass(container, "task-workbench-title-textarea")[0];
+        dispatch(area, "compositionstart");
+        area.value = "へんかんちゅう";
+        dispatch(area, "keydown", { key: "Enter", ctrlKey: true });
+        dispatch(area, "keydown", { key: "Enter", metaKey: true });
+        dispatch(area, "keydown", { key: "Escape" });
+        await flush();
+
+        expect(h.updateTaskItem).not.toHaveBeenCalled();
+        expect(area.dataset.saved).toBeUndefined();
+        expect(area.dataset.cancelled).toBeUndefined();
+        expect((view as any).editing).not.toBeNull();
+        expect(byClass(container, "task-workbench-title-textarea")).toHaveLength(1);
+      });
+
+      it("subtask: plain Enter during composition does not save", async () => {
+        const parent = makeParent();
+        makeSubtask(parent, "child-task");
+        const { container, h } = await startNameEdit([parent], 1);
+        const input = byClass(
+          cells(bodyRows(container)[1])[0],
+          "task-workbench-inline-input"
+        )[0];
+        dispatch(input, "compositionstart");
+        input.value = "へんかん";
+        dispatch(input, "keydown", { key: "Enter" });
+        await flush();
+        expect(h.updateTaskItem).not.toHaveBeenCalled();
+
+        dispatch(input, "compositionend");
+        input.value = "確定";
+        dispatch(input, "keydown", { key: "Enter" });
+        await flush();
+        expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+        expect(h.updateTaskItem.mock.calls[0][1]).toEqual({ displayName: "確定", title: "確定" });
+      });
+
+      it("blur mid-composition does not auto-save; a normal blur after compositionend saves the committed value", async () => {
+        const { container, view, h } = await startNameEdit([
+          makeParent({ displayName: "Parent One" }),
+        ]);
+        const area = byClass(container, "task-workbench-title-textarea")[0];
+        dispatch(area, "compositionstart");
+        area.value = "変換中";
+        dispatch(area, "blur");
+        await flush();
+        expect(h.updateTaskItem).not.toHaveBeenCalled();
+        expect((view as any).editing).not.toBeNull();
+
+        dispatch(area, "compositionend");
+        area.value = "確定済み";
+        dispatch(area, "blur");
+        await flush();
+        expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+        expect(h.updateTaskItem.mock.calls[0][1]).toEqual({
+          displayName: "確定済み",
+          title: "確定済み",
+        });
+      });
+
+      it("parent: plain Enter, Ctrl+Enter and Escape still work outside composition", async () => {
+        const { container, h } = await startNameEdit([
+          makeParent({ displayName: "Parent One" }),
+        ]);
+        const area = byClass(container, "task-workbench-title-textarea")[0];
+        dispatch(area, "compositionstart");
+        dispatch(area, "compositionend");
+        dispatch(area, "keydown", { key: "Enter" });
+        expect(h.updateTaskItem).not.toHaveBeenCalled();
+        area.value = "Saved";
+        dispatch(area, "keydown", { key: "Enter", ctrlKey: true });
+        await flush();
+        expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("subtask: dblclick opens a single-line text input", async () => {
       const parent = makeParent();
       makeSubtask(parent, "child-task");

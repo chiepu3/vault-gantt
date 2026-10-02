@@ -1306,7 +1306,19 @@ export class TaskWorkbenchView extends ItemView {
       evt.preventDefault();
     });
 
+    // IME composition state, same policy as buildCurrentStatusEditor.
+    let composing = false;
+    el.addEventListener("compositionstart", () => {
+      composing = true;
+    });
+    el.addEventListener("compositionend", () => {
+      composing = false;
+    });
+
     el.addEventListener("keydown", (evt) => {
+      if (composing) {
+        return; // Enter/Escape are IME keys while composing
+      }
       if (evt.key === "Escape") {
         // cancel without saving.
         el.dataset.cancelled = "1";
@@ -1334,6 +1346,10 @@ export class TaskWorkbenchView extends ItemView {
         return;
       }
       if (el.dataset.saved === "1") {
+        return;
+      }
+      // mid-composition focus loss: never commit a half-composed string.
+      if (composing) {
         return;
       }
       this.saveNameEdit(row, el.value);
