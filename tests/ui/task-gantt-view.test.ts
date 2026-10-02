@@ -4694,10 +4694,11 @@ describe("computeRichPopoverPosition", () => {
     expect(pos.top).toBe(150);
   });
 
-  it("a colliding workload popup makes right preferred over a fitting below", () => {
-    // Below WOULD fit (136+180=316 <= 800), but the workload popup occupies
-    // that exact slot; above overflows (-92), so right wins.
-    const workload = { left: 90, top: 130, right: 350, bottom: 400 };
+  it("a colliding workload popup makes a free right preferred over a fitting below", () => {
+    // The workload popup sits under the anchor, so below collides (and would
+    // otherwise fit: 136+180=316 <= 800); above overflows (-92). Right
+    // (212..472) clears the workload popup (right edge 200), so right wins.
+    const workload = { left: 90, top: 130, right: 200, bottom: 400 };
     const pos = computeRichPopoverPosition(
       anchor,
       260,
@@ -4709,9 +4710,88 @@ describe("computeRichPopoverPosition", () => {
     );
     expect(pos.side).toBe("right");
     expect(pos.left).toBe(212);
+    expect(pos.top).toBe(100);
   });
 
-  it("with a colliding workload popup and no right room, left is used", () => {
+  it("rejects a right candidate that collides with the workload popup", () => {
+    // Right (212..472 x 100..280) overlaps this workload popup, as do below
+    // and (off-screen) above, so the rich popup stacks below the workload.
+    const workload = { left: 90, top: 130, right: 350, bottom: 400 };
+    const pos = computeRichPopoverPosition(
+      anchor,
+      260,
+      180,
+      1200,
+      800,
+      12,
+      workload
+    );
+    expect(pos.side).toBe("below");
+    expect(pos.top).toBe(412); // 400 + 12
+    expect(pos.left).toBe(100);
+  });
+
+  it("clamps the right candidate's top into a short viewport", () => {
+    const lowAnchor = { left: 100, top: 250, right: 200, bottom: 274 };
+    const pos = computeRichPopoverPosition(lowAnchor, 260, 250, 1200, 300, 12);
+    expect(pos.side).toBe("right");
+    expect(pos.left).toBe(212);
+    expect(pos.top).toBe(50); // 300 - 250, not the anchor's 250
+  });
+
+  it("clamps the left fallback's top into a narrow, short viewport", () => {
+    const lowAnchor = { left: 100, top: 250, right: 200, bottom: 274 };
+    const pos = computeRichPopoverPosition(lowAnchor, 260, 250, 400, 300, 12);
+    expect(pos.side).toBe("left");
+    expect(pos.top).toBe(50);
+  });
+
+  it("no-space fallback is stable: popover taller than the viewport pins to top 0", () => {
+    const workload = { left: 90, top: 130, right: 350, bottom: 400 };
+    const args = [anchor, 260, 500, 400, 300, 12, workload] as const;
+    const first = computeRichPopoverPosition(...args);
+    expect(first.side).toBe("left");
+    expect(first.top).toBe(0);
+    expect(first.left).toBe(-172);
+    expect(computeRichPopoverPosition(...args)).toEqual(first);
+  });
+
+  it("with a colliding workload popup, no right room and no stacking room, left is used", () => {
+    // 450px-tall viewport: below the workload (412+180=592) does not fit,
+    // above it (130-12-180) is off-screen, and right overflows 400px.
+    const workload = { left: 90, top: 130, right: 350, bottom: 400 };
+    const pos = computeRichPopoverPosition(
+      anchor,
+      260,
+      180,
+      400,
+      450,
+      12,
+      workload
+    );
+    expect(pos.side).toBe("left");
+  });
+
+  it("stacks above the workload popup when below/above/right are unusable", () => {
+    // Anchor near the bottom of a 400px-wide viewport: below overflows,
+    // above collides with the workload popup, right overflows.
+    const lowAnchor = { left: 100, top: 600, right: 390, bottom: 624 };
+    const workload = { left: 90, top: 470, right: 290, bottom: 592 };
+    const pos = computeRichPopoverPosition(
+      lowAnchor,
+      260,
+      180,
+      400,
+      800,
+      12,
+      workload
+    );
+    expect(pos.side).toBe("above");
+    expect(pos.top).toBe(278); // 470 - 12 - 180
+    expect(pos.top + 180 + 12).toBeLessThanOrEqual(workload.top);
+  });
+
+  it("stacks below the workload popup when there is no room above it", () => {
     const workload = { left: 90, top: 130, right: 350, bottom: 400 };
     const pos = computeRichPopoverPosition(
       anchor,
@@ -4722,7 +4802,17 @@ describe("computeRichPopoverPosition", () => {
       12,
       workload
     );
-    expect(pos.side).toBe("left");
+    expect(pos.side).toBe("below");
+    expect(pos.top).toBe(412); // 400 + 12
+  });
+
+  it("is deterministic for repeated identical inputs", () => {
+    const lowAnchor = { left: 100, top: 600, right: 390, bottom: 624 };
+    const workload = { left: 90, top: 470, right: 290, bottom: 592 };
+    const args = [lowAnchor, 260, 180, 400, 800, 12, workload] as const;
+    expect(computeRichPopoverPosition(...args)).toEqual(
+      computeRichPopoverPosition(...args)
+    );
   });
 
   it("a null/undefined workload popup never blocks below placement", () => {
@@ -6325,6 +6415,63 @@ describe("workload paint-drag and bar-level popup", () => {
     // aboveTop = 300 - 12 - 122 = 166.
     expect(popover.style.top).toBe("166px");
     expect(popover.attributes["data-side"]).toBe("above");
+  });
+
+  it("re-places an open rich popover away from the workload popup when it opens, repeatably", async () => {
+    const { view, container, bar } = await openBarView();
+    bar.getBoundingClientRect = () => ({
+      left: 100,
+      top: 600,
+      right: 1190,
+      bottom: 624,
+      width: 1090,
+      height: 24,
+    });
+    // Rich popover opens first (mouseover precedes mouseenter): below does
+    // not fit (624+12+180 > 800) so it goes above, where the workload popup
+    // will also land.
+    dispatch(bar, "mouseover", { clientX: 200, clientY: 610 });
+    const rich = byClass(popoverBody(), "task-gantt-rich-popover")[0];
+    expect(rich.style.top).toBe("408px"); // 600 - 12 - 180
+    const workloadRect = { left: 90, top: 466, right: 290, bottom: 588 };
+    vi.spyOn(view as any, "getWorkloadPopupRect").mockReturnValue(
+      workloadRect
+    );
+
+    dispatch(bar, "mouseenter");
+    expect(popoverOf(container)).toBeDefined();
+    // Stacked above the workload popup: 466 - 12 - 180.
+    expect(rich.style.top).toBe("274px");
+    expect(rich.attributes["data-side"]).toBe("above");
+    const bottom = parseFloat(rich.style.top) + 180;
+    expect(bottom + 12).toBeLessThanOrEqual(workloadRect.top);
+
+    // Repeated hover rebuilds the workload popup; placement stays put.
+    dispatch(bar, "mouseenter");
+    expect(rich.style.top).toBe("274px");
+  });
+
+  it("getWorkloadPopupRect reflects the open workload popup and clears when it closes", async () => {
+    const { view, container, bar } = await openBarView();
+    expect((view as any).getWorkloadPopupRect()).toBeUndefined();
+    dispatch(bar, "mouseenter");
+    const popover = popoverOf(container) as FakeEl;
+    popover.getBoundingClientRect = () => ({
+      left: 10,
+      top: 20,
+      right: 210,
+      bottom: 142,
+      width: 200,
+      height: 122,
+    });
+    expect((view as any).getWorkloadPopupRect()).toEqual({
+      left: 10,
+      top: 20,
+      right: 210,
+      bottom: 142,
+    });
+    (view as any).closeWorkloadPopup();
+    expect((view as any).getWorkloadPopupRect()).toBeUndefined();
   });
 
   it("renders plan as a backdrop and actual as the overlay sharing the same position, per the current mode", async () => {

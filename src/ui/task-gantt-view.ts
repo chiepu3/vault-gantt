@@ -725,15 +725,45 @@ export function computeRichPopoverPosition(
     return { top: aboveTop, left: verticalLeft, side: "above" };
   }
 
-  // 3. right — only when it fits.
+  // Side placements keep the anchor's top but are clamped into the viewport
+  // vertically (a tall popover near the bottom or top edge must not spill).
+  const sideTop = Math.max(
+    0,
+    Math.min(anchorRect.top, viewportHeight - popoverHeight)
+  );
+
+  // 3. right — only when it fits and does not collide with the workload popup.
   const rightLeft = anchorRect.right + gapPx;
-  if (rightLeft + popoverWidth <= viewportWidth) {
-    return { top: anchorRect.top, left: rightLeft, side: "right" };
+  const rightCandidate: RichPopoverRect = {
+    left: rightLeft,
+    top: sideTop,
+    right: rightLeft + popoverWidth,
+    bottom: sideTop + popoverHeight,
+  };
+  if (
+    rightLeft + popoverWidth <= viewportWidth &&
+    !overlapsWorkload(rightCandidate)
+  ) {
+    return { top: sideTop, left: rightLeft, side: "right" };
   }
 
-  // 4. left — unconditional fallback.
+  // 4. stacked against the workload popup — only when one is present, so the
+  // two popups never overlap even when below/above/right are unusable.
+  if (workloadPopupRect != null) {
+    const stackedAboveTop = workloadPopupRect.top - gapPx - popoverHeight;
+    if (stackedAboveTop >= 0) {
+      return { top: stackedAboveTop, left: verticalLeft, side: "above" };
+    }
+    const stackedBelowTop = workloadPopupRect.bottom + gapPx;
+    if (stackedBelowTop + popoverHeight <= viewportHeight) {
+      return { top: stackedBelowTop, left: verticalLeft, side: "below" };
+    }
+  }
+
+  // 5. left — unconditional fallback (vertically clamped; a pure function of
+  // its inputs, so repeated hovers resolve to the same position).
   return {
-    top: anchorRect.top,
+    top: sideTop,
     left: anchorRect.left - gapPx - popoverWidth,
     side: "left",
   };
@@ -1121,6 +1151,8 @@ export class TaskGanttView extends ItemView {
   private richPopoverAnchorEl: HTMLElement | undefined = undefined;
   /** The task whose data populates the open popover. */
   private richPopoverTask: TaskRow | undefined = undefined;
+  /** Pointer x at open time, reused when the popover is re-placed. */
+  private richPopoverMouseX: number | undefined = undefined;
   /** pending mouse-leave → hide debounce timer. */
   private richPopoverHideTimer: ReturnType<typeof setTimeout> | undefined =
     undefined;
@@ -5841,9 +5873,9 @@ export class TaskGanttView extends ItemView {
     this.richPopoverEl = el;
     this.richPopoverAnchorEl = anchor.anchorEl;
     this.richPopoverTask = anchor.task;
-    this.positionRichPopover(
-      typeof evt.clientX === "number" ? evt.clientX : undefined
-    );
+    this.richPopoverMouseX =
+      typeof evt.clientX === "number" ? evt.clientX : undefined;
+    this.positionRichPopover(this.richPopoverMouseX);
   }
 
 
@@ -5952,6 +5984,7 @@ export class TaskGanttView extends ItemView {
     this.richPopoverEl = undefined;
     this.richPopoverAnchorEl = undefined;
     this.richPopoverTask = undefined;
+    this.richPopoverMouseX = undefined;
   }
 
   /**
@@ -6093,7 +6126,12 @@ export class TaskGanttView extends ItemView {
 
 
   private getWorkloadPopupRect(): RichPopoverRect | undefined {
-    return undefined;
+    const el = this.workloadPopoverState?.el;
+    if (el === undefined || !el.isConnected) {
+      return undefined;
+    }
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
   }
 
 
@@ -6340,7 +6378,11 @@ export class TaskGanttView extends ItemView {
     });
 
     this.positionWorkloadPopup(anchorEl);
-
+    // The rich popover opens before this popup exists (mouseover precedes
+    // mouseenter), so re-place it now that the workload rect is known.
+    if (this.richPopoverEl !== undefined) {
+      this.positionRichPopover(this.richPopoverMouseX);
+    }
   }
 
 
