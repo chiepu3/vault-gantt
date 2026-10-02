@@ -1,0 +1,66 @@
+name: Faroe Artifact
+
+# Builds the Vault Gantt bundle for tools/faroe/Update-VaultGantt.ps1.
+#
+# Actions are pinned to the commit the official v4 tag pointed to when this file was written
+# (resolved via the GitHub API from each official actions/* repository).
+#
+# Trust model: only push / workflow_dispatch on an allow-listed branch of this
+# repository. There is no pull_request trigger, so code from arbitrary PRs is
+# never run here. The token is read-only; the artifact is produced in the same
+# job, strictly after check -> build -> E2E have all succeeded for the exact
+# commit (github.sha).
+on:
+  push:
+    branches: [main, codex/faroe-updater]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: faroe-artifact-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-package:
+    if: github.ref_type == 'branch' && contains(fromJSON('["main","codex/faroe-updater"]'), github.ref_name)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # Keep the key in sync with e2e.yml / OBSIDIAN_VERSION in tools/e2e/obsidian-runtime.mjs.
+      - name: Cache Obsidian AppImage
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tools/e2e/cache
+          key: obsidian-e2e-cache-1.13.4
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm run test:e2e
+
+      # Reached only if every step above succeeded.
+      - name: Package bundle
+        run: node tools/faroe/package-bundle.mjs "$RUNNER_TEMP/faroe-bundle"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vault-gantt-faroe-${{ github.sha }}
+          path: ${{ runner.temp }}/faroe-bundle/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

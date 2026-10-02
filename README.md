@@ -74,6 +74,10 @@ npm run test:e2e
 
 `npm run test:e2e` はNode.js 22以上とLinuxのXvfbを使用し、実際のObsidianを起動します。利用可能なキャッシュがない場合は、固定バージョンのObsidian AppImageをダウンロードします。手元のAppImageを使う場合は `E2E_OBSIDIAN_APPIMAGE`、キャッシュ先を変更する場合は `E2E_CACHE_DIR` を設定できます。
 
+## 別PCのVaultへの更新
+
+GitHub Actionsのartifactから別Windows PCのVaultへ3ファイルだけを更新・rollbackする手順は [tools/faroe/README.md](tools/faroe/README.md) を参照してください（実機未テスト）。
+
 ## ライセンス
 
 [MIT License](LICENSE)
