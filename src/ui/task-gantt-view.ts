@@ -693,13 +693,13 @@ export function computeRichPopoverPosition(
   };
 
 
-  const verticalLeft =
-    mouseX !== undefined
-      ? Math.max(
-          0,
-          Math.min(mouseX - popoverWidth / 2, viewportWidth - popoverWidth)
-        )
-      : anchorRect.left;
+  // Keeps a horizontal position inside the viewport when that is possible
+  // (a popover wider than the viewport pins to 0).
+  const clampLeft = (left: number): number =>
+    Math.max(0, Math.min(left, viewportWidth - popoverWidth));
+  const verticalLeft = clampLeft(
+    mouseX !== undefined ? mouseX - popoverWidth / 2 : anchorRect.left
+  );
 
   // 1. below
   const belowTop = anchorRect.bottom + gapPx;
@@ -760,13 +760,37 @@ export function computeRichPopoverPosition(
     }
   }
 
-  // 5. left — unconditional fallback (vertically clamped; a pure function of
-  // its inputs, so repeated hovers resolve to the same position).
-  return {
+  // 5. left of the anchor, horizontally and vertically clamped into the
+  // viewport. Accepted when it clears the workload popup.
+  const leftLeft = clampLeft(anchorRect.left - gapPx - popoverWidth);
+  const sideCandidate = (left: number): RichPopoverRect => ({
+    left,
     top: sideTop,
-    left: anchorRect.left - gapPx - popoverWidth,
-    side: "left",
-  };
+    right: left + popoverWidth,
+    bottom: sideTop + popoverHeight,
+  });
+  if (!overlapsWorkload(sideCandidate(leftLeft))) {
+    return { top: sideTop, left: leftLeft, side: "left" };
+  }
+
+  // 6. beside the workload popup itself: left of it, then right of it —
+  // each only when fully inside the viewport.
+  if (workloadPopupRect != null) {
+    const leftOfWorkload = workloadPopupRect.left - gapPx - popoverWidth;
+    if (leftOfWorkload >= 0) {
+      return { top: sideTop, left: leftOfWorkload, side: "left" };
+    }
+    const rightOfWorkload = workloadPopupRect.right + gapPx;
+    if (rightOfWorkload + popoverWidth <= viewportWidth) {
+      return { top: sideTop, left: rightOfWorkload, side: "right" };
+    }
+  }
+
+  // 7. Physically impossible: no placement is both inside the viewport and
+  // clear of the workload popup. Fall back to the clamped left-of-anchor
+  // position. It is a pure function of its inputs, so repeated hovers and
+  // re-placements resolve to the same rect instead of oscillating.
+  return { top: sideTop, left: leftLeft, side: "left" };
 }
 
 

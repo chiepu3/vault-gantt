@@ -7,9 +7,16 @@
 //  2. Hovering a parent row and then a lower subtask bar opens the rich popup
 //     and the workload popup together; they must not overlap and the rich
 //     popup's progress textarea and buttons must stay uncovered.
+//  3. At a narrow 1188x500 viewport (bar scrolled to ~y=330) both popups stay
+//     inside the viewport and still do not overlap. The measured DOM rects are
+//     written as JSON plus a PNG of the synthetic fixture to E2E_EVIDENCE_DIR
+//     (default tools/e2e/artifacts, gitignored) as narrow-<E2E_EVIDENCE_TAG>.*
+//     (tag default "after"; run the same scenario against an older build with
+//     tag "before" for before/after evidence).
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { pickAnchorMonday, toIsoStr, addDaysIso } from "./drag-fixture.mjs";
 import { loadNoteFormatModule } from "../gen-fixtures.mjs";
 import {
@@ -21,17 +28,74 @@ import {
 
 const COMMAND_ID = "vault-gantt:open-task-gantt";
 const FILLER_PARENTS = 4;
+// Rows below the bars so the wrap can scroll them up to y~260 at 500px high.
+const TAIL_PARENTS = 5;
 const LONG_DAYS = 40;
 const SHORT_DAYS = 3;
 const GRAPH_HEIGHT_PX = 86;
 const EPS = 0.5;
 
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const NARROW_VIEWPORT = { w: 1188, h: 500 };
+// The sticky header covers y < ~300 at this size, so the bar is scrolled to the
+// first hoverable row; the exact {top:260} geometry is pinned in the unit tests.
+const NARROW_BAR_TOP_PX = 330;
+
+/** In-page expression: DOM/paint ordering of the rich and workload popups. */
+const ORDER_PROBE = `(() => {
+  const rich = document.querySelector(".task-gantt-rich-popover.is-subtask");
+  const wl = document.querySelector(".task-gantt-workload-popover.is-visible");
+  if (!rich || !wl) return { rich: !!rich, workload: !!wl };
+  const vis = (e) => { const c = getComputedStyle(e); return c.display !== "none" && c.visibility !== "hidden" && Number(c.opacity) > 0; };
+  const rr = wl.getBoundingClientRect();
+  const topAtWl = document.elementFromPoint((rr.left + rr.right) / 2, (rr.top + rr.bottom) / 2);
+  return {
+    rich: true,
+    workload: true,
+    richVisible: vis(rich),
+    workloadVisible: vis(wl),
+    richBeforeWorkloadInDom: !!(rich.compareDocumentPosition(wl) & Node.DOCUMENT_POSITION_FOLLOWING),
+    sameParent: rich.parentNode === wl.parentNode,
+    richZ: getComputedStyle(rich).zIndex,
+    workloadZ: getComputedStyle(wl).zIndex,
+    workloadOnTopAtItsCenter: !!topAtWl && wl.contains(topAtWl),
+  };
+})()`;
+
+function checkOrder(label, o, failures) {
+  if (!o.rich || !o.workload) {
+    failures.push(`${label}: both popups must be present (rich=${o.rich}, workload=${o.workload})`);
+    return;
+  }
+  if (!o.richVisible) failures.push(`${label}: rich popup is not displayed`);
+  if (!o.workloadVisible) failures.push(`${label}: workload popup is not displayed`);
+  if (!o.richBeforeWorkloadInDom) failures.push(`${label}: DOM order is not rich-then-workload`);
+  if (!o.sameParent) failures.push(`${label}: popups do not share a parent`);
+  if (o.richZ !== o.workloadZ) failures.push(`${label}: z-index differs (rich=${o.richZ}, workload=${o.workloadZ}); order would not follow the DOM`);
+  if (!o.workloadOnTopAtItsCenter) failures.push(`${label}: workload popup is not on top at its own center`);
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Set by prepare() (same process as run()); lets run() derive the hours the
+// fixture stored for any date.
+let fixtureStart;
+
+/** Planned/actual hours the fixture stores for `date` (see prepare()). */
+function fixtureHours(date) {
+  const idx = Math.round(
+    (Date.UTC(...date.split("-").map((n, i) => (i === 1 ? Number(n) - 1 : Number(n)))) -
+      Date.UTC(...fixtureStart.split("-").map((n, i) => (i === 1 ? Number(n) - 1 : Number(n))))) /
+      86400000
+  );
+  return { plan: idx % 2 ? 1 : 0.5, actual: idx % 2 ? 0.5 : 1 };
+}
 
 export async function prepare(vaultDir) {
   const { buildFullNote } = await loadNoteFormatModule();
   const today = toIsoStr(new Date());
   const start = toIsoStr(pickAnchorMonday({ minDaysFromToday: 3 }));
+  fixtureStart = start;
   const folder = `tasks/${today.slice(0, 4)}/${today.slice(5, 7)}`;
   fs.mkdirSync(path.join(vaultDir, folder), { recursive: true });
 
@@ -99,6 +163,9 @@ export async function prepare(vaultDir) {
   }
   const longPath = makeParent("0003", FILLER_PARENTS, "PlannedWork001", LONG_DAYS);
   makeParent("0004", FILLER_PARENTS + 1, "ShortWork", SHORT_DAYS);
+  for (let i = 0; i < TAIL_PARENTS; i++) {
+    makeParent(`Tail${i}`, FILLER_PARENTS + 2 + i, undefined, 0);
+  }
   return { longPath };
 }
 
@@ -113,9 +180,9 @@ const MEASURE_GRAPH = `(() => {
   const gR = g.getBoundingClientRect();
   const zero = labels[labels.length - 1].getBoundingClientRect();
   const cells = [...pop.querySelectorAll(".task-gantt-workload-popover-cell")];
-  const fills = cells.slice(0, 2).map((c) => {
+  const fills = cells.map((c) => {
     const f = c.querySelector(".task-gantt-workload-fill").getBoundingClientRect();
-    return { height: f.height, bottom: f.bottom };
+    return { date: c.getAttribute("data-date"), height: f.height, bottom: f.bottom };
   });
   return {
     clientHeight: sc.clientHeight,
@@ -127,6 +194,8 @@ const MEASURE_GRAPH = `(() => {
     hasHScroll: sc.scrollWidth > sc.clientWidth,
     scrollbarHeight: sc.offsetHeight - sc.clientHeight,
     popBottom: pop.getBoundingClientRect().bottom,
+    mode: pop.classList.contains("is-actual") ? "actual" : "plan",
+    maxHours: (app.plugins.plugins["vault-gantt"].settings || {}).ganttWorkloadMaxHours,
     popClientH: pop.clientHeight,
     popScrollH: pop.scrollHeight,
     fills,
@@ -157,14 +226,28 @@ function checkGraph(label, m, expectScroll, failures, details) {
   if (Math.abs(m.zeroLabelBottom - m.graphBottom) > 1) {
     failures.push(`${label}: zero label bottom ${m.zeroLabelBottom} != graph bottom ${m.graphBottom}`);
   }
-  // 1h and 0.5h fills (plan mode, first two cells) at the unchanged scale.
-  for (const [i, fill] of m.fills.entries()) {
-    if (fill.height <= 0) continue;
+  // Every cell's fill must be positive (0.5h and 1h included), visible above
+  // the scrollbar, and match the unchanged scale: hours / max(0.5, maxHours)
+  // of the 86px plot.
+  const maxHours = typeof m.maxHours === "number" ? m.maxHours : 7;
+  const seen = new Set();
+  for (const fill of m.fills) {
+    const hours = fixtureHours(fill.date)[m.mode];
+    seen.add(hours);
+    const expected = (hours / Math.max(0.5, maxHours)) * GRAPH_HEIGHT_PX;
+    if (!(fill.height > 0)) {
+      failures.push(`${label}: ${fill.date} (${hours}h) fill height ${fill.height} is not positive`);
+    } else if (Math.abs(fill.height - expected) > EPS) {
+      failures.push(`${label}: ${fill.date} (${hours}h) fill height ${fill.height.toFixed(2)} != expected ${expected.toFixed(2)}`);
+    }
     if (fill.bottom > visibleBottom + EPS) {
-      failures.push(`${label}: fill ${i} bottom ${fill.bottom} is clipped below ${visibleBottom}`);
+      failures.push(`${label}: ${fill.date} fill bottom ${fill.bottom} is clipped below ${visibleBottom}`);
     }
   }
-  const heights = m.fills.map((f) => f.height.toFixed(2)).join("/");
+  if (!seen.has(0.5) || !seen.has(1)) {
+    failures.push(`${label}: expected both 0.5h and 1h cells, saw hours ${[...seen].join(",")}`);
+  }
+  const heights = m.fills.slice(0, 2).map((f) => f.height.toFixed(2)).join("/");
   if (m.popClientH < m.popScrollH) {
     failures.push(`${label}: popover content clipped (client ${m.popClientH} < scroll ${m.popScrollH})`);
   }
@@ -181,7 +264,7 @@ export async function run({ cdp }) {
   }
   try {
     await cdp.waitForExpression(
-      `(() => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("tasks/") && app.metadataCache.getFileCache(f)?.frontmatter?.ganttEnabled === true).length === ${FILLER_PARENTS + 2})()`,
+      `(() => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("tasks/") && app.metadataCache.getFileCache(f)?.frontmatter?.ganttEnabled === true).length === ${FILLER_PARENTS + 2 + TAIL_PARENTS})()`,
       { timeoutMs: 20000, label: "fixtures indexed by metadataCache" }
     );
   } catch (err) {
@@ -289,6 +372,8 @@ export async function run({ cdp }) {
     details.push(`popups: rich=${JSON.stringify(layout.rr)} workload=${JSON.stringify(layout.wr)} overlap=${layout.overlap}`);
   }
 
+  checkOrder("1188x848", await cdp.evaluate(ORDER_PROBE), failures);
+
   // Repeated hover must keep the placement stable.
   await moveMouse(cdp, 2, 2);
   await sleep(500);
@@ -298,6 +383,80 @@ export async function run({ cdp }) {
   const again = await cdp.evaluate(`(() => { const e = document.querySelector(".task-gantt-rich-popover.is-subtask"); if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
   if (first && again && (Math.abs(again.top - first.top) > 1 || Math.abs(again.left - first.left) > 1)) {
     failures.push(`rich popup moved on repeated hover: ${JSON.stringify(first)} -> ${JSON.stringify(again)}`);
+  }
+
+  // ---- 3. narrow 1188x500 viewport
+  await moveMouse(cdp, 2, 2);
+  await sleep(500);
+  await cdp.evaluate(
+    `(() => { const r = require("electron").remote || require("@electron/remote"); const w = r.getCurrentWindow(); w.setContentSize(${NARROW_VIEWPORT.w}, ${NARROW_VIEWPORT.h}); w.setPosition(0, 0); return true; })()`
+  );
+  await sleep(800);
+  // Scroll the wrap vertically so the long bar sits near y=330.
+  await cdp.evaluate(`(() => {
+    const wrap = document.querySelector(".task-gantt-wrap");
+    const bar = document.querySelectorAll(".task-gantt-bar")[0];
+    wrap.scrollTop += bar.getBoundingClientRect().top - ${NARROW_BAR_TOP_PX};
+    return true;
+  })()`);
+  await sleep(400);
+  const narrowPt = await cdp.evaluate(`(() => {
+    const r = document.querySelectorAll(".task-gantt-bar")[0].getBoundingClientRect();
+    return { x: 1000, y: r.top + r.height / 2, bar: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } };
+  })()`);
+  await moveMouse(cdp, 2, 2);
+  await sleep(300);
+  await hoverOnto(cdp, narrowPt.x, narrowPt.y, { settleMs: 600 });
+  const narrow = await cdp.evaluate(`(() => {
+    const rect = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height }; };
+    const rich = document.querySelector(".task-gantt-rich-popover.is-subtask");
+    const wl = document.querySelector(".task-gantt-workload-popover.is-visible");
+    const rr = rect(rich), wr = rect(wl);
+    const vw = innerWidth, vh = innerHeight;
+    const inside = (r) => !!r && r.left >= 0 && r.top >= 0 && r.right <= vw && r.bottom <= vh;
+    const hit = (el) => {
+      const r = rect(el);
+      const top = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+      return !!top && rich.contains(top);
+    };
+    const ta = rich && rich.querySelector("textarea");
+    return {
+      viewport: { w: vw, h: vh },
+      richSide: rich ? rich.dataset.side : null,
+      workloadSide: wl ? wl.dataset.side : null,
+      rich: rr,
+      workload: wr,
+      overlap: !!(rr && wr && rr.left < wr.right && wr.left < rr.right && rr.top < wr.bottom && wr.top < rr.bottom),
+      richInViewport: inside(rr),
+      workloadInViewport: inside(wr),
+      textareaReachable: ta ? hit(ta) : null,
+      buttonsReachable: rich ? [...rich.querySelectorAll("button")].map((b) => ({ text: b.textContent, reachable: hit(b) })) : [],
+    };
+  })()`);
+  narrow.order = await cdp.evaluate(ORDER_PROBE);
+  checkOrder("narrow", narrow.order, failures);
+  narrow.bar = narrowPt.bar;
+  narrow.tag = process.env.E2E_EVIDENCE_TAG || "after";
+  const evidenceDir = process.env.E2E_EVIDENCE_DIR
+    ? path.resolve(process.env.E2E_EVIDENCE_DIR)
+    : path.join(REPO_ROOT, "tools", "e2e", "artifacts");
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  fs.writeFileSync(path.join(evidenceDir, `narrow-${narrow.tag}.json`), `${JSON.stringify(narrow, null, 2)}\n`);
+  await cdp.screenshot(path.join(evidenceDir, `narrow-${narrow.tag}.png`));
+  if (narrow.viewport.w !== NARROW_VIEWPORT.w || narrow.viewport.h !== NARROW_VIEWPORT.h) {
+    failures.push(`narrow viewport is ${narrow.viewport.w}x${narrow.viewport.h}, expected ${NARROW_VIEWPORT.w}x${NARROW_VIEWPORT.h}`);
+  }
+  if (!narrow.rich || !narrow.workload) {
+    failures.push(`narrow: both popups must be visible (rich=${!!narrow.rich}, workload=${!!narrow.workload})`);
+  } else {
+    if (narrow.overlap) failures.push(`narrow: popups overlap: rich=${JSON.stringify(narrow.rich)} workload=${JSON.stringify(narrow.workload)}`);
+    if (!narrow.richInViewport) failures.push(`narrow: rich popup outside viewport: ${JSON.stringify(narrow.rich)}`);
+    if (!narrow.workloadInViewport) failures.push(`narrow: workload popup outside viewport: ${JSON.stringify(narrow.workload)}`);
+    if (narrow.textareaReachable !== true) failures.push("narrow: progress textarea is covered");
+    for (const b of narrow.buttonsReachable) {
+      if (!b.reachable) failures.push(`narrow: button "${b.text}" is covered`);
+    }
+    details.push(`narrow ${narrow.viewport.w}x${narrow.viewport.h}: side=${narrow.richSide} rich=${JSON.stringify(narrow.rich)} workload=${JSON.stringify(narrow.workload)} overlap=${narrow.overlap}`);
   }
 
   const errors = cdp.capturedErrors();
