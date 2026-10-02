@@ -1453,6 +1453,36 @@ describe("TaskWorkbenchView", () => {
       ).toHaveLength(0);
     });
 
+    it("parent: focus is re-applied after the editor is attached (live DOMs ignore focus on detached nodes)", async () => {
+      const connectedAtFocus: boolean[] = [];
+      const realCreate = document.createElement.bind(document);
+      const createSpy = vi
+        .spyOn(document, "createElement")
+        .mockImplementation(((tag: string) => {
+          const el = realCreate(tag) as any;
+          if (tag === "textarea") {
+            const realFocus = el.focus.bind(el);
+            el.focus = () => {
+              connectedAtFocus.push(el.isConnected);
+              realFocus();
+            };
+          }
+          return el;
+        }) as any);
+      try {
+        const { container } = await startNameEdit([
+          makeParent({ displayName: "Parent One" }),
+        ]);
+        await flush();
+        const area = byClass(container, "task-workbench-title-textarea")[0];
+        expect(area.selected).toBe(true);
+        expect(connectedAtFocus[0]).toBe(false);
+        expect(connectedAtFocus[connectedAtFocus.length - 1]).toBe(true);
+      } finally {
+        createSpy.mockRestore();
+      }
+    });
+
     it("subtask: dblclick opens a single-line text input", async () => {
       const parent = makeParent();
       makeSubtask(parent, "child-task");

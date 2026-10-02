@@ -402,6 +402,8 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 
 .task-gantt-parent-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.task-gantt-parent-left > .twb-hidden-during-title-edit { display: none; }
+.task-gantt-parent-title-editor { width: 100%; flex: 1 1 auto; min-height: 0; font: inherit; font-weight: 600; resize: none; }
 .task-gantt-parent-tag { display: inline-block; border-width: 1px; border-style: solid; border-radius: 3px; padding: 0 4px; font-size: 11px; line-height: 1.5; }
 
 

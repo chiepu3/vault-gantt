@@ -9699,6 +9699,34 @@ describe("parent title inline editor", () => {
     );
   });
 
+  it("tags stay hidden through cancel (Escape) and Ctrl+Enter paths and are restored, not deleted", async () => {
+    const parent = makeParent({ ganttEnabled: true, tags: ["backend", "frontend"] });
+    const { container } = await openView([parent]);
+    const { left, title } = leftAndTitle(container);
+    const tagsEl = byClass(left, "task-gantt-parent-tags")[0];
+    const chipCount = tagsEl.children.length;
+
+    dispatch(title, "dblclick");
+    expect(tagsEl.classList.contains("twb-hidden-during-title-edit")).toBe(true);
+    dispatch(titleEditorOf(left)!, "keydown", { key: "Escape" });
+    expect(tagsEl.classList.contains("twb-hidden-during-title-edit")).toBe(false);
+    expect(tagsEl.children).toHaveLength(chipCount);
+
+    dispatch(title, "dblclick");
+    expect(tagsEl.classList.contains("twb-hidden-during-title-edit")).toBe(true);
+    dispatch(titleEditorOf(left)!, "keydown", { key: "Enter", ctrlKey: true });
+    await flush();
+    expect(tagsEl.classList.contains("twb-hidden-during-title-edit")).toBe(false);
+    expect(tagsEl.children).toHaveLength(chipCount);
+  });
+
+  it("styles.css hides .twb-hidden-during-title-edit children of the parent-left region", async () => {
+    const css = (await import("node:fs")).readFileSync("styles.css", "utf8");
+    expect(css).toMatch(
+      /\.task-gantt-parent-left\s*>\s*\.twb-hidden-during-title-edit\s*\{[^}]*display:\s*none/
+    );
+  });
+
   it("blur always commits a trimmed value with newline runs collapsed to a single space", async () => {
     const parent = makeParent({ ganttEnabled: true, displayName: "旧" });
     const { h, container } = await openView([parent]);
