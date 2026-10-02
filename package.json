@@ -1,0 +1,36 @@
+{
+  "name": "vault-gantt",
+  "version": "0.3.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "description": "Vault内のMarkdownノートを正本とするタスク管理・Ganttチャート機能を提供します。",
+  "main": "main.js",
+  "author": "ryory",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test": "vitest run --passWithNoTests",
+    "test:e2e": "node tools/e2e/run-smoke.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^8.56.0",
+    "obsidian": "latest",
+    "typescript": "^5.0.0",
+    "vite": "^5.4.21",
+    "vite-node": "^2.1.9",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "moment": "^2.29.0"
+  }
+}

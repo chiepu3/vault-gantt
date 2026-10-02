@@ -1,0 +1,47 @@
+name: E2E
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      # Xvfb binary is spawned directly by tools/e2e/obsidian-runtime.mjs
+      # (startXvfb), not via an xvfb-run wrapper, so it just needs to be
+      # on PATH. libfuse2 is deliberately NOT installed here: the harness
+      # always extracts the Obsidian AppImage via `--appimage-extract`,
+      # which is documented as FUSE-free and never mounts the AppImage.
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # obsidian-runtime.mjs pins OBSIDIAN_VERSION and caches the
+      # downloaded/extracted binary under tools/e2e/cache/. Bump the
+      # version in this key whenever OBSIDIAN_VERSION changes in
+      # tools/e2e/obsidian-runtime.mjs, otherwise the cache silently keeps
+      # serving the old binary.
+      - name: Cache Obsidian AppImage
+        uses: actions/cache@v4
+        with:
+          path: tools/e2e/cache
+          key: obsidian-e2e-cache-1.13.4
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:e2e
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-screenshots
+          path: tools/e2e/artifacts/*.png
+          if-no-files-found: ignore
