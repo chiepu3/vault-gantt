@@ -648,6 +648,69 @@ describe("TaskGanttView", () => {
   });
 
   describe("per-cell classes", () => {
+    it.each([true, false])("reuses date classifications only within a render (incremental=%s)", async (incrementalGanttRender) => {
+      const { view } = await openView(
+        [makeParent({ ganttEnabled: true })],
+        { incrementalGanttRender }
+      );
+      const date = datesOf(view)[0];
+      const classes = (view as any).dateClasses(date);
+      const daySpy = vi.spyOn(moment.fn, "day");
+      expect((view as any).dateClasses(date)).toBe(classes);
+      expect(daySpy).not.toHaveBeenCalled();
+
+      // Popup dates need not belong to the rendered chart range.
+      const outsideDate = addDays(date, -1);
+      const outsideClasses = (view as any).dateClasses(outsideDate);
+      expect((view as any).dateClasses(outsideDate)).toBe(outsideClasses);
+      expect(daySpy).toHaveBeenCalledTimes(1);
+      daySpy.mockRestore();
+
+      (view as any).renderChart();
+      expect((view as any).dateClasses(date)).toEqual(classes);
+      expect((view as any).dateClasses(date)).not.toBe(classes);
+      expect((view as any).dateClasses(outsideDate)).toEqual(outsideClasses);
+      expect((view as any).dateClasses(outsideDate)).not.toBe(outsideClasses);
+    });
+
+    it.each([true, false])("refreshes cached holiday and today classes on the next render (incremental=%s)", async (incrementalGanttRender) => {
+      useFridayClock();
+      const today = todayStr();
+      const tomorrow = addDays(today, 1);
+      const { view, container, h } = await openView(
+        [makeParent({ ganttEnabled: true })],
+        { incrementalGanttRender, ganttManualHolidays: [today] }
+      );
+      expect((view as any).dateClasses(today)).toEqual({
+        isWeekend: false, isHoliday: true, isToday: true,
+      });
+      expect((view as any).dateClasses(tomorrow)).toEqual({
+        isWeekend: true, isHoliday: false, isToday: false,
+      });
+
+      h.settings.ganttManualHolidays = [];
+      h.settings.ganttSpecialHolidays = [tomorrow];
+      vi.setSystemTime(new Date(2026, 9, 3, 12, 0, 0));
+      (view as any).renderChart();
+
+      for (const [date, expected] of [
+        [today, { isWeekend: false, isHoliday: false, isToday: false }],
+        [tomorrow, { isWeekend: true, isHoliday: true, isToday: true }],
+      ] as const) {
+        expect((view as any).dateClasses(date)).toEqual(expected);
+        const index = datesOf(view).indexOf(date);
+        const cells = [
+          rowOf(wrapOf(container), "task-gantt-day-row").children[index],
+          byClass(timelineOf(parentRows(container)[0]), "task-gantt-bg")[index],
+        ];
+        for (const cell of cells) {
+          expect(cell.classList.contains("is-weekend")).toBe(expected.isWeekend);
+          expect(cell.classList.contains("is-holiday")).toBe(expected.isHoliday);
+          expect(cell.classList.contains("is-today")).toBe(expected.isToday);
+        }
+      }
+    });
+
     it("marks weekend cells is-weekend on all three rows", async () => {
       const { view, container } = await openView([]);
       const wrap = wrapOf(container);
