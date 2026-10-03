@@ -714,12 +714,18 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 /* Independent Obsidian-native AI pane: header, scrollable log, anchored composer. */
 .vg-ai-chat { display: flex; flex-direction: column; padding: 0; height: 100%; min-width: 0; overflow: hidden; color: var(--text-normal); background: var(--background-primary); }
-.vg-ai-header { display: flex; align-items: center; gap: 6px; height: 40px; min-height: 40px; padding: 0 10px; border-bottom: 1px solid var(--background-modifier-border); position: relative; z-index: 3; }
-.vg-ai-header > strong { font-size: var(--font-ui-small); white-space: nowrap; }
+/* Beat the host view-content padding without !important or a 100% content-box overflow. */
+.workspace-leaf-content .view-content.vg-ai-chat { flex: 1 1 auto; height: auto; min-height: 0; padding: 0; margin-block-end: var(--status-bar-height, 26px); }
+.vg-ai-content { width: calc(100% - 32px); max-width: 760px; margin-inline: auto; }
+.vg-ai-header { height: 40px; min-height: 40px; border-bottom: 1px solid var(--background-modifier-border); position: relative; z-index: 3; }
+.vg-ai-header-content { display: flex; align-items: center; gap: 4px; height: 100%; }
+.vg-ai-header-content > strong { font-size: var(--font-ui-small); white-space: nowrap; }
 .vg-ai-status { flex: 1; min-width: 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vg-ai-header .vg-ai-icon, .vg-ai-menu > summary { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--text-normal); cursor: pointer; font-size: 18px; list-style: none; }
+.vg-ai-icon-button { display: flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--text-normal); cursor: pointer; list-style: none; }
+.vg-ai-icon-button svg { width: 16px; height: 16px; }
+.vg-ai-icon-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .vg-ai-menu > summary::-webkit-details-marker { display: none; }
-.vg-ai-menu > summary:hover, .vg-ai-header .vg-ai-icon:hover { background: var(--background-modifier-hover); }
+.vg-ai-icon-button:hover { background: var(--background-modifier-hover); }
 .vg-ai-menu > summary:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .vg-ai-popover { position: absolute; top: 38px; right: 8px; width: min(320px, calc(100% - 16px)); max-height: 65vh; overflow: auto; padding: 12px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 10px; box-shadow: var(--shadow-s); }
 .vg-ai-chat label { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; font-size: var(--font-ui-small); }
@@ -727,7 +733,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-popover p { font-size: var(--font-ui-small); color: var(--text-muted); }
 .vg-ai-history button { display: block; width: 100%; text-align: start; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
 .vg-ai-history button[aria-current="true"] { border-inline-start: 3px solid var(--interactive-accent); }
-.vg-ai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; overscroll-behavior: contain; }
+.vg-ai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; overscroll-behavior: contain; }
 .vg-ai-empty { margin: 36px auto; max-width: 540px; line-height: 1.6; color: var(--text-muted); }
 .vg-ai-empty strong { color: var(--text-normal); }
 .vg-ai-message { max-width: 760px; margin: 0 auto 18px; line-height: 1.6; font-size: var(--font-ui-medium); overflow-wrap: anywhere; }
@@ -747,20 +753,54 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-result-task > div { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-ai-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .vg-ai-actions button { font-size: var(--font-ui-small); }
-.vg-ai-composer { flex-shrink: 0; margin: 0 10px 10px; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-primary); }
+.vg-ai-composer { flex-shrink: 0; margin-block: 0 10px; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-primary); }
 .vg-ai-composer:focus-within { border-color: var(--interactive-accent); }
 .vg-ai-context { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border-radius: 6px; background: var(--background-secondary); color: var(--text-muted); font-size: 11px; }
 .vg-ai-composer textarea { display: block; min-height: 56px; max-height: 160px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 8px 0; line-height: 1.5; }
 .vg-ai-composer textarea:focus { box-shadow: none; }
-.vg-ai-composer-actions { display: flex; align-items: end; gap: 8px; }
-.vg-ai-composer-actions label { flex: 1; min-width: 0; margin: 0; color: var(--text-muted); font-size: 11px; }
-.vg-ai-composer-actions select { height: 28px; font-size: var(--font-ui-small); text-overflow: ellipsis; }
-.vg-ai-composer-actions button { flex-shrink: 0; height: 30px; font-size: var(--font-ui-small); }
+.vg-ai-context[hidden] { display: none; }
+.vg-ai-composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.vg-ai-model { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 150px; padding: 0 6px; border: 0; background: transparent; box-shadow: none; color: var(--text-muted); }
+.vg-ai-model-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vg-ai-model-chevron { display: flex; flex-shrink: 0; }
+.vg-ai-model-chevron svg { width: 16px; height: 16px; }
+.vg-ai-composer-actions button { height: 30px; font-size: var(--font-ui-small); }
+.vg-ai-send, .vg-ai-stop { flex-shrink: 0; }
 .vg-ai-composer-actions button[hidden] { display: none; }
-.vg-ai-composer-actions button:not(:disabled) { background: var(--interactive-accent); color: var(--text-on-accent); }
+.vg-ai-composer-actions .vg-ai-send:not(:disabled), .vg-ai-composer-actions .vg-ai-stop:not(:disabled) { background: var(--interactive-accent); color: var(--text-on-accent); }
 
 
-.vg-ai-ghost { position: absolute; height: 6px; border: 1px dashed var(--text-normal); color: var(--text-normal); background: var(--background-primary); font-size: 9px; line-height: 6px; pointer-events: auto; z-index: 1; }
-.vg-ai-target { outline: 2px double var(--text-normal); outline-offset: 2px; }
-.vg-ai-target-label { position: absolute; transform: translateY(-100%); color: var(--text-normal); background: var(--background-primary); font-size: 10px; pointer-events: none; z-index: 2; }
-.vg-ai-legend { font-size: var(--font-ui-small); color: var(--text-muted); }
+/* Ghosts share the existing 44px lane: 9px old band, 24px current bar. */
+.task-gantt-container .vg-ai-ghost { position: absolute; height: 9px; border: 1px dashed var(--text-muted); border-radius: 3px; color: var(--text-normal); background: var(--background-secondary); font-size: 10px; line-height: 9px; text-align: center; pointer-events: auto; z-index: 1; }
+.task-gantt-container .vg-ai-ghost::before, .task-gantt-container .vg-ai-ghost::after { position: absolute; top: -1px; width: 8px; font-size: 11px; line-height: 9px; color: var(--text-normal); }
+.task-gantt-container .vg-ai-ghost::before { content: "‹"; left: 0; }
+.task-gantt-container .vg-ai-ghost::after { content: "›"; right: 0; }
+.task-gantt-container .vg-ai-ghost.is-clipped-start::before { content: "◀"; }
+.task-gantt-container .vg-ai-ghost.is-clipped-end::after { content: "▶"; }
+.task-gantt-container .vg-ai-ghost.is-outside { border: 0; background: var(--background-primary); }
+.task-gantt-container .vg-ai-ghost.is-outside::before, .task-gantt-container .vg-ai-ghost.is-outside::after { content: none; }
+.task-gantt-container .vg-ai-target { transform: translateY(4px); }
+.task-gantt-container .vg-ai-target .task-gantt-resize-start::after, .task-gantt-container .vg-ai-target .task-gantt-resize-end::after { display: block; font-size: 10px; line-height: 24px; color: var(--text-on-accent); text-align: center; pointer-events: none; }
+.task-gantt-container .vg-ai-target .task-gantt-resize-start::after { content: "‹"; }
+.task-gantt-container .vg-ai-target .task-gantt-resize-end::after { content: "›"; }
+.task-gantt-container .vg-ai-target-label { position: absolute; height: 11px; color: var(--text-normal); background: var(--background-primary); font-size: 10px; line-height: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: auto; z-index: 2; }
+.task-gantt-container .vg-ai-target-label.is-compact { background: transparent; }
+.task-gantt-container .vg-ai-target-label[hidden] { display: none; }
+.task-gantt-container .vg-ai-legend { flex-shrink: 0; margin-inline-start: auto; font-size: 11px; color: var(--text-normal); white-space: nowrap; }
+.task-gantt-container .task-gantt-toolbar { flex-wrap: wrap; }
+.task-gantt-container .task-gantt-version-info { display: none; }
+.vg-ai-chat .vg-ai-result-status { display: block; font-size: 10px; color: var(--text-muted); }
+.vg-ai-chat .vg-ai-mini-timeline { margin-top: 6px; }
+.vg-ai-chat .vg-ai-mini-axis { display: flex; justify-content: space-between; padding-inline-start: 24px; font-size: 10px; color: var(--text-muted); }
+.vg-ai-chat .vg-ai-mini-delta { font-weight: 600; color: var(--text-normal); }
+.vg-ai-chat .vg-ai-mini-row { display: flex; align-items: center; gap: 8px; height: 18px; }
+.vg-ai-chat .vg-ai-mini-label { width: 16px; flex-shrink: 0; font-size: 10px; color: var(--text-muted); }
+.vg-ai-chat .vg-ai-mini-track { position: relative; flex: 1; height: 10px; min-width: 0; }
+.vg-ai-chat .vg-ai-mini-bar { position: absolute; height: 10px; border-radius: 3px; }
+.vg-ai-chat .vg-ai-mini-before .vg-ai-mini-bar { border: 1px dashed var(--text-muted); background: var(--background-primary); }
+.vg-ai-chat .vg-ai-mini-after .vg-ai-mini-bar { background: var(--interactive-accent); }
+.vg-ai-chat .vg-ai-mini-bar::before, .vg-ai-chat .vg-ai-mini-bar::after { position: absolute; top: -1px; font-size: 10px; line-height: 10px; }
+.vg-ai-chat .vg-ai-mini-bar::before { content: "‹"; left: 1px; }
+.vg-ai-chat .vg-ai-mini-bar::after { content: "›"; right: 1px; }
+.vg-ai-chat .vg-ai-mini-after .vg-ai-mini-bar::before, .vg-ai-chat .vg-ai-mini-after .vg-ai-mini-bar::after { color: var(--text-on-accent); }
+.vg-ai-chat .vg-ai-mini-unset { font-size: 10px; color: var(--text-muted); }

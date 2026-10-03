@@ -1367,7 +1367,8 @@ export class TaskGanttView extends ItemView {
     if (this.host.ghosts?.entries.size && !this.ghostLegend) {
       this.ghostLegend = document.createElement("span");
       this.ghostLegend.className = "vg-ai-legend";
-      this.ghostLegend.textContent = "AI変更: 前＝細い破線 ／ 変更後＝通常バー＋二重枠（60秒）";
+      this.ghostLegend.textContent = "AI変更 · 上: 前 ┄ ／ 下: 後 ▰ · 60秒";
+      this.ghostLegend.title = "変更前は上段の破線帯、変更後は下段の通常バー。矢印は期間の端、◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
       this.toolbarEl.appendChild(this.ghostLegend);
     }
 

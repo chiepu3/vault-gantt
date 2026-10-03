@@ -332,6 +332,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
       },
       openGantt: () => this.navigation.activateGanttView(),
       canUndo: (result) => !!result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel,
+      undoStatus: (result) => {
+        if (result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel) return "available";
+        return result.undoLabel && this.historyManager.peekRedoLabel() === result.undoLabel ? "undone" : "unavailable";
+      },
       undo: (result) => this.operations.coordinate(async () => {
         if (result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel) await this.performUndo();
         else new Notice("この変更は現在の履歴の先頭ではありません");
@@ -687,6 +691,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
       }
     }
     await Promise.all(renders);
+    // Read-only result badges follow the existing history refresh, too.
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_CHAT)) {
+      (leaf.view as AgentView | undefined)?.render?.();
+    }
   }
 
 

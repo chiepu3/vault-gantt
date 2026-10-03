@@ -23,6 +23,7 @@ describe("independent AgentView", () => {
     const root = reopened.containerEl as unknown as FakeEl;
     expect(findAll(root, (el) => el.textContent === "合成応答")).toHaveLength(1);
     expect(findAll(root, (el) => el.tagName.toLowerCase() === "textarea")[0].value).toBe("未送信");
+    expect((findAll(root, el => el.className === "vg-ai-context")[0] as any).hidden).toBe(true);
     const input = findAll(root, (el) => el.tagName.toLowerCase() === "textarea")[0];
     const event = { key: "z", ctrlKey: true, preventDefault: vi.fn() };
     for (const listener of input.listeners.keydown) listener(event);
@@ -41,14 +42,23 @@ describe("independent AgentView", () => {
     const root = view.containerEl as unknown as FakeEl;
     const button = (text: string) => findAll(root, (el) => el.tagName === "BUTTON" && el.textContent === text)[0] as any;
     expect(findAll(root, (el) => el.tagName === "HEADER")).toHaveLength(1);
-    expect(findAll(root, (el) => el.tagName === "SELECT")).toHaveLength(4); // Three connection fields and model; no duplicate conversation select.
+    expect(findAll(root, (el) => el.tagName === "SELECT")).toHaveLength(3); // Connection settings only; model uses Obsidian Menu.
     const model = findAll(root, (el) => el.getAttribute("aria-label") === "モデルを選択")[0];
-    expect(model.tagName).toBe("SELECT"); expect(model.value).toBe("synthetic");
+    expect(model.tagName).toBe("BUTTON"); expect(model.dataset.model).toBe("synthetic");
+    expect(model.getAttribute("aria-haspopup")).toBe("menu");
     session.configure({ ...session.config, model: "synthetic-2" }); view.render();
-    expect(model.children.map((el) => el.value)).toEqual(["synthetic", "synthetic-2"]);
-    model.value = "synthetic";
-    for (const listener of model.listeners.change) listener({});
-    expect(session.config.model).toBe("synthetic");
+    const event = { key: "ArrowDown", preventDefault: vi.fn() };
+    for (const listener of model.listeners.keydown) listener(event);
+    expect(event.preventDefault).toHaveBeenCalled(); expect(model.getAttribute("aria-expanded")).toBe("true");
+    const menuItems = findAll(document.body as unknown as FakeEl, el => el.classList.contains("menu-item"));
+    expect(menuItems.map(el => el.textContent)).toEqual(["synthetic", "synthetic-2"]);
+    expect(menuItems[1].getAttribute("aria-checked")).toBe("true");
+    for (const listener of menuItems[0].listeners.click) listener({});
+    expect(session.config.model).toBe("synthetic"); expect(model.getAttribute("aria-expanded")).toBe("false");
+    expect(findAll(root, el => el.classList.contains("vg-ai-icon-button"))).toHaveLength(3);
+    for (const control of findAll(root, el => el.classList.contains("vg-ai-icon-button"))) {
+      expect(control.getAttribute("aria-label")).toBeTruthy(); expect(control.title).toBeTruthy(); expect(control.children[0].tagName).toBe("SVG");
+    }
     expect(findAll(root, (el) => el.getAttribute("aria-label") === "新しい会話")).toHaveLength(1);
     expect(findAll(root, (el) => el.textContent.startsWith("選択中: 合成タスク"))).toHaveLength(1);
     expect(button("送信 ↑").hidden).toBe(false); expect(button("停止 ■").hidden).toBe(true);
@@ -71,6 +81,44 @@ describe("independent AgentView", () => {
     input.scrollHeight = 220; input.value = "複数行";
     for (const listener of input.listeners.input) listener({});
     expect(input.style.height).toBe("160px"); expect(session.active.draft).toBe("複数行");
+    await view.onClose(); session.dispose();
+  });
+  it("shows periods/delta and proposed, applied and undone states without changing proposals", async () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault(); const history = new HistoryManager();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: history, invalidate: () => undefined }, () => vault);
+    const session = new ChatSession(vault, registry, new FakeProvider());
+    const diff = { taskId: "synthetic", name: "デザイン確認", fields: [{ field: "plannedStartDate", before: "2026-10-01", after: "2026-10-04" }, { field: "notes", before: "旧", after: "新" }], schedule: { before: { start: "2026-10-01", end: "2026-10-03" }, after: { start: "2026-10-04", end: "2026-10-06" } } };
+    const proposal: any = { operation: "update", input: {}, consumed: false, plan: { previewId: "synthetic", operation: "update", summary: "合成", count: 1, diffs: [diff] } };
+    session.active.messages = [{ role: "assistant", text: "合成提案", proposals: [proposal] }];
+    let canUndo = false; let undone = false;
+    const undo = vi.fn(async () => { canUndo = false; undone = true; });
+    const view = new AgentView({} as any, { session, secretIds: () => [], openGantt: vi.fn(), undo, canUndo: () => canUndo, undoStatus: () => undone ? "undone" : "unavailable" });
+    await view.onOpen(); const root = view.containerEl as unknown as FakeEl;
+    const text = (value: string) => findAll(root, el => el.textContent === value);
+    const button = (value: string) => findAll(root, el => el.tagName === "BUTTON" && el.textContent === value)[0];
+    expect(text("変更案")).toHaveLength(1); expect(text("デザイン確認")).toHaveLength(1);
+    const timeline = findAll(root, el => el.className === "vg-ai-mini-timeline")[0];
+    expect(timeline.getAttribute("aria-label")).toContain("2026-10-01 ～ 2026-10-03");
+    expect(timeline.getAttribute("aria-label")).toContain("2026-10-04 ～ 2026-10-06");
+    expect(text("+3d")).toHaveLength(1); expect(text("メモ: 旧 → 新")).toHaveLength(1);
+    expect(findAll(root, el => el.className.includes("vg-ai-mini-row"))).toHaveLength(2);
+    expect(button("元に戻す")).toBeUndefined();
+    proposal.consumed = true;
+    proposal.result = { kind: "success", committed: 1, total: 1, results: [], message: "保存しました", diffs: [diff], undoLabel: "synthetic-top" };
+    const snapshot = structuredClone(proposal);
+    view.render(); expect(button("元に戻す").disabled).toBe(true);
+    expect(button("元に戻す").title).toContain("履歴の先頭ではない");
+    expect(text("適用済み")).toHaveLength(1); expect(text("保存しました")).toHaveLength(0);
+    canUndo = true; view.render(); expect(button("元に戻す").disabled).toBe(false);
+    // A concurrent top-history change must be rechecked even before a UI refresh.
+    canUndo = false; for (const listener of button("元に戻す").listeners.click) listener({});
+    expect(undo).not.toHaveBeenCalled(); expect(button("元に戻す").disabled).toBe(true);
+    canUndo = true; view.render();
+    for (const listener of button("元に戻す").listeners.click) listener({});
+    await Promise.resolve(); await Promise.resolve();
+    expect(undo).toHaveBeenCalledOnce(); expect(text("元に戻しました")).toHaveLength(1);
+    expect(button("元に戻す").disabled).toBe(true); expect(proposal).toEqual(snapshot);
     await view.onClose(); session.dispose();
   });
   it("renders a safe Markdown subset without HTML, images or links", () => {

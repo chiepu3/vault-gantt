@@ -82,6 +82,11 @@ export class App {
 
 
 
+export function setIcon(parent: HTMLElement, iconId: string): void {
+  const svg = document.createElement("svg"); svg.setAttribute("data-icon", iconId);
+  parent.replaceChildren(svg);
+}
+
 export class MenuItem {
   dom: any;
   submenu: Menu | undefined = undefined;
