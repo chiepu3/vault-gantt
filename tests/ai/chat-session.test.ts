@@ -4,6 +4,9 @@ import { OperationRegistry } from "../../src/app/operation-registry";
 import { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { FakeVault } from "../app/fake-vault";
+import { createTask } from "../../src/app/task-operations";
+import { buildFileRevision } from "../../src/core/utils";
+import type { TaskRow } from "../../src/core/types";
 import { FakeProvider } from "./fake-provider";
 const config: ConnectionConfig = { provider: "openai-compatible", endpoint: "http://localhost:1234/v1", model: "synthetic-a", auth: "none", secretId: "" };
 function setup(provider = new FakeProvider()) {
@@ -69,5 +72,56 @@ describe("vault-scoped chat session (deterministic fake, not real LLM)", () => {
     a.session.newConversation(); expect(a.session.active.messages).toHaveLength(0);
     a.session.select(first); expect(a.session.active.messages).toHaveLength(2);
     const b = setup(); expect(b.session.active.messages).toHaveLength(0); expect(b.session.scope).not.toBe(a.session.scope);
+  });
+});
+
+describe("chat review regressions", () => {
+  function deferred() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; }
+  async function tick() { for (let i = 0; i < 10; i++) await Promise.resolve(); }
+  it("an old aborted send cannot replace a newer send's running state or stop controller", async () => {
+    const first = deferred(); const second = deferred(); let requests = 0;
+    const provider = new FakeProvider(async function* () { const gate = ++requests === 1 ? first : second; yield { type: "text", text: "start" }; await gate.promise; yield { type: "text", text: "end" }; });
+    const a = setup(provider); a.session.configure(config);
+    const old = a.session.send("A"); await tick(); a.session.stop();
+    const current = a.session.send("B"); await tick(); first.resolve(); await old;
+    expect(a.session.active.status).toBe("running");
+    expect(provider.requests[1].signal.aborted).toBe(false);
+    a.session.stop(); expect(provider.requests[1].signal.aborted).toBe(true); second.resolve(); await current;
+  });
+  it("stale re-preview refreshes old revision guards and retains the failed result", async () => {
+    const a = setup(); const row = await createTask(a.vault, { ...DEFAULT_SETTINGS }, "Example");
+    const expectedRevision = buildFileRevision(a.vault.getFileByPath(row.id)! as TaskRow["file"]);
+    const input = { taskId: row.id, patch: { notes: "new" }, expectedRevision };
+    const plan = await a.registry.plan("update", input);
+    const session = new ChatSession(a.vault, a.registry, new FakeProvider(async function* () { yield { type: "plan", plan, operation: "update", input }; }));
+    session.configure(config); await session.send("change");
+    const proposal = session.active.messages[1].proposals[0];
+    const file = a.vault.getFileByPath(row.id)!; await a.vault.modify(file, (await a.vault.read(file)) + "\n");
+    await session.confirm(proposal); expect(proposal.result?.kind).toBe("stale");
+    await session.repreview(proposal);
+    expect(session.active.status).toBe("preview");
+    expect(session.active.messages[1].proposals).toHaveLength(2);
+    expect(proposal.result?.kind).toBe("stale");
+  });
+});
+
+describe("cancelled confirmation ownership", () => {
+  it("retains committed results without clobbering a later stream and carries the result forward", async () => {
+    const a = setup(); const plan = await a.registry.plan("create", { name: "Synthetic" });
+    let releaseCommit!: (result: import("../../src/app/operation-registry").OperationResult) => void;
+    const commitResult = new Promise<import("../../src/app/operation-registry").OperationResult>((resolve) => { releaseCommit = resolve; });
+    let releaseStream!: () => void; const gate = new Promise<void>((resolve) => { releaseStream = resolve; });
+    let calls = 0;
+    const provider = new FakeProvider(async function* () {
+      if (++calls === 1) yield { type: "plan", plan, operation: "create", input: { name: "Synthetic" } };
+      else { yield { type: "text", text: "new" }; await gate; yield { type: "text", text: " done" }; }
+    });
+    const session = new ChatSession(a.vault, a.registry, provider, a.changed); session.configure(config); await session.send("create");
+    vi.spyOn(a.registry, "commit").mockReturnValue(commitResult);
+    const proposal = session.active.messages[1].proposals[0]; const old = session.confirm(proposal); session.stop();
+    const next = session.send("B"); for (let i = 0; i < 10; i++) await Promise.resolve();
+    releaseCommit({ kind: "success", committed: 1, total: 1, results: [], diffs: plan.diffs, message: "synthetic saved" }); await old;
+    expect(session.active.status).toBe("running"); expect(proposal.result?.committed).toBe(1);
+    releaseStream(); await next; expect(session.active.context.at(-1)?.content).toContain("操作の実際の結果");
   });
 });

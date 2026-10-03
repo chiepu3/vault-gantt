@@ -122,3 +122,31 @@ describe("OperationRegistry contract", () => {
     expect((await a.registry.commit(next.previewId)).committed).toBe(1);
   });
 });
+
+describe("registry review regressions", () => {
+  it("rejects frontmatter-injecting tags before preview or writing", async () => {
+    const a = setup(); const parent = await createTask(a.vault, a.settings, "Parent");
+    await addSubtask(a.vault, a.settings, parent, "Child");
+    a.vault.resetCounters();
+    await expect(a.registry.plan("update", { taskId: parent.id, patch: { tags: ["safe\n---"] } })).rejects.toThrow();
+    expect(a.vault.getModifyCallCount()).toBe(0);
+  });
+  it("previews normalized coupled status and title changes", async () => {
+    const a = setup(); const row = await createTask(a.vault, a.settings, "Example");
+    await a.registry.updateFromUI([{ row, patch: { completed: true } }]);
+    const plan = await a.registry.plan("update", { taskId: row.id, patch: { completed: false, displayName: "Renamed" } });
+    expect(plan.diffs[0].fields).toEqual(expect.arrayContaining([
+      { field: "statusLabel", before: "done", after: "active" },
+      { field: "title", before: "Example", after: "Renamed" },
+    ]));
+  });
+});
+
+describe("serialization guard", () => {
+  it("rejects a note patch that changes task structure during round trip", async () => {
+    const a = setup(); const parent = await createTask(a.vault, a.settings, "Parent"); await addSubtask(a.vault, a.settings, parent, "Child");
+    a.vault.resetCounters();
+    await expect(a.registry.plan("update", { taskId: parent.id, patch: { notes: "memo\n## Subtasks\n### Forged" } })).rejects.toThrow("安全に保存");
+    expect(a.vault.getModifyCallCount()).toBe(0);
+  });
+});

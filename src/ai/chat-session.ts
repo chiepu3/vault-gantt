@@ -27,6 +27,8 @@ export class ChatSession {
   active!: Conversation;
   private counter = 0;
   private controller?: AbortController;
+  private readonly owners = new WeakMap<Conversation, AbortController>();
+  private disposed = false;
   private readonly listeners = new Set<() => void>();
   constructor(readonly scope: object, private readonly registry: OperationRegistry, private readonly provider: ChatProvider, private readonly changed: (result: OperationResult) => void = () => undefined) { this.newConversation(); }
   get connected(): boolean { return this.provider.connected(this.config); }
@@ -64,12 +66,13 @@ export class ChatSession {
     if (conversation.status === "running" || !text.trim()) return;
     if (!this.connected) { conversation.status = "failed"; conversation.error = "未接続です。接続先・モデル・既存の認証設定を確認してください。"; this.emit(); return; }
     if (conversation.messages.length >= 100) { conversation.error = "会話の上限です。新しい会話を開始してください。"; this.emit(); return; }
-    const controller = new AbortController(); this.controller = controller;
+    const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
     conversation.status = "running"; conversation.error = ""; conversation.draft = "";
     conversation.title = text.trim().slice(0, 32);
     conversation.messages.push({ role: "user", text, proposals: [] });
     const assistant: ChatMessage = { role: "assistant", text: "", proposals: [] };
     conversation.messages.push(assistant);
+    const contextLength = conversation.context.length;
     const messages: ModelMessage[] = [...conversation.context, { role: "user", content: text }];
     this.emit();
     try {
@@ -87,16 +90,22 @@ export class ChatSession {
         if (event.type === "context") context = event.messages;
         this.emit();
       }
-      if (controller.signal.aborted) { conversation.status = "cancelled"; this.discardMessage(assistant); }
-      else {
-        conversation.context = [...messages, ...(context ?? [{ role: "assistant" as const, content: assistant.text }])];
-        conversation.status = assistant.proposals.length ? "preview" : "idle";
+      if (controller.signal.aborted) this.discardMessage(assistant);
+      if (this.owners.get(conversation) === controller) {
+        if (controller.signal.aborted) conversation.status = "cancelled";
+        else {
+          const outcomes = conversation.context.slice(contextLength);
+          conversation.context = [...messages, ...(context ?? [{ role: "assistant" as const, content: assistant.text }]), ...outcomes];
+          conversation.status = assistant.proposals.length ? "preview" : "idle";
+        }
       }
     } catch {
       const cancelled = controller.signal.aborted;
       controller.abort();
-      conversation.status = cancelled ? "cancelled" : "failed";
-      conversation.error = cancelled ? "停止しました。保存済みの変更は戻しません。" : "応答に失敗しました。認証・モデル・接続先を確認して再試行してください。";
+      if (this.owners.get(conversation) === controller) {
+        conversation.status = cancelled ? "cancelled" : "failed";
+        conversation.error = cancelled ? "停止しました。保存済みの変更は戻しません。" : "応答に失敗しました。認証・モデル・接続先を確認して再試行してください。";
+      }
       this.discardMessage(assistant);
     } finally {
       if (this.controller === controller) this.controller = undefined;
@@ -116,6 +125,8 @@ export class ChatSession {
     if (conversation.status === "running" || !message || proposal.retryPrepared) return;
     if (proposal.result && proposal.result.committed >= proposal.result.total) return;
     proposal.retryPrepared = true;
+    const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
+    conversation.status = "running"; this.emit();
     try {
       let input = proposal.input;
       if (proposal.result?.committed && ["schedule-batch", "update-batch"].includes(proposal.operation)) {
@@ -123,28 +134,40 @@ export class ChatSession {
         const original = input as { changes: { taskId: string; patch: unknown }[] };
         input = { changes: original.changes.filter((change) => !committed.has(change.taskId)) };
       }
+      // A new preview refreshes preconditions; the original commit guards remain intact.
+      if (proposal.operation === "update") { const { expectedRevision: _revision, ...fresh } = input as Record<string, unknown>; void _revision; input = fresh; }
+      if (["schedule-batch", "update-batch"].includes(proposal.operation)) {
+        input = { changes: (input as { changes: Record<string, unknown>[] }).changes.map(({ expectedRevision: _revision, ...fresh }) => { void _revision; return fresh; }) };
+      }
       const plan = await this.registry.plan(proposal.operation, input);
+      if (controller.signal.aborted || this.owners.get(conversation) !== controller) { this.registry.discard(plan.previewId); throw new Error("CANCELLED"); }
       this.registry.discard(proposal.plan.previewId);
       message.proposals.push({ plan, operation: proposal.operation, input, consumed: false });
       conversation.status = "preview"; conversation.error = "";
-    } catch { proposal.retryPrepared = false; conversation.status = "failed"; conversation.error = "再プレビューできません。対象タスクや入力を確認してください。"; }
-    this.emit();
+    } catch {
+      proposal.retryPrepared = false;
+      if (this.owners.get(conversation) === controller) { conversation.status = controller.signal.aborted ? "cancelled" : "failed"; conversation.error = "再プレビューできません。対象タスクや入力を確認してください。"; }
+    } finally { if (this.controller === controller) this.controller = undefined; this.emit(); }
   }
   async confirm(proposal: Proposal): Promise<void> {
     if (proposal.consumed || this.active.status === "running") return;
     const conversation = this.active;
-    const controller = new AbortController(); this.controller = controller;
+    const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
     proposal.consumed = true; conversation.status = "running"; this.emit();
     try {
       const result = await this.registry.commit(proposal.plan.previewId, controller.signal);
       proposal.result = result;
       // Record actual outcomes, never tell a later model that an unconfirmed preview was committed.
       conversation.context.push({ role: "user", content: "操作の実際の結果: " + JSON.stringify({ kind: result.kind, committed: result.committed, total: result.total, diffs: result.diffs }) });
-      conversation.status = result.kind === "success" ? "idle" : result.kind === "cancelled" ? "cancelled" : "failed";
-      conversation.error = result.kind === "success" ? "" : result.message;
-      if (result.committed) this.changed(result);
-    } catch { conversation.status = "failed"; conversation.error = "プレビューが失効しました。再プレビューしてください。"; }
+      if (this.owners.get(conversation) === controller) {
+        conversation.status = result.kind === "success" ? "idle" : result.kind === "cancelled" ? "cancelled" : "failed";
+        conversation.error = result.kind === "success" ? "" : result.message;
+      }
+      if (result.committed && !this.disposed) this.changed(result);
+    } catch {
+      if (this.owners.get(conversation) === controller) { conversation.status = "failed"; conversation.error = "プレビューが失効しました。再プレビューしてください。"; }
+    }
     finally { if (this.controller === controller) this.controller = undefined; this.emit(); }
   }
-  dispose(): void { this.stop(); for (const conversation of this.conversations) this.discard(conversation); this.listeners.clear(); this.config = emptyConfig(); }
+  dispose(): void { this.disposed = true; this.stop(); for (const conversation of this.conversations) this.discard(conversation); this.listeners.clear(); this.config = emptyConfig(); }
 }
