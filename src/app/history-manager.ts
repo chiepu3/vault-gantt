@@ -26,6 +26,10 @@ interface PreparedFileChange {
   target: string;
 }
 
+type PendingMutation =
+  | { kind: "clear" }
+  | { kind: "push"; entry: HistoryEntry };
+
 /**
  * In-memory undo/redo history for coordinated Markdown file changes.
  *
@@ -37,6 +41,9 @@ export class HistoryManager {
   private readonly redoStack: HistoryEntry[] = [];
   private readonly maxEntries = 50;
   private readonly maxTotalBytes = 12 * 1024 * 1024;
+  private operationTail: Promise<void> = Promise.resolve();
+  private operationDepth = 0;
+  private readonly pendingMutations: PendingMutation[] = [];
 
   /**
  * Records a completed action and invalidates any redo actions from the old
@@ -49,13 +56,27 @@ export class HistoryManager {
  * corruption that would only surface much later as a wrong-content undo.
  */
   push(entry: HistoryEntry): void {
+    const files = entry.files.filter((file) => file.before !== file.after);
+    if (files.length === 0) {
+      return;
+    }
+
     const clonedEntry: HistoryEntry = {
       label: entry.label,
-      files: entry.files.map((file) => ({ ...file })),
+      files: files.map((file) => ({ ...file })),
     };
 
+    if (this.operationDepth > 0) {
+      this.pendingMutations.push({ kind: "push", entry: clonedEntry });
+      return;
+    }
+
+    this.pushEntry(clonedEntry);
+  }
+
+  private pushEntry(entry: HistoryEntry): void {
     this.redoStack.length = 0;
-    this.undoStack.push(clonedEntry);
+    this.undoStack.push(entry);
 
     while (this.undoStack.length > this.maxEntries) {
       this.undoStack.shift();
@@ -75,6 +96,15 @@ export class HistoryManager {
  * unrecorded disk changes would otherwise make later undo/redo unsafe.
  */
   clear(): void {
+    if (this.operationDepth > 0) {
+      this.pendingMutations.push({ kind: "clear" });
+      return;
+    }
+
+    this.clearNow();
+  }
+
+  private clearNow(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
   }
@@ -95,42 +125,88 @@ export class HistoryManager {
     return this.redoStack[this.redoStack.length - 1]?.label;
   }
 
-  async undo(vault: Vault): Promise<HistoryOpResult> {
-    if (this.undoStack.length === 0) {
-      return { kind: "empty" };
-    }
+  undo(vault: Vault): Promise<HistoryOpResult> {
+    return this.serialize(async () => {
+      if (this.undoStack.length === 0) {
+        return { kind: "empty" };
+      }
 
-    const entry = this.undoStack[this.undoStack.length - 1];
-    const result = await this.applyDirectional(
-      vault,
-      entry,
-      "after",
-      "before"
-    );
-    if (result.kind === "success") {
-      this.undoStack.pop();
-      this.redoStack.push(entry);
-    }
-    return result;
+      const entry = this.undoStack[this.undoStack.length - 1];
+      const result = await this.applyDirectional(
+        vault,
+        entry,
+        "after",
+        "before"
+      );
+      if (result.kind === "success") {
+        this.undoStack.pop();
+        this.redoStack.push(entry);
+      }
+      return result;
+    });
   }
 
-  async redo(vault: Vault): Promise<HistoryOpResult> {
-    if (this.redoStack.length === 0) {
-      return { kind: "empty" };
-    }
+  redo(vault: Vault): Promise<HistoryOpResult> {
+    return this.serialize(async () => {
+      if (this.redoStack.length === 0) {
+        return { kind: "empty" };
+      }
 
-    const entry = this.redoStack[this.redoStack.length - 1];
-    const result = await this.applyDirectional(
-      vault,
-      entry,
-      "before",
-      "after"
+      const entry = this.redoStack[this.redoStack.length - 1];
+      const result = await this.applyDirectional(
+        vault,
+        entry,
+        "before",
+        "after"
+      );
+      if (result.kind === "success") {
+        this.redoStack.pop();
+        this.undoStack.push(entry);
+      }
+      return result;
+    });
+  }
+
+  /**
+   * Obsidian UI buttons can be clicked again while a Vault operation is still
+   * pending. Keep undo/redo transitions in invocation order so two requests
+   * cannot preflight the same content and then race their writes.
+   */
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    this.operationDepth += 1;
+    const run = this.operationTail.then(
+      async () => {
+        try {
+          return await operation();
+        } finally {
+          this.finishOperation();
+        }
+      },
+      async () => {
+        try {
+          return await operation();
+        } finally {
+          this.finishOperation();
+        }
+      }
     );
-    if (result.kind === "success") {
-      this.redoStack.pop();
-      this.undoStack.push(entry);
+    this.operationTail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private finishOperation(): void {
+    this.operationDepth -= 1;
+    const pendingMutations = this.pendingMutations.splice(0);
+    for (const mutation of pendingMutations) {
+      if (mutation.kind === "clear") {
+        this.clearNow();
+      } else {
+        this.pushEntry(mutation.entry);
+      }
     }
-    return result;
   }
 
   private getUndoStackBytes(): number {

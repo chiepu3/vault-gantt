@@ -12,6 +12,25 @@ import {
 import { FakeVault } from "./fake-vault";
 import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
+import { HistoryManager } from "../../src/app/history-manager";
+
+class FailingBatchVault extends FakeVault {
+  private modifyAttempts = 0;
+  private readonly failingAttempt: number;
+
+  constructor(failingAttempt: number) {
+    super();
+    this.failingAttempt = failingAttempt;
+  }
+
+  override async modify(file: { path: string }, content: string): Promise<void> {
+    this.modifyAttempts += 1;
+    if (this.modifyAttempts === this.failingAttempt) {
+      throw new Error(`simulated batch failure: ${file.path}`);
+    }
+    await super.modify(file, content);
+  }
+}
 
 describe("Task Operations - Integration Tests", () => {
   let vault: FakeVault;
@@ -522,6 +541,38 @@ describe("Task Operations - Integration Tests", () => {
       expect(result.revisionAfter).toBeDefined();
       expect(result.changedFields).toBeDefined();
       expect(Array.isArray(result.changedFields)).toBe(true);
+    });
+
+    it("clears history when a multi-file batch fails after a partial write", async () => {
+      vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
+      const batchVault = new FailingBatchVault(2);
+      const first = await createTask(batchVault, settings, "First");
+      const second = await createTask(batchVault, settings, "Second");
+      const historyManager = new HistoryManager();
+      historyManager.push({
+        label: "先行編集",
+        files: [{ path: first.file.path, before: "before", after: "after" }],
+      });
+
+      await expect(
+        updateTaskItemsBatch(
+          batchVault,
+          settings,
+          cache,
+          [
+            { row: first, patch: { displayName: "First changed" } },
+            { row: second, patch: { displayName: "Second changed" } },
+          ],
+          {},
+          historyManager
+        )
+      ).rejects.toThrow("simulated batch failure");
+
+      expect(historyManager.canUndo()).toBe(false);
+      expect(historyManager.canRedo()).toBe(false);
+      expect(batchVault.getFileContent(first.file.path)).toContain("First changed");
+      expect(batchVault.getFileContent(second.file.path)).toContain("Second");
+      expect(batchVault.getFileContent(second.file.path)).not.toContain("Second changed");
     });
   });
 
