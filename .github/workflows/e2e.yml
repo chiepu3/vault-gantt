@@ -45,3 +45,13 @@ jobs:
           name: e2e-failure-screenshots
           path: tools/e2e/artifacts/*.png
           if-no-files-found: ignore
+
+      # Harness-owned Xvfb/Obsidian stdout+stderr logs only (no user data,
+      # env or vault content).
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-logs
+          path: tools/e2e/cache/logs/
+          if-no-files-found: ignore

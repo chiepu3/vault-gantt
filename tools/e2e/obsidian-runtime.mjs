@@ -31,6 +31,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatStartupDiagnostics, trackExit } from "./diagnostics.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -245,6 +246,7 @@ export async function startXvfb() {
     { detached: true, stdio: ["ignore", out, out] }
   );
   fs.closeSync(out);
+  const xvfbExit = trackExit(proc);
 
   // A spawn failure (e.g. ENOENT if the Xvfb binary isn't installed, or
   // EACCES) fires an async 'error' event; with no listener attached, Node
@@ -274,8 +276,11 @@ export async function startXvfb() {
       spawnError,
     ]);
   } catch (err) {
+    const diagnostics = formatStartupDiagnostics([
+      { name: "xvfb", pid: xvfbExit.pid, state: xvfbExit.state(), logFile },
+    ]);
     kill();
-    throw new Error(`${err.message} (log: ${logFile})`);
+    throw new Error(`${err.message} (log: ${logFile})\n${diagnostics}`);
   }
 
   return {
@@ -284,6 +289,7 @@ export async function startXvfb() {
     port: 6000 + displayNum,
     process: proc,
     logFile,
+    exit: xvfbExit,
     kill,
   };
 }
@@ -546,6 +552,7 @@ export async function startObsidian({ vaultDir, obsidianBin, display }) {
     }
   );
   fs.closeSync(out);
+  const obsidianExit = trackExit(proc);
 
   // Same rationale as startXvfb: a spawn failure (e.g. ENOENT/EACCES on
   // the extracted binary) fires an async 'error' event that crashes the
@@ -608,8 +615,14 @@ export async function startObsidian({ vaultDir, obsidianBin, display }) {
       )
       .catch(() => {});
   } catch (err) {
+    const diagnostics = formatStartupDiagnostics([
+      { name: "obsidian", pid: obsidianExit.pid, state: obsidianExit.state(), logFile },
+      ...(xvfb.logFile
+        ? [{ name: "xvfb", pid: xvfb.exit?.pid, state: xvfb.exit.state(), logFile: xvfb.logFile }]
+        : []),
+    ]);
     kill();
-    throw new Error(`${err.message} (obsidian log: ${logFile})`);
+    throw new Error(`${err.message} (obsidian log: ${logFile})\n${diagnostics}`);
   }
 
   registerSignalHandlersOnce();
