@@ -44,7 +44,6 @@ import {
   deleteSubtaskTaskItem,
   loadTasks,
   updateTaskItem,
-  updateTaskItemsBatch,
 } from "./app/task-operations";
 import { AutoPriorityController, TaskCache } from "./app/auto-priority";
 import {
@@ -54,6 +53,7 @@ import {
 } from "./app/holiday-service";
 import { TaskFileService, modalPrompt } from "./app/task-file-service";
 import { HistoryManager } from "./app/history-manager";
+import { OperationRegistry } from "./app/operation-registry";
 import { NavigationService as ObsidianNavigationService } from "./app/navigation-service";
 import { ToolAdapter } from "./agent-tools/tool-adapter";
 import { TaskWorkbenchSettingTab } from "./ui/settings-tab";
@@ -176,6 +176,10 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     await this.app.vault.modify(this.requireTFile(file.path), content);
   }
 
+  async process(file: VaultFile, transform: (content: string) => string): Promise<string> {
+    return this.app.vault.process(this.requireTFile(file.path), transform);
+  }
+
   async read(file: VaultFile): Promise<string> {
     return this.app.vault.read(this.requireTFile(file.path));
   }
@@ -246,6 +250,15 @@ export default class TaskWorkbenchPlugin extends Plugin {
   readonly autoPriority = new AutoPriorityController();
   readonly taskCache: TaskCache = new Map();
   readonly historyManager = new HistoryManager();
+  private createOperations(): OperationRegistry {
+    const settings = () => this.settings;
+    return new OperationRegistry({
+    get settings() { return settings(); },
+    historyManager: this.historyManager,
+    invalidate: async () => { this.taskCache.clear(); await this.refreshOpenViews(); },
+    }, () => this.vaultAdapter());
+  }
+  readonly operations = this.createOperations();
 
 
   // aggregate (loadDailyTodoSummaries) plus the write-side functions
@@ -563,7 +576,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }
   }
 
-  async undoLastAction(): Promise<void> {
+  undoLastAction(): Promise<void> {
+    return this.operations.coordinate(() => this.performUndo());
+  }
+
+  private async performUndo(): Promise<void> {
     const result = await this.historyManager.undo(this.app.vault);
     switch (result.kind) {
       case "empty":
@@ -584,7 +601,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }
   }
 
-  async redoLastAction(): Promise<void> {
+  redoLastAction(): Promise<void> {
+    return this.operations.coordinate(() => this.performRedo());
+  }
+
+  private async performRedo(): Promise<void> {
     const result = await this.historyManager.redo(this.app.vault);
     switch (result.kind) {
       case "empty":
@@ -1191,12 +1212,21 @@ export default class TaskWorkbenchPlugin extends Plugin {
   /**
  * delegates to the interactive wizard.
  */
+  private async createViaRegistry(name: string): Promise<TaskRow> {
+    const plan = await this.operations.plan("create", { name });
+    const result = await this.operations.commit(plan.previewId);
+    if (!result.created) throw new Error(result.message);
+    return result.created;
+  }
+
   private async runCreateTaskCommand(): Promise<void> {
     await this.taskFiles.createTaskInteractively(
       this.app,
       this.vaultAdapter(),
       this.settings,
-      this.promptInput.bind(this)
+      this.promptInput.bind(this),
+      undefined,
+      (name) => this.createViaRegistry(name)
     );
   }
 
@@ -1350,14 +1380,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       getDisplayRows: (tasks: TaskRow[], opts: DisplayRowsOptions) =>
         getDisplayRows(tasks, opts),
       updateTaskItem: (row: TaskRow, patch: TaskPatch) =>
-        updateTaskItem(
-          this.vaultAdapter(),
-          this.settings,
-          this.taskCache,
-          { row, patch },
-          undefined,
-          this.historyManager
-        ),
+        this.operations.updateFromUI([{ row, patch }]).then((results) => results[0]),
       openTaskItem: async (row: TaskRow): Promise<void> => {
         await this.navigation.openTaskItem?.(row);
       },
@@ -1370,7 +1393,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
           this.vaultAdapter(),
           this.settings,
           this.promptInput.bind(this),
-          onCreated
+          onCreated,
+          (name) => this.createViaRegistry(name)
         );
       },
       activateGanttView: async (): Promise<void> => {
@@ -1431,14 +1455,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       // single drag/edit save, same path as the Workbench's
       // own updateTaskItem wrapper above.
       updateTaskItem: (row: TaskRow, patch: TaskPatch) =>
-        updateTaskItem(
-          this.vaultAdapter(),
-          this.settings,
-          this.taskCache,
-          { row, patch },
-          undefined,
-          this.historyManager
-        ),
+        this.operations.updateFromUI([{ row, patch }]).then((results) => results[0]),
       // the popover's 「ノートを開く」 — identical
       // one-line wrapper to workbenchViewHost's openTaskItem above.
       openTaskItem: async (row: TaskRow): Promise<void> => {
@@ -1446,14 +1463,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       },
       // Bulk-Move's single batch save.
       updateTaskItemsBatch: (commands: TaskUpdateCommand[]) =>
-        updateTaskItemsBatch(
-          this.vaultAdapter(),
-          this.settings,
-          this.taskCache,
-          commands,
-          undefined,
-          this.historyManager
-        ),
+        this.operations.updateFromUI(commands),
       // workload-actual shift warning.
       confirmWorkloadShift: (message: string): Promise<boolean> =>
         confirmDragWorkloadShift(this.app, message),

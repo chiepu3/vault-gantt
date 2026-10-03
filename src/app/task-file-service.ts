@@ -30,7 +30,8 @@ export class TaskFileService {
     vault: VaultAdapter,
     settings: TaskWorkbenchSettings,
     promptFn: PromptFn,
-    onCreated?: (task: TaskRow) => void
+    onCreated?: (task: TaskRow) => void,
+    create?: (name: string) => Promise<TaskRow>
   ): Promise<TaskRow | null> {
     // the modal "stays open" on empty or whitespace-only
     // input — modeled as a re-prompt loop until valid input or cancellation
@@ -46,7 +47,7 @@ export class TaskFileService {
     }
 
     // create and save the new managed task note
-    const task = await createTask(vault, settings, name);
+    const task = create ? await create(name) : await createTask(vault, settings, name);
 
     // display a notification
     new Notice(`タスクを作成しました: ${task.displayName}`);
