@@ -463,10 +463,21 @@ export async function updateTaskItemsBatch(
         });
       }
     }
-  } finally {
-    if (appliedChanges.length > 0 && historyManager) {
-      historyManager.push({ label: "タスク更新", files: appliedChanges });
+  } catch (error) {
+    // A batch may span multiple parent files. If a later file fails, earlier
+    // files may already be written but the requested operation did not finish
+    // as one unit. Do not expose that partial mutation as an undo entry: the
+    // next undo could otherwise silently cross an incomplete operation. The
+    // history barrier is safer than attempting to overwrite a file that may
+    // have changed externally while the failing batch was unwinding.
+    if (appliedChanges.length > 0) {
+      historyManager?.clear();
     }
+    throw error;
+  }
+
+  if (appliedChanges.length > 0 && historyManager) {
+    historyManager.push({ label: "タスク更新", files: appliedChanges });
   }
 
   return results;

@@ -113,6 +113,19 @@ describe("HistoryManager", () => {
     expect(manager.canRedo()).toBe(false);
   });
 
+  it("does not record no-op changes or discard redo for them", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+
+    manager.push(makeEntry("編集"));
+    await manager.undo(vault.asVault());
+    manager.push(makeEntry("同値更新", [makeChange("task.md", "before", "before")]));
+
+    expect(manager.peekRedoLabel()).toBe("編集");
+    expect(manager.canUndo()).toBe(false);
+  });
+
   it("evicts the oldest entries after exceeding the 50-entry cap", async () => {
     const manager = new HistoryManager();
     const vault = new ProcessFakeVault();
@@ -355,5 +368,51 @@ describe("HistoryManager", () => {
     expect(result).toEqual({ kind: "empty" });
     expect(manager.peekUndoLabel()).toBe("新しい編集");
     expect(manager.peekRedoLabel()).toBeUndefined();
+  });
+
+  it("serializes consecutive undo requests", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+    manager.push(makeEntry("編集"));
+
+    const firstUndo = manager.undo(vault.asVault());
+    const secondUndo = manager.undo(vault.asVault());
+
+    await expect(firstUndo).resolves.toEqual({ kind: "success", label: "編集" });
+    await expect(secondUndo).resolves.toEqual({ kind: "empty" });
+    expect(vault.getContent("task.md")).toBe("before");
+    expect(manager.peekRedoLabel()).toBe("編集");
+  });
+
+  it("defers a new push until an in-flight undo finishes", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("first.md", "first-after");
+    vault.seed("second.md", "second-after");
+    manager.push(makeEntry("最初の編集", [makeChange("first.md", "first-before", "first-after")]));
+
+    const undo = manager.undo(vault.asVault());
+    manager.push(makeEntry("新しい編集", [makeChange("second.md", "second-before", "second-after")]));
+
+    await expect(undo).resolves.toEqual({ kind: "success", label: "最初の編集" });
+    expect(vault.getContent("first.md")).toBe("first-before");
+    expect(manager.peekUndoLabel()).toBe("新しい編集");
+    expect(manager.peekRedoLabel()).toBeUndefined();
+  });
+
+  it("applies a clear requested during undo after the disk transition", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+    manager.push(makeEntry("編集"));
+
+    const undo = manager.undo(vault.asVault());
+    manager.clear();
+
+    await expect(undo).resolves.toEqual({ kind: "success", label: "編集" });
+    expect(vault.getContent("task.md")).toBe("before");
+    expect(manager.canUndo()).toBe(false);
+    expect(manager.canRedo()).toBe(false);
   });
 });
