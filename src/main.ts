@@ -325,6 +325,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
       session: this.chatSession,
       closeDiff: () => this.scheduleGhosts.clear(),
       secretIds: () => this.app.secretStorage?.listSecrets() ?? [],
+      selectedTask: () => {
+        const file = this.app.workspace.getActiveFile();
+        const folder = this.settings.taskFolder.replace(/\/+$/, "");
+        return file && file.path.startsWith(folder + "/") && file.extension === "md" ? file.basename : undefined;
+      },
       openGantt: () => this.navigation.activateGanttView(),
       canUndo: (result) => !!result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel,
       undo: (result) => this.operations.coordinate(async () => {

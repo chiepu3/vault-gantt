@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { AgentView, diffText } from "../../src/ui/agent-view";
+import { AgentView, diffText, renderChatText } from "../../src/ui/agent-view";
 import { ChatSession } from "../../src/ai/chat-session";
 import { OperationRegistry } from "../../src/app/operation-registry";
 import { HistoryManager } from "../../src/app/history-manager";
@@ -28,6 +28,60 @@ describe("independent AgentView", () => {
     for (const listener of input.listeners.keydown) listener(event);
     expect(event.preventDefault).not.toHaveBeenCalled();
     await reopened.onClose(); session.dispose();
+  });
+  it("keeps history/settings behind menus and composer actions mutually exclusive", async () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const session = new ChatSession(vault, registry, new FakeProvider());
+    session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
+    const undo = vi.fn();
+    const view = new AgentView({} as any, { session, secretIds: () => [], selectedTask: () => "合成タスク", openGantt: vi.fn(), undo, canUndo: () => true });
+    await view.onOpen();
+    const root = view.containerEl as unknown as FakeEl;
+    const button = (text: string) => findAll(root, (el) => el.tagName === "BUTTON" && el.textContent === text)[0] as any;
+    expect(findAll(root, (el) => el.tagName === "HEADER")).toHaveLength(1);
+    expect(findAll(root, (el) => el.tagName === "SELECT")).toHaveLength(4); // Three connection fields and model; no duplicate conversation select.
+    const model = findAll(root, (el) => el.getAttribute("aria-label") === "モデルを選択")[0];
+    expect(model.tagName).toBe("SELECT"); expect(model.value).toBe("synthetic");
+    session.configure({ ...session.config, model: "synthetic-2" }); view.render();
+    expect(model.children.map((el) => el.value)).toEqual(["synthetic", "synthetic-2"]);
+    model.value = "synthetic";
+    for (const listener of model.listeners.change) listener({});
+    expect(session.config.model).toBe("synthetic");
+    expect(findAll(root, (el) => el.getAttribute("aria-label") === "新しい会話")).toHaveLength(1);
+    expect(findAll(root, (el) => el.textContent.startsWith("選択中: 合成タスク"))).toHaveLength(1);
+    expect(button("送信 ↑").hidden).toBe(false); expect(button("停止 ■").hidden).toBe(true);
+    expect(button("応答を再試行")).toBeUndefined();
+    session.active.messages = [{ role: "assistant", text: "**確認**しました", proposals: [] }];
+    session.active.status = "running"; view.render();
+    expect(button("送信 ↑").hidden).toBe(true); expect(button("停止 ■").hidden).toBe(false);
+    session.active.status = "failed"; session.active.error = "合成エラー"; view.render();
+    expect(button("応答を再試行").parentNode.className).toBe("vg-ai-message vg-ai-assistant");
+    session.active.status = "idle";
+    const result = { kind: "success" as const, committed: 1, total: 1, results: [], message: "合成保存", diffs: [{ taskId: "fake", name: "合成タスク", fields: [{ field: "notes", before: "旧", after: "新" }] }] };
+    session.active.messages[0].proposals = [{ operation: "update", input: {}, consumed: true, plan: { previewId: "fake", operation: "update", summary: "合成", count: 1, diffs: result.diffs }, result }];
+    session.active.context = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "fake", toolName: "search", output: { type: "text", value: "not rendered" } }] }];
+    view.render();
+    expect(findAll(root, (el) => el.textContent === "タスク検索")).toHaveLength(1);
+    expect(findAll(root, (el) => el.textContent === "メモ: 旧 → 新")).toHaveLength(1);
+    for (const listener of button("元に戻す").listeners.click) listener({});
+    expect(undo).toHaveBeenCalledWith(result);
+    const input = findAll(root, (el) => el.tagName === "TEXTAREA")[0];
+    input.scrollHeight = 220; input.value = "複数行";
+    for (const listener of input.listeners.input) listener({});
+    expect(input.style.height).toBe("160px"); expect(session.active.draft).toBe("複数行");
+    await view.onClose(); session.dispose();
+  });
+  it("renders a safe Markdown subset without HTML, images or links", () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const root = document.createElement("div");
+    renderChatText(root, '**強調**と`コード`\n- 箇条書き\n<img src=x onerror=alert(1)> [リンク](javascript:alert(1))');
+    const fake = root as unknown as FakeEl;
+    expect(findAll(fake, (el) => el.tagName === "STRONG" && el.textContent === "強調")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.tagName === "CODE" && el.textContent === "コード")).toHaveLength(1);
+    expect(findAll(fake, (el) => ["IMG", "A", "SCRIPT"].includes(el.tagName))).toHaveLength(0);
+    expect(findAll(fake, (el) => el.textContent.includes("<img"))).toHaveLength(1);
   });
   it("diff text conveys old/new dates and non-date changes without relying on color", () => {
     expect(diffText([{ taskId: "synthetic", name: "作業", fields: [{ field: "plannedStartDate", before: "2026-10-01", after: "2026-10-03" }, { field: "notes", before: "旧", after: "新" }] }])).toBe("作業\n開始日: 2026-10-01 → 2026-10-03\nメモ: 旧 → 新");

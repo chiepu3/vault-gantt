@@ -712,19 +712,52 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
  * ========================================================================== */
 
 
-/* Independent Obsidian-native AI pane. */
-.vg-ai-chat { display: flex; flex-direction: column; gap: 8px; padding: 12px; height: 100%; overflow: auto; }
-.vg-ai-chat h3 { margin: 0; }
+/* Independent Obsidian-native AI pane: header, scrollable log, anchored composer. */
+.vg-ai-chat { display: flex; flex-direction: column; padding: 0; height: 100%; min-width: 0; overflow: hidden; color: var(--text-normal); background: var(--background-primary); }
+.vg-ai-header { display: flex; align-items: center; gap: 6px; height: 40px; min-height: 40px; padding: 0 10px; border-bottom: 1px solid var(--background-modifier-border); position: relative; z-index: 3; }
+.vg-ai-header > strong { font-size: var(--font-ui-small); white-space: nowrap; }
+.vg-ai-status { flex: 1; min-width: 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vg-ai-header .vg-ai-icon, .vg-ai-menu > summary { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--text-normal); cursor: pointer; font-size: 18px; list-style: none; }
+.vg-ai-menu > summary::-webkit-details-marker { display: none; }
+.vg-ai-menu > summary:hover, .vg-ai-header .vg-ai-icon:hover { background: var(--background-modifier-hover); }
+.vg-ai-menu > summary:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.vg-ai-popover { position: absolute; top: 38px; right: 8px; width: min(320px, calc(100% - 16px)); max-height: 65vh; overflow: auto; padding: 12px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 10px; box-shadow: var(--shadow-s); }
 .vg-ai-chat label { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; font-size: var(--font-ui-small); }
 .vg-ai-chat input, .vg-ai-chat textarea, .vg-ai-chat select { width: 100%; min-width: 0; }
-.vg-ai-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; }
-.vg-ai-status { font-size: var(--font-ui-small); color: var(--text-muted); }
-.vg-ai-messages { flex: 1; min-height: 80px; overflow-y: auto; }
-.vg-ai-message { margin: 8px 0; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 6px; }
-.vg-ai-user { background: var(--background-secondary); }
-.vg-ai-message p, .vg-ai-diff pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.vg-ai-diff { border-inline-start: 2px dashed var(--text-accent); padding: 8px; margin-top: 8px; }
-.vg-ai-diff button { margin: 4px; }
+.vg-ai-popover p { font-size: var(--font-ui-small); color: var(--text-muted); }
+.vg-ai-history button { display: block; width: 100%; text-align: start; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+.vg-ai-history button[aria-current="true"] { border-inline-start: 3px solid var(--interactive-accent); }
+.vg-ai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; overscroll-behavior: contain; }
+.vg-ai-empty { margin: 36px auto; max-width: 540px; line-height: 1.6; color: var(--text-muted); }
+.vg-ai-empty strong { color: var(--text-normal); }
+.vg-ai-message { max-width: 760px; margin: 0 auto 18px; line-height: 1.6; font-size: var(--font-ui-medium); overflow-wrap: anywhere; }
+.vg-ai-message > strong { display: block; font-size: var(--font-ui-small); margin-bottom: 6px; color: var(--text-muted); }
+.vg-ai-user { padding: 10px 12px; border-radius: 12px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); }
+.vg-ai-assistant { padding: 0 2px; }
+.vg-ai-message-body p { margin: 0 0 6px; white-space: pre-wrap; }
+.vg-ai-message-body code { padding: 1px 4px; border-radius: 4px; background: var(--background-secondary); color: var(--text-normal); }
+.vg-ai-tools { font-size: var(--font-ui-small); color: var(--text-muted); margin-top: 10px; }
+.vg-ai-tools summary { cursor: pointer; }
+.vg-ai-tools > div { padding: 4px 12px; }
+.vg-ai-error { color: var(--text-error); }
+.vg-ai-diff { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 10px; margin-top: 10px; background: var(--background-secondary); }
+.vg-ai-diff > strong { font-size: var(--font-ui-small); }
+.vg-ai-diff p { font-size: var(--font-ui-small); margin: 8px 0; }
+.vg-ai-result-task { padding: 8px 0; font-size: var(--font-ui-small); border-bottom: 1px solid var(--background-modifier-border); }
+.vg-ai-result-task > div { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vg-ai-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.vg-ai-actions button { font-size: var(--font-ui-small); }
+.vg-ai-composer { flex-shrink: 0; margin: 0 10px 10px; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-primary); }
+.vg-ai-composer:focus-within { border-color: var(--interactive-accent); }
+.vg-ai-context { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border-radius: 6px; background: var(--background-secondary); color: var(--text-muted); font-size: 11px; }
+.vg-ai-composer textarea { display: block; min-height: 56px; max-height: 160px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 8px 0; line-height: 1.5; }
+.vg-ai-composer textarea:focus { box-shadow: none; }
+.vg-ai-composer-actions { display: flex; align-items: end; gap: 8px; }
+.vg-ai-composer-actions label { flex: 1; min-width: 0; margin: 0; color: var(--text-muted); font-size: 11px; }
+.vg-ai-composer-actions select { height: 28px; font-size: var(--font-ui-small); text-overflow: ellipsis; }
+.vg-ai-composer-actions button { flex-shrink: 0; height: 30px; font-size: var(--font-ui-small); }
+.vg-ai-composer-actions button[hidden] { display: none; }
+.vg-ai-composer-actions button:not(:disabled) { background: var(--interactive-accent); color: var(--text-on-accent); }
 
 
 .vg-ai-ghost { position: absolute; height: 6px; border: 1px dashed var(--text-normal); color: var(--text-normal); background: var(--background-primary); font-size: 9px; line-height: 6px; pointer-events: auto; z-index: 1; }
