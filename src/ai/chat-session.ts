@@ -15,7 +15,7 @@ export interface ChatProvider {
   stream(request: ChatRequest): AsyncIterable<ChatEvent>;
 }
 export type ChatStatus = "idle" | "running" | "preview" | "failed" | "cancelled";
-export interface Proposal { plan: OperationPlan; operation: OperationName; input: unknown; result?: OperationResult; consumed: boolean }
+export interface Proposal { plan: OperationPlan; operation: OperationName; input: unknown; result?: OperationResult; consumed: boolean; retryPrepared?: boolean }
 export interface ChatMessage { role: "user" | "assistant"; text: string; proposals: Proposal[] }
 export interface Conversation { id: string; title: string; messages: ChatMessage[]; context: ModelMessage[]; status: ChatStatus; error: string; draft: string }
 const emptyConfig = (): ConnectionConfig => ({ provider: "disconnected", endpoint: "", model: "", auth: "secret", secretId: "" });
@@ -111,13 +111,23 @@ export class ChatSession {
     if (last) await this.send(last.text);
   }
   async repreview(proposal: Proposal): Promise<void> {
-    if (this.active.status === "running") return;
+    const conversation = this.active;
+    const message = conversation.messages.find((item) => item.proposals.includes(proposal));
+    if (conversation.status === "running" || !message || proposal.retryPrepared) return;
+    if (proposal.result && proposal.result.committed >= proposal.result.total) return;
+    proposal.retryPrepared = true;
     try {
-      const plan = await this.registry.plan(proposal.operation, proposal.input);
+      let input = proposal.input;
+      if (proposal.result?.committed && ["schedule-batch", "update-batch"].includes(proposal.operation)) {
+        const committed = new Set(proposal.result.diffs.map((diff) => diff.taskId));
+        const original = input as { changes: { taskId: string; patch: unknown }[] };
+        input = { changes: original.changes.filter((change) => !committed.has(change.taskId)) };
+      }
+      const plan = await this.registry.plan(proposal.operation, input);
       this.registry.discard(proposal.plan.previewId);
-      proposal.plan = plan; proposal.consumed = false; proposal.result = undefined;
-      this.active.status = "preview"; this.active.error = "";
-    } catch { this.active.status = "failed"; this.active.error = "再プレビューできません。対象タスクや入力を確認してください。"; }
+      message.proposals.push({ plan, operation: proposal.operation, input, consumed: false });
+      conversation.status = "preview"; conversation.error = "";
+    } catch { proposal.retryPrepared = false; conversation.status = "failed"; conversation.error = "再プレビューできません。対象タスクや入力を確認してください。"; }
     this.emit();
   }
   async confirm(proposal: Proposal): Promise<void> {

@@ -78,7 +78,8 @@ export class TaskFileService {
     settings: TaskWorkbenchSettings,
     parentRow: TaskRow,
     promptFn: PromptFn,
-    onCreated?: (task: TaskRow) => void
+    onCreated?: (task: TaskRow) => void,
+    create?: (name: string, parent: TaskRow) => Promise<TaskRow>
   ): Promise<TaskRow | null> {
     let name: string | null;
     for (;;) {
@@ -91,7 +92,7 @@ export class TaskFileService {
       }
     }
 
-    const subtask = await addSubtask(vault, settings, parentRow, name);
+    const subtask = create ? await create(name, parentRow) : await addSubtask(vault, settings, parentRow, name);
     new Notice(`サブタスクを追加しました: ${subtask.displayName}`);
     await this.openInEditor(app, parentRow.file.path);
 
@@ -114,7 +115,8 @@ export class TaskFileService {
     vault: VaultAdapter,
     settings: TaskWorkbenchSettings,
     currentFilePath: string,
-    promptFn: PromptFn
+    promptFn: PromptFn,
+    create?: (name: string, parent: TaskRow) => Promise<TaskRow>
   ): Promise<TaskRow | null> {
     void app; // reserved for future post-write navigation
 
@@ -147,7 +149,7 @@ export class TaskFileService {
     }
 
     // addSubtask writes the subtask into the file and re-parses
-    const subtask = await addSubtask(vault, settings, parent, name);
+    const subtask = create ? await create(name, parent) : await addSubtask(vault, settings, parent, name);
     new Notice(`サブタスクを追加しました: ${subtask.displayName}`);
     return subtask;
   }

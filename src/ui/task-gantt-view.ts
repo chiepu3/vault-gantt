@@ -1,3 +1,5 @@
+import type { ScheduleGhostStore } from "../app/schedule-ghost";
+import { renderGhost } from "./ghost-layer";
 import { ItemView, Menu, Notice, moment } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
 
@@ -241,6 +243,7 @@ function getPrimaryGanttTagDefinition(
 
 
 export interface TaskGanttViewHost {
+  ghosts?: ScheduleGhostStore;
 
   logger: Logger;
 
@@ -891,6 +894,9 @@ export class TaskGanttView extends ItemView {
   // --- DOM references ---
 
   private toolbarEl!: HTMLElement;
+  private unsubscribeGhosts?: () => void;
+  private readonly ghostNodes = new Map<string, { nodes: HTMLElement[]; current?: HTMLElement }>();
+  private ghostLegend?: HTMLElement;
   /** The scrollable element. */
   private wrapEl!: HTMLElement;
   /** Always-visible current-month label, kept in the toolbar so it survives
@@ -1250,6 +1256,10 @@ export class TaskGanttView extends ItemView {
     this.dragTooltipEl = dragTooltipEl;
 
 
+    this.unsubscribeGhosts = this.host.ghosts?.subscribe((event) => {
+      if (event === "show") this.renderChart();
+      else this.clearGhostLayer();
+    });
     await this.render();
 
     // defer the initial scroll to the next animation frame so the
@@ -1272,6 +1282,9 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    this.unsubscribeGhosts?.(); this.unsubscribeGhosts = undefined;
+    this.host.ghosts?.clear();
+    this.clearGhostLayer();
     this.activeContextMenu?.hide();
     this.activeContextMenu = undefined;
 
@@ -1289,6 +1302,14 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadDaySummaryPopover();
     this.closeDailyTodoPopover();
     return Promise.resolve();
+  }
+
+  private clearGhostLayer(): void {
+    for (const [taskId, { nodes, current }] of this.ghostNodes) {
+      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      nodes.forEach((node) => node.remove()); current?.classList.remove("vg-ai-target");
+    }
+    this.ghostNodes.clear(); this.ghostLegend?.remove(); this.ghostLegend = undefined;
   }
 
   /** Opens a context menu after closing any prior menu and its native children. */
@@ -1343,6 +1364,12 @@ export class TaskGanttView extends ItemView {
  */
   renderChart(): void {
     this.dateClassesCache.clear();
+    if (this.host.ghosts?.entries.size && !this.ghostLegend) {
+      this.ghostLegend = document.createElement("span");
+      this.ghostLegend.className = "vg-ai-legend";
+      this.ghostLegend.textContent = "AI変更: 前＝細い破線 ／ 変更後＝通常バー＋二重枠（60秒）";
+      this.toolbarEl.appendChild(this.ghostLegend);
+    }
 
     // a chart rebuild detaches the current chip, so do not leave
     // its body-anchored detail popover orphaned behind.
@@ -1460,7 +1487,7 @@ export class TaskGanttView extends ItemView {
       const rowEl = this.renderParentRow(parent, dates);
       rowFragment.appendChild(rowEl);
       rowEls.set(parent.file.path, rowEl);
-      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent));
+      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? ""));
     }
     this.wrapEl.appendChild(rowFragment);
 
@@ -1563,7 +1590,7 @@ export class TaskGanttView extends ItemView {
       }
 
 
-      const fingerprint = computeRowFingerprint(parent);
+      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "");
       if (
         oldEl !== undefined &&
         cache.rowFingerprints.get(path) === fingerprint
@@ -3814,6 +3841,14 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(bg);
     });
 
+    const renderedIds = new Set(renders.map((item) => item.bar.task.id));
+    for (const subtask of parent.subtasks?.values() ?? []) {
+      const ghost = this.host.ghosts?.entries.get(subtask.id);
+      if (ghost && !renderedIds.has(subtask.id)) {
+        this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX) });
+      }
+    }
     // Bars, their markers and their external labels.
     for (const render of renders) {
       const { bar, labelledBar, left, width, labelText, needsLabel } = render;
@@ -3882,6 +3917,11 @@ export class TaskGanttView extends ItemView {
       resizeEnd.classList.add("task-gantt-resize-end");
       barEl.appendChild(resizeEnd);
       timeline.appendChild(barEl);
+      const ghost = this.host.ghosts?.entries.get(bar.task.id);
+      if (ghost) {
+        this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl), current: barEl });
+      }
       // Keep a keyed lookup for Bulk-Move previews and drag-state styling.
       this.barElsByTaskId.set(bar.task.id, barEl);
 

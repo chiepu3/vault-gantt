@@ -37,7 +37,7 @@ export const OPERATION_MANIFEST = {
 } as const;
 export type OperationName = keyof typeof OPERATION_MANIFEST;
 export interface FieldDiff { field: string; before: unknown; after: unknown }
-export interface TaskDiff { taskId: string; name: string; fields: FieldDiff[] }
+export interface TaskDiff { taskId: string; name: string; fields: FieldDiff[]; schedule?: { before: { start: string; end: string }; after: { start: string; end: string } } }
 export interface OperationPlan { previewId: string; operation: OperationName; summary: string; diffs: TaskDiff[]; count: number }
 export interface OperationResult { kind: "success" | "partial" | "failed" | "cancelled" | "stale"; committed: number; total: number; diffs: TaskDiff[]; results: TaskUpdateResult[]; message: string; created?: TaskRow; undoLabel?: string }
 interface PendingPlan { public: OperationPlan; changes: TaskUpdateCommand[]; contents: Map<string, string>; create?: { name: string; parent?: TaskRow; path?: string }; expires: number }
@@ -106,13 +106,14 @@ export class OperationRegistry {
         const parent = parseTaskFile({ path: file.path }, content, this.host.settings)!;
         row = row.kind === "parent" ? parent : [...parent.subtasks!.values()].find((item) => item.id === row!.id);
         if (!row) throw new Error("Task not found");
+        const rowBefore = structuredClone(row);
         const previous = structuredClone(taskData(row));
         applyPatchToParent(parent, arg.patch as TaskPatch, row.id, this.host.settings);
         const after = row.kind === "parent" ? parent : [...parent.subtasks!.values()].find((item) => item.id === row.id)!;
         if (after.plannedStartDate && after.plannedEndDate && after.plannedStartDate > after.plannedEndDate) throw new Error("開始日は終了日以前にしてください");
         const fields = Object.keys(arg.patch).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: previous[key] ?? "", after: taskData(after)[key] ?? "" }));
-        diffs.push({ taskId: row.id, name: row.displayName, fields });
-        changes.push({ row, patch: arg.patch as TaskPatch });
+        diffs.push({ taskId: row.id, name: row.displayName, fields, schedule: { before: { start: String(previous.plannedStartDate ?? ""), end: String(previous.plannedEndDate ?? "") }, after: { start: after.plannedStartDate ?? "", end: after.plannedEndDate ?? "" } } });
+        changes.push({ row: rowBefore, patch: arg.patch as TaskPatch });
       }
     }
     this.prune();

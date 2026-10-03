@@ -725,3 +725,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-message p, .vg-ai-diff pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-ai-diff { border-inline-start: 2px dashed var(--text-accent); padding: 8px; margin-top: 8px; }
 .vg-ai-diff button { margin: 4px; }
+
+
+.vg-ai-ghost { position: absolute; height: 6px; border: 1px dashed var(--text-normal); color: var(--text-normal); background: var(--background-primary); font-size: 9px; line-height: 6px; pointer-events: auto; z-index: 1; }
+.vg-ai-target { outline: 2px double var(--text-normal); outline-offset: 2px; }
+.vg-ai-target-label { position: absolute; transform: translateY(-100%); color: var(--text-normal); background: var(--background-primary); font-size: 10px; pointer-events: none; z-index: 2; }
+.vg-ai-legend { font-size: var(--font-ui-small); color: var(--text-muted); }

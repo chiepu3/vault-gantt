@@ -7,6 +7,7 @@ export const VIEW_TYPE_AI_CHAT = "vault-gantt-ai-chat";
 export interface AgentViewHost {
   session: ChatSession;
   secretIds(): string[];
+  closeDiff?(): void;
   openGantt(): Promise<void> | void;
   undo(result: OperationResult): Promise<void> | void;
   canUndo(result: OperationResult): boolean;
@@ -68,7 +69,7 @@ export class AgentView extends ItemView {
     });
     this.render();
   }
-  async onClose(): Promise<void> { this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  async onClose(): Promise<void> { this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
   render(): void {
     if (!this.messagesEl) return;
     const session = this.host.session; const conversation = session.active;
@@ -95,7 +96,7 @@ export class AgentView extends ItemView {
     this.element(item, "pre").textContent = diffText(proposal.result?.diffs ?? proposal.plan.diffs);
     if (proposal.result) this.element(item, "p").textContent = proposal.result.message;
     if (!proposal.consumed) this.button(item, "確認して実行", () => { void this.host.session.confirm(proposal); }).disabled = running;
-    if (proposal.consumed && proposal.result?.kind !== "success") this.button(item, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
+    if (proposal.consumed && !proposal.retryPrepared && proposal.result?.kind !== "success" && (!proposal.result || proposal.result.committed < proposal.result.total)) this.button(item, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
     if (proposal.result?.committed) {
       this.button(item, "Ganttを開く", () => { void this.host.openGantt(); });
       this.button(item, "元に戻す", () => { void this.host.undo(proposal.result!); }).disabled = !this.host.canUndo(proposal.result);

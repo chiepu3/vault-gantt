@@ -241,7 +241,7 @@ export async function startXvfb() {
     // 1920x1080 (16:9 FHD) so screenshots match a standard monitor aspect
     // ratio; must be >= the --window-size passed to Obsidian below or the
     // window gets clipped against the virtual screen bounds.
-    [`:${displayNum}`, "-screen", "0", "1920x1080x24", "-listen", "tcp", "-ac"],
+    [`:${displayNum}`, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
     { detached: true, stdio: ["ignore", out, out] }
   );
   fs.closeSync(out);
@@ -267,7 +267,7 @@ export async function startXvfb() {
 
   try {
     await Promise.race([
-      pollUntil(() => isPortListening(6000 + displayNum), {
+      pollUntil(() => fs.existsSync(`/tmp/.X11-unix/X${displayNum}`), {
         timeoutMs: 10000,
         label: `Xvfb :${displayNum} TCP port ${6000 + displayNum}`,
       }),
@@ -279,7 +279,7 @@ export async function startXvfb() {
   }
 
   return {
-    display: `127.0.0.1:${displayNum}`,
+    display: `:${displayNum}`,
     displayNum,
     port: 6000 + displayNum,
     process: proc,
@@ -494,7 +494,7 @@ function registerSignalHandlersOnce() {
  * kill tears down Obsidian (process group), the Xvfb it started AND
  * removes the temporary user-data-dir (best-effort).
  */
-export async function startObsidian({ vaultDir, obsidianBin }) {
+export async function startObsidian({ vaultDir, obsidianBin, display }) {
   const binary = obsidianBin ?? (await ensureObsidianBinary());
 
   // Fresh profile per run — never reuse ~/.config/obsidian (the real user
@@ -519,7 +519,7 @@ export async function startObsidian({ vaultDir, obsidianBin }) {
     )
   );
 
-  const xvfb = await startXvfb();
+  const xvfb = display ? { display, kill: () => undefined } : await startXvfb();
   const cdpPort = await findFreePort(9400, 9799);
 
   const logFile = path.join(logDir(), `obsidian-${Date.now()}.log`);
@@ -529,7 +529,6 @@ export async function startObsidian({ vaultDir, obsidianBin }) {
     [
       `--user-data-dir=${userDataDir}`,
       `--remote-debugging-port=${cdpPort}`,
-      "--no-sandbox",
       "--disable-gpu",
       // NOTE: the standard Chromium `--window-size`/`--window-position`
       // flags are silently ignored here — Obsidian's Electron main process
