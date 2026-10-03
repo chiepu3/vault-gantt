@@ -54,6 +54,9 @@ import {
 import { TaskFileService, modalPrompt } from "./app/task-file-service";
 import { HistoryManager } from "./app/history-manager";
 import { OperationRegistry } from "./app/operation-registry";
+import { ChatSession } from "./ai/chat-session";
+import { SdkChatProvider } from "./ai/sdk-provider";
+import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
 import { NavigationService as ObsidianNavigationService } from "./app/navigation-service";
 import { ToolAdapter } from "./agent-tools/tool-adapter";
 import { TaskWorkbenchSettingTab } from "./ui/settings-tab";
@@ -259,6 +262,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }, () => this.vaultAdapter());
   }
   readonly operations = this.createOperations();
+  chatSession!: ChatSession;
 
 
   // aggregate (loadDailyTodoSummaries) plus the write-side functions
@@ -314,6 +318,19 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     // settings load failures propagate — plugin load fails
     await this.loadSettings();
+
+    this.chatSession = new ChatSession(this.app.vault, this.operations, new SdkChatProvider(this.operations, (id) => this.app.secretStorage?.getSecret(id) ?? null));
+    this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
+      session: this.chatSession,
+      secretIds: () => this.app.secretStorage?.listSecrets() ?? [],
+      openGantt: () => this.navigation.activateGanttView(),
+      canUndo: (result) => !!result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel,
+      undo: (result) => this.operations.coordinate(async () => {
+        if (result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel) await this.performUndo();
+        else new Notice("この変更は現在の履歴の先頭ではありません");
+      }),
+    }));
+
 
     this.holidays = this.createHolidayService();
 
@@ -384,6 +401,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
     );
 
     this.registerCommands();
+    for (const [position, label] of [["tab", "タブ"], ["left", "左サイドバー"], ["right", "右サイドバー"]] as const) {
+      this.addCommand({ id: "open-ai-chat-" + position, name: "AI チャットを開く（" + label + "）", callback: () => this.openAIChat(position) });
+    }
     this.registerRibbonIcons();
 
 
@@ -426,7 +446,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
   }
 
+  async openAIChat(position: "tab" | "left" | "right" = "tab"): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_CHAT)[0];
+    const leaf = existing ?? (position === "left" ? this.app.workspace.getLeftLeaf(false) : position === "right" ? this.app.workspace.getRightLeaf(false) : this.app.workspace.getLeaf("tab"));
+    if (!leaf) return;
+    if (!existing) await leaf.setViewState({ type: VIEW_TYPE_AI_CHAT, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
   onunload(): void {
+    this.chatSession?.dispose();
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_CHAT);
     // stop the Gantt sync timer; with a null handle
     // clearInterval is not called. Global clearInterval is used instead of
     // window.clearInterval — identical in the Obsidian renderer where

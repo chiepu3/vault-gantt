@@ -39,7 +39,7 @@ export type OperationName = keyof typeof OPERATION_MANIFEST;
 export interface FieldDiff { field: string; before: unknown; after: unknown }
 export interface TaskDiff { taskId: string; name: string; fields: FieldDiff[] }
 export interface OperationPlan { previewId: string; operation: OperationName; summary: string; diffs: TaskDiff[]; count: number }
-export interface OperationResult { kind: "success" | "partial" | "failed" | "cancelled" | "stale"; committed: number; total: number; diffs: TaskDiff[]; results: TaskUpdateResult[]; message: string; created?: TaskRow }
+export interface OperationResult { kind: "success" | "partial" | "failed" | "cancelled" | "stale"; committed: number; total: number; diffs: TaskDiff[]; results: TaskUpdateResult[]; message: string; created?: TaskRow; undoLabel?: string }
 interface PendingPlan { public: OperationPlan; changes: TaskUpdateCommand[]; contents: Map<string, string>; create?: { name: string; parent?: TaskRow; path?: string }; expires: number }
 export interface RegistryHost { readonly settings: TaskWorkbenchSettings; readonly historyManager: HistoryManager; invalidate(): Promise<void> | void }
 export function taskData(row: TaskRow): Record<string, unknown> {
@@ -78,9 +78,14 @@ export class OperationRegistry {
     const diffs: TaskDiff[] = [];
     if (name === "create") {
       const args = parsed as { name: string; parentTaskId?: string };
-      const parent = args.parentTaskId ? await this.get(args.parentTaskId) : undefined;
+      let parent = args.parentTaskId ? await this.get(args.parentTaskId) : undefined;
       if (parent && parent.kind !== "parent") throw new Error("Not a parent task");
-      if (parent) contents.set(parent.file.path, await vault.read(vault.getFileByPath(parent.file.path)!));
+      if (parent) {
+        const content = await vault.read(vault.getFileByPath(parent.file.path)!);
+        contents.set(parent.file.path, content);
+        parent = parseTaskFile({ path: parent.file.path }, content, this.host.settings) ?? undefined;
+        if (!parent) throw new Error("Task not found");
+      }
       const path = parent ? undefined : getAvailableTaskPath(vault, this.host.settings, args.name, todayStr());
       creation = { name: args.name, parent, path };
       diffs.push({ taskId: parent?.id ?? path!, name: args.name, fields: [{ field: "create", before: null, after: args.name }] });
@@ -92,17 +97,20 @@ export class OperationRegistry {
       for (const arg of args) {
         if (seen.has(arg.taskId)) throw new Error("Duplicate task in plan");
         seen.add(arg.taskId);
-        const row = rows.get(arg.taskId);
+        let row = rows.get(arg.taskId);
         if (!row) throw new Error(`Task not found: ${arg.taskId}`);
         const file = vault.getFileByPath(row.file.path)!;
         if (arg.expectedRevision && arg.expectedRevision !== buildFileRevision(file as TaskRow["file"])) throw new Error("REVISION_CONFLICT");
         const content = contents.get(file.path) ?? await vault.read(file);
         contents.set(file.path, content);
         const parent = parseTaskFile({ path: file.path }, content, this.host.settings)!;
+        row = row.kind === "parent" ? parent : [...parent.subtasks!.values()].find((item) => item.id === row!.id);
+        if (!row) throw new Error("Task not found");
+        const previous = structuredClone(taskData(row));
         applyPatchToParent(parent, arg.patch as TaskPatch, row.id, this.host.settings);
         const after = row.kind === "parent" ? parent : [...parent.subtasks!.values()].find((item) => item.id === row.id)!;
         if (after.plannedStartDate && after.plannedEndDate && after.plannedStartDate > after.plannedEndDate) throw new Error("開始日は終了日以前にしてください");
-        const fields = Object.keys(arg.patch).filter((key) => JSON.stringify(taskData(row)[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: taskData(row)[key] ?? "", after: taskData(after)[key] ?? "" }));
+        const fields = Object.keys(arg.patch).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: previous[key] ?? "", after: taskData(after)[key] ?? "" }));
         diffs.push({ taskId: row.id, name: row.displayName, fields });
         changes.push({ row, patch: arg.patch as TaskPatch });
       }
@@ -134,7 +142,13 @@ export class OperationRegistry {
     const result: OperationResult = { kind: "success", committed: 0, total: plan.public.count, diffs: [], results: [], message: "変更を保存しました" };
     const history: HistoryFileChange[] = [];
     const guardedVault: VaultAdapter = {
-      create: (path, content) => vault.create(path, content),
+      create: async (path, content) => {
+        if (signal?.aborted) throw new Error("CANCELLED");
+        const file = await vault.create(path, content);
+        result.committed = 1; result.diffs = plan.public.diffs;
+        this.host.historyManager.clear();
+        return file;
+      },
       read: (file) => vault.read(file),
       getFiles: () => vault.getFiles(),
       getFileByPath: (path) => vault.getFileByPath(path),
@@ -148,11 +162,14 @@ export class OperationRegistry {
         if (vault.process) await vault.process(file, guard);
         else { guard(await vault.read(file)); await vault.modify(file, content); }
         history.push({ path: file.path, before, after: content });
+        const commands = plan.changes.filter((change) => change.row.file.path === file.path);
+        result.committed += plan.create ? 1 : commands.length;
+        result.diffs.push(...plan.public.diffs.filter((diff) => plan.create || commands.some((command) => command.row.id === diff.taskId)));
       },
     };
     try {
       if (plan.expires < Date.now()) throw new Error("REVISION_CONFLICT");
-      if (signal?.aborted) { result.kind = "cancelled"; return result; }
+      if (signal?.aborted) { result.kind = "cancelled"; result.message = "停止しました。保存済みの変更は戻しません。"; return result; }
       // Preflight the complete plan, not just its first file.
       for (const [path, content] of plan.contents) {
         const file = vault.getFileByPath(path);
@@ -162,10 +179,7 @@ export class OperationRegistry {
         if (signal?.aborted) { result.kind = "cancelled"; return result; }
         const { name, parent, path } = plan.create;
         if (path && getAvailableTaskPath(vault, this.host.settings, name, todayStr()) !== path) throw new Error("REVISION_CONFLICT");
-        result.created = parent ? await addSubtask(guardedVault, this.host.settings, parent, name) : await createTask(vault, this.host.settings, name);
-        this.host.historyManager.clear(); // New files are not representable by the existing history format.
-        result.committed = 1;
-        result.diffs = plan.public.diffs;
+        result.created = parent ? await addSubtask(guardedVault, this.host.settings, parent, name) : await createTask(guardedVault, this.host.settings, name);
       } else {
         const paths = new Set(plan.changes.map((change) => change.row.file.path));
         for (const path of paths) {
@@ -175,15 +189,16 @@ export class OperationRegistry {
           if (signal?.aborted) { result.kind = "cancelled"; break; }
           const commands = plan.changes.filter((change) => change.row.file.path === path);
           result.results.push(...await updateTaskItemsBatch(guardedVault, this.host.settings, new Map(), commands));
-          result.committed += commands.length;
-          result.diffs.push(...plan.public.diffs.filter((diff) => commands.some((command) => command.row.id === diff.taskId)));
         }
       }
     } catch (error) {
       result.kind = error instanceof Error && error.message === "CANCELLED" ? "cancelled" : result.committed ? "partial" : (error instanceof Error && error.message === "REVISION_CONFLICT" ? "stale" : "failed");
       result.message = result.kind === "stale" ? "元データが変わりました。再試行で再プレビューしてください。" : "保存に失敗しました。保存済みの変更は残ります。再試行は再プレビューが必要です。";
     } finally {
-      if (history.length) this.host.historyManager.push({ label: "AI/UI タスク変更", files: history });
+      if (history.length) {
+        result.undoLabel = "タスク変更 " + plan.public.previewId;
+        this.host.historyManager.push({ label: result.undoLabel, files: history });
+      }
       if (result.committed) {
         try { await this.host.invalidate(); }
         catch { result.message += " 表示の更新に失敗しました。ビューを再度開いてください。"; }

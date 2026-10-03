@@ -1,8 +1,3 @@
-
-
-
-
-
 .task-workbench-container *, .task-gantt-container * { box-sizing: border-box; }
 
 
@@ -715,3 +710,18 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
  *   Local (separate stacking context, excluded from the chain):
  *   Workbench thead th=1, header-left=1.
  * ========================================================================== */
+
+
+/* Independent Obsidian-native AI pane. */
+.vg-ai-chat { display: flex; flex-direction: column; gap: 8px; padding: 12px; height: 100%; overflow: auto; }
+.vg-ai-chat h3 { margin: 0; }
+.vg-ai-chat label { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; font-size: var(--font-ui-small); }
+.vg-ai-chat input, .vg-ai-chat textarea, .vg-ai-chat select { width: 100%; min-width: 0; }
+.vg-ai-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; }
+.vg-ai-status { font-size: var(--font-ui-small); color: var(--text-muted); }
+.vg-ai-messages { flex: 1; min-height: 80px; overflow-y: auto; }
+.vg-ai-message { margin: 8px 0; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 6px; }
+.vg-ai-user { background: var(--background-secondary); }
+.vg-ai-message p, .vg-ai-diff pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vg-ai-diff { border-inline-start: 2px dashed var(--text-accent); padding: 8px; margin-top: 8px; }
+.vg-ai-diff button { margin: 4px; }
