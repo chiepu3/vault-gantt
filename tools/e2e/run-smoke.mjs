@@ -27,6 +27,7 @@ import * as dragResize from "./scenarios/drag-resize.mjs";
 import * as popoverAndInlineEdit from "./scenarios/popover-and-inline-edit.mjs";
 import * as workbenchEditing from "./scenarios/workbench-editing.mjs";
 import * as weeklyScheduleAndEventWorkload from "./scenarios/weekly-schedule-and-event-workload.mjs";
+import * as workloadPopupLayout from "./scenarios/workload-popup-layout.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TMP_ROOT = path.join(REPO_ROOT, "tools", "e2e", "tmp");
@@ -93,6 +94,12 @@ async function main() {
 
       prepare: (vaultDir) => weeklyScheduleAndEventWorkload.prepare(vaultDir),
       run: ({ cdp, vaultDir }) => weeklyScheduleAndEventWorkload.run({ cdp, vaultDir }),
+    },
+    {
+      name: "workload-popup-layout",
+
+      prepare: (vaultDir) => workloadPopupLayout.prepare(vaultDir),
+      run: ({ cdp, vaultDir }) => workloadPopupLayout.run({ cdp, vaultDir }),
     },
   ];
 

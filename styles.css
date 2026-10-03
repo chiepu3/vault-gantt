@@ -402,6 +402,8 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 
 .task-gantt-parent-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.task-gantt-parent-left > .twb-hidden-during-title-edit { display: none; }
+.task-gantt-parent-title-editor { width: 100%; flex: 1 1 auto; min-height: 0; font: inherit; font-weight: 600; resize: none; }
 .task-gantt-parent-tag { display: inline-block; border-width: 1px; border-style: solid; border-radius: 3px; padding: 0 4px; font-size: 11px; line-height: 1.5; }
 
 
@@ -462,7 +464,8 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
   display: none;
   width: max-content;
-  height: 122px;
+  height: auto;
+  min-height: 122px;
   min-width: 200px;
   max-width: calc(100vw - 16px);
   overflow: hidden;
@@ -529,7 +532,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-workload-popover-body {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
-  align-items: stretch;
+  align-items: start;
   gap: 6px;
   min-width: 0;
 }
@@ -547,7 +550,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-workload-popover-graph-scroll {
   min-width: 0;
   width: 100%;
-  height: 86px;
+  /* Height follows the 86px graph plus any horizontal scrollbar, so the
+     scrollbar never covers the bottom of the plot (zero line, low bars). */
+  height: auto;
   overflow-x: auto;
   overflow-y: hidden;
 }

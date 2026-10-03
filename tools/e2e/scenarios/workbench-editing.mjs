@@ -29,6 +29,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { dismissTrustDialogIfPresent } from "./cdp-input.mjs";
 
 const COMMAND_ID = "vault-gantt:open-task-workbench";
 const TARGET_NAME = "E2E Fixture Task 0001";
@@ -99,6 +100,57 @@ export async function run({ cdp, vaultDir }) {
     return { ok: false, failures, details: details.join(" | ") };
   }
   details.push(`target file: ${path.relative(vaultDir, filePath)}`);
+
+
+  // Obsidian's vault-trust modal would otherwise hold document.activeElement.
+  details.push(`trust dialog: ${await dismissTrustDialogIfPresent(cdp)}`);
+  // Dismissing it leaves the window unfocused, so blur events stop firing.
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await sleep(SETTLE_MS);
+
+  // 0. Parent title edit (#27): dblclick must leave the live editor focused
+  // with its whole value selected (document.activeElement, not just a flag).
+
+  await cdp.evaluate(`(() => {
+    const row = ${rowFinderExpr(TARGET_NAME)};
+    if (!row) { throw new Error("target row missing before title edit"); }
+    const wrap = row.querySelector(".task-workbench-col-name .task-workbench-cell-text");
+    if (!wrap) { throw new Error("title display element not found"); }
+    wrap.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+    return true;
+  })()`);
+  try {
+    await cdp.waitForExpression(
+      `(() => {
+        const el = document.querySelector(".task-workbench-title-textarea");
+        return !!el && el.isConnected && document.activeElement === el;
+      })()`,
+      { timeoutMs: 5000, label: "title textarea focused" }
+    );
+    const sel = await cdp.evaluate(`(() => {
+      const el = document.querySelector(".task-workbench-title-textarea");
+      return { start: el.selectionStart, end: el.selectionEnd, len: el.value.length };
+    })()`);
+    if (sel.start === 0 && sel.end === sel.len && sel.len > 0) {
+      details.push("OK title edit: editor is document.activeElement with full selection");
+    } else {
+      failures.push(`title edit: selection not select-all: ${JSON.stringify(sel)}`);
+    }
+  } catch (err) {
+    const diag = await cdp.evaluate(`(() => {
+      const el = document.querySelector(".task-workbench-title-textarea");
+      const a = document.activeElement;
+      return { editor: !!el, connected: !!el && el.isConnected, active: a ? a.tagName + "." + String(a.className).slice(0, 40) : null, hasFocus: document.hasFocus() };
+    })()`).catch(() => null);
+    failures.push(`title edit: textarea not focused after dblclick: ${err.message} ${JSON.stringify(diag)}`);
+  }
+  // Escape cancels without saving.
+  await cdp.evaluate(`(() => {
+    const el = document.querySelector(".task-workbench-title-textarea");
+    if (el) { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
+    return true;
+  })()`);
+  await sleep(SETTLE_MS);
 
 
   // 1. Click a priority star.
@@ -263,6 +315,59 @@ export async function run({ cdp, vaultDir }) {
   await sleep(SETTLE_MS); // extra settle margin
   checkFileContains(afterStatus, CURRENT_STATUS_VALUE, "currentStatus edit: blur commits value", failures, details);
   checkFileContains(afterStatus, EXPECTED_TAGS_LINE, "currentStatus edit: prior tags edit still intact", failures, details);
+
+
+  // 4b. Gantt parent title edit (#28): tags are hidden while editing and the
+  // editor fills the name area; Escape restores the tags untouched.
+
+  await cdp.evaluate(`app.commands.executeCommandById("vault-gantt:open-task-gantt"), true`);
+  try {
+    await cdp.waitForExpression(
+      `!!document.querySelector(".task-gantt-parent-left .task-gantt-parent-tags")`,
+      { timeoutMs: 30000, label: "gantt parent with tags" }
+    );
+    await cdp.evaluate(`(() => {
+      const left = document.querySelector(".task-gantt-parent-left .task-gantt-parent-tags").parentElement;
+      left.querySelector(".task-gantt-parent-title").dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    })()`);
+    const m = await cdp.evaluate(`(() => {
+      const ed = document.querySelector(".task-gantt-parent-title-editor");
+      if (!ed) { return null; }
+      const left = ed.parentElement;
+      const tags = left.querySelector(".task-gantt-parent-tags");
+      return {
+        focused: document.activeElement === ed,
+        tagsDisplay: getComputedStyle(tags).display,
+        editorH: ed.getBoundingClientRect().height,
+        leftH: left.getBoundingClientRect().height,
+        editorW: ed.getBoundingClientRect().width,
+        leftW: left.getBoundingClientRect().width,
+      };
+    })()`);
+    if (!m) {
+      failures.push("gantt title edit: editor never appeared");
+    } else {
+      if (!m.focused) { failures.push("gantt title edit: editor not document.activeElement"); }
+      if (m.tagsDisplay !== "none") { failures.push(`gantt title edit: tags display is ${m.tagsDisplay}, expected none`); }
+      if (!(m.editorH > 40)) { failures.push(`gantt title edit: editor height ${m.editorH} does not use freed space (left ${m.leftH})`); }
+      details.push(`gantt title edit metrics ${JSON.stringify(m)}`);
+    }
+    await cdp.evaluate(`(() => {
+      const ed = document.querySelector(".task-gantt-parent-title-editor");
+      if (ed) { ed.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
+      return true;
+    })()`);
+    const after = await cdp.evaluate(`(() => {
+      const tags = document.querySelector(".task-gantt-parent-left .task-gantt-parent-tags");
+      return { restored: !!tags && getComputedStyle(tags).display !== "none", chips: tags ? tags.children.length : 0 };
+    })()`);
+    if (!after.restored || after.chips === 0) {
+      failures.push(`gantt title edit: tags not restored after Escape ${JSON.stringify(after)}`);
+    }
+  } catch (err) {
+    failures.push(`gantt title edit check failed: ${err.message}`);
+  }
 
 
   // 5. Zero console errors / uncaught exceptions throughout

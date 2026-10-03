@@ -1306,7 +1306,19 @@ export class TaskWorkbenchView extends ItemView {
       evt.preventDefault();
     });
 
+    // IME composition state, same policy as buildCurrentStatusEditor.
+    let composing = false;
+    el.addEventListener("compositionstart", () => {
+      composing = true;
+    });
+    el.addEventListener("compositionend", () => {
+      composing = false;
+    });
+
     el.addEventListener("keydown", (evt) => {
+      if (composing) {
+        return; // Enter/Escape are IME keys while composing
+      }
       if (evt.key === "Escape") {
         // cancel without saving.
         el.dataset.cancelled = "1";
@@ -1336,12 +1348,25 @@ export class TaskWorkbenchView extends ItemView {
       if (el.dataset.saved === "1") {
         return;
       }
+      // mid-composition focus loss: never commit a half-composed string.
+      if (composing) {
+        return;
+      }
       this.saveNameEdit(row, el.value);
     });
 
     // autofocus and select-all on mount.
     el.focus();
     el.select();
+    // The editor is not attached yet, so the focus above is a no-op in a
+    // live DOM; re-apply once the caller has appended it (renderTable is
+    // synchronous, so a microtask runs after attachment).
+    queueMicrotask(() => {
+      if (el.isConnected && document.activeElement !== el) {
+        el.focus();
+        el.select();
+      }
+    });
     return el;
   }
 
