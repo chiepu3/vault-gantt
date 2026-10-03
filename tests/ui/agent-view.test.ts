@@ -69,7 +69,7 @@ describe("independent AgentView", () => {
     session.active.status = "failed"; session.active.error = "合成エラー"; view.render();
     expect(button("応答を再試行").parentNode.className).toBe("vg-ai-message vg-ai-assistant");
     session.active.status = "idle";
-    const result = { kind: "success" as const, committed: 1, total: 1, results: [], message: "合成保存", diffs: [{ taskId: "fake", name: "合成タスク", fields: [{ field: "notes", before: "旧", after: "新" }] }] };
+    const result = { kind: "success" as const, committed: 1, total: 1, results: [], undoLabel: "synthetic-history", message: "合成保存", diffs: [{ taskId: "fake", name: "合成タスク", fields: [{ field: "notes", before: "旧", after: "新" }] }] };
     session.active.messages[0].proposals = [{ operation: "update", input: {}, consumed: true, plan: { previewId: "fake", operation: "update", summary: "合成", count: 1, diffs: result.diffs }, result }];
     session.active.context = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "fake", toolName: "search", output: { type: "text", value: "not rendered" } }] }];
     view.render();

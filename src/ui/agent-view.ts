@@ -201,13 +201,13 @@ export class AgentView extends ItemView {
     if (proposal.consumed && !proposal.retryPrepared && proposal.result?.kind !== "success" && (!proposal.result || proposal.result.committed < proposal.result.total)) this.button(actions, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
     if (proposal.result?.committed) {
       const result = proposal.result;
-      const available = this.host.canUndo(result);
+      const available = !!result.undoLabel && this.host.canUndo(result);
       const undone = this.host.undoStatus?.(result) === "undone";
       const undoHint = undone ? "元に戻しました" : available ? "履歴の先頭の変更を元に戻す" : "現在の履歴の先頭ではないため元に戻せません";
       this.button(actions, "Ganttを開く", () => { void this.host.openGantt(); });
       const undo = this.button(actions, "元に戻す", () => {
         // Recheck at click time as other views may have changed the history.
-        if (!this.host.canUndo(result)) { this.render(); return; }
+        if (!result.undoLabel || !this.host.canUndo(result)) { this.render(); return; }
         void (async () => {
           try { await this.host.undo(result); this.render(); }
           catch { status.textContent = "元に戻せませんでした。履歴とタスクを確認してください。"; }
