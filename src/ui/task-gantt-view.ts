@@ -882,6 +882,11 @@ export class TaskGanttView extends ItemView {
   private holidaySet = new Set<string>();
   /** todayStr captured per render so dateClasses stays consistent. */
   private todayForRender = "";
+  /** Shared date classifications, invalidated at the start of every render. */
+  private dateClassesCache = new Map<
+    string,
+    { isWeekend: boolean; isHoliday: boolean; isToday: boolean }
+  >();
 
   // --- DOM references ---
 
@@ -1337,6 +1342,8 @@ export class TaskGanttView extends ItemView {
  * selects the full-render escape hatch.
  */
   renderChart(): void {
+    this.dateClassesCache.clear();
+
     // a chart rebuild detaches the current chip, so do not leave
     // its body-anchored detail popover orphaned behind.
     this.closeDailyTodoPopover();
@@ -3413,12 +3420,18 @@ export class TaskGanttView extends ItemView {
     isHoliday: boolean;
     isToday: boolean;
   } {
+    const cached = this.dateClassesCache.get(date);
+    if (cached !== undefined) {
+      return cached;
+    }
     const dow = moment(date, "YYYY-MM-DD").day();
-    return {
+    const classes = {
       isWeekend: dow === 0 || dow === 6,
       isHoliday: this.holidaySet.has(date),
       isToday: date === this.todayForRender,
     };
+    this.dateClassesCache.set(date, classes);
+    return classes;
   }
 
 
