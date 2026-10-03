@@ -648,6 +648,69 @@ describe("TaskGanttView", () => {
   });
 
   describe("per-cell classes", () => {
+    it.each([true, false])("reuses date classifications only within a render (incremental=%s)", async (incrementalGanttRender) => {
+      const { view } = await openView(
+        [makeParent({ ganttEnabled: true })],
+        { incrementalGanttRender }
+      );
+      const date = datesOf(view)[0];
+      const classes = (view as any).dateClasses(date);
+      const daySpy = vi.spyOn(moment.fn, "day");
+      expect((view as any).dateClasses(date)).toBe(classes);
+      expect(daySpy).not.toHaveBeenCalled();
+
+      // Popup dates need not belong to the rendered chart range.
+      const outsideDate = addDays(date, -1);
+      const outsideClasses = (view as any).dateClasses(outsideDate);
+      expect((view as any).dateClasses(outsideDate)).toBe(outsideClasses);
+      expect(daySpy).toHaveBeenCalledTimes(1);
+      daySpy.mockRestore();
+
+      (view as any).renderChart();
+      expect((view as any).dateClasses(date)).toEqual(classes);
+      expect((view as any).dateClasses(date)).not.toBe(classes);
+      expect((view as any).dateClasses(outsideDate)).toEqual(outsideClasses);
+      expect((view as any).dateClasses(outsideDate)).not.toBe(outsideClasses);
+    });
+
+    it.each([true, false])("refreshes cached holiday and today classes on the next render (incremental=%s)", async (incrementalGanttRender) => {
+      useFridayClock();
+      const today = todayStr();
+      const tomorrow = addDays(today, 1);
+      const { view, container, h } = await openView(
+        [makeParent({ ganttEnabled: true })],
+        { incrementalGanttRender, ganttManualHolidays: [today] }
+      );
+      expect((view as any).dateClasses(today)).toEqual({
+        isWeekend: false, isHoliday: true, isToday: true,
+      });
+      expect((view as any).dateClasses(tomorrow)).toEqual({
+        isWeekend: true, isHoliday: false, isToday: false,
+      });
+
+      h.settings.ganttManualHolidays = [];
+      h.settings.ganttSpecialHolidays = [tomorrow];
+      vi.setSystemTime(new Date(2026, 9, 3, 12, 0, 0));
+      (view as any).renderChart();
+
+      for (const [date, expected] of [
+        [today, { isWeekend: false, isHoliday: false, isToday: false }],
+        [tomorrow, { isWeekend: true, isHoliday: true, isToday: true }],
+      ] as const) {
+        expect((view as any).dateClasses(date)).toEqual(expected);
+        const index = datesOf(view).indexOf(date);
+        const cells = [
+          rowOf(wrapOf(container), "task-gantt-day-row").children[index],
+          byClass(timelineOf(parentRows(container)[0]), "task-gantt-bg")[index],
+        ];
+        for (const cell of cells) {
+          expect(cell.classList.contains("is-weekend")).toBe(expected.isWeekend);
+          expect(cell.classList.contains("is-holiday")).toBe(expected.isHoliday);
+          expect(cell.classList.contains("is-today")).toBe(expected.isToday);
+        }
+      }
+    });
+
     it("marks weekend cells is-weekend on all three rows", async () => {
       const { view, container } = await openView([]);
       const wrap = wrapOf(container);
@@ -825,6 +888,13 @@ describe("TaskGanttView", () => {
       // The scroll position shifted right by the prepended width.
       expect(wrap.scrollLeft).toBe(100 + 60 * 28);
       expect((view as any).isExtendingRange).toBe(false);
+      // The browser emits a scroll event after the compensating shift.
+      wrap.scrollWidth = 150 * 28;
+      wrap.clientWidth = 500;
+      dispatch(wrap, "scroll");
+      expect(((view as any).floatingMonthEl as FakeEl).textContent).toBe(
+        moment(addDays(startBefore, Math.floor(100 / 28)), "YYYY-MM-DD").format("YYYY年M月")
+      );
     });
 
     it("the render and the scroll shift are two SEPARATE animation frames, in that order (not one combined frame)", async () => {
@@ -898,6 +968,9 @@ describe("TaskGanttView", () => {
       expect(datesOf(view)).toHaveLength(150);
       expect(wrap.scrollLeft).toBe(1920); // unchanged
       expect((view as any).isExtendingRange).toBe(false);
+      expect(((view as any).floatingMonthEl as FakeEl).textContent).toBe(
+        moment(addDays(startBefore, Math.floor(1920 / 28)), "YYYY-MM-DD").format("YYYY年M月")
+      );
     });
 
     it("ignores scroll events while an extension is in flight", async () => {
@@ -914,6 +987,31 @@ describe("TaskGanttView", () => {
   });
 
   describe("updateFloatingMonth", () => {
+    it.each([true, false])("captures the visible date before rendering without changing date classes (incremental=%s)", async (incrementalGanttRender) => {
+      const { view, container } = await openView(
+        [makeParent({ ganttEnabled: true })], { incrementalGanttRender }
+      );
+      const headerClasses = (): string[] => rowOf(wrapOf(container), "task-gantt-day-row")
+        .children.map((cell) => cell.className);
+      const before = headerClasses();
+      const read = vi.spyOn(view as any, "getVisibleStartDate");
+      const method = incrementalGanttRender ? "renderChartIncremental" : "renderChartFull";
+      const render = (view as any)[method].bind(view);
+      vi.spyOn(view as any, method).mockImplementation((...args: any[]) => {
+        expect(read).toHaveBeenCalledTimes(1);
+        render(...args);
+      });
+      (view as any).renderChart();
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(headerClasses()).toEqual(before);
+      const backgrounds = byClass(timelineOf(parentRows(container)[0]), "task-gantt-bg");
+      const dateFlags = (cell: FakeEl): boolean[] => ["is-weekend", "is-holiday", "is-today"]
+        .map((flag) => cell.classList.contains(flag));
+      rowOf(wrapOf(container), "task-gantt-day-row").children.forEach((cell, index) => {
+        expect(dateFlags(backgrounds[index])).toEqual(dateFlags(cell));
+      });
+    });
+
     it("writes the month once and dedupes while it is unchanged", async () => {
       const { view } = await openView([]);
       const floatingMonthEl = (view as any).floatingMonthEl as FakeEl;
@@ -996,6 +1094,40 @@ describe("TaskGanttView", () => {
 
 
   describe("setZoom", () => {
+    it.each([
+      ["2026-09-30", 28, 56],
+      ["2026-09-29", 56, 28],
+    ])("preserves the floating month across a zoom boundary (%s, %s→%s)", async (start, oldWidth, newWidth) => {
+      const { view, container } = await openView([], { ganttZoom: oldWidth });
+      (view as any).rangeStart = start;
+      (view as any).renderChart();
+      const wrap = wrapOf(container);
+      wrap.scrollLeft = Number(oldWidth);
+      await view.setZoom(Number(newWidth));
+      expect(wrap.scrollLeft).toBe(Number(newWidth));
+      expect(((view as any).floatingMonthEl as FakeEl).textContent).toBe(
+        moment(addDays(String(start), 1), "YYYY-MM-DD").format("YYYY年M月")
+      );
+    });
+
+    it("updates the floating month from the clamped position after zoom-out", async () => {
+      const { view, container } = await openView([], { ganttZoom: 56 });
+      (view as any).rangeStart = "2026-09-15";
+      (view as any).renderChart();
+      const wrap = wrapOf(container);
+      wrap.clientWidth = 500;
+      let scrollLeft = 4540; // December before zoom; November after clamp.
+      Object.defineProperty(wrap, "scrollLeft", {
+        get: () => scrollLeft,
+        set: (value: number) => {
+          scrollLeft = Math.min(value, 90 * (view as any).dayWidth - wrap.clientWidth);
+        },
+      });
+      await view.setZoom(28);
+      expect(wrap.scrollLeft).toBe(2020);
+      expect(((view as any).floatingMonthEl as FakeEl).textContent).toBe("2026年11月");
+    });
+
     it("updates dayWidth, persists, scales scroll, re-renders", async () => {
       const { view, container, h } = await openView([]);
       const wrap = wrapOf(container);
