@@ -535,7 +535,6 @@ export async function startObsidian({ vaultDir, obsidianBin, display }) {
     [
       `--user-data-dir=${userDataDir}`,
       `--remote-debugging-port=${cdpPort}`,
-      "--no-sandbox",
       "--disable-gpu",
       // NOTE: the standard Chromium `--window-size`/`--window-position`
       // flags are silently ignored here — Obsidian's Electron main process
