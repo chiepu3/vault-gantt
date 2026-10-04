@@ -32,6 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatStartupDiagnostics, trackExit } from "./diagnostics.mjs";
+import { assertSandboxEnabled } from "./sandbox-assert.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -71,6 +72,19 @@ function logDir() {
  * (e.g. the dev-machine cache at ~/tools/obsidian-headless/Obsidian.AppImage).
  */
 export async function ensureObsidianBinary() {
+  // CI: the binary is installed (SHA256-verified, root-owned, SUID sandbox
+  // helper) by tools/e2e/ci-install-obsidian.sh. Never fall back to the
+  // user-writable cache there.
+  if (process.env.E2E_OBSIDIAN_BIN) {
+    const bin = path.resolve(process.env.E2E_OBSIDIAN_BIN);
+    if (!fs.existsSync(bin)) {
+      throw new Error(`E2E_OBSIDIAN_BIN does not exist: ${bin}`);
+    }
+    return bin;
+  }
+  if (process.env.GITHUB_ACTIONS === "true") {
+    throw new Error("E2E_OBSIDIAN_BIN is required on GitHub Actions (run ci-install-obsidian.sh)");
+  }
   const cache = cacheDir();
   fs.mkdirSync(cache, { recursive: true });
 
@@ -491,6 +505,13 @@ function registerSignalHandlersOnce() {
   }
 }
 
+// Never let a sandbox bypass env var leak into the Obsidian process.
+function obsidianEnv(display) {
+  const env = { ...process.env, DISPLAY: display };
+  delete env.CHROME_DEVEL_SANDBOX;
+  return env;
+}
+
 /**
  * Starts a fully isolated Obsidian instance against `vaultDir`:
  * fresh --user-data-dir, pre-registered vault (skips the vault picker),
@@ -546,7 +567,7 @@ export async function startObsidian({ vaultDir, obsidianBin, display }) {
     {
       // cwd = squashfs-root, matching the proven manual launch sequence.
       cwd: path.dirname(binary),
-      env: { ...process.env, DISPLAY: xvfb.display },
+      env: obsidianEnv(xvfb.display),
       detached: true,
       stdio: ["ignore", out, out],
     }
@@ -593,6 +614,8 @@ export async function startObsidian({ vaultDir, obsidianBin, display }) {
       ),
       spawnError,
     ]);
+    // The real process tree must be running with the Chromium sandbox on.
+    await assertSandboxEnabled(proc.pid, cdp);
     // 16:9 FHD so screenshots match a standard monitor aspect ratio.
     // Command-line --window-size is a no-op for Obsidian (see spawn args
     // above), so the window is resized here via its own renderer-process

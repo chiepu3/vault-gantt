@@ -23,16 +23,10 @@ jobs:
       - name: Install Xvfb
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      # obsidian-runtime.mjs pins OBSIDIAN_VERSION and caches the
-      # downloaded/extracted binary under tools/e2e/cache/. Bump the
-      # version in this key whenever OBSIDIAN_VERSION changes in
-      # tools/e2e/obsidian-runtime.mjs, otherwise the cache silently keeps
-      # serving the old binary.
-      - name: Cache Obsidian AppImage
-        uses: actions/cache@v4
-        with:
-          path: tools/e2e/cache
-          key: obsidian-e2e-cache-1.13.4
+      # Pinned, SHA256-verified, root-owned install with the SUID sandbox
+      # helper (Chromium sandbox stays enabled). No actions/cache is trusted.
+      - name: Install Obsidian (sandbox-enabled)
+        run: bash tools/e2e/ci-install-obsidian.sh
 
       - run: npm ci
       - run: npm run build
@@ -53,5 +47,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-failure-logs
-          path: tools/e2e/cache/logs/
+          path: ${{ runner.temp }}/e2e-cache/logs/
           if-no-files-found: ignore
