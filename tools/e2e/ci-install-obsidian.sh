@@ -16,7 +16,7 @@ fi
 VERSION="1.13.4"
 SHA256="b66f01d2a6afbb6b7abd93e4b5c6602645f03c16ad2d6dd49fd5a90dddd87872"
 URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v${VERSION}/Obsidian-${VERSION}.AppImage"
-ROOT="/opt/obsidian-e2e"
+ROOT="/var/lib/obsidian-e2e"
 DEST="${ROOT}/${VERSION}"
 BIN="${DEST}/squashfs-root/obsidian"
 HELPER="${DEST}/squashfs-root/chrome-sandbox"
