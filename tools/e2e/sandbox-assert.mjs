@@ -1,7 +1,19 @@
 // tools/e2e/sandbox-assert.mjs
-// Asserts the REAL Obsidian process tree runs with Chromium's sandbox enabled.
-// Reads only argv (/proc/<pid>/cmdline) of the harness's own descendants and
-// whether CHROME_DEVEL_SANDBOX is set — env values are never logged.
+// Evidence-based guard that the REAL Obsidian process tree was NOT launched
+// with any Chromium sandbox bypass. Reads only argv (/proc/<pid>/cmdline) of
+// the harness's own descendants and whether CHROME_DEVEL_SANDBOX is set — env
+// values are never logged.
+//
+// What this proves: no process in the tree carries a sandbox-disable flag, no
+// CHROME_DEVEL_SANDBOX override is present, and the CDP-visible renderer is a
+// real --type=renderer process of this tree. Combined with the CI-verified
+// root:root 4755 chrome-sandbox helper, Chromium would abort at startup rather
+// than silently run unsandboxed, so a successful launch means no bypass.
+//
+// What this does NOT prove: that this renderer is OS-sandboxed. Obsidian
+// renderers use Node integration, so Electron's `process.sandboxed` may be
+// false and the renderer's seccomp state may be 0; neither is asserted. They
+// are only logged as observed evidence ("seccomp" / "sandboxed" below).
 
 import fs from "node:fs";
 
@@ -48,9 +60,10 @@ export function listDescendants(rootPid) {
 }
 
 /**
- * Throws unless: no process in the tree has a sandbox-disable flag, a
- * renderer process exists, CHROME_DEVEL_SANDBOX is not set on the main
- * process, and the renderer's own CDP-visible argv is clean too.
+ * Throws on any actual bypass: a sandbox-disable flag in any process argv,
+ * CHROME_DEVEL_SANDBOX on the main process, no renderer process, or a CDP
+ * renderer pid that is not a --type=renderer process of this tree. Logs (does
+ * not assert) the renderer's observed seccomp/NoNewPrivs/process.sandboxed.
  */
 export async function assertSandboxEnabled(rootPid, cdp) {
   const pids = listDescendants(rootPid);
@@ -88,8 +101,14 @@ export async function assertSandboxEnabled(rootPid, cdp) {
   if (rendererRaw === null || !parseCmdline(rendererRaw).includes("--type=renderer")) {
     throw new Error("CDP renderer pid is not a --type=renderer process of this tree");
   }
+  if (!pids.includes(renderer.pid)) {
+    throw new Error("CDP renderer pid is not a descendant of the launched Obsidian process");
+  }
+  const status = readProc(renderer.pid, "status") ?? "";
+  const field = (name) => status.match(new RegExp(`^${name}:\\s*(\\S+)`, "m"))?.[1] ?? "?";
   console.log(
-    `[runtime] sandbox check ok: ${pids.length} processes (${summary.join(",")}), ` +
-      `renderer pid ${renderer.pid}, process.sandboxed=${renderer.sandboxed}`
+    `[runtime] no sandbox bypass: ${pids.length} processes (${summary.join(",")}), ` +
+      `renderer pid ${renderer.pid}; observed (not asserted): seccomp=${field("Seccomp")}, ` +
+      `no_new_privs=${field("NoNewPrivs")}, process.sandboxed=${renderer.sandboxed}`
   );
 }
