@@ -37,6 +37,9 @@ export interface VaultAdapter {
   // Modify an existing file's content
   modify(file: VaultFile, content: string): Promise<void>;
 
+  // Obsidian provides atomic read/transform/write for revision guards.
+  process?(file: VaultFile, transform: (content: string) => string): Promise<string>;
+
   // Read file content
   read(file: VaultFile): Promise<string>;
 

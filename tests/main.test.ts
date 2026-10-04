@@ -343,9 +343,9 @@ describe("TaskWorkbenchPlugin", () => {
         expect.any(Error)
       );
 
-      expect(h.commands).toHaveLength(10);
+      expect(h.commands).toHaveLength(13);
 
-      expect(h.views.size).toBe(2);
+      expect(h.views.size).toBe(3);
       expect(h.ribbons).toHaveLength(2);
       expect(h.settingTabs).toHaveLength(1);
     });
@@ -387,9 +387,9 @@ describe("TaskWorkbenchPlugin", () => {
 
       expect(refresh).toHaveBeenCalledTimes(1);
 
-      expect(h.commands).toHaveLength(10);
+      expect(h.commands).toHaveLength(13);
 
-      expect(h.views.size).toBe(2);
+      expect(h.views.size).toBe(3);
       expect(h.ribbons).toHaveLength(2);
     });
   });
@@ -480,6 +480,9 @@ describe("TaskWorkbenchPlugin", () => {
 
         "undo-last-action",
         "redo-last-action",
+        "open-ai-chat-tab",
+        "open-ai-chat-left",
+        "open-ai-chat-right",
       ]);
       expect(h.commands.map((c) => c.name)).toEqual([
         "Open task workbench",
@@ -494,6 +497,9 @@ describe("TaskWorkbenchPlugin", () => {
 
         "元に戻す",
         "やり直す",
+        "AI チャットを開く（タブ）",
+        "AI チャットを開く（左サイドバー）",
+        "AI チャットを開く（右サイドバー）",
       ]);
     });
 
@@ -1185,9 +1191,9 @@ describe("TaskWorkbenchPlugin", () => {
 
       // startup registrations all happened
 
-      expect(h.commands).toHaveLength(10);
+      expect(h.commands).toHaveLength(13);
 
-      expect(h.views.size).toBe(2);
+      expect(h.views.size).toBe(3);
       expect(h.ribbons).toHaveLength(2);
       // auto priority ran once on startup
       expect(
