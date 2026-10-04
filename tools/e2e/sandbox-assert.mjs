@@ -4,17 +4,29 @@
 // the harness's own descendants and whether CHROME_DEVEL_SANDBOX is set — env
 // values are never logged.
 //
-// What this proves: no process in the tree carries a sandbox-disable flag, no
-// CHROME_DEVEL_SANDBOX override is present, and the CDP-visible renderer
-// (identified via its own process.pid/argv) is a --type=renderer process
-// descended from this tree. Combined with the CI-verified
-// root:root 4755 chrome-sandbox helper, Chromium would abort at startup rather
-// than silently run unsandboxed, so a successful launch means no bypass.
+// What this proves (gate, throws on violation):
+//   - the chrome-sandbox helper next to the binary is root:root 4755;
+//   - no process of the launched tree has a sandbox-disable flag in its
+//     readable /proc/<pid>/cmdline (the root entry is the actual launch argv);
+//   - CHROME_DEVEL_SANDBOX is not set on the main process;
+//   - the main process's own process.argv (read through the renderer's
+//     electron.remote handle, when available) has no such flag;
+//   - the CDP-reported renderer pid is a descendant of the launched process.
+// Combined with the root:root 4755 helper, a caller-supplied bypass would show
+// up in the root argv and fail here.
 //
-// What this does NOT prove: that this renderer is OS-sandboxed. Obsidian
-// renderers use Node integration, so Electron's `process.sandboxed` may be
-// false and the renderer's seccomp state may be 0; neither is asserted. They
-// are only logged as observed evidence ("seccomp" / "sandboxed" below).
+// What this does NOT prove: that the Obsidian renderer is OS-sandboxed.
+// Obsidian's windows use Node integration (webPreferences.sandbox=false), for
+// which Electron ITSELF appends --no-sandbox and --no-zygote to that
+// renderer's command line (shell/browser/web_contents_preferences.cc,
+// AppendCommandLineSwitches). The renderer's CDP-visible process.argv therefore
+// carries those flags even though nobody passed them at launch; that is
+// Electron-synthesized per-renderer metadata, not a launch-time bypass, and it
+// is only LOGGED ("renderer metadata flags"), never used to pass or hide
+// anything. A flag a caller really supplied is in the root argv and still
+// throws. Browser.getBrowserCommandLine is unusable: it only answers when
+// --enable-automation is on the command line. seccomp / no_new_privs /
+// process.sandboxed are observed and logged, not asserted.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -97,14 +109,14 @@ function describe(pid) {
 }
 
 /**
- * Throws on any actual bypass: a sandbox-disable flag in any process argv,
- * CHROME_DEVEL_SANDBOX on the main process, or a CDP renderer that is not a
- * --type=renderer process descended from the launched Obsidian process. The
- * renderer is identified through CDP (its own process.pid/argv), NOT by
- * scanning /proc for --type=renderer, because zygote-forked Chromium children
- * may not expose that flag in /proc/<pid>/cmdline. On failure the thrown
- * message carries a secret-free process table so CI shows the real shape.
- * Logs (does not assert) the renderer's observed seccomp/NoNewPrivs/sandboxed.
+ * Throws on any launch-time bypass: chrome-sandbox not root:root 4755, a
+ * sandbox-disable flag in any readable /proc argv of the tree (root = actual
+ * launch argv) or in the main process's own argv, CHROME_DEVEL_SANDBOX on the
+ * main process, or a CDP renderer pid outside the launched tree. The renderer
+ * is identified through CDP (its own process.pid), not by scanning /proc for
+ * --type=renderer. The renderer's CDP process.argv is Electron-synthesized
+ * metadata (see header) and is only logged. Failures carry a secret-free
+ * process table.
  */
 export async function assertSandboxEnabled(rootPid, cdp) {
   const pids = listDescendants(rootPid);
@@ -130,32 +142,44 @@ export async function assertSandboxEnabled(rootPid, cdp) {
   );
   // Flag NAMES only (values such as --user-data-dir paths are never printed).
   const flagNames = (argv) => argv.filter((a) => a.startsWith("--")).map((a) => a.split("=")[0]);
-  const helperEvidence = () => {
-    const exe = parseCmdline(readProc(rootPid, "cmdline") ?? "")[0];
-    if (!exe) return "chrome-sandbox: root cmdline unreadable";
-    try {
-      const st = fs.statSync(path.join(path.dirname(exe), "chrome-sandbox"));
-      return `chrome-sandbox: uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o7777).toString(8)}`;
-    } catch (e) {
-      return `chrome-sandbox: stat failed (${e.code ?? "error"})`;
-    }
-  };
+  const exe = parseCmdline(readProc(rootPid, "cmdline") ?? "")[0];
+  let helper;
+  try {
+    const st = fs.statSync(path.join(path.dirname(exe), "chrome-sandbox"));
+    helper = { uid: st.uid, gid: st.gid, mode: (st.mode & 0o7777).toString(8) };
+  } catch (e) {
+    throw new Error(`chrome-sandbox helper stat failed (${e.code ?? "error"})`);
+  }
   const dump = () =>
-    `\n  ${helperEvidence()}\n  root: ${describe(rootPid)}` +
-    `\n  cdp renderer process.argv flags=[${flagNames(renderer.argv).join(",")}]` +
+    `\n  chrome-sandbox: uid=${helper.uid} gid=${helper.gid} mode=${helper.mode}` +
+    `\n  root: ${describe(rootPid)}` +
+    `\n  cdp renderer metadata process.argv flags=[${flagNames(renderer.argv).join(",")}]` +
     `\n  cdp renderer /proc: ${describe(renderer.pid)}\n  tree (${pids.length}):\n` +
     pids.map((p) => `    ${describe(p)}`).join("\n");
-  const bad = findSandboxDisableFlags(renderer.argv);
-  if (bad.length) {
-    throw new Error(`renderer argv has sandbox-disable flags: ${bad.join(" ")}${dump()}`);
+  if (helper.uid !== 0 || helper.gid !== 0 || helper.mode !== "4755") {
+    throw new Error(`chrome-sandbox is not root:root 4755${dump()}`);
+  }
+  // Main process argv as Electron reports it (best-effort; unavailable if the
+  // renderer has no electron.remote). Real caller-supplied flags show here.
+  let mainFlags = "unavailable";
+  try {
+    const mainArgv = JSON.parse(
+      await cdp.evaluate(
+        "JSON.stringify(require('electron').remote.process.argv)"
+      )
+    );
+    const mainBad = findSandboxDisableFlags(mainArgv);
+    if (mainBad.length) {
+      throw new Error(`main process argv has sandbox-disable flags: ${mainBad.join(" ")}${dump()}`);
+    }
+    mainFlags = `[${flagNames(mainArgv).join(",")}]`;
+  } catch (e) {
+    if (String(e.message).startsWith("main process argv")) throw e;
   }
   const procArgv = parseCmdline(readProc(renderer.pid, "cmdline") ?? "");
   const procBad = findSandboxDisableFlags(procArgv);
   if (procBad.length) {
     throw new Error(`renderer /proc argv has sandbox-disable flags: ${procBad.join(" ")}${dump()}`);
-  }
-  if (!renderer.argv.includes("--type=renderer") && !procArgv.includes("--type=renderer")) {
-    throw new Error(`CDP renderer pid ${renderer.pid} is not a --type=renderer process${dump()}`);
   }
   if (!pids.includes(renderer.pid)) {
     throw new Error(
@@ -163,11 +187,15 @@ export async function assertSandboxEnabled(rootPid, cdp) {
         `(ancestry: ${ancestry(renderer.pid, rootPid).join("<-")})${dump()}`
     );
   }
+  const metadataFlags = findSandboxDisableFlags(renderer.argv);
   const status = readProc(renderer.pid, "status") ?? "";
   const field = (name) => status.match(new RegExp(`^${name}:\\s*(\\S+)`, "m"))?.[1] ?? "?";
   console.log(
-    `[runtime] no sandbox bypass: ${pids.length} processes (${summary.join(",")}), ` +
-      `renderer pid ${renderer.pid}; observed (not asserted): seccomp=${field("Seccomp")}, ` +
+    `[runtime] no launch-time sandbox bypass: helper root:root ${helper.mode}, ` +
+      `${pids.length} processes (${summary.join(",")}), main argv flags=${mainFlags}; ` +
+      `renderer pid ${renderer.pid}; observed (not asserted): ` +
+      `renderer metadata flags=[${metadataFlags.join(",")}] (Electron-synthesized for ` +
+      `sandbox:false windows, absent from the launch argv), seccomp=${field("Seccomp")}, ` +
       `no_new_privs=${field("NoNewPrivs")}, process.sandboxed=${renderer.sandboxed}`
   );
 }

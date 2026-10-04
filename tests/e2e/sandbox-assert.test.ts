@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertSandboxEnabled,
   ancestry,
   findSandboxDisableFlags,
   listDescendants,
@@ -35,5 +36,11 @@ describe("sandbox-assert", () => {
     expect(ancestry(process.pid, process.pid)).toEqual([process.pid]);
     const chain = ancestry(process.pid, process.ppid);
     expect(chain).toEqual([process.pid, process.ppid]);
+  });
+
+  it("fails closed when the chrome-sandbox helper is not root:root 4755", async () => {
+    // process.execPath's dir has no chrome-sandbox, and a test run is not root.
+    const cdp = { evaluate: async () => JSON.stringify({ argv: [], pid: process.pid, sandboxed: null }) };
+    await expect(assertSandboxEnabled(process.pid, cdp)).rejects.toThrow(/chrome-sandbox/);
   });
 });
