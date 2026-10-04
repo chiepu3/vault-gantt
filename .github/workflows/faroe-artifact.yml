@@ -40,12 +40,11 @@ jobs:
       - name: Install Xvfb
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      # Keep the key in sync with e2e.yml / OBSIDIAN_VERSION in tools/e2e/obsidian-runtime.mjs.
-      - name: Cache Obsidian AppImage
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: tools/e2e/cache
-          key: obsidian-e2e-cache-1.13.4
+      # Same pinned, SHA256-verified, root-owned install with the SUID sandbox
+      # helper as e2e.yml (Chromium sandbox stays enabled). Exports
+      # E2E_OBSIDIAN_BIN via GITHUB_ENV. No actions/cache is trusted.
+      - name: Install Obsidian (sandbox-enabled)
+        run: bash tools/e2e/ci-install-obsidian.sh
 
       - run: npm ci
       - run: npm run check
