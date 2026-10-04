@@ -38,7 +38,9 @@ echo "${SHA256}  ${DEST}/Obsidian.AppImage" | sudo sha256sum --check --strict -
 # FUSE-free extraction (root, into the root-owned dir), then lock the tree.
 (cd "${DEST}" && sudo ./Obsidian.AppImage --appimage-extract >/dev/null)
 sudo chown -R root:root "${DEST}"
-sudo chmod -R go-w "${DEST}"
+# Ordinary runner needs read + traverse/execute (X: dirs and already-executable
+# files only), never write.
+sudo chmod -R a+rX,go-w "${DEST}"
 sudo chown root:root "${HELPER}"
 sudo chmod 4755 "${HELPER}"
 
@@ -56,6 +58,7 @@ while :; do
   echo "parent ${dir}: ${owner} ${mode}"
   [[ "${owner}" == "root" ]] || { echo "${dir} not root-owned" >&2; exit 1; }
   (( (8#${mode} & 8#022) == 0 )) || { echo "${dir} is group/other-writable" >&2; exit 1; }
+  (( (8#${mode} & 8#005) == 8#005 )) || { echo "${dir} not other-readable/traversable" >&2; exit 1; }
   [[ "${dir}" == "/" ]] && break
   dir="$(dirname "${dir}")"
 done
