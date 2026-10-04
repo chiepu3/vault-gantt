@@ -17,6 +17,7 @@
 // are only logged as observed evidence ("seccomp" / "sandboxed" below).
 
 import fs from "node:fs";
+import path from "node:path";
 
 const FORBIDDEN_FLAG = /^--(no-sandbox|disable-[a-z-]*sandbox|no-zygote-sandbox)(=|$)/;
 
@@ -127,17 +128,31 @@ export async function assertSandboxEnabled(rootPid, cdp) {
       "JSON.stringify({ argv: process.argv, pid: process.pid, sandboxed: process.sandboxed ?? null })"
     )
   );
+  // Flag NAMES only (values such as --user-data-dir paths are never printed).
+  const flagNames = (argv) => argv.filter((a) => a.startsWith("--")).map((a) => a.split("=")[0]);
+  const helperEvidence = () => {
+    const exe = parseCmdline(readProc(rootPid, "cmdline") ?? "")[0];
+    if (!exe) return "chrome-sandbox: root cmdline unreadable";
+    try {
+      const st = fs.statSync(path.join(path.dirname(exe), "chrome-sandbox"));
+      return `chrome-sandbox: uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o7777).toString(8)}`;
+    } catch (e) {
+      return `chrome-sandbox: stat failed (${e.code ?? "error"})`;
+    }
+  };
   const dump = () =>
-    `\n  root: ${describe(rootPid)}\n  cdp renderer: ${describe(renderer.pid)}\n  tree (${pids.length}):\n` +
+    `\n  ${helperEvidence()}\n  root: ${describe(rootPid)}` +
+    `\n  cdp renderer process.argv flags=[${flagNames(renderer.argv).join(",")}]` +
+    `\n  cdp renderer /proc: ${describe(renderer.pid)}\n  tree (${pids.length}):\n` +
     pids.map((p) => `    ${describe(p)}`).join("\n");
   const bad = findSandboxDisableFlags(renderer.argv);
   if (bad.length) {
-    throw new Error(`renderer argv has sandbox-disable flags: ${bad.join(" ")}`);
+    throw new Error(`renderer argv has sandbox-disable flags: ${bad.join(" ")}${dump()}`);
   }
   const procArgv = parseCmdline(readProc(renderer.pid, "cmdline") ?? "");
   const procBad = findSandboxDisableFlags(procArgv);
   if (procBad.length) {
-    throw new Error(`renderer /proc argv has sandbox-disable flags: ${procBad.join(" ")}`);
+    throw new Error(`renderer /proc argv has sandbox-disable flags: ${procBad.join(" ")}${dump()}`);
   }
   if (!renderer.argv.includes("--type=renderer") && !procArgv.includes("--type=renderer")) {
     throw new Error(`CDP renderer pid ${renderer.pid} is not a --type=renderer process${dump()}`);
