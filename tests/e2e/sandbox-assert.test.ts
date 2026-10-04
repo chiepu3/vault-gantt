@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ancestry,
   findSandboxDisableFlags,
   listDescendants,
   parseCmdline,
@@ -28,5 +29,11 @@ describe("sandbox-assert", () => {
 
   it("lists the current process as its own descendant root", () => {
     expect(listDescendants(process.pid)).toContain(process.pid);
+  });
+
+  it("walks the ppid chain up to the root pid", () => {
+    expect(ancestry(process.pid, process.pid)).toEqual([process.pid]);
+    const chain = ancestry(process.pid, process.ppid);
+    expect(chain).toEqual([process.pid, process.ppid]);
   });
 });

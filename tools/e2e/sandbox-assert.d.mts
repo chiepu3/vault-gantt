@@ -5,3 +5,4 @@ export function assertSandboxEnabled(
   rootPid: number,
   cdp: { evaluate(expression: string): Promise<unknown> }
 ): Promise<void>;
+export function ancestry(pid: number, rootPid: number): number[];
