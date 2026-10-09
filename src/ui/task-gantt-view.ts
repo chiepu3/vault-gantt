@@ -1,3 +1,5 @@
+import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
+import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts } from "../contracts/ports";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
@@ -1236,8 +1238,44 @@ export class TaskGanttView extends ItemView {
  * inside requestAnimationFrame — auto-scrolls so today sits 220px from the
  * left edge.
  */
+  async requestViewOperation(id: ViewOperationId, input: unknown): Promise<OperationRequestResultV1> {
+    const args = operationInputSchemas[id].parse(input), before = { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter] };
+    if (id === "V13") { this.activeTagFilter = new Set((args as OperationInputMap["V13"]).tagNames); await this.render(); }
+    else if (id === "V14") await this.setZoom((args as OperationInputMap["V14"]).dayWidth);
+    else if (id === "V15") { const target = args as OperationInputMap["V15"]; if (!this.dates.includes(target.date)) { this.rangeStart = addDays(target.date, -14); this.rangeDays = 90; this.renderChart(); } this.scrollToDate(target.date, target.offset); }
+    else if (id === "V16") await this.render();
+    else if (id === "V18") {
+      const target = args as OperationInputMap["V18"];
+      const task = this.tasks.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]).find((row) => row.id === target.targetId);
+      if (target.targetKind === "task" && (!task || task.kind !== "subtask") || target.targetKind === "event" && !this.host.settings.ganttEvents.some((event) => event.key === target.targetId)) throw new Error("NOT_FOUND");
+      this.workloadModeStore.set(target.targetKind === "task" ? getWorkloadTaskKey(task!) : target.targetId, { mode: target.mode });
+      this.closeWorkloadPopup();
+    } else if (id === "V19") {
+      const target = args as OperationInputMap["V19"];
+      if (!target.enabled) this.bulkMoveState = undefined;
+      else {
+        const parent = this.tasks.find((row) => row.kind === "parent" && row.id === target.parentId);
+        const anchor = [...parent?.subtasks?.values() ?? []].find((row) => row.id === target.anchorId);
+        if (!parent || target.anchorId && !anchor) throw new Error("NOT_FOUND");
+        this.bulkMoveState = { parentKey: parent.id, anchorKey: anchor?.id ?? "", anchorStart: anchor?.plannedStartDate ?? todayStr() };
+      }
+    } else if (id === "V17") {
+      const target = args as OperationInputMap["V17"], anchorEl = this.barElsByTaskId.get(target.target) ?? this.wrapEl;
+      if (target.kind === "weekly") {
+        const button = this.wrapEl.querySelector<HTMLButtonElement>(".task-gantt-workload-settings-button"); if (!button) throw new Error("UI_UNAVAILABLE"); button.click();
+      } else if (target.kind === "workload") { if (!this.host.settings.ganttFeatureWorkloadEnabled || !this.dates.includes(target.target)) throw new Error("UI_UNAVAILABLE"); this.showWorkloadDaySummaryPopup(target.target, anchorEl); }
+      else if (target.kind === "daily") { const summary = this.dailyTodoSummaries.find((day) => day.date === target.target); if (!summary || !this.host.settings.ganttFeatureDailyTodoEnabled) throw new Error("UI_UNAVAILABLE"); this.showDailyTodoPopover(summary, anchorEl); }
+      else if (target.kind === "event") { const event = this.host.settings.ganttEvents.find((event) => event.key === target.target); if (!event || !this.host.settings.ganttFeatureEventsEnabled || !this.host.settings.ganttFeatureWorkloadEnabled) throw new Error("UI_UNAVAILABLE"); this.showWorkloadPopupForEvent(event, anchorEl); }
+      else {
+        const task = this.tasks.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]).find((row) => row.id === target.target && (target.kind === "parent" ? row.kind === "parent" : true));
+        if (!task) throw new Error("NOT_FOUND");
+        this.closeRichPopover(); this.openRichPopover(task.kind === "parent" ? { kind: "parent", task, anchorEl } : { kind: "subtask", task, anchorEl, barStart: task.plannedStartDate ?? "", barEnd: task.plannedEndDate ?? "" }, new MouseEvent("mouseover"));
+      }
+    } else return { schemaVersion: 1, resultKind: "request", operationId: id, status: "unavailable", effects: [], error: { code: "UI_UNAVAILABLE", retryable: false, nextAction: "Ganttに対応する表示操作を指定してください。" } };
+    return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before, after: { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter], request: args as import("../contracts/context").Json }, affectedIds: [this.host.viewId!] }] };
+  }
   async onOpen(): Promise<void> {
-    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "gantt", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [...this.activeTagFilter], dayWidth: this.dayWidth }));
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "gantt", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [...this.activeTagFilter], dayWidth: this.dayWidth }), (id, input) => this.requestViewOperation(id, input));
 
     this.host.logger.info?.("TaskGanttView", "view opened", {});
 

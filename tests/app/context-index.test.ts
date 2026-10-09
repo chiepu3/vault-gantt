@@ -61,7 +61,7 @@ describe("content-hash ContextReadPort", () => {
     const changes = await service.contextPort.query("context.changes", { sinceRevision: before.revision, scope: { parentIds: [PARENT_ID] } }, context);
     expect(changes.status).toBe("success"); if (changes.status === "success") expect(changes.result.data.changed.map((task) => task.id)).toContain(CHILD_ID);
     expect(await service.contextPort.query("context.changes", { sinceRevision: "unknown", scope: {} }, context)).toMatchObject({ status: "error", error: { code: "RESET_REQUIRED", nextAction: expect.any(String) } });
-    expect(await service.contextPort.query("daily.get", { dateRange: { from: "2026-10-13", to: "2026-10-13" } }, context)).toMatchObject({ status: "error", error: { code: "POLICY_DENIED" } });
+    expect(await service.contextPort.query("daily.get", { dateRange: { from: "2026-10-13", to: "2026-10-13" } }, context)).toMatchObject({ status: "success", result: { data: { kind: "daily", days: [] } } });
   });
   it("scales compact search over 1200 children while fetching only requested page", async () => {
     const { service, context, vault, parent, child } = await runtimeFixture();

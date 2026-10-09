@@ -66,7 +66,7 @@ export interface ViewStateV1 {
 }
 /** View lifecycle registration is supplied only to human UI hosts. */
 export interface ViewStateRegistrationPort {
-  register(viewId: string, read: () => ViewStateV1): () => void;
+  register(viewId: string, read: () => ViewStateV1, request?: (id: ViewOperationId, input: unknown) => Promise<OperationRequestResultV1>): () => void;
 }
 /** Obsidian's direct human UI only. Never pass this port to MCP, Chat SDK or transport code.
  * V14 may persist ganttZoom here; external requests use OperationService and are denied.

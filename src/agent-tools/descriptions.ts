@@ -179,7 +179,7 @@ const LEDGER = {
   "T30": {
     "purpose": "全管理タスクの自動優先度再計算",
     "input": "force?、設定・今日",
-    "constraints": "起動時/設定ONで呼ぶ。auto対象のみ、日単位で抑制、force可、専用コマンドなし。registry外の全ノート再構築",
+    "constraints": "起動時/設定ONで呼ぶ。auto対象のみ、日単位で抑制、force可、専用コマンドなし。標準Markdownを検証し、優先度が変わったノートだけ保存する",
     "undo": "×、履歴記録なし"
   },
   "M01": {
@@ -311,7 +311,7 @@ const LEDGER = {
   "D04": {
     "purpose": "既存ToDoの文面変更",
     "input": "path, line, text",
-    "constraints": "行範囲・file存在・非空を検証。行内容/revisionの同一性検証なし",
+    "constraints": "既存行のpath・0始まりline・itemFingerprint・expectedRevisionを照合。file存在・非空を検証し、外部編集時は再取得",
     "undo": "×、履歴バリア"
   },
   "D05": {
@@ -323,7 +323,7 @@ const LEDGER = {
   "D06": {
     "purpose": "既存ToDo削除／service helperのみ",
     "input": "path, line",
-    "constraints": "`deleteDailyTodoItem` は実装済みだがproduction UIから未呼出。行範囲だけ検証",
+    "constraints": "path・0始まりline・行hash・file revisionを照合したcheckbox行だけ削除。省略された別行は保持",
     "undo": "×、履歴バリア"
   },
   "D07": {
@@ -335,7 +335,7 @@ const LEDGER = {
   "D08": {
     "purpose": "ToDo元ノートを開く／service helperのみ",
     "input": "path",
-    "constraints": "`openDailyTodoFile` 実装済み、現Gantt hoverは読み取り専用、未存在無操作",
+    "constraints": "指定Vault相対pathの既存ノートを開く。未存在はNOT_FOUND、表示だけで保存しない",
     "undo": "―"
   },
   "D09": {
@@ -371,7 +371,7 @@ const LEDGER = {
   "S05": {
     "purpose": "自動優先度ON/OFF",
     "input": "autoPriorityEnabled",
-    "constraints": "保存後T30(force)を呼ぶ。OFFは再計算skip、manualは保持",
+    "constraints": "ONはT30(force)相当の優先度変更と更新日を同時にプレビュー。OFFは再計算skip、manualは保持",
     "undo": "×"
   },
   "S06": {
@@ -455,13 +455,13 @@ const LEDGER = {
   "S19": {
     "purpose": "外部同期URL変更",
     "input": "ganttSyncUrl",
-    "constraints": "trim、`/api/snapshot` 補完。保存後timer再起動、現UI入力時URLの厳密検証なし",
+    "constraints": "trim、`/api/snapshot` 補完。認証情報・query・fragmentなしのHTTP(S) URLを検証。保存後timer再起動、承認payloadのみ即時送信",
     "undo": "×"
   },
   "S20": {
     "purpose": "外部同期間隔変更",
     "input": "ganttSyncIntervalMinutes",
-    "constraints": "Number、NaN/空は5、最小1分、timer再起動",
+    "constraints": "有限数を指定、最小1分へ補正。保存後timer再起動、承認payloadのみ即時送信",
     "undo": "×"
   },
   "S21": {
@@ -789,7 +789,7 @@ export function operationDescription<K extends OperationId>(id: K): OperationDef
     "IDは検索または詳細取得で解決し、同名対象を推測しない。日付は実在するYYYY-MM-DD、期間は両端を含む。",
   ];
   const sideEffects = write ? ["この呼出しは保存しない。previewIdを返し、Obsidianで人間が承認してから保存する。未承認を実行済みと回答しない。", "保留10分。元内容・設定・休日・評価日/TZが変わると失効。複数ファイルは一部保存があり得る。保存済みを再送しない。"] : ["取得結果と保存済み結果と未承認提案を区別する。"];
-  if (id.startsWith("T") || id.startsWith("M")) constraints.push("親期間は子からのderived値。予定・マーカー・時間は子のみ。親はGantt管理可否・順序を持つ。名前変更はpath/keyを変更しない。", "statusとcompletedは連動し、doneなら完了true。変更時updatedAtは今日。自動priority対象は期限によって派生変更する。", "tags・markers・時間mapは全置換。時間単位hours、0.5h刻みへ丸め、0で日を削除、24h/日上限。休日の明示map保存は許可し、UIペイントの休日不可と区別する。");
+  if (id.startsWith("T") || id.startsWith("M")) constraints.push("親期間は子からのderived値。予定・マーカー・時間は子のみ。親はGantt管理可否・順序を持つ。名前変更はpath/keyを変更しない。", "statusとcompletedは連動し、doneなら完了true。通常のタスク変更時updatedAtは今日、T30はupdatedAtを保持。自動priority対象は期限によって派生変更する。", "tags・markers・時間mapは全置換。時間単位hours、0.5h刻みへ丸め、0で日を削除、24h/日上限。休日の明示map保存は許可し、UIペイントの休日不可と区別する。");
   if (id === "T19" || id === "T28" || id === "T29" || id === "T27") constraints.push("直接日付設定では休日snap、マーカー・時間map移動を行わない。片側省略時も保存済み反対側と開始<=終了を検証。");
   if (id === "T20") constraints.push("開始を移動方向の営業日に補正し、営業日数を保って終了を計算。マーカーを営業日相対位置で移し期間内へ収める。単体移動は計画・実績mapを保持。実績ありは警告。");
   if (id === "T21" || id === "T22") constraints.push("伸縮は既存Ganttの営業日snapと交差防止に従う。マーカーと時間mapは保持。実績ありは警告。");
@@ -811,14 +811,14 @@ export function operationDescription<K extends OperationId>(id: K): OperationDef
   if (id === "V20" || id === "V21") constraints.push("履歴先頭・history revision・ファイルbefore/afterを固定した保存提案。承認後に既存のUndo/Redo経路で実行し、履歴が変われば拒否する。");
   if (id === "V23") constraints.push("記録中ログのrevision・出力path・件数を固定して承認待ちにする。ログが増えたら再プレビュー。保存失敗時は記録bufferを保持する。");
   if (["Q04", "Q05", "Q06"].includes(id)) constraints.push("対象は選択中の会話に限定。送信・停止で別会話を暗黙に切り替えない。再試行は失敗応答のみ。送信と再試行はexternal capabilityも必要。");
-  if (id === "T30" || id === "S05") constraints.push("専用の管理値保存effectが契約にないため今回は未実装。契約変更が必要。");
+  if (id === "T30" || id === "S05") constraints.push("service-stateで最終更新日を独立actionとして計画する。全ファイル保存が成功した後だけ管理値を保存する。自動設定OFFは再計算しない、manual優先度は保持する。");
   if (id === "Q07") sideEffects.push("人間へ承認を要求するだけで、保存権限を付与しない。SDK/MCPから実承認は不可。");
   return { purpose: row.purpose, targetKinds: id.startsWith("M") || id >= "T19" && id <= "T26" ? ["subtask"] : id.startsWith("T") ? ["parent", "subtask"] : id.startsWith("E") ? ["event"] : id.startsWith("W") ? ["weekly"] : id.startsWith("D") ? ["daily-todo", "daily-file"] : id.startsWith("S") ? ["setting", "tag-definition", "source"] : id.startsWith("V") ? ["view", "integration"] : ["conversation"],
     parameters: Object.keys(schema.properties ?? {}).map((name) => ({ name, required: schema.required?.includes(name) ?? false, description: name === "patch" && id === "M02" ? "既存マーカーのtitle/dateのみ部分更新。省略fieldとkey/tagsは保持。" : name === "patch" && id === "W02" ? "title/dayOfWeek/minutesPerWeekだけを部分更新。省略は保持。分数は30分単位へ丸め。" : PARAMETER_DOCS[name] ?? `${name}: ${row.input}。schemaの型・範囲に従う。省略した任意値は既存値を保持する。` })),
     constraints, sideEffects, clearSemantics: ["省略は保持。日付の空文字は解除、tags/markersの[]・時間mapの{}は全解除。操作固有の解除入力のみ使用する。"],
     examples: [{ input: OPERATION_EXAMPLES[id] as OperationDefinition<K>["description"]["examples"][number]["input"], explanation: `${row.purpose}の入力例。実ID/hashは事前取得の値へ置き換える。${write ? "返る提案を人間が承認するまで保存されない。" : "返る結果のscopeと省略件数を確認する。"}` }],
     errors: ["INVALID_INPUT", "KIND_MISMATCH", "NOT_FOUND", "REVISION_CONFLICT", "PLAN_EXPIRED", "PLAN_CONSUMED", "POLICY_DENIED", "PARTIAL"],
-    undo: write ? id.startsWith("D") || id === "V23" ? "Undo不可。Daily保存・診断出力は既存の履歴barrierとして扱う。" : id === "V20" || id === "V21" ? "既存Undo/Redo履歴を移動する。新しい履歴entryを追加しない。" : id === "T03" || id === "T05" || id.startsWith("S") || id.startsWith("E") || id.startsWith("W") ? "Undo不可（新規親ファイル/設定保存は履歴対象外）。" : "Markdown更新はUndo対応。履歴先頭かつ現在内容一致が必要。外部編集は上書きしない。" : id === "V14" ? "Undo不可。ズームをsettingsへ保存する直接UI操作。" : OPERATION_CONTRACTS[id][0] === "read" ? "データ変更なし。" : `プラグイン履歴なし（表示/会話状態の操作）。台帳: ${row.undo}` };
+    undo: write ? id === "V23" ? "Undo不可。診断出力は新規ファイル作成と履歴barrier。" : id.startsWith("D") ? "既存Dailyノートの変更は履歴先頭・内容一致時にUndo可。新規ファイル作成・診断出力はUndo不可、履歴barrier。" : id === "V20" || id === "V21" ? "既存Undo/Redo履歴を移動する。新しい履歴entryを追加しない。" : id === "T03" || id === "T05" || id === "T30" || id.startsWith("S") || id.startsWith("E") || id.startsWith("W") ? "Undo不可（新規親ファイル/設定保存は履歴対象外）。" : "Markdown更新はUndo対応。履歴先頭かつ現在内容一致が必要。外部編集は上書きしない。" : id === "V14" ? "Undo不可。ズームをsettingsへ保存する直接UI操作。" : OPERATION_CONTRACTS[id][0] === "read" ? "データ変更なし。" : `プラグイン履歴なし（表示/会話状態の操作）。台帳: ${row.undo}` };
 }
 export function fullDescription(id: OperationId): string {
   const description = operationDescription(id);

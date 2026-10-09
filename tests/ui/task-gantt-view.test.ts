@@ -10,6 +10,8 @@
 
 
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
+import { ViewStateService } from "../../src/app/view-state-service";
+import { PreviewStore } from "../../src/app/preview-store";
 import moment from "moment";
 import { Menu } from "obsidian";
 import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
@@ -502,6 +504,17 @@ describe("TaskGanttView", () => {
 
 
 
+
+  it("registered view requests extend the date range and persist zoom only through human UiPort", async () => {
+    const previews = new PreviewStore({ reject: () => {}, repreview: async () => { throw new Error("unused"); } }), ui = new ViewStateService(previews);
+    const h = makeHostHarness([]), view = new TaskGanttView({} as any, h.host);
+    Object.assign(h.host, { viewId: "gantt-live", viewStatePort: ui }); await view.onOpen();
+    const target = addDays(todayStr(), 365);
+    expect(await ui.request("V15", { viewId: "gantt-live", date: target, offset: 50 })).toMatchObject({ status: "applied" });
+    const wrap = byClass(view.containerEl as unknown as FakeEl, "task-gantt-wrap")[0]; expect(wrap.scrollLeft).toBeGreaterThan(0); expect(h.saveSettings).not.toHaveBeenCalled();
+    await ui.request("V14", { viewId: "gantt-live", dayWidth: 36 }); expect(ui.inspectView("gantt-live")?.dayWidth).toBe(36); expect(h.saveSettings).toHaveBeenCalledOnce();
+    await view.onClose(); expect(ui.inspectView("gantt-live")).toBeUndefined(); previews.dispose();
+  });
 
   describe("identity and onOpen", () => {
     it("exposes the Gantt view type and title", () => {

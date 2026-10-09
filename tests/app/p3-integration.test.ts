@@ -7,6 +7,8 @@ import { ViewStateService } from "../../src/app/view-state-service";
 import { project } from "../../src/app/preview-projector";
 import { operationPreviewSchema, validatePreviewOutcome, type PreviewEventV1, type PreviewEntry } from "../../src/contracts/preview";
 import { createFakeDocument, byTag, deepText, dispatch, type FakeEl } from "../stubs/fake-dom";
+import { ChatSession } from "../../src/ai/chat-session";
+import type { Capability } from "../../src/contracts/context";
 import { runtimeFixture } from "./operation-runtime-fixture";
 import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
 
@@ -50,6 +52,36 @@ describe("P3 real runtime and transport integration", () => {
       expect(events.some((event) => event.kind === "revoked" && event.previewId === pending.previewId)).toBe(true);
       expect((await fetch(handle.endpoint!, { headers: { Authorization: `Bearer ${oldToken}` } })).status).toBe(401);
     } finally { await view.onClose(); await client.close(); await handle.stop(); service.dispose(); }
+  }, 15000);
+
+  it("HTTP dispatches merged Daily, view, control, diagnostics, priority and external operations through real runtime", async () => {
+    let ui: ViewStateService, session: ChatSession;
+    const f = await runtimeFixture({ get ui() { return ui; }, get chatSession() { return session; } });
+    session = new ChatSession({}, f.service, { connected: () => true, async *stream() { yield { type: "text", text: "reply" }; } });
+    let filterText = "";
+    ui = new ViewStateService(f.service.previewPort);
+    ui.register("workbench", () => ({ viewId: "workbench", kind: "workbench", filterText, statusFilter: "all", showCompleted: true, tagNames: [] }), async (id, input) => { filterText = (input as { text: string }).text; return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before: null, after: filterText, affectedIds: ["workbench"] }] }; });
+    f.settings.ganttSyncUrl = "https://example.test/api/snapshot";
+    const capabilities: Capability[] = ["read", "propose", "ui", "external", "diagnostic", "chat-control"];
+    const handle = await startMcpServer({ operations: f.service, previews: f.service.previewPort, context: f.service.contextPort, history: f.historyManager,
+      vaultInstanceId: f.service.vaultInstanceId, principal: { id: "mcp-wiring", label: "wiring", capabilities }, isDesktop: true }, { ...DEFAULT_MCP_SETTINGS, enabled: true, port: 0 });
+    const client = new Client({ name: "p3-wiring", version: "1" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(handle.endpoint!), { requestInit: { headers: { Authorization: `Bearer ${handle.sessionToken}` } } }));
+      const call = async (name: string, input: unknown) => { const result = await client.callTool({ name, arguments: name.endsWith(".propose") ? { input, callerIntentId: name } : input as Record<string, unknown> }); expect(result.isError, name).not.toBe(true); return result; };
+      await call("operations.V07.request", { viewId: "workbench", text: "HTTP filter" }); expect(filterText).toBe("HTTP filter");
+      const oldConversation = session.active.id; await call("operations.Q02.request", {}); expect(session.active.id).not.toBe(oldConversation);
+      await call("operations.V22.request", { name: "http" }); expect(f.logger.inspectRecording().recording).toBe(true);
+      for (const [id, input] of [["D03", { date: "2026-10-13", text: "HTTP Daily" }], ["S05", { autoPriorityEnabled: true }], ["T30", { force: true }], ["V23", {}], ["S21", {}]] as const) {
+        const response = await call(`operations.${id}.propose`, input);
+        const data = response.structuredContent as { data: { previewId: string } };
+        const preview = f.service.previewPort.inspect(data.data.previewId)!; expect(preview.status).toBe("pending");
+        const outcome = await f.service.humanApprovalPort.approve(preview.previewId); expect(outcome.status, id).toBe("success"); expect(validatePreviewOutcome(preview, outcome)).toEqual(outcome);
+      }
+      await call("operations.D01.read", { dateRange: { from: "2026-10-13", to: "2026-10-13" } });
+      expect(f.vault.getFileContent("daily/2026-10-13.md")).toContain("HTTP Daily"); expect(f.sendExternal).toHaveBeenCalledOnce();
+      const tools = await client.listTools(); expect(tools.tools.some((tool) => tool.name.startsWith("operations.V14"))).toBe(false);
+    } finally { await client.close(); await handle.stop(); session.dispose(); f.service.dispose(); }
   }, 15000);
 
   it("authorizes receipt inspection by read capability, Vault, principal and request cancellation", async () => {

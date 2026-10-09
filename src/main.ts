@@ -1,9 +1,13 @@
 import { ApprovalView, VIEW_TYPE_AI_APPROVAL } from "./ui/approval-view";
 import { DEFAULT_MCP_SETTINGS, mcpSettingsSchema, startMcpServer, type McpServerHandle } from "./mcp/server";
+import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "./contracts/operations";
+import type { OperationRequestResultV1 } from "./contracts/preview";
+import { TaskFinderModal } from "./ui/task-finder-modal";
+import { detectConfiguredDailyNoteSettings } from "./app/daily-note-creation";
 import type { PreviewUiHostPorts } from "./contracts/ports";
 import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
-import { Notice, Plugin, TFile, moment, Platform } from "obsidian";
+import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
@@ -269,9 +273,13 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
   readonly operations = this.createOperations();
   private createOperationService(): OperationService {
-    const settings = () => this.settings;
+    const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
     return new OperationService({ get settings() { return settings(); }, historyManager: this.historyManager, coordinator: this.operations,
       persistSettings: (candidate) => this.saveData(candidate),
+      get ui() { return ui(); }, get chatSession() { return session(); }, get logger() { return logger(); },
+      integration: { get pluginVersion() { return version(); }, fetchNationalHolidays: (current) => this.holidayFetcher(current), detectDailyNoteSettings: () => detectConfiguredDailyNoteSettings(this.app) },
+      sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
+      restartSync: () => this.startGanttSyncTimer(false),
       requestApproval: async (previewId) => { await this.uiPort.requestApproval(previewId); },
       invalidate: async () => { this.scheduleGhosts.clear(); this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -284,7 +292,31 @@ export default class TaskWorkbenchPlugin extends Plugin {
     const preview = this.previewPort.inspect(previewId);
     if (preview?.origin.kind === "mcp") await this.activateApprovalView();
     else await this.openAIChat("tab");
-  });
+  }, (id, input) => this.requestGlobalView(id, input));
+  private async activateOperationView(type: string, position: "tab" | "left" | "right" = "tab"): Promise<void> {
+    if (position === "tab") { if (type === VIEW_TYPE_TASK_WORKBENCH) await this.navigation.activateView(); else await this.navigation.activateGanttView(); return; }
+    const workspace = this.app.workspace;
+    const leaf = workspace.getLeavesOfType(type)[0] ?? (position === "left" ? workspace.getLeftLeaf(true) : workspace.getRightLeaf(true));
+    if (!leaf) throw new Error("UI_UNAVAILABLE");
+    await leaf.setViewState({ type, active: true }); await workspace.revealLeaf(leaf);
+  }
+  private async requestGlobalView(id: ViewOperationId, input: unknown): Promise<OperationRequestResultV1> {
+    const args = operationInputSchemas[id].parse(input);
+    if (id === "V01") await this.activateOperationView(VIEW_TYPE_TASK_WORKBENCH, (args as OperationInputMap["V01"]).position);
+    else if (id === "V02") await this.activateOperationView(VIEW_TYPE_TASK_GANTT, (args as OperationInputMap["V02"]).position);
+    else if (id === "V03") {
+      const rows = await this.operationService.rows(), finder = new TaskFinderModal(this.app, { openTaskItem: (row) => this.navigation.openTaskItem?.(row) }, rows);
+      finder.open(); finder.setQuery((args as OperationInputMap["V03"]).query ?? "");
+    } else if (id === "V04") await this.navigation.openTaskItem?.(await this.operationService.get((args as OperationInputMap["V04"]).taskId));
+    else if (id === "V05") await this.openOrCreateDailyTodoForDate((args as OperationInputMap["V05"]).date);
+    else if (id === "V06") await this.openAIChat((args as OperationInputMap["V06"]).position ?? "tab");
+    else if (id === "D08") {
+      const file = this.app.vault.getFileByPath((args as OperationInputMap["D08"]).path);
+      if (!file) throw new Error("NOT_FOUND");
+      await this.app.workspace.getLeaf(false).openFile(file);
+    } else return { schemaVersion: 1, resultKind: "request", operationId: id, status: "unavailable", effects: [], error: { code: "UI_UNAVAILABLE", retryable: false, nextAction: "対象viewIdを指定してください。" } };
+    return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before: null, after: args as import("./contracts/context").Json, affectedIds: [] }] };
+  }
   get historyPort() { return this.historyManager; }
   chatSession!: ChatSession;
   private viewCounter = 0;
@@ -626,7 +658,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
 
-  startGanttSyncTimer(): void {
+  startGanttSyncTimer(sendImmediately = true): void {
     if (this.ganttSyncIntervalId) {
       clearInterval(this.ganttSyncIntervalId);
       this.ganttSyncIntervalId = null;
@@ -641,7 +673,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       void this.runAutomaticGanttSync();
     }, intervalMs);
 
-    void this.runAutomaticGanttSync();
+    if (sendImmediately) void this.runAutomaticGanttSync();
   }
 
   /**

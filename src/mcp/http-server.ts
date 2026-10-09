@@ -1,3 +1,4 @@
+import { setInterval, clearInterval } from "node:timers";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { Socket } from "node:net";
 import { toNodeHandler } from "@modelcontextprotocol/node";

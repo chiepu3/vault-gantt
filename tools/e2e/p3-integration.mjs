@@ -6,7 +6,9 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { startObsidian, enablePlugin } from "./obsidian-runtime.mjs";
+import net from "node:net";
+import { spawn } from "node:child_process";
+import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
 import { loadNoteFormatModule } from "./gen-fixtures.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -26,13 +28,61 @@ const child = { ...common, kind: "subtask", id: childId, key: "review", file: { 
 const parent = { ...common, kind: "parent", id: taskPath, file: { path: taskPath }, title: "P3確認", displayName: "P3確認", ganttEnabled: true, ganttOrder: 1000, subtasks: new Map([["review", child]]) };
 const { buildFullNote } = await loadNoteFormatModule();
 fs.mkdirSync(path.join(vault, "tasks")); fs.writeFileSync(path.join(vault, taskPath), buildFullNote(parent, parent.subtasks));
-let runtime, client;
+// Match ai-design-capture: own Xvfb, literal /tmp profile and own CDP log.
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "vg-p3-runtime-")), profile = path.join(root, "independent-profile"), temp = path.join(root, "runtime-temp");
+for (const dir of [profile, temp]) fs.mkdirSync(dir);
+fs.writeFileSync(path.join(profile, "obsidian.json"), JSON.stringify({ vaults: { a1b2c3d4e5f60718: { path: vault, ts: Date.now(), open: true } } }));
+const outDir = "/mnt/d/vault-gantt-ai-design/v5-integration";
+function assertIsolation() {
+  for (const dir of [vault, root, profile, temp]) assert.ok(fs.realpathSync(dir) === dir && dir.startsWith("/tmp/"));
+  for (let dir = outDir; ; dir = path.dirname(dir)) {
+    if (fs.existsSync(dir)) { const stat = fs.lstatSync(dir); assert.ok(stat.isDirectory() && !stat.isSymbolicLink()); assert.ok(!fs.existsSync(path.join(dir, ".obsidian"))); }
+    if (dir === path.dirname(dir)) break;
+  }
+}
+assertIsolation(); fs.mkdirSync(outDir, { recursive: true }); assertIsolation();
+let runtime, client, xvfb, obsidian;
+async function stopOwnProcess(child) {
+  if (!child?.pid) return;
+  try { process.kill(-child.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+}
+async function launch() {
+  const displayNumber = 91, cdpPort = 9477;
+  for (const port of [6000 + displayNumber, cdpPort]) await new Promise((resolve, reject) => { const server = net.createServer(); server.once("error", reject); server.listen(port, "127.0.0.1", () => server.close(resolve)); });
+  const spawnOwn = async (binary, args, env, logName) => {
+    const log = fs.openSync(path.join(root, logName), "a");
+    const child = spawn(binary, args, { cwd: repo, env, detached: true, stdio: ["ignore", log, log] }); fs.closeSync(log);
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); }); return child;
+  };
+  xvfb = await spawnOwn("Xvfb", [":91", "-screen", "0", "1920x1080x24", "-listen", "tcp", "-nolisten", "unix"], process.env, "xvfb.log");
+  await pollUntil(() => new Promise(resolve => { const socket = net.connect(6091, "127.0.0.1"); socket.once("connect", () => { socket.destroy(); resolve(true); }); socket.once("error", () => { socket.destroy(); resolve(false); }); }), { timeoutMs: 10000, label: "own Xvfb" });
+  assert.equal(xvfb.exitCode, null); assertIsolation();
+  obsidian = await spawnOwn(process.env.OBSIDIAN_BIN ?? "/home/ryory/tools/obsidian-headless/squashfs-root/obsidian", [`--user-data-dir=${profile}`, "--remote-debugging-port=9477", "--disable-gpu"], { ...process.env, DISPLAY: "127.0.0.1:91", TMPDIR: temp }, "obsidian.log");
+  await pollUntil(() => { assert.equal(obsidian.exitCode, null); return fs.readFileSync(path.join(root, "obsidian.log"), "utf8").includes("DevTools listening on ws://127.0.0.1:9477/"); }, { timeoutMs: 45000, label: "own Obsidian CDP" });
+  const cdp = await connectCdp(cdpPort);
+  await cdp.waitForExpression("typeof app !== 'undefined' && !!app.plugins?.manifests['vault-gantt']", { timeoutMs: 60000, label: "synthetic vault manifest" });
+  assert.equal(await cdp.evaluate("app.vault.adapter.getBasePath()"), vault);
+  return { cdp };
+}
+const screenshots = [], runId = new Date().toISOString().replace(/[:.]/g, "-");
+async function shot(cdp, name) {
+  await cdp.evaluate("document.activeElement?.blur()"); await new Promise(resolve => setTimeout(resolve, 400)); assertIsolation();
+  const file = path.join(outDir, `${runId}-${name}.png`), image = await cdp.send("Page.captureScreenshot", { format: "png" });
+  fs.writeFileSync(file, Buffer.from(image.data, "base64"), { flag: "wx" }); screenshots.push(file);
+}
+
 try {
-  runtime = await startObsidian({ vaultDir: vault });
+  runtime = await launch();
   const { cdp } = runtime;
   await enablePlugin(cdp, "vault-gantt");
+  await cdp.evaluate(`(() => { Array.from(document.querySelectorAll('.modal button')).find(button => /Trust author|信頼/.test(button.textContent))?.click(); })()`);
+  await cdp.waitForExpression("!document.querySelector('.modal-container')", { timeoutMs: 10000, label: "trust author" });
+  await cdp.evaluate(`(() => { const remote = require('electron').remote || require('@electron/remote'); remote.getCurrentWindow().setSize(1920, 1080); app.setTheme('moonstone'); })()`);
   const initial = await cdp.evaluate(`(async () => {
     const plugin = app.plugins.plugins["vault-gantt"];
+    try { await plugin.configureMcp(); } catch (error) { throw new Error("MCP startup: " + error.message + "; Node=" + process.versions.node); }
     const taskId = ${JSON.stringify(childId)};
     plugin.chatSession.provider = { connected: () => true, async *stream(request) {
       const preview = await plugin.operationService.propose("T07", { taskId, name: "チャット保存" }, {
@@ -41,20 +91,25 @@ try {
       });
       yield { type: "plan", preview, operationId: "T07", plan: plugin.operationService.legacyPlan(preview), operation: "update", input: { taskId, patch: { displayName: "チャット保存" } } };
     } };
+    plugin.chatSession.configure({ provider: "openai-compatible", endpoint: "http://localhost:1/v1", model: "fake-model", auth: "none", secretId: "" });
     await plugin.openAIChat("tab");
-    await plugin.chatSession.send("子タスクの名前をチャット保存へ変更");
+    const input = document.querySelector(".vg-ai-composer textarea"); input.value = "子タスクの名前をチャット保存へ変更"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector(".vg-ai-send").click();
+    await new Promise(resolve => { const unsubscribe = plugin.chatSession.subscribe(() => { if (plugin.chatSession.active.status !== "running") { unsubscribe(); resolve(); } }); });
     const preview = plugin.previewPort.list().find(p => p.origin.kind === "chat");
     return { previewId: preview.previewId, status: preview.status, content: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(taskPath)})), endpoint: plugin.getMcpStatus() };
   })()`);
   assert.equal(initial.status, "pending"); assert.ok(initial.content.includes("変更前")); assert.ok(!initial.content.includes("チャット保存"));
   const cardSelector = `[data-preview-id="${initial.previewId}"]`;
   await cdp.waitForExpression(`!!document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="approve"]')})`, { timeoutMs: 10000, label: "chat approval card" });
+  await shot(cdp, "01-chat-proposal");
   await cdp.evaluate(`document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="focus"]')}).click()`);
   await cdp.waitForExpression(`!!document.querySelector(".vg-pv-dockhost:not([hidden])")`, { timeoutMs: 10000, label: "Gantt preview dock" });
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].openAIChat("tab")`);
   await cdp.evaluate(`document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="approve"]')}).click()`);
   await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(initial.previewId)})?.status === "success"`, { timeoutMs: 10000, label: "chat approval save" });
   assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("チャット保存"));
+  await shot(cdp, "02-chat-saved");
   // Keep credentials in memory; never include them in logs/artifacts.
   const connection = await cdp.evaluate(`({ endpoint: app.plugins.plugins["vault-gantt"].mcpServer?.endpoint, token: app.plugins.plugins["vault-gantt"].mcpServer?.sessionToken })`);
   assert.ok(connection.endpoint?.startsWith("http://127.0.0.1:"));
@@ -67,18 +122,21 @@ try {
   const mcpSelector = `[data-preview-id="${data.previewId}"] button[data-action="approve"]`;
   await cdp.waitForExpression(`!!document.querySelector(${JSON.stringify(mcpSelector)})`, { timeoutMs: 10000, label: "MCP approval list" });
   assert.ok(!fs.readFileSync(path.join(vault, taskPath), "utf8").includes("MCP保存"));
+  await shot(cdp, "03-mcp-approval-list");
   await cdp.evaluate(`document.querySelector(${JSON.stringify(mcpSelector)}).click()`);
   await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(data.previewId)})?.status === "success"`, { timeoutMs: 10000, label: "MCP human approval save" });
   const status = await client.callTool({ name: "previews.status", arguments: { previewId: data.previewId } });
   assert.equal(status.structuredContent.data.status, "committed"); assert.equal(status.structuredContent.data.descriptor.approvedEvent.kind, "approved");
   assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("MCP保存"));
+  await shot(cdp, "04-mcp-saved");
   const pending = await client.callTool({ name: "operations.T07.propose", arguments: { callerIntentId: "p3-mcp-pending", input: { taskId: childId, name: "未保存" } } });
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].generateMcpToken(true)`);
   const revoked = await cdp.evaluate(`app.plugins.plugins["vault-gantt"].previewPort.inspect(${JSON.stringify(pending.structuredContent.data.previewId)}).status`);
   assert.equal(revoked, "revoked"); assert.ok(!fs.readFileSync(path.join(vault, taskPath), "utf8").includes("未保存"));
-  console.log(JSON.stringify({ vault, chatProvider: "deterministic (no LLM)", chatCardApproveSave: "passed", ganttPreviewDock: "passed", approvalList: "passed", mcpLoopbackApproveSave: "passed", tokenRotationRevokesPending: "passed" }));
+  console.log(JSON.stringify({ vault, root, screenshots, chatProvider: "deterministic (no LLM)", chatCardApproveSave: "passed", ganttPreviewDock: "passed", approvalList: "passed", mcpLoopbackApproveSave: "passed", tokenRotationRevokesPending: "passed" }));
 } finally {
   if (client) await client.close().catch(() => {});
-  runtime?.kill();
+  runtime?.cdp.close();
+  await Promise.all([stopOwnProcess(obsidian), stopOwnProcess(xvfb)]);
   console.log(`P3 test Vault: ${vault}`);
 }

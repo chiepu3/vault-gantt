@@ -8,6 +8,7 @@ import { canonical, contentRevision, fail, flatten, findTask, OperationFailure, 
 import { publicSettings, period, progress, hours, aggregates } from "./preview-projector";
 import { holidaySet } from "./gantt-actions";
 import { addDays } from "./gantt-layout";
+import { DailyReadHandler } from "./operations/daily-handlers";
 const DEFAULT_FIELDS: readonly TaskFieldGroup[] = ["identity", "status", "schedule", "priority", "tags"];
 export function compactTask(row: TaskRow, snapshot: TaskSnapshot, fields: readonly TaskFieldGroup[]): CompactTaskV1 {
   const common = { id: row.id, name: row.displayName || row.title, revision: snapshot.revisions.get(row.file.path)!,
@@ -31,6 +32,7 @@ export class ContextIndex implements ContextReadPort {
   private readonly parsed = new Map<string, { revision: string; parent: TaskRow | null }>();
   private readonly snapshots = new Map<string, TaskSnapshot>();
   private readonly cursors = new Map<string, Cursor>();
+  private readonly dailyReader = new DailyReadHandler();
   private counter = 0;
   constructor(private readonly vaultFactory: () => VaultAdapter, private readonly settings: () => TaskWorkbenchSettings, readonly vaultInstanceId: string) {}
   async snapshot(): Promise<TaskSnapshot> {
@@ -92,6 +94,11 @@ export class ContextIndex implements ContextReadPort {
       const parsed = contextQueryInputSchemas[id].safeParse(input);
       if (!parsed.success) fail("INVALID_INPUT", parsed.error.issues.map((issue) => issue.path.join(".") + ": " + issue.message).join("; "));
       const snapshot = await this.snapshot();
+      if (id === "daily.get") {
+        const args = contextQueryInputSchemas["daily.get"].parse(input);
+        const result = await this.dailyReader.read({ dateRange: args.dateRange, sourceKeys: args.sourceKeys, cursor: args.cursor }, context, snapshot, this.vaultFactory(), { limit: args.limit, includeItems: args.includeItems });
+        return contextQueryOutputSchemas[id].parse({ status: "success", result });
+      }
       const base: Omit<ReadResultV1, "data" | "errors"> & { errors: Array<ReadResultV1["errors"][number]> } = { schemaVersion: 1 as const, resultKind: "read" as const, today: snapshot.today, timezone: snapshot.timezone, snapshotRevision: snapshot.revision,
         errors: snapshot.parseFailures.map((targetId) => ({ code: "PARSE_FAILED" as const, targetId, detail: "管理タスクを解析できません。" })) };
       const binding = canonical({ query: id, input: { ...parsed.data, cursor: undefined }, principal: context.principalId, vault: context.vaultInstanceId });
@@ -165,7 +172,7 @@ export class ContextIndex implements ContextReadPort {
             ...snapshot.settings.ganttEvents.map((event) => ({ kind: "event" as const, id: event.key, cells: hours(event).filter((cell) => cell.date >= from && cell.date <= to).map(mask) })),
             ...snapshot.settings.weeklyWorkSchedules.map((weekly) => ({ kind: "weekly" as const, id: weekly.key, cells: dates.filter((date) => new Date(date + "T00:00:00Z").getUTCDay() === weekly.dayOfWeek).map((date) => mask({ date, plan: weekly.minutesPerWeek / 60, actual: 0 })) })),
           ] } : {}) };
-      } else fail("POLICY_DENIED", "daily.getは未実装です。現在のDaily UIから取得してください。");
+      } else fail("INVALID_INPUT", "対応するcontext queryを指定してください。");
       const result = readResultSchema.parse({ ...base, data });
       return contextQueryOutputSchemas[id].parse({ status: "success", result });
     } catch (error) {

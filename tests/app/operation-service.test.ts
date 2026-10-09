@@ -5,15 +5,33 @@ import { OPERATION_CONTRACTS, operationInputSchemas, type WriteOperationId, type
 import { operationPreviewSchema, validatePreviewOutcome } from "../../src/contracts/preview";
 import { INPUT_FIXTURES, CHILD_ID, PARENT_ID } from "../contracts/fixtures";
 import { buildFullNote, parseTaskFile } from "../../src/core/note-format";
+import { dailyItems } from "../../src/app/operations/daily-handlers";
+import { contentRevision } from "../../src/app/operations/runtime";
 import { buildFileRevision } from "../../src/core/utils";
 afterEach(() => vi.useRealTimers());
 describe("frozen catalog operation runtime", () => {
   for (const id of [...IMPLEMENTED_OPERATION_IDS].filter((id) => OPERATION_CONTRACTS[id][0] === "write") as WriteOperationId[]) {
     it(`${id}: plan is side effect free; commit passes frozen outcome contract`, async () => {
-      const { service, context, vault, settings, parent, persistSettings } = await runtimeFixture();
+      const { service, context: baseContext, vault, settings, parent, persistSettings, logger } = await runtimeFixture();
+      const context = { ...baseContext, capabilities: ["read", "propose", "ui", "external", "diagnostic", "chat-control"] as import("../../src/contracts/context").Capability[] };
       if (id === "T23") { const child = parent.subtasks!.get("review")!; child.plannedStartDate = undefined; child.plannedEndDate = undefined; await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks)); }
+      let input = structuredClone(INPUT_FIXTURES[id]) as unknown as Record<string, unknown>;
+      if (["D04", "D05", "D06", "D07"].includes(id)) {
+        const path = "daily/2026-10-13.md", content = "# Daily\n\n- [ ] 確認\n";
+        await vault.create(path, content);
+        const item = (await dailyItems(path, content, await service.contextPort.snapshot()))[0];
+        const target = { path, line: item.line, expectedRevision: await contentRevision(content), itemFingerprint: item.itemFingerprint };
+        input = id === "D07" ? { date: "2026-10-13", nextItems: [{ kind: "existing", ...target, text: "確認する", completed: true }, { kind: "new", text: "新規", completed: false }] } : { ...input, ...target };
+      }
+      if (id === "V20" || id === "V21") {
+        const prior = await service.propose("T07", { taskId: CHILD_ID, name: "履歴準備" }, context); await service.humanApprovalPort.approve(prior.previewId);
+        if (id === "V21") { const undo = await service.propose("V20", {}, context); await service.humanApprovalPort.approve(undo.previewId); }
+        persistSettings.mockClear();
+      }
+      if (id === "S21") settings.ganttSyncUrl = "https://example.test/api/snapshot";
+      if (id === "V23") logger.startRecording("fixture");
       vault.resetCounters(); const bytes = vault.getFileContent(PARENT_ID), beforeSettings = JSON.stringify(settings);
-      const preview = await service.propose(id, operationInputSchemas[id].parse(INPUT_FIXTURES[id]) as OperationInputMap[typeof id], context);
+      const preview = await service.propose(id, operationInputSchemas[id].parse(input) as OperationInputMap[typeof id], context);
       expect(operationPreviewSchema.safeParse(preview).success).toBe(true);
       expect(vault.getCreateCallCount()).toBe(0); expect(vault.getModifyCallCount()).toBe(0); expect(vault.getFileContent(PARENT_ID)).toBe(bytes); expect(JSON.stringify(settings)).toBe(beforeSettings); expect(persistSettings).not.toHaveBeenCalled();
       const outcome = await service.humanApprovalPort.approve(preview.previewId);

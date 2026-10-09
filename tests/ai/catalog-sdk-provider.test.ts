@@ -10,7 +10,7 @@ it("the actual SDK serializes selected catalog schemas, six legacy tools and com
     const names = request.tools.map((tool: { function: { name: string } }) => tool.function.name);
     for (const name of ["search", "get", "create", "update", "schedule-batch", "update-batch", "workload_propose", "tasks_search", "tasks_get_many", "operations_describe"]) expect(names).toContain(name);
     expect(names.some((name: string) => /^(approve|commit|confirm)$/.test(name))).toBe(false);
-    expect(names).not.toContain("events_propose"); expect(names).not.toContain("daily_get");
+    expect(names).not.toContain("events_propose"); expect(names).toContain("daily_get");
     expect(request.messages[0].content).toContain("snapshotRevision"); expect(request.messages[0].content).not.toContain("review-point");
     const chunk = { id: "fake", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: "確認します" }, finish_reason: null }] };
     const finish = { ...chunk, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };

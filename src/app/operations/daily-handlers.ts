@@ -35,7 +35,7 @@ export async function dailyItems(path: string, content: string, snapshot: TaskSn
 export class DailyReadHandler {
   private readonly cursors = new Map<string, { binding: string; revision: string; offset: number }>();
   private counter = 0;
-  async read(input: OperationInputMap["D01"], context: RequestContext, snapshot: TaskSnapshot, vault: VaultAdapter): Promise<DailyReadResultV1> {
+  async read(input: OperationInputMap["D01"], context: RequestContext, snapshot: TaskSnapshot, vault: VaultAdapter, options: { limit: number; includeItems: boolean } = { limit: 20, includeItems: true }): Promise<DailyReadResultV1> {
     const args = handlerInput("D01", input, context);
     if (context.signal?.aborted) fail("POLICY_DENIED", "要求は停止済みです。");
     const byDate = new Map<string, DailyItem[]>(), files: [string, string][] = [];
@@ -49,7 +49,7 @@ export class DailyReadHandler {
       byDate.set(date, [...byDate.get(date) ?? [], ...await dailyItems(file.path, content, snapshot)]);
     }
     const revision = await contentRevision({ files, settings: snapshot.settingsRevision, today: snapshot.today, timezone: snapshot.timezone });
-    const binding = canonical([context.vaultInstanceId, context.principalId, context.origin, args.dateRange, args.sourceKeys ?? null]);
+    const binding = canonical([context.vaultInstanceId, context.principalId, context.origin, args.dateRange, args.sourceKeys ?? null, options]);
     let offset = 0;
     if (args.cursor) {
       const saved = this.cursors.get(args.cursor);
@@ -57,14 +57,14 @@ export class DailyReadHandler {
       offset = saved.offset;
     }
     const days = [...byDate].filter(([, items]) => items.length).sort(([a], [b]) => a.localeCompare(b)).map(([date, items]) => ({ date, items, totalCount: items.length, completedCount: items.filter((item) => item.completed).length }));
-    const page = days.slice(offset, offset + 20), truncated = offset + page.length < days.length;
+    const page = days.slice(offset, offset + options.limit), truncated = offset + page.length < days.length;
     const nextCursor = truncated ? `daily-cursor-${++this.counter}` : null;
     if (nextCursor) {
       this.cursors.set(nextCursor, { binding, revision, offset: offset + page.length });
       while (this.cursors.size > 100) this.cursors.delete(this.cursors.keys().next().value!);
     }
     if (context.signal?.aborted) fail("POLICY_DENIED", "要求は停止済みです。");
-    return operationOutputSchemas.D01.parse({ schemaVersion: 1, resultKind: "read", today: snapshot.today, timezone: snapshot.timezone, snapshotRevision: revision, errors: [], data: { kind: "daily", days: page, totalMatched: days.length, returned: page.length, truncated, nextCursor } });
+    return operationOutputSchemas.D01.parse({ schemaVersion: 1, resultKind: "read", today: snapshot.today, timezone: snapshot.timezone, snapshotRevision: revision, errors: [], data: { kind: "daily", days: options.includeItems ? page : page.map(({ items: _items, ...summary }) => { void _items; return summary; }), totalMatched: days.length, returned: page.length, truncated, nextCursor } });
   }
 }
 
