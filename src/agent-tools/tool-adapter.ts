@@ -1,3 +1,4 @@
+import type { OperationService } from "../app/operation-service";
 import type { TaskPatch, TaskRow, TaskUpdateCommand, TaskWorkbenchSettings } from "../core/types";
 import type { TaskCache } from "../app/auto-priority";
 import type { Logger } from "../core/logger";
@@ -11,14 +12,15 @@ export interface ToolAdapterHost {
   readonly settings: TaskWorkbenchSettings;
   readonly taskCache: TaskCache;
   readonly operations?: OperationRegistry;
+  readonly operationService?: OperationService;
 }
 export interface ToolPreview { previewId: string; kind: string; summary: string; details: Record<string, unknown> }
 
 // Compatibility facade only: all mutations belong to OperationRegistry.
 export class ToolAdapter {
-  private readonly registry: OperationRegistry;
+  private readonly registry: Pick<OperationRegistry, "plan" | "commit" | "rows" | "get">;
   constructor(private readonly host: ToolAdapterHost, vaultFactory: () => VaultAdapter) {
-    this.registry = host.operations ?? new OperationRegistry({ settings: host.settings, historyManager: new HistoryManager(), invalidate: () => host.taskCache.clear() }, vaultFactory);
+    this.registry = host.operationService ?? host.operations ?? new OperationRegistry({ settings: host.settings, historyManager: new HistoryManager(), invalidate: () => host.taskCache.clear() }, vaultFactory);
   }
   async searchTasks(query?: string): Promise<TaskRow[]> { this.requireEnabled(); return this.registry.rows(query); }
   async getTask(taskId: string): Promise<TaskRow> { this.requireEnabled(); return this.registry.get(taskId); }
