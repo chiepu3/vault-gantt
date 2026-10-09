@@ -350,14 +350,15 @@ export function compareBy(
   sortDir: "asc" | "desc" | undefined,
   a: TaskRow,
   b: TaskRow,
-  todayStart?: moment.Moment
+  todayStart?: moment.Moment,
+  dueBuckets?: ReadonlyMap<string | undefined, number>
 ): number {
   const direction = sortDir === "desc" ? -1 : 1;
 
   if (!sortKey || sortKey === "default") {
     // Default sort: dueBucket primary, dueDate secondary, displayName tertiary
-    const bucketA = dueBucket(a.dueDate, todayStart);
-    const bucketB = dueBucket(b.dueDate, todayStart);
+    const bucketA = dueBuckets?.get(a.dueDate) ?? dueBucket(a.dueDate, todayStart);
+    const bucketB = dueBuckets?.get(b.dueDate) ?? dueBucket(b.dueDate, todayStart);
 
     if (bucketA !== bucketB) {
       return (bucketA - bucketB) * direction;
@@ -397,8 +398,8 @@ export function compareBy(
   }
 
   if (sortKey === "dueDate") {
-    const bucketA = dueBucket(a.dueDate, todayStart);
-    const bucketB = dueBucket(b.dueDate, todayStart);
+    const bucketA = dueBuckets?.get(a.dueDate) ?? dueBucket(a.dueDate, todayStart);
+    const bucketB = dueBuckets?.get(b.dueDate) ?? dueBucket(b.dueDate, todayStart);
 
     if (bucketA !== bucketB) {
       return (bucketA - bucketB) * direction;
