@@ -1,6 +1,18 @@
 import type { OperationErrorV1 } from "../../contracts/context";
 import type { TaskRow, TaskWorkbenchSettings } from "../../core/types";
 import type { VaultAdapter } from "../task-operations";
+import type { RequestContext } from "../../contracts/context";
+import { operationInputSchemas, operationRequestDenial, OPERATION_CONTRACTS, type OperationId, type OperationInputMap } from "../../contracts/operations";
+
+/** The service also guards the Vault binding/lifecycle. Dispatchers never bypass request policy. */
+export function handlerInput<K extends OperationId>(id: K, input: OperationInputMap[K], context: RequestContext): OperationInputMap[K] {
+  const denial = operationRequestDenial(id, context.origin);
+  if (denial) fail(denial.code, denial.nextAction);
+  if (context.signal?.aborted || !OPERATION_CONTRACTS[id][2].every((capability) => context.capabilities.includes(capability))) fail("POLICY_DENIED", "必要なcapabilityがないか、要求が停止済みです。");
+  const parsed = operationInputSchemas[id].safeParse(input);
+  if (!parsed.success) fail("INVALID_INPUT", parsed.error.message);
+  return parsed.data as OperationInputMap[K];
+}
 
 export class OperationFailure extends Error {
   constructor(readonly error: OperationErrorV1, detail: string = error.code) { super(detail); }

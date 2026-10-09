@@ -157,6 +157,13 @@ export class HistoryManager implements HistoryPort {
     return this.redoStack[this.redoStack.length - 1]?.label;
   }
 
+  /** Frozen read-only input for approval-based undo/redo; execution still uses undo/redo. */
+  inspectTransition(direction: "undo" | "redo"): { historyRevision: string; busy: boolean; entry: HistoryEntry | null } {
+    const stack = direction === "undo" ? this.undoStack : this.redoStack;
+    const entry = stack[stack.length - 1];
+    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map((file) => ({ ...file })) } : null };
+  }
+
   undo(vault: Vault): Promise<HistoryOpResult> {
     return this.serialize(async () => {
       if (this.undoStack.length === 0) {
