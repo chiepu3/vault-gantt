@@ -2,11 +2,11 @@
 .SYNOPSIS
   GitHub Actionsの検証済みartifactから、VaultのVault Gantt 3ファイル(main.js/manifest.json/styles.css)だけを更新/rollbackする。
 .DESCRIPTION
-  既定はdry-run。実更新/実rollbackは -Apply が必要。詳細は tools/faroe/README.md。
+  既定はdry-run。実更新/実rollbackは -Apply が必要。詳細は tools/updater/README.md。
 .EXAMPLE
   .\Update-VaultGantt.ps1 -Repository owner/name -RunId 123 -ExpectedCommit <40桁SHA> -VaultPath D:\PreviewVault
 .EXAMPLE
-  .\Update-VaultGantt.ps1 -Rollback -BackupDir $env:TEMP\vault-gantt-faroe\backup-... -VaultPath D:\PreviewVault -Apply
+  .\Update-VaultGantt.ps1 -Rollback -BackupDir $env:TEMP\vault-gantt-updater\backup-... -VaultPath D:\PreviewVault -Apply
 #>
 [CmdletBinding(DefaultParameterSetName = 'Update')]
 param(

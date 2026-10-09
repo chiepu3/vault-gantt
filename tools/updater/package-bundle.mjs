@@ -1,8 +1,8 @@
 // Packages the 3 plugin files + metadata/checksum into a bundle directory.
-// Run by .github/workflows/faroe-artifact.yml only after check/build/E2E all
+// Run by .github/workflows/vault-gantt-updater.yml only after check/build/E2E all
 // succeeded. No external dependencies.
 //
-// usage: node tools/faroe/package-bundle.mjs <outDir>
+// usage: node tools/updater/package-bundle.mjs <outDir>
 // env:   GITHUB_SHA GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_REPOSITORY GITHUB_REF_NAME
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -24,7 +24,7 @@ function requireEnv(name, pattern) {
 }
 
 const outDir = process.argv[2];
-if (!outDir) fail('usage: node tools/faroe/package-bundle.mjs <outDir>');
+if (!outDir) fail('usage: node tools/updater/package-bundle.mjs <outDir>');
 
 const commit = requireEnv('GITHUB_SHA', /^[0-9a-f]{40}$/);
 const runId = requireEnv('GITHUB_RUN_ID', /^\d+$/);

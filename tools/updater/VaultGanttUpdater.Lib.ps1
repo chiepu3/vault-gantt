@@ -1,4 +1,4 @@
-﻿# Vault Gantt Faroe updater - library (dot-sourced by Update-VaultGantt.ps1).
+﻿# Vault Gantt artifact updater - library (dot-sourced by Update-VaultGantt.ps1).
 # Standard Windows PowerShell 5.1 / PowerShell 7 only. No external modules.
 # Never prints tokens; never runs `gh auth login`.
 
@@ -7,7 +7,7 @@ Set-StrictMode -Version 2.0
 $script:PluginId = 'vault-gantt'
 $script:PayloadFiles = @('main.js', 'manifest.json', 'styles.css')
 $script:MetaFiles = @('metadata.json', 'SHA256SUMS')
-$script:WorkflowFile = '.github/workflows/faroe-artifact.yml'
+$script:WorkflowFile = '.github/workflows/vault-gantt-updater.yml'
 $script:MaxEntryBytes = 16MB
 $script:SyncPluginIds = @('remotely-save', 'obsidian-livesync', 'obsidian-git')
 
@@ -243,7 +243,7 @@ function Assert-RunVerified {
 
 function Select-BundleArtifact {
     param($List, [string]$RunId, [string]$ExpectedCommit)
-    $name = "vault-gantt-faroe-$ExpectedCommit"
+    $name = "vault-gantt-updater-$ExpectedCommit"
     $hits = @(@(Get-Prop $List 'artifacts') | Where-Object { (Get-Prop $_ 'name') -ceq $name })
     if ($hits.Count -ne 1) { Stop-Updater "artifact $name が run $RunId にちょうど1件ありません (件数=$($hits.Count))" 2 }
     $a = $hits[0]
@@ -362,7 +362,7 @@ function Assert-BundleContent {
 
 function Resolve-WorkRoot {
     param([string]$WorkRoot, [string]$VaultPath)
-    if (-not $WorkRoot) { $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'vault-gantt-faroe' }
+    if (-not $WorkRoot) { $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'vault-gantt-updater' }
     $w = Get-NormPath $WorkRoot
     if (Test-PathUnder $w $VaultPath) { Stop-Updater "WorkRoot がVault内です: $w" 2 }
     if (Test-PathUnder $VaultPath $w) { Stop-Updater 'WorkRoot がVaultを含んでいます' 2 }
@@ -448,7 +448,7 @@ function Assert-SyncGate {
     if ($risk.Count -eq 0) { return }
     foreach ($r in $risk) { Write-Info "同期リスク: $r" }
     if (-not ($AllowSyncedVault -and $SyncPausedConfirmed)) {
-        Stop-Updater '同期されるVaultへの書き込みは既定で拒否されます。専用のunsynced preview Vaultを使うか、同期を停止した上で -AllowSyncedVault -SyncPausedConfirmed を両方指定してください（tools/faroe/README.md参照）。' 4
+        Stop-Updater '同期されるVaultへの書き込みは既定で拒否されます。専用のunsynced preview Vaultを使うか、同期を停止した上で -AllowSyncedVault -SyncPausedConfirmed を両方指定してください（tools/updater/README.md参照）。' 4
     }
     Write-Info '同期Vaultへの適用が明示的に許可されています（同期停止は利用者の責任で確認済みとして扱います）。'
 }

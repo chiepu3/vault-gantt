@@ -1,5 +1,5 @@
 ﻿<#
-  Independent tests for the Faroe updater. No Pester / no network / no real gh:
+  Independent tests for the artifact updater. No Pester / no network / no real gh:
   gh access is replaced by in-process fakes. Only temp directories are touched.
   usage: powershell -NoProfile -File Test-VaultGanttUpdater.ps1   (exit 0 = all passed)
 #>
@@ -141,14 +141,14 @@ function New-Scenario {
     New-Bundle -ZipPath $zip -Opt $BundleOpt
     $run = [ordered]@{
         id = [int64]$RunId; run_attempt = 1; workflow_id = 9001; status = 'completed'; conclusion = 'success'; head_sha = $Commit; head_branch = $Branch; event = 'push'
-        path = '.github/workflows/faroe-artifact.yml'
+        path = '.github/workflows/vault-gantt-updater.yml'
         repository = [pscustomobject]@{ full_name = $Repo }; head_repository = [pscustomobject]@{ full_name = $Repo }
     }
     foreach ($k in $RunOverride.Keys) { $run[$k] = $RunOverride[$k] }
     $script:FakeRun = [pscustomobject]$run
     $arts = @()
     if (-not $NoArtifact) {
-        $arts = @([pscustomobject]@{ id = 777; name = "vault-gantt-faroe-$Commit"; expired = $false; size_in_bytes = (Get-Item $zip).Length
+        $arts = @([pscustomobject]@{ id = 777; name = "vault-gantt-updater-$Commit"; expired = $false; size_in_bytes = (Get-Item $zip).Length
             workflow_run = [pscustomobject]@{ id = [int64]$RunId; head_sha = $Commit } })
     }
     $script:FakeArtifacts = [pscustomobject]@{ artifacts = $arts }
@@ -183,7 +183,7 @@ function Snapshot { param($S) $h = @{}; foreach ($f in 'main.js', 'manifest.json
 function Assert-Unchanged { param($S, $Before) $now = Snapshot $S; foreach ($k in $Before.Keys) { Assert-True ($now[$k] -ceq $Before[$k]) "$k changed" } }
 function New-Junction { param([string]$Link, [string]$Target) New-Item -ItemType Directory -Path $Target -Force | Out-Null; cmd /c mklink /J "`"$Link`"" "`"$Target`"" | Out-Null; Assert-True (Test-Path $Link) 'junction creation' }
 
-Write-Host 'Vault Gantt Faroe updater tests'
+Write-Host 'Vault Gantt artifact updater tests'
 
 Check 'dry-run: verifies but writes nothing to the vault' {
     $s = New-Scenario; $b = Snapshot $s
@@ -384,13 +384,13 @@ Check 'apply failure: backup tree tampered (junction) before auto-rollback => ex
     Get-ChildItem $s.Work -Directory -Filter 'backup-*' | ForEach-Object { Remove-Junction (Join-Path $_.FullName 'files') }
 }
 Check 'workflow identity: exact path only (prefix collisions refused); explicit branch suffix and workflow_id handled' {
-    foreach ($bad in '.github/workflows/faroe-artifact.yml.extra.yml', '.github/workflows/faroe-artifact.yml2', '.github/workflows/faroe-artifact.yml@refs/heads/other', '.github/workflows/faroe-artifact.yml@refs/heads/main.evil', 'x.github/workflows/faroe-artifact.yml') {
+    foreach ($bad in '.github/workflows/vault-gantt-updater.yml.extra.yml', '.github/workflows/vault-gantt-updater.yml2', '.github/workflows/vault-gantt-updater.yml@refs/heads/other', '.github/workflows/vault-gantt-updater.yml@refs/heads/main.evil', 'x.github/workflows/vault-gantt-updater.yml') {
         $s = New-Scenario -RunOverride @{ path = $bad }; $b = Snapshot $s
         Expect-Refusal { Invoke-Update $s -Apply } 2 'workflow'
         Assert-True ($script:Calls.Count -eq 2) "continued after bad path: $($script:Calls -join ',')"
         Assert-Unchanged $s $b
     }
-    $s = New-Scenario -RunOverride @{ path = '.github/workflows/faroe-artifact.yml@refs/heads/main' }
+    $s = New-Scenario -RunOverride @{ path = '.github/workflows/vault-gantt-updater.yml@refs/heads/main' }
     Assert-True ((Invoke-Update $s).Mode -eq 'DryRun') 'explicit branch suffix should be accepted'
     $s = New-Scenario
     Expect-Refusal { Invoke-Update $s -Extra @{ ExpectedWorkflowId = '1234' } } 2 'workflow_id'
