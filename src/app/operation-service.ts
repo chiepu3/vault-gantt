@@ -35,7 +35,7 @@ import type { ChatSession } from "../ai/chat-session";
 import type { Logger } from "../core/logger";
 
 interface WriteUnit { path: string; before: string | null; after: string; actionIds: string[] }
-interface StoredPlan { preview: OperationPreviewV1; input: unknown; context: RequestContext; snapshot: TaskSnapshot; afterParents: TaskRow[]; afterSettings: TaskWorkbenchSettings; writes: WriteUnit[]; settingKeys: (keyof TaskWorkbenchSettings)[]; changes: TaskChange[]; daily?: DailyPlan; history?: HistoryPlan; diagnostic?: DiagnosticPlan; integration?: IntegrationPlan }
+interface StoredPlan { copyFrom?: string; preview: OperationPreviewV1; input: unknown; context: RequestContext; snapshot: TaskSnapshot; afterParents: TaskRow[]; afterSettings: TaskWorkbenchSettings; writes: WriteUnit[]; settingKeys: (keyof TaskWorkbenchSettings)[]; changes: TaskChange[]; daily?: DailyPlan; history?: HistoryPlan; diagnostic?: DiagnosticPlan; integration?: IntegrationPlan }
 export interface OperationServiceHost {
   readonly settings: TaskWorkbenchSettings;
   readonly historyManager: HistoryManager;
@@ -130,23 +130,32 @@ export class OperationService implements OperationServicePort {
     return operationOutputSchemas[id].parse(result.result);
   }
   async propose<K extends WriteOperationId>(id: K, input: OperationInputMap[K], context: RequestContext): Promise<OperationPreviewV1> {
+    return this.proposeBound(id, input, context);
+  }
+  /** Compose a same-parent copy into one T04 creation preview, with ordinary approval/preconditions. */
+  async proposeTaskCopy(subtaskId: string, name: string, context: RequestContext): Promise<OperationPreviewV1> {
+    operationInputSchemas.T02.parse({ taskId: subtaskId });
+    const parentTaskId = subtaskId.slice(0, subtaskId.lastIndexOf("::"));
+    return this.proposeBound("T04", { parentTaskId, name }, context, subtaskId);
+  }
+  private async proposeBound<K extends WriteOperationId>(id: K, input: OperationInputMap[K], context: RequestContext, copyFrom?: string): Promise<OperationPreviewV1> {
     this.guard(id, input, context);
-    if (!context.callerIntentId) return this.createProposal(id, input, context);
+    if (!context.callerIntentId) return this.createProposal(id, input, context, copyFrom);
     const key = canonical([context.vaultInstanceId, context.principalId, context.callerIntentId]);
-    const binding = canonical({ id, input: operationInputSchemas[id].parse(input) });
+    const binding = canonical({ id, input: operationInputSchemas[id].parse(input), ...(copyFrom ? { copyFrom } : {}) });
     const active = this.planningIntents.get(key);
     if (active) { if (active.binding !== binding) fail("POLICY_DENIED", "同じcallerIntentIdで別の操作を送信しないでください。"); return active.promise; }
-    const promise = this.createProposal(id, input, context);
+    const promise = this.createProposal(id, input, context, copyFrom);
     this.planningIntents.set(key, { binding, promise });
     void promise.finally(() => this.planningIntents.delete(key)).catch(() => undefined);
     return promise;
   }
-  private async createProposal<K extends WriteOperationId>(id: K, input: OperationInputMap[K], context: RequestContext): Promise<OperationPreviewV1> {
+  private async createProposal<K extends WriteOperationId>(id: K, input: OperationInputMap[K], context: RequestContext, copyFrom?: string): Promise<OperationPreviewV1> {
     this.guard(id, input, context);
     if (this.catalog.get(id).classification !== "write") fail("INVALID_INPUT", "write操作IDを指定してください。");
     const parsed = operationInputSchemas[id].parse(input) as OperationInputMap[K];
     const intentKey = context.callerIntentId ? canonical([context.vaultInstanceId, context.principalId, context.callerIntentId]) : undefined;
-    const binding = canonical({ id, input: parsed });
+    const binding = canonical({ id, input: parsed, ...(copyFrom ? { copyFrom } : {}) });
     if (intentKey) {
       const previous = this.intents.get(intentKey);
       if (previous) {
@@ -207,7 +216,15 @@ export class OperationService implements OperationServicePort {
         const copy = afterParents.find((row) => row.id === parent.id)!;
         const date = id === "T06" ? snapForward(args.date, holidaySet(snapshot.settings)) : undefined;
         created = await addSubtask(virtual, parseSettings, copy, args.name, date ? { plannedStartDate: date, plannedEndDate: date } : undefined);
+        if (copyFrom) {
+          const source = findTask(snapshot, copyFrom, "subtask");
+          if (source.file.path !== parent.id) fail("KIND_MISMATCH", "同じ親の子タスクだけを複製できます。");
+          created = { ...structuredClone(source), id: created.id, key: created.key, file: created.file, title: created.title, displayName: created.displayName, createdAt: snapshot.today, updatedAt: snapshot.today };
+          copy.subtasks!.set(created.key!, created);
+          createdContents.set(parent.file.path, buildFullNote(copy, copy.subtasks));
+        }
         const reparsed = parseTaskFile({ path: parent.file.path }, createdContents.get(parent.file.path)!, parseSettings)!;
+        if (copyFrom && canonical(taskPublicState(reparsed.subtasks!.get(created.key!)!)) !== canonical(taskPublicState(created))) fail("INVALID_INPUT", "複製内容を安全に保存できません。元タスクの内容を確認してください。");
         afterParents[afterParents.findIndex((row) => row.id === parent.id)] = reparsed;
       } else {
         created = await createTask(virtual, parseSettings, args.name);
@@ -259,7 +276,7 @@ export class OperationService implements OperationServicePort {
     if (this.disposed || context.signal?.aborted) fail("POLICY_DENIED", "停止した要求の計画は破棄しました。");
     if (new TextEncoder().encode(JSON.stringify(preview)).length > 12 * 1024 * 1024) fail("INVALID_INPUT", "提案が12MiBを超えます。対象を分けて再提案してください。");
     while (this.pending.size >= 50) { const oldest = this.pending.keys().next().value!; this.pending.delete(oldest); this.previewPort.setStatus(oldest, "expired"); }
-    const stored: StoredPlan = { preview, input: structuredClone(parsed), context: { ...context, origin: structuredClone(context.origin), capabilities: [...context.capabilities], signal: undefined }, snapshot, afterParents, afterSettings, writes, settingKeys, changes, daily, history: historyPlanData, diagnostic, integration };
+    const stored: StoredPlan = { copyFrom, preview, input: structuredClone(parsed), context: { ...context, origin: structuredClone(context.origin), capabilities: [...context.capabilities], signal: undefined }, snapshot, afterParents, afterSettings, writes, settingKeys, changes, daily, history: historyPlanData, diagnostic, integration };
     this.pending.set(previewId, stored); this.stored.set(previewId, stored);
     while (this.stored.size > 100) this.stored.delete(this.stored.keys().next().value!);
     if (intentKey) { this.intents.set(intentKey, { binding, previewId }); while (this.intents.size > 100) this.intents.delete(this.intents.keys().next().value!); }
@@ -303,7 +320,7 @@ export class OperationService implements OperationServicePort {
       const committed = new Set(outcome?.actions.filter((action) => action.state === "committed").map((action) => stored.preview.entries.find((entry) => entry.actionId === action.actionId)!.entity).flatMap((entity) => entity.kind === "task" ? [entity.taskId] : []) ?? []);
       input.changes = (input.changes as Record<string, unknown>[]).filter((change) => !committed.has(String(change.taskId))).map(({ expectedRevision: _expected, ...change }) => { void _expected; return change; });
     }
-    const preview = await this.propose(stored.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], { ...stored.context, callerIntentId: undefined, requestId: `repreview-${++this.counter}` });
+    const preview = await this.proposeBound(stored.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], { ...stored.context, callerIntentId: undefined, requestId: `repreview-${++this.counter}` }, stored.copyFrom);
     this.discard(id); return preview;
   }
   private executeApproved(id: string, signal?: AbortSignal): Promise<OperationOutcomeV1> {

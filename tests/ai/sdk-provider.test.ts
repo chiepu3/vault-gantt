@@ -42,6 +42,6 @@ describe("AI SDK Core compatible adapter (fake HTTP only)", () => {
     const events = [];
     for await (const event of provider.stream({ config, messages: [{ role: "user", content: "synthetic test" }], signal: new AbortController().signal })) events.push(event);
     expect(events.filter((event) => event.type === "text").map((event) => event.text).join("")).toBe("合成応答");
-    expect(events.at(-1)?.type).toBe("context"); expect(fetchMock).toHaveBeenCalledOnce();
+    expect(events.at(-1)?.type).toBe("completion"); expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

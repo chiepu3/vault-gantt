@@ -2,6 +2,7 @@ import type { OperationPreviewV1 } from "../contracts/preview";
 import type { WriteOperationId } from "../contracts/operations";
 import type { OperationService } from "../app/operation-service";
 import type { ModelMessage } from "ai";
+import { completionText, type ChatCompletion } from "./chat-completion";
 import type { OperationName, OperationPlan, OperationRegistry, OperationResult } from "../app/operation-registry";
 
 export interface ConnectionConfig {
@@ -11,7 +12,7 @@ export interface ConnectionConfig {
   auth: "secret" | "none";
   secretId: string;
 }
-export type ChatEvent = { type: "text"; text: string } | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown; preview?: OperationPreviewV1; operationId?: WriteOperationId } | { type: "context"; messages: ModelMessage[] };
+export type ChatEvent = { type: "text"; text: string } | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown; preview?: OperationPreviewV1; operationId?: WriteOperationId } | { type: "context"; messages: ModelMessage[] } | { type: "completion"; completion: ChatCompletion };
 export interface ChatRequest { config: ConnectionConfig; messages: ModelMessage[]; signal: AbortSignal; conversationId?: string }
 export interface ChatProvider {
   connected(config: ConnectionConfig): boolean;
@@ -19,8 +20,8 @@ export interface ChatProvider {
 }
 export type ChatStatus = "idle" | "running" | "preview" | "failed" | "cancelled";
 export interface Proposal { preview?: OperationPreviewV1; operationId?: WriteOperationId; plan: OperationPlan; operation: OperationName; input: unknown; result?: OperationResult; consumed: boolean; retryPrepared?: boolean }
-export interface ChatMessage { role: "user" | "assistant"; text: string; proposals: Proposal[] }
-export interface Conversation { id: string; title: string; messages: ChatMessage[]; context: ModelMessage[]; status: ChatStatus; error: string; draft: string }
+export interface ChatMessage { completion?: ChatCompletion; role: "user" | "assistant"; text: string; proposals: Proposal[] }
+export interface Conversation { completion?: ChatCompletion; id: string; title: string; messages: ChatMessage[]; context: ModelMessage[]; status: ChatStatus; error: string; draft: string }
 const emptyConfig = (): ConnectionConfig => ({ provider: "disconnected", endpoint: "", model: "", auth: "secret", secretId: "" });
 
 // Owned by one plugin/vault instance, never saved to plugin data or browser storage.
@@ -102,7 +103,7 @@ export class ChatSession {
     if (!this.connected) { conversation.status = "failed"; conversation.error = "未接続です。接続先・モデル・既存の認証設定を確認してください。"; this.emit(); return; }
     if (conversation.messages.length >= 100) { conversation.error = "会話の上限です。新しい会話を開始してください。"; this.emit(); return; }
     const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
-    conversation.status = "running"; conversation.error = ""; conversation.draft = "";
+    conversation.status = "running"; conversation.error = ""; conversation.draft = ""; conversation.completion = undefined;
     conversation.title = text.trim().slice(0, 32);
     conversation.messages.push({ role: "user", text, proposals: [] });
     const assistant: ChatMessage = { role: "assistant", text: "", proposals: [] };
@@ -123,21 +124,26 @@ export class ChatSession {
         }
         if (event.type === "plan" && !assistant.proposals.some((proposal) => proposal.plan.previewId === event.plan.previewId)) assistant.proposals.push({ preview: event.preview, operationId: event.operationId, plan: event.plan, operation: event.operation, input: event.input, consumed: false });
         if (event.type === "context") context = event.messages;
+        if (event.type === "completion") assistant.completion = conversation.completion = event.completion;
         this.emit();
       }
       if (controller.signal.aborted) this.discardMessage(assistant);
       if (this.owners.get(conversation) === controller) {
-        if (controller.signal.aborted) conversation.status = "cancelled";
+        if (controller.signal.aborted) { conversation.status = "cancelled"; conversation.completion = assistant.completion = { kind: "cancelled", proposalIds: [], toolErrors: 0 }; }
         else {
           const outcomes = conversation.context.slice(contextLength);
           conversation.context = [...messages, ...(context ?? [{ role: "assistant" as const, content: assistant.text }]), ...outcomes];
-          conversation.status = assistant.proposals.length ? "preview" : "idle";
+          assistant.completion ??= { kind: assistant.proposals.length ? "proposal-created" : "no-proposal", proposalIds: assistant.proposals.map((proposal) => proposal.plan.previewId), toolErrors: 0 };
+          conversation.completion = assistant.completion;
+          conversation.status = assistant.proposals.length ? "preview" : ["timeout", "connection-error"].includes(assistant.completion.kind) ? "failed" : "idle";
+          if (conversation.status === "failed") conversation.error = completionText[assistant.completion.kind];
         }
       }
     } catch {
       const cancelled = controller.signal.aborted;
       controller.abort();
       if (this.owners.get(conversation) === controller) {
+        conversation.completion = assistant.completion = { kind: cancelled ? "cancelled" : "connection-error", proposalIds: [], toolErrors: 0 };
         conversation.status = cancelled ? "cancelled" : "failed";
         conversation.error = cancelled ? "停止しました。保存済みの変更は戻しません。" : "応答に失敗しました。認証・モデル・接続先を確認して再試行してください。";
       }
