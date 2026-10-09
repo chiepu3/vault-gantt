@@ -804,16 +804,16 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-composer-actions .vg-ai-send:not(:disabled):hover, .vg-ai-composer-actions .vg-ai-stop:not(:disabled):hover { background: var(--interactive-accent-hover); }
 
 /* Mini before/after timeline inside the result card: dashed = before, solid = after. */
-.vg-ai-chat .vg-ai-mini-timeline { margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-s); background: var(--background-primary); }
-.vg-ai-chat .vg-ai-mini-axis { display: flex; justify-content: space-between; padding-inline-start: 24px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.vg-ai-chat .vg-ai-mini-delta { font-weight: var(--font-semibold); color: var(--text-normal); }
-.vg-ai-chat .vg-ai-mini-row { display: flex; align-items: center; gap: 8px; height: 22px; }
-.vg-ai-chat .vg-ai-mini-label { width: 16px; flex-shrink: 0; font-size: var(--font-ui-smaller); color: var(--text-muted); }
-.vg-ai-chat .vg-ai-mini-track { position: relative; flex: 1; height: 12px; min-width: 0; }
-.vg-ai-chat .vg-ai-mini-bar { position: absolute; height: 10px; border: 1px solid transparent; border-radius: var(--radius-s); }
-.vg-ai-chat .vg-ai-mini-before .vg-ai-mini-bar { border: 1px dashed var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); }
-.vg-ai-chat .vg-ai-mini-after .vg-ai-mini-bar { background: var(--interactive-accent); }
-.vg-ai-chat .vg-ai-mini-unset { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.vg-ai-mini-timeline { margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-s); background: var(--background-primary); }
+.vg-ai-mini-axis { display: flex; justify-content: space-between; padding-inline-start: 24px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.vg-ai-mini-delta { font-weight: var(--font-semibold); color: var(--text-normal); }
+.vg-ai-mini-row { display: flex; align-items: center; gap: 8px; height: 22px; }
+.vg-ai-mini-label { width: 16px; flex-shrink: 0; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.vg-ai-mini-track { position: relative; flex: 1; height: 12px; min-width: 0; }
+.vg-ai-mini-bar { position: absolute; height: 10px; border: 1px solid transparent; border-radius: var(--radius-s); }
+.vg-ai-mini-before .vg-ai-mini-bar { border: 1px dashed var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); }
+.vg-ai-mini-after .vg-ai-mini-bar { background: var(--interactive-accent); }
+.vg-ai-mini-unset { font-size: var(--font-ui-smaller); color: var(--text-muted); }
 
 /* Ghosts share the existing 44px lane: 9px old band above, 24px current bar below. */
 .task-gantt-container .vg-ai-ghost { position: absolute; height: 9px; border: 1px dashed var(--interactive-accent); border-radius: var(--radius-s); color: var(--text-normal); background: color-mix(in srgb, var(--interactive-accent) 16%, transparent); font-size: 0; line-height: 1; text-align: center; pointer-events: auto; z-index: 1; }
@@ -826,3 +826,146 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-container .vg-ai-legend { flex-shrink: 0; margin-inline-start: auto; padding: 2px 10px; border-radius: var(--radius-l); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); font-size: var(--font-ui-smaller); color: var(--text-normal); white-space: nowrap; }
 .task-gantt-container .task-gantt-toolbar { flex-wrap: wrap; }
 .task-gantt-container .task-gantt-version-info { display: none; }
+
+/* Operation preview card (chat, approval list, Gantt preview region).
+ * Meaning is carried by text, borders and patterns; color only reinforces it. */
+.vg-ai-mini-tick { position: absolute; top: 1px; height: 10px; min-width: 4px; border-inline-start: 3px solid var(--interactive-accent); }
+.vg-ai-mini-track .vg-pv-point { position: absolute; top: -2px; width: 12px; font-size: var(--font-ui-small); line-height: 16px; text-align: center; color: var(--text-normal); }
+.vg-ai-mini-track .vg-pv-point-note { position: absolute; inset-inline-end: 0; top: 0; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.vg-pv-points .vg-ai-mini-row { height: 20px; }
+.vg-ai-mini-before .vg-pv-point { opacity: 0.7; }
+.vg-pv-card { display: block; margin-top: 12px; padding: 12px; border: 1px solid var(--background-modifier-border); border-inline-start: 4px solid var(--interactive-accent); border-radius: var(--radius-m); background: var(--background-secondary); color: var(--text-normal); font-size: var(--font-ui-small); line-height: 1.5; overflow-wrap: anywhere; }
+.vg-pv-card[data-focused="true"] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 35%, transparent); }
+.vg-pv-card[data-state="success"] { border-inline-start-color: var(--color-green); }
+.vg-pv-card[data-state="partial"], .vg-pv-card[data-state="applying"] { border-inline-start-color: var(--color-orange); }
+.vg-pv-card[data-state="failed"] { border-inline-start-color: var(--text-error); }
+.vg-pv-card[data-state="cancelled"], .vg-pv-card[data-state="stale"], .vg-pv-card[data-state="expired"], .vg-pv-card[data-state="rejected"], .vg-pv-card[data-state="undone"] { border-inline-start-color: var(--text-faint); border-inline-start-style: dashed; }
+.vg-pv-card[data-state="read"] { border-inline-start-color: var(--background-modifier-border-hover); }
+.vg-pv-header { display: block; margin-bottom: 8px; }
+.vg-pv-headtop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vg-pv-status { display: inline-block; padding: 0 8px; border: 1px solid var(--interactive-accent); border-radius: var(--radius-l); background: color-mix(in srgb, var(--interactive-accent) 16%, transparent); color: var(--text-normal); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); line-height: 18px; white-space: nowrap; }
+.vg-pv-card[data-state="success"] .vg-pv-status { border-color: var(--color-green); background: color-mix(in srgb, var(--color-green) 16%, transparent); }
+.vg-pv-card[data-state="partial"] .vg-pv-status, .vg-pv-card[data-state="applying"] .vg-pv-status { border-color: var(--color-orange); background: color-mix(in srgb, var(--color-orange) 16%, transparent); }
+.vg-pv-card[data-state="failed"] .vg-pv-status { border-color: var(--text-error); background: color-mix(in srgb, var(--text-error) 14%, transparent); }
+.vg-pv-card[data-state="cancelled"] .vg-pv-status, .vg-pv-card[data-state="stale"] .vg-pv-status, .vg-pv-card[data-state="expired"] .vg-pv-status, .vg-pv-card[data-state="rejected"] .vg-pv-status, .vg-pv-card[data-state="undone"] .vg-pv-status { border-style: dashed; border-color: var(--text-faint); background: var(--background-modifier-hover); }
+.vg-pv-title { font-weight: var(--font-semibold); font-size: var(--font-ui-small); }
+.vg-pv-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 4px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-origin { font-weight: var(--font-semibold); color: var(--text-normal); }
+.vg-pv-origin[data-origin="mcp"] { padding: 0 6px; border: 1px solid var(--background-modifier-border-hover); border-radius: var(--radius-s); background: var(--background-primary); }
+.vg-pv-mcp { margin-top: 6px; padding: 6px 8px; border-inline-start: 3px solid var(--text-faint); background: var(--background-primary); color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-note { margin: 6px 0; padding: 4px 8px; border-inline-start: 3px solid var(--background-modifier-border-hover); color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: pre-wrap; }
+.vg-pv-note.is-warn { border-inline-start-color: var(--color-orange); color: var(--text-normal); }
+.vg-pv-note.is-error { border-inline-start-color: var(--text-error); color: var(--text-normal); }
+.vg-pv-note.is-noop { border-inline-start-style: dashed; }
+.vg-pv-result { margin: 6px 0; font-weight: var(--font-semibold); font-size: var(--font-ui-smaller); }
+.vg-pv-entry { padding: 8px 0; border-top: 1px solid var(--background-modifier-border); }
+.vg-pv-entry[data-state="failed"], .vg-pv-entry[data-state="not-attempted"] { border-inline-start: 3px dashed var(--text-faint); padding-inline-start: 8px; }
+.vg-pv-entry[data-state="committed"] { border-inline-start: 3px solid var(--color-green); padding-inline-start: 8px; }
+.vg-pv-entryhead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.vg-pv-entryname { font-weight: var(--font-semibold); min-width: 0; }
+.vg-pv-unsaved { opacity: 0.85; border-inline-start: 2px dashed var(--text-faint); padding-inline-start: 8px; }
+.vg-pv-badge { display: inline-block; padding: 0 6px; border: 1px solid var(--background-modifier-border-hover); border-radius: var(--radius-s); background: var(--background-primary); color: var(--text-normal); font-size: var(--font-ui-smaller); line-height: 18px; white-space: nowrap; }
+.vg-pv-badge[data-kind="create"], .vg-pv-badge[data-kind="created"], .vg-pv-badge[data-kind="committed"], .vg-pv-badge[data-kind="ok"] { border-color: var(--color-green); }
+.vg-pv-badge[data-kind="delete"], .vg-pv-badge[data-kind="deleted"], .vg-pv-badge[data-kind="failed"] { border-color: var(--text-error); border-style: dashed; }
+.vg-pv-badge[data-kind="warn"], .vg-pv-badge[data-kind="not-attempted"], .vg-pv-badge[data-kind="update"], .vg-pv-badge[data-kind="changed"], .vg-pv-badge[data-kind="duplicate"] { border-color: var(--color-orange); }
+.vg-pv-effect { margin-top: 6px; padding: 6px 8px; border-radius: var(--radius-s); background: var(--background-primary); }
+.vg-pv-effect-title, .vg-pv-subtitle { margin-bottom: 4px; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
+.vg-pv-row { display: grid; grid-template-columns: minmax(4.5em, 24%) minmax(0, 1fr); gap: 2px 8px; padding: 3px 0; }
+.vg-pv-row + .vg-pv-row { border-top: 1px dotted var(--background-modifier-border); }
+.vg-pv-label, .vg-pv-key { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-values { display: block; min-width: 0; }
+.vg-pv-before, .vg-pv-after { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.vg-pv-before { color: var(--text-muted); }
+.vg-pv-after { color: var(--text-normal); font-weight: var(--font-semibold); }
+.vg-pv-side { flex: 0 0 1.4em; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-normal); }
+.vg-pv-value { min-width: 0; }
+.vg-pv-row.is-removed .vg-pv-after .vg-pv-value, .vg-pv-object.is-removed, .vg-pv-chip.is-removed { text-decoration: line-through; }
+.task-gantt-container .vg-pv-gname.is-removed { text-decoration: line-through; }
+.vg-pv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vg-pv-text.is-multiline { display: block; max-height: 8em; overflow: auto; padding: 2px 6px; border-inline-start: 2px solid var(--background-modifier-border); }
+.vg-pv-muted { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.vg-pv-chip { padding: 0 6px; border: 1px solid var(--background-modifier-border-hover); border-radius: var(--radius-l); font-size: var(--font-ui-smaller); line-height: 18px; }
+.vg-pv-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vg-pv-object { padding: 4px 8px; border: 1px solid var(--background-modifier-border-hover); border-radius: var(--radius-s); }
+.vg-pv-object.is-removed { border-style: dashed; }
+.vg-pv-kv { display: grid; grid-template-columns: minmax(4.5em, 24%) minmax(0, 1fr); gap: 8px; padding: 2px 0; }
+.vg-pv-derived { margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-derived summary, .vg-pv-rest summary { cursor: pointer; }
+.vg-pv-derived-item { margin-top: 4px; padding-inline-start: 8px; border-inline-start: 2px solid var(--background-modifier-border); }
+.vg-pv-table { display: block; }
+.vg-pv-trow { display: grid; grid-template-columns: 4.5em minmax(0, 1fr) minmax(0, 1fr); gap: 2px 8px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.vg-pv-trow.is-total { margin-top: 2px; border-top: 1px solid var(--background-modifier-border); font-weight: var(--font-semibold); }
+.vg-pv-aggregates { margin-top: 6px; }
+.vg-pv-agg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 2px 0; font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; }
+.vg-pv-agg-date { min-width: 5em; font-weight: var(--font-semibold); }
+.vg-pv-order { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.vg-pv-orderlist { margin: 0; padding-inline-start: 1.6em; max-height: 14em; overflow: auto; }
+.vg-pv-side-title { list-style: none; margin-inline-start: -1.6em; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
+.vg-pv-orderitem { overflow-wrap: anywhere; }
+.vg-pv-tagmark { margin-inline-start: 6px; padding: 0 4px; border: 1px dashed var(--text-faint); border-radius: var(--radius-s); color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-swatch { display: inline-block; width: 12px; height: 12px; margin-inline-end: 4px; border: 1px solid var(--background-modifier-border-hover); border-radius: 3px; vertical-align: middle; }
+.vg-pv-datelist { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.vg-pv-zoom { margin-top: 6px; overflow: hidden; }
+.vg-pv-zoomtrack { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.vg-pv-zoomcell { flex: 0 0 auto; height: 10px; border-inline-end: 1px solid var(--text-faint); background: var(--background-modifier-hover); }
+.vg-pv-projection { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--background-modifier-border); }
+.vg-pv-hidden { margin-top: 4px; padding: 2px 8px; border-inline-start: 3px dotted var(--text-faint); }
+.vg-pv-hidden-title { font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
+.vg-pv-coverage { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: var(--font-ui-smaller); }
+.vg-pv-undo { margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-pv-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.vg-pv-button { font-size: var(--font-ui-small); }
+.vg-pv-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.vg-pv-button[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--interactive-accent); }
+.vg-pv-rest { margin-top: 6px; }
+.vg-pv-readlist { margin: 4px 0; padding-inline-start: 1.4em; }
+.vg-pv-panel { margin-top: 8px; padding: 6px 8px; border: 1px dashed var(--background-modifier-border-hover); border-radius: var(--radius-s); }
+.vg-pv-panel-title { font-weight: var(--font-semibold); }
+.vg-pv-unplaced, .vg-pv-statediff, .vg-pv-ordered { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--background-modifier-border); }
+.vg-pv-chat-previews { display: block; }
+.vg-pv-chat-previews > .vg-pv-card:first-child { margin-top: 0; }
+
+/* Approval list pane */
+.vg-pv-approval { padding: 12px 16px; color: var(--text-normal); }
+.vg-pv-approval-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.vg-pv-approval-list { display: block; max-width: 760px; }
+.vg-pv-group-title { margin: 16px 0 0; font-size: var(--font-ui-small); font-weight: var(--font-semibold); color: var(--text-muted); }
+.vg-pv-empty { margin-top: 24px; padding: 16px; border: 1px dashed var(--background-modifier-border-hover); border-radius: var(--radius-m); color: var(--text-muted); text-align: center; }
+
+/* Gantt preview region: sits above the chart, never inside live rows. */
+.task-gantt-container .vg-pv-dockhost { flex: 0 0 auto; max-height: 45%; overflow: auto; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+.task-gantt-container .vg-pv-dockhost[hidden] { display: none; }
+.task-gantt-container .vg-pv-dock { padding: 8px 12px; font-size: var(--font-ui-small); }
+.task-gantt-container .vg-pv-dock[data-state="success"] .vg-pv-status { border-color: var(--color-green); background: color-mix(in srgb, var(--color-green) 16%, transparent); }
+.task-gantt-container .vg-pv-dock[data-state="partial"] .vg-pv-status, .task-gantt-container .vg-pv-dock[data-state="applying"] .vg-pv-status { border-color: var(--color-orange); background: color-mix(in srgb, var(--color-orange) 16%, transparent); }
+.task-gantt-container .vg-pv-dock[data-state="stale"] .vg-pv-status, .task-gantt-container .vg-pv-dock[data-state="expired"] .vg-pv-status { border-style: dashed; border-color: var(--text-faint); background: var(--background-modifier-hover); }
+.task-gantt-container .vg-pv-dockhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.task-gantt-container .vg-pv-dockhead .vg-pv-button { margin-inline-start: auto; }
+.task-gantt-container .vg-pv-gantt { margin-top: 6px; padding: 6px 8px; border-radius: var(--radius-s); background: var(--background-primary); }
+.task-gantt-container .vg-pv-gruler { display: flex; justify-content: space-between; padding-inline-start: 38%; color: var(--text-muted); font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; }
+.task-gantt-container .vg-pv-gparent { margin-top: 6px; }
+.task-gantt-container .vg-pv-gparent-title { display: flex; align-items: center; gap: 6px; }
+.task-gantt-container .vg-pv-grow { display: grid; grid-template-columns: 38% minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; border-top: 1px dotted var(--background-modifier-border); }
+.task-gantt-container .vg-pv-grow[data-state="context"] { opacity: 0.6; }
+.task-gantt-container .vg-pv-glabel { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.task-gantt-container .vg-pv-gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-gantt-container .vg-pv-gtrack { position: relative; min-width: 0; overflow: hidden; }
+.task-gantt-container .vg-pv-glane { position: relative; height: 12px; }
+.task-gantt-container .vg-pv-glane.is-points { height: 16px; }
+.task-gantt-container .vg-pv-gbar { position: absolute; top: 1px; height: 9px; min-width: 6px; border-radius: var(--radius-s); background: var(--interactive-accent); }
+.task-gantt-container .vg-pv-glane.is-before .vg-pv-gbar { border: 1px dashed var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); }
+.task-gantt-container .vg-pv-gbar.is-removed { background: repeating-linear-gradient(135deg, transparent 0, transparent 3px, var(--text-faint) 3px, var(--text-faint) 4px); border: 1px dashed var(--text-error); }
+.task-gantt-container .vg-pv-gtick { position: absolute; top: 0; height: 11px; min-width: 4px; border-inline-start: 3px solid var(--interactive-accent); }
+.task-gantt-container .vg-pv-gnote { position: relative; margin-inline-start: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.task-gantt-container .vg-pv-gpoint { position: absolute; top: 0; width: 12px; font-size: var(--font-ui-small); line-height: 14px; text-align: center; }
+.task-gantt-container .vg-pv-gpoint.is-before { opacity: 0.6; text-decoration: underline dashed; }
+
+/* Live chart: deadline / marker ghosts and delete labels share the schedule-ghost lane. */
+.task-gantt-container .vg-pv-live-point { position: absolute; width: 12px; height: 12px; font-size: var(--font-ui-smaller); line-height: 12px; text-align: center; color: var(--text-normal); pointer-events: auto; z-index: 2; }
+.task-gantt-container .vg-pv-live-point.is-before { opacity: 0.6; text-decoration: underline dashed; }
+.task-gantt-container .vg-pv-live-point.is-removed { text-decoration: line-through; }
+.task-gantt-container .vg-pv-live-edge, .task-gantt-container .vg-pv-live-note, .task-gantt-container .vg-pv-live-delete { position: absolute; height: 12px; padding-inline: 4px; border-inline-start: 2px dashed var(--text-faint); color: var(--text-normal); font-size: var(--font-ui-smaller); line-height: 12px; white-space: nowrap; pointer-events: auto; z-index: 2; }
+.task-gantt-container .vg-pv-live-delete { border-inline-start-color: var(--text-error); font-weight: var(--font-semibold); }
+.task-gantt-container .vg-pv-delete-target { opacity: 0.55; background-image: repeating-linear-gradient(135deg, transparent 0, transparent 4px, var(--background-primary) 4px, var(--background-primary) 6px); outline: 2px dashed var(--text-error); outline-offset: -2px; }
+.task-gantt-container .vg-ai-ghost.is-proposed { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0, transparent 3px, color-mix(in srgb, var(--interactive-accent) 30%, transparent) 3px, color-mix(in srgb, var(--interactive-accent) 30%, transparent) 5px); }
