@@ -4,6 +4,16 @@
  */
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any */
 
+import { createRequire } from "node:module";
+
+// Use the YAML parser already installed by ESLint instead of approximating YAML.
+const yaml = createRequire(import.meta.url)("js-yaml") as {
+  load: (input: string) => unknown;
+};
+export function parseYaml(input: string): unknown {
+  return yaml.load(input);
+}
+
 export { default as moment } from "moment";
 
 export class Plugin {
