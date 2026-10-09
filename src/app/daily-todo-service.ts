@@ -571,11 +571,11 @@ export function getDailyTodoInsertIndex(lines: string[]): number {
 
 /**
  *
- * Appends `items` into the given date's main daily note, inside its
+ * Appends `items` into the given date's selected daily note, inside its
  * "## ToDoリスト" section (or at EOF if that section/heading is absent).
  * Items whose text is empty/whitespace-only are dropped; if that
  * leaves nothing to insert, this returns false without touching the file.
- * A missing creatable main file is created by requireMainDailyTodoFile.
+ * A missing creatable target file is created by requireMainDailyTodoFile.
  */
 
 export async function insertDailyTodoItems(
@@ -610,10 +610,8 @@ export async function insertDailyTodoItems(
 
 
 /**
- * the main daily note file for `dateStr`, or null when it
- * doesn't exist yet. Meeting notes are never a target here — only "main"
- * daily notes are ever created/appended from the Gantt/DailyToDo UI
- * The meeting-note source is not creatable from the Gantt view.
+ * Resolves the selected target's file for `dateStr`, or null if absent.
+ * The historical function name is retained for existing callers.
  */
 export function getMainDailyTodoFile(
   dateStr: string,
@@ -621,7 +619,7 @@ export function getMainDailyTodoFile(
   settings: TaskWorkbenchSettings
 ): TFile | null {
   const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
+    (candidate) => candidate.key === (settings.dailyTodoTargetSourceKey ?? "main")
   );
   if (!source) {
     return null;
@@ -633,11 +631,9 @@ export function getMainDailyTodoFile(
 
 /**
  *
- * Resolves or auto-creates the configured main source; non-creatable sources
- * retain the Notice-and-null behavior.
- * A missing creatable file is created through createDailyTodoFile; a missing
- * or non-creatable main source receives the Notice-and-null response so
- * every write path has an explicit user-visible outcome.
+ * Resolves or auto-creates the selected target. Existing notes can be
+ * appended to regardless of creation permission. Missing targets require
+ * an explicit selection; missing files require creation permission.
  */
 export async function requireMainDailyTodoFile(
   dateStr: string,
@@ -645,18 +641,18 @@ export async function requireMainDailyTodoFile(
   settings: TaskWorkbenchSettings
 ): Promise<TFile | null> {
   const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
+    (candidate) => candidate.key === (settings.dailyTodoTargetSourceKey ?? "main")
   );
-  const path = source
-    ? getDailyTodoPathForDate(dateStr, source.key, settings)
-    : "";
-  const file = source
-    ? getMainDailyTodoFile(dateStr, app, settings)
-    : null;
+  if (!source) {
+    new Notice("設定で「新規ToDoの追加先」を選んでください。");
+    return null;
+  }
+  const path = getDailyTodoPathForDate(dateStr, source.key, settings);
+  const file = getMainDailyTodoFile(dateStr, app, settings);
   if (file) {
     return file;
   }
-  if (!source || !source.creatableFromGantt) {
+  if (!source.creatableFromGantt) {
     new Notice(
       `デイリーノートがまだありません: ${path}。Templater等で先に作成してから追加してください。`
     );
@@ -668,8 +664,8 @@ export async function requireMainDailyTodoFile(
 /**
  *
  * "新しいタスク" quick-add: inserts one placeholder item into the given
- * date's main daily note and, only on success, invokes onDone (e.g. to
- * refresh a caller's view). A missing or non-creatable main source causes
+ * date's selected daily note and, only on success, invokes onDone (e.g. to
+ * refresh a caller's view). A missing target or non-creatable missing file causes
  * insertDailyTodoItems to return false after its Notice, so this simply
  * stops without calling onDone in that case.
  */

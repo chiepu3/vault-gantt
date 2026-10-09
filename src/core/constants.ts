@@ -64,6 +64,7 @@ export const DEFAULT_SETTINGS: TaskWorkbenchSettings = {
 
   // Daily Notes
   ganttFeatureDailyTodoEnabled: true,
+  dailyTodoTargetSourceKey: "main",
 
   // preserve the shipped default daily-note paths.
   dailyTodoSources: [

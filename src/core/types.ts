@@ -202,6 +202,7 @@ export interface TaskWorkbenchSettings {
   ganttFeatureDailyTodoEnabled: boolean;
 
   dailyTodoSources: DailyTodoSourceConfig[];
+  dailyTodoTargetSourceKey: string;
 
 
   // Rendering/Integration

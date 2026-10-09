@@ -1,7 +1,7 @@
 /* global __VG_VERSION__, __VG_COMMIT__, __VG_BUILT_AT__ */
 import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
-import type { App, Plugin, ColorComponent, TextComponent } from "obsidian";
+import type { App, Plugin, ColorComponent, TextComponent, DropdownComponent } from "obsidian";
 
 import type {
   DailyTodoSourceConfig,
@@ -653,6 +653,27 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
   private renderDailyTodoSourceList(containerEl: HTMLElement): void {
     const sources = this.getEditableDailyTodoSources();
     containerEl.replaceChildren();
+    let targetDropdown: DropdownComponent | undefined;
+
+    new Setting(containerEl)
+      .setName("新規ToDoの追加先")
+      .setDesc(
+        "新規ToDoを追加するソースです。ノートがない場合は「Ganttから新規作成可」をオンにしてください。"
+      )
+      .addDropdown((dropdown) => {
+        targetDropdown = dropdown;
+        const targetKey = this.hostPlugin.settings.dailyTodoTargetSourceKey ?? "main";
+        if (!sources.some((source) => source.key === targetKey)) {
+          dropdown.addOption(targetKey, "追加先を選んでください");
+        }
+        sources.forEach((source, index) => {
+          dropdown.addOption(source.key, source.label || `ソース ${index + 1}`);
+        });
+        dropdown.setValue(targetKey).onChange(async (value) => {
+          this.hostPlugin.settings.dailyTodoTargetSourceKey = value;
+          await this.hostPlugin.saveSettings();
+        });
+      });
 
     if (sources.length === 0) {
       new Setting(containerEl).setDesc(
@@ -675,6 +696,11 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
               // labels are editable in place and save immediately.
               source.label = value.trim();
               row.setName(source.label || `ソース ${index + 1}`);
+              const targetOption = targetDropdown && Array.from(targetDropdown.selectEl.options)
+                .find((option) => option.value === source.key);
+              if (targetOption) {
+                targetOption.text = source.label || `ソース ${index + 1}`;
+              }
               await this.hostPlugin.saveSettings();
             })
         )
