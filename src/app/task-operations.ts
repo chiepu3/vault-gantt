@@ -245,6 +245,16 @@ export async function loadTasks(
       continue;
     }
 
+    // Unchanged files need neither a read nor a parse. Only trust a revision
+    // when the adapter supplies file stats; stat-less adapters still read.
+    const cachedEntry = cache.get(file.path);
+    if (file.stat && cachedEntry && cachedEntry.revision === buildFileRevision(file as any)) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (cachedEntry.taskRow) {
+        result.push(cachedEntry.taskRow);
+      }
+      continue;
+    }
+
     // Read file content
     let content: string;
     try {
@@ -265,7 +275,6 @@ export async function loadTasks(
     const revision = buildFileRevision(file as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 
     // Check cache hit
-    const cachedEntry = cache.get(file.path);
     if (cachedEntry && cachedEntry.revision === revision) {
       // Cache hit - skip parsing
       if (cachedEntry.taskRow) {

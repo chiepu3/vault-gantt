@@ -6,15 +6,17 @@ import process from "process";
 
 const prod = process.argv[2] === "production";
 const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
-let commit = "unknown";
+let commit = process.env.VG_BUILD_COMMIT || "unknown";
 
-try {
-  commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-} catch {
-  // A source archive or other non-Git build environment has no commit hash.
+if (!process.env.VG_BUILD_COMMIT) {
+  try {
+    commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // A source archive or other non-Git build environment has no commit hash.
+  }
 }
 
 const buildOptions = {
