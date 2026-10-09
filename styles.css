@@ -969,3 +969,23 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-container .vg-pv-live-delete { border-inline-start-color: var(--text-error); font-weight: var(--font-semibold); }
 .task-gantt-container .vg-pv-delete-target { opacity: 0.55; background-image: repeating-linear-gradient(135deg, transparent 0, transparent 4px, var(--background-primary) 4px, var(--background-primary) 6px); outline: 2px dashed var(--text-error); outline-offset: -2px; }
 .task-gantt-container .vg-ai-ghost.is-proposed { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0, transparent 3px, color-mix(in srgb, var(--interactive-accent) 30%, transparent) 3px, color-mix(in srgb, var(--interactive-accent) 30%, transparent) 5px); }
+
+/* Settings tab: one card per repeated item (tags, Daily ToDo sources), stacked so a narrow pane never squeezes the fields. */
+.setting-item.vg-settings-card { flex-direction: column; align-items: stretch; gap: 8px; margin-block: 8px; padding: 12px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); }
+.vg-settings-card .setting-item-info { margin-inline-end: 0; }
+.vg-settings-card .setting-item-control { flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 8px; width: 100%; }
+.vg-settings-card .setting-item-control input[type="text"] { flex: 1 1 10em; min-width: 0; }
+.vg-settings-card-stack .setting-item-control input[type="text"] { flex: 1 1 100%; }
+.vg-settings-field-label { flex: 1 1 100%; text-align: start; margin-bottom: -4px; font-size: var(--font-ui-small); color: var(--text-muted); }
+.vg-settings-card .task-workbench-daily-todo-source-preview { flex: 1 1 100%; text-align: start; font-size: var(--font-ui-small); color: var(--text-normal); overflow-wrap: anywhere; }
+.vg-settings-card .task-workbench-daily-todo-source-format-help { flex: 1 1 100%; text-align: start; font-size: var(--font-ui-smaller); color: var(--text-muted); overflow-wrap: anywhere; }
+.vg-settings-card .task-workbench-daily-todo-source-creatable-label { font-size: var(--font-ui-small); color: var(--text-normal); }
+.vg-settings-card .task-workbench-daily-todo-source-creatable-label + .checkbox-container { margin-inline-end: auto; }
+
+/* Settings tab: AI chat connection. Standard Setting rows; only long values need to wrap. */
+.vg-settings-ai .setting-item-control { flex-wrap: wrap; justify-content: flex-end; }
+.vg-settings-ai .setting-item-control input[type="text"], .vg-settings-ai .setting-item-control input[type="password"] { min-width: 0; flex: 1 1 12em; }
+.vg-settings-ai .setting-item-control select { min-width: 0; max-width: 100%; }
+.vg-settings-ai .setting-item-description { overflow-wrap: anywhere; }
+/* Obsidian makes every control full width in a narrow pane; repeated-item cards keep their buttons inline. Specificity matches Obsidian's rule and this comes later. */
+.setting-item.vg-settings-card .setting-item-control button:not(.clickable-icon), .setting-item.vg-settings-card .setting-item-control input[type="color"] { flex: 0 0 auto; width: auto; }

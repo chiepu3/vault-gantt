@@ -4,6 +4,8 @@ import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
 import type { App, Plugin, ColorComponent, TextComponent } from "obsidian";
 
+import { AI_PRESET_LABELS, AI_PRESET_URLS, type AiConnectionSettings, type AiPreset, type ModelListResult } from "../ai/connection-settings";
+
 import type {
   DailyTodoSourceConfig,
   GanttTagDefinition,
@@ -25,6 +27,14 @@ export interface SettingsTabHost {
   configureMcp?(): Promise<void>;
   generateMcpToken?(regenerate?: boolean): Promise<void>;
   copyMcpToken?(): Promise<void>;
+  /** AI chat connection. Optional so hosts without AI chat (and tests) skip the section. */
+  getAiSettings?(): AiConnectionSettings;
+  updateAiSettings?(patch: Partial<Omit<AiConnectionSettings, "apiKey">>): Promise<void>;
+  hasAiApiKey?(): boolean;
+  setAiApiKey?(key: string): Promise<void>;
+  clearAiApiKey?(): Promise<void>;
+  aiKeyStorage?(): "secret" | "data";
+  fetchAiModels?(): Promise<ModelListResult>;
   settings: TaskWorkbenchSettings;
   holidays: HolidayService;
   saveSettings(): Promise<void>;
@@ -438,6 +448,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
           })
       );
 
+    this.renderAiSettings(containerEl.createDiv({ cls: "vg-settings-ai" }));
     this.renderMcpSettings(containerEl);
     const version =
       typeof __VG_VERSION__ === "undefined" ? "unknown" : __VG_VERSION__;
@@ -480,6 +491,250 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
  *
  * Render only the tag-definition portion of the settings tab.
  */
+  private aiModels: string[] = [];
+  private aiModelNote = "";
+  private aiTestNote = "";
+  private aiLoading = false;
+  private aiKeyVisible = false;
+  private aiFetchSeq = 0;
+  private aiEl: HTMLElement | null = null;
+
+  private renderAiSettings(containerEl: HTMLElement): void {
+    const host = this.hostPlugin;
+    if (!host.getAiSettings || !host.updateAiSettings) return;
+    this.aiEl = containerEl;
+    this.aiModels = [];
+    this.aiModelNote = "";
+    this.aiTestNote = "";
+    this.aiKeyVisible = false;
+    this.drawAiSettings();
+    void this.refreshAiModels();
+  }
+
+  /** Fetches the model list. A failure leaves the manual model field in place. */
+  private async refreshAiModels(): Promise<ModelListResult | null> {
+    const host = this.hostPlugin;
+    const settings = host.getAiSettings?.();
+    if (!settings || !host.fetchAiModels) return null;
+    const seq = ++this.aiFetchSeq;
+    if (settings.useApiKey && !host.hasAiApiKey?.()) {
+      this.aiModels = [];
+      this.aiModelNote = "APIキーを登録すると、モデルの一覧を取得できます。";
+      this.aiLoading = false;
+      this.drawAiSettings();
+      return null;
+    }
+    this.aiLoading = true;
+    this.drawAiSettings();
+    const result = await host.fetchAiModels();
+    if (seq !== this.aiFetchSeq) return result;
+    this.aiLoading = false;
+    if (result.ok) {
+      this.aiModels = result.models;
+      this.aiModelNote = "";
+    } else {
+      this.aiModels = [];
+      this.aiModelNote = `一覧を取得できませんでした。${result.reason}モデルIDは直接入力できます。`;
+    }
+    this.drawAiSettings();
+    return result;
+  }
+
+  private async changeAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey">>, refetch: boolean): Promise<void> {
+    try {
+      await this.hostPlugin.updateAiSettings?.(patch);
+    } catch {
+      new Notice("AI接続設定を保存できませんでした。");
+      return;
+    }
+    if (refetch) {
+      this.aiTestNote = "";
+      await this.refreshAiModels();
+    }
+  }
+
+  private drawAiSettings(): void {
+    const el = this.aiEl;
+    const host = this.hostPlugin;
+    const settings = host.getAiSettings?.();
+    if (!el || !settings) return;
+    el.replaceChildren();
+
+    new Setting(el).setName("AI チャット").setHeading();
+    new Setting(el).setDesc(
+      "OpenAI互換のAPIに接続します。メッセージを送ると、会話の内容と必要なタスク情報が接続先へ送られます。"
+    );
+
+    new Setting(el)
+      .setName("接続先")
+      .setDesc("OpenRouter、ローカルで動かしているLLM、その他のOpenAI互換APIから選びます。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions(AI_PRESET_LABELS)
+          .setValue(settings.preset)
+          .onChange(async (value: string) => {
+            const preset = value as AiPreset;
+            this.aiModels = [];
+            this.aiModelNote = "";
+            this.aiTestNote = "";
+            await this.changeAiSettings(
+              preset === "custom"
+                ? { preset, model: "" }
+                : { preset, baseUrl: AI_PRESET_URLS[preset], useApiKey: preset === "openrouter", model: "" },
+              false
+            );
+            this.drawAiSettings();
+            void this.refreshAiModels();
+          })
+      );
+
+    const urlHelp: Record<AiPreset, string> = {
+      openrouter: "OpenRouterの接続先です。変更できません。",
+      local: "LM Studio の既定は http://localhost:1234/v1 です。Ollama は http://localhost:11434/v1 を指定します。",
+      custom: "末尾が /v1 のURLを指定します。https:// で始まるものか、http://localhost のものが使えます。",
+    };
+    new Setting(el)
+      .setName("接続先URL")
+      .setDesc(urlHelp[settings.preset])
+      .addText((text) => {
+        text.inputEl.disabled = settings.preset === "openrouter";
+        text.inputEl.addEventListener("change", () => {
+          this.aiTestNote = "";
+          void this.refreshAiModels();
+        });
+        return text
+          .setValue(settings.baseUrl)
+          .setPlaceholder("https://example.com/v1")
+          .onChange(async (value: string) => {
+            await this.changeAiSettings({ baseUrl: value.trim() }, false);
+          });
+      });
+
+    new Setting(el)
+      .setName("APIキーを使う")
+      .setDesc("ローカルLLMなど、キーが要らない接続先ではオフにします。")
+      .addToggle((toggle) =>
+        toggle.setValue(settings.useApiKey).onChange(async (value: boolean) => {
+          await this.changeAiSettings({ useApiKey: value }, false);
+          this.drawAiSettings();
+          void this.refreshAiModels();
+        })
+      );
+
+    if (settings.useApiKey) this.drawAiKeySetting(el);
+
+    const modelSetting = new Setting(el).setName("モデル");
+    modelSetting.setDesc(
+      this.aiLoading
+        ? "モデルの一覧を取得しています…"
+        : this.aiModels.length
+          ? `接続先から${this.aiModels.length}件のモデルを取得しました。`
+          : this.aiModelNote || "「再取得」で接続先からモデルの一覧を取得します。"
+    );
+    if (this.aiModels.length) {
+      const options: Record<string, string> = {};
+      if (!settings.model) options[""] = "選択してください";
+      else if (!this.aiModels.includes(settings.model)) options[settings.model] = `${settings.model}（一覧にありません）`;
+      for (const id of this.aiModels) options[id] = id;
+      modelSetting.addDropdown((dropdown) =>
+        dropdown.addOptions(options).setValue(settings.model).onChange(async (value: string) => {
+          await this.changeAiSettings({ model: value }, false);
+        })
+      );
+    } else {
+      modelSetting.addText((text) =>
+        text
+          .setValue(settings.model)
+          .setPlaceholder("モデルID")
+          .onChange(async (value: string) => {
+            await this.changeAiSettings({ model: value.trim() }, false);
+          })
+      );
+    }
+    modelSetting.addButton((button) =>
+      button
+        .setButtonText("再取得")
+        .setDisabled(this.aiLoading)
+        .onClick(() => {
+          this.aiTestNote = "";
+          void this.refreshAiModels();
+        })
+    );
+
+    new Setting(el)
+      .setName("接続テスト")
+      .setDesc(this.aiTestNote || "接続先とAPIキーが使えるかを確認します。")
+      .addButton((button) =>
+        button.setButtonText("接続テスト").onClick(async () => {
+          const result = await this.refreshAiModels();
+          const model = host.getAiSettings?.().model ?? "";
+          this.aiTestNote = !result
+            ? "APIキーを登録してから試してください。"
+            : result.ok
+              ? `接続できました。モデルは${result.models.length}件あります。${model && !result.models.includes(model) ? "選択中のモデルは一覧にありません。" : ""}`
+              : `接続できませんでした。${result.reason}`;
+          this.drawAiSettings();
+        })
+      );
+  }
+
+  private drawAiKeySetting(el: HTMLElement): void {
+    const host = this.hostPlugin;
+    const registered = host.hasAiApiKey?.() === true;
+    const configDir = this.app?.vault?.configDir ?? ".obsidian";
+    const where =
+      host.aiKeyStorage?.() === "secret"
+        ? "APIキーはObsidianの秘密ストレージに保存されます。"
+        : `APIキーはこのVaultの ${configDir}/plugins/${host.manifest?.id ?? "vault-gantt"}/data.json に保存されます。`;
+    let input: TextComponent | null = null;
+    let reveal: { setButtonText(text: string): unknown } | null = null;
+    new Setting(el)
+      .setName("APIキー")
+      .setDesc(`${registered ? "登録済みです。入力して保存すると置き換えます。" : "未登録です。"}${where}`)
+      .addText((text) => {
+        input = text;
+        text.inputEl.type = this.aiKeyVisible ? "text" : "password";
+        text.inputEl.autocomplete = "off";
+        return text.setPlaceholder(registered ? "登録済み" : "APIキーを入力");
+      })
+      .addButton((button) => {
+        reveal = button;
+        return button.setButtonText(this.aiKeyVisible ? "隠す" : "表示").onClick(() => {
+          this.aiKeyVisible = !this.aiKeyVisible;
+          if (input) input.inputEl.type = this.aiKeyVisible ? "text" : "password";
+          reveal?.setButtonText(this.aiKeyVisible ? "隠す" : "表示");
+        });
+      })
+      .addButton((button) =>
+        button.setButtonText("保存").setCta().onClick(async () => {
+          const value = input?.getValue().trim() ?? "";
+          if (!value) { new Notice("APIキーを入力してください"); return; }
+          try {
+            await host.setAiApiKey?.(value);
+          } catch {
+            new Notice("APIキーを保存できませんでした。");
+            return;
+          }
+          new Notice("APIキーを保存しました");
+          this.aiTestNote = "";
+          await this.refreshAiModels();
+        })
+      )
+      .addButton((button) =>
+        button.setButtonText("削除").setDisabled(!registered).onClick(async () => {
+          try {
+            await host.clearAiApiKey?.();
+          } catch {
+            new Notice("APIキーを削除できませんでした。");
+            return;
+          }
+          new Notice("APIキーを削除しました");
+          this.aiTestNote = "";
+          await this.refreshAiModels();
+        })
+      );
+  }
+
   private renderMcpSettings(containerEl: HTMLElement): void {
     const settings = this.hostPlugin.getMcpSettings?.(); if (!settings) return;
     new Setting(containerEl).setName("MCP接続").setHeading();
@@ -512,6 +767,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     definitions.forEach((definition, index) => {
       const row = new Setting(containerEl).setName(definition.name);
+      row.settingEl.classList.add("vg-settings-card");
       const swatch = row.controlEl.createSpan({
         cls: "task-workbench-gantt-tag-color-swatch",
       });
@@ -691,21 +947,27 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     sources.forEach((source, index) => {
       const row = new Setting(containerEl)
         .setName(source.label || `ソース ${index + 1}`)
-        .setDesc("ラベル・書式・テンプレートを編集できます。");
+        .setDesc("名前・書式・テンプレートを編集できます。");
       let previewEl: HTMLElement | null = null;
+      row.settingEl.classList.add("vg-settings-card", "vg-settings-card-stack");
 
+      const fieldLabel = (text: string) =>
+        row.controlEl.createDiv({ cls: "vg-settings-field-label", text });
+      fieldLabel("名前");
       row
         .addText((text) =>
           text
             .setValue(source.label)
-            .setPlaceholder("ラベル")
+            .setPlaceholder("名前")
             .onChange(async (value: string) => {
               // labels are editable in place and save immediately.
               source.label = value.trim();
               row.setName(source.label || `ソース ${index + 1}`);
               await this.hostPlugin.saveSettings();
             })
-        )
+        );
+      fieldLabel("書式");
+      row
         .addText((text) =>
           text
             .setValue(source.format)
@@ -721,7 +983,9 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
               }
               await this.hostPlugin.saveSettings();
             })
-        )
+        );
+      fieldLabel("テンプレート");
+      row
         .addText((text) =>
           text
             .setValue(source.templatePath ?? "")
@@ -745,7 +1009,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       });
       row.controlEl.createDiv({
         cls: "task-workbench-daily-todo-source-creatable-label",
-        text: "Ganttから新規作成可",
+        text: "Gantt から新規作成可",
       });
 
       row

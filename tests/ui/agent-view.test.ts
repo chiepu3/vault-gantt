@@ -18,7 +18,7 @@ describe("independent AgentView", () => {
     const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
     const session = new ChatSession(vault, registry, new FakeProvider());
     session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
-    const host = { session, secretIds: () => [], openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false };
+    const host = { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false };
     const view = new AgentView({} as any, host); await view.onOpen();
     await session.send("合成会話"); session.active.draft = "未送信"; await view.onClose();
     const reopened = new AgentView({} as any, host); await reopened.onOpen();
@@ -39,12 +39,16 @@ describe("independent AgentView", () => {
     const session = new ChatSession(vault, registry, new FakeProvider());
     session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
     const undo = vi.fn();
-    const view = new AgentView({} as any, { session, secretIds: () => [], selectedTask: () => "合成タスク", openGantt: vi.fn(), undo, canUndo: () => true });
+    const openSettings = vi.fn();
+    const view = new AgentView({} as any, { session, openSettings, selectedTask: () => "合成タスク", openGantt: vi.fn(), undo, canUndo: () => true });
     await view.onOpen();
     const root = view.containerEl as unknown as FakeEl;
     const button = (text: string) => findAll(root, (el) => el.tagName === "BUTTON" && el.textContent === text)[0] as any;
     expect(findAll(root, (el) => el.tagName === "HEADER")).toHaveLength(1);
-    expect(findAll(root, (el) => el.tagName === "SELECT")).toHaveLength(3); // Connection settings only; model uses Obsidian Menu.
+    // Connection settings live in the plugin settings tab: no form in the chat, the gear only opens it.
+    expect(findAll(root, (el) => el.tagName === "SELECT" || el.tagName === "INPUT")).toHaveLength(0);
+    for (const listener of findAll(root, (el) => el.getAttribute("aria-label") === "接続設定を開く")[0].listeners.click) listener({});
+    expect(openSettings).toHaveBeenCalledTimes(1);
     const model = findAll(root, (el) => el.getAttribute("aria-label") === "モデルを選択")[0];
     expect(model.tagName).toBe("BUTTON"); expect(model.dataset.model).toBe("synthetic");
     expect(model.getAttribute("aria-haspopup")).toBe("menu");
@@ -95,7 +99,7 @@ describe("independent AgentView", () => {
     session.active.messages = [{ role: "assistant", text: "合成提案", proposals: [proposal] }];
     let canUndo = false; let undone = false;
     const undo = vi.fn(async () => { canUndo = false; undone = true; });
-    const view = new AgentView({} as any, { session, secretIds: () => [], openGantt: vi.fn(), undo, canUndo: () => canUndo, undoStatus: () => undone ? "undone" : "unavailable" });
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo, canUndo: () => canUndo, undoStatus: () => undone ? "undone" : "unavailable" });
     await view.onOpen(); const root = view.containerEl as unknown as FakeEl;
     const text = (value: string) => findAll(root, el => el.textContent === value);
     const button = (value: string) => findAll(root, el => el.tagName === "BUTTON" && el.textContent === value)[0];
@@ -146,7 +150,7 @@ describe("AgentView operation preview cards", () => {
     const session = new ChatSession(vault, registry, new FakeProvider());
     session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
     const ports = fakePorts(previews.map((preview) => ({ ...preview, origin: preview.origin.kind === "chat" ? { kind: "chat", conversationId: session.active.id } : preview.origin })));
-    const view = new AgentView({} as any, { session, secretIds: () => [], openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false, previewPorts: ports, ...extras });
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false, previewPorts: ports, ...extras });
     await view.onOpen();
     return { view, session, ports, root: view.containerEl as unknown as FakeEl };
   }

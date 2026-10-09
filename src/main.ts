@@ -66,6 +66,7 @@ import { OperationRegistry } from "./app/operation-registry";
 import { ScheduleGhostStore } from "./app/schedule-ghost";
 import { ChatSession } from "./ai/chat-session";
 import { SdkChatProvider } from "./ai/sdk-provider";
+import { AI_SECRET_ID, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig, type AiConnectionSettings, type ModelListResult } from "./ai/connection-settings";
 import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
 import { NavigationService as ObsidianNavigationService } from "./app/navigation-service";
 import { ToolAdapter } from "./agent-tools/tool-adapter";
@@ -276,7 +277,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private settingsPersistence?: SettingsPersistence;
   private settingsWriter(): SettingsPersistence {
     return this.settingsPersistence ??= new SettingsPersistence({ settings: () => this.settings,
-      coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData(settings), read: () => this.loadData() });
+      coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData({ ...settings, ai: this.aiSettings }), read: () => this.loadData() });
   }
   private createOperationService(): OperationService {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
@@ -326,6 +327,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
   get historyPort() { return this.historyManager; }
   chatSession!: ChatSession;
+  /** AI connection settings live next to, not inside, `settings` so snapshots, previews, AI context and MCP never see them. */
+  aiSettings: AiConnectionSettings = defaultAiSettings();
+  aiModels: string[] = [];
   private viewCounter = 0;
   private mcpServer?: McpServerHandle;
   private mcpTail: Promise<void> = Promise.resolve();
@@ -440,7 +444,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
  * remain undefined.
  */
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    this.aiSettings = normalizeAiSettings(ai);
+    if (this.aiSettings.apiKey && this.app.secretStorage) {
+      // Move a key saved in data.json into secret storage as soon as it is available.
+      try { this.app.secretStorage.setSecret(AI_SECRET_ID, this.aiSettings.apiKey); delete this.aiSettings.apiKey; await this.writeAiSettings(); }
+      catch { new Notice("APIキーを秘密ストレージへ移せませんでした。"); }
+    }
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
     this.settingsPersistence = undefined; this.settingsWriter();
@@ -450,6 +461,51 @@ export default class TaskWorkbenchPlugin extends Plugin {
  *
  * Persists the in-memory settings object to disk.
  */
+  private writeAiSettings(): Promise<void> {
+    return this.operations.coordinate(() => this.saveData({ ...this.settings, ai: this.aiSettings }));
+  }
+  /** Applies the saved connection to the chat session; the session is only touched when something changed. */
+  applyAiConnection(): void {
+    const next = toConnectionConfig(this.aiSettings), current = this.chatSession.config;
+    if (JSON.stringify(next) !== JSON.stringify(current)) this.chatSession.configure(next);
+  }
+  getAiSettings(): AiConnectionSettings { const { apiKey: _key, ...rest } = this.aiSettings; void _key; return { ...rest }; }
+  async updateAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey">>): Promise<void> {
+    this.aiSettings = normalizeAiSettings({ ...this.aiSettings, ...patch });
+    await this.writeAiSettings();
+    this.applyAiConnection();
+  }
+  aiKeyStorage(): "secret" | "data" { return this.app.secretStorage ? "secret" : "data"; }
+  private readAiApiKey(): string | null {
+    const stored = this.app.secretStorage ? this.app.secretStorage.getSecret(AI_SECRET_ID) : this.aiSettings.apiKey ?? null;
+    return stored ? stored : null;
+  }
+  hasAiApiKey(): boolean { return !!this.readAiApiKey(); }
+  async setAiApiKey(key: string): Promise<void> {
+    const value = key.trim();
+    if (!value) throw new Error("EMPTY_KEY");
+    if (this.app.secretStorage) { this.app.secretStorage.setSecret(AI_SECRET_ID, value); delete this.aiSettings.apiKey; }
+    else this.aiSettings = { ...this.aiSettings, apiKey: value };
+    await this.writeAiSettings();
+    this.applyAiConnection();
+  }
+  async clearAiApiKey(): Promise<void> {
+    // Secret storage has no delete; an empty value is treated as not registered.
+    this.app.secretStorage?.setSecret(AI_SECRET_ID, "");
+    delete this.aiSettings.apiKey;
+    await this.writeAiSettings();
+    this.applyAiConnection();
+  }
+  async fetchAiModels(): Promise<ModelListResult> {
+    const result = await listModels({ baseUrl: this.aiSettings.baseUrl, apiKey: this.aiSettings.useApiKey ? this.readAiApiKey() : null });
+    if (result.ok) this.aiModels = result.models;
+    return result;
+  }
+  openAiSettings(): void {
+    const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+    if (!setting) { new Notice("設定画面の「Vault Gantt」を開いてください。"); return; }
+    setting.open(); setting.openTabById(this.manifest.id);
+  }
   async saveSettings(): Promise<void> {
     await this.settingsWriter().save();
     this.operationService.clearSavedProjection();
@@ -469,12 +525,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
     this.unloading = false;
     this.historyManager.attachVault(() => this.vaultAdapter());
 
-    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id) => this.app.secretStorage?.getSecret(id) ?? null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
+    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id) => id === AI_SECRET_ID ? this.readAiApiKey() : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
+    this.applyAiConnection();
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,
       previewPorts: this.previewUiPorts("chat"),
       closeDiff: () => this.scheduleGhosts.clear(),
-      secretIds: () => this.app.secretStorage?.listSecrets() ?? [],
+      openSettings: () => this.openAiSettings(),
+      modelOptions: () => this.aiModels,
       selectedTask: () => {
         const file = this.app.workspace.getActiveFile();
         const folder = this.settings.taskFolder.replace(/\/+$/, "");
