@@ -143,6 +143,15 @@ describe("schedule, deadline and marker", () => {
 });
 
 describe("workload, order, membership and the rest", () => {
+  it("shows only changed days, folds unchanged ones and says what the total covers", () => {
+    const parent = root(); const same = { plan: 1, actual: 1 };
+    const cells = [{ date: "2026-10-12", before: same, after: same }, { date: "2026-10-13", before: { plan: 0, actual: 0 }, after: { plan: 0, actual: 2 } }, { date: "2026-10-14", before: same, after: same }, { date: "2026-10-15", before: same, after: same }];
+    renderEffect(parent, { kind: "workload", cells } as never, {});
+    const shown = text(parent);
+    expect(shown).toContain("10-13"); expect(shown).not.toContain("10-12"); expect(shown).not.toContain("10-15");
+    expect(shown).toContain("ほか 3日は変更なし"); expect(shown).toContain("変更した1日分だけの合計");
+    const allSame = root(); renderEffect(allSame, { kind: "workload", cells: [cells[0]] } as never, {}); expect(text(allSame)).toContain("時間の変更はありません");
+  });
   it("lists dates with plan/actual before and after, totals, and the projection's capacity warning", () => {
     const parent = root();
     renderEffect(parent, PREVIEW_FIXTURES.partial.entries[0].effects[1], { projection: PREVIEW_FIXTURES.partial.projection });

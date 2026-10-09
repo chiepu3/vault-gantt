@@ -7,7 +7,7 @@ import { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { FakeVault } from "../app/fake-vault";
 import { FakeProvider } from "../ai/fake-provider";
-import { createFakeDocument, findAll, type FakeEl } from "../stubs/fake-dom";
+import { createFakeDocument, deepText, findAll, type FakeEl } from "../stubs/fake-dom";
 import { CREATE_PREVIEW, MCP_PREVIEW } from "../contracts/fixtures";
 import { fakePorts } from "./preview-fakes";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -136,6 +136,29 @@ describe("independent AgentView", () => {
     expect(findAll(fake, (el) => el.tagName === "CODE" && el.textContent === "コード")).toHaveLength(1);
     expect(findAll(fake, (el) => ["IMG", "A", "SCRIPT"].includes(el.tagName))).toHaveLength(0);
     expect(findAll(fake, (el) => el.textContent.includes("<img"))).toHaveLength(1);
+  });
+  it("renders tables, headings, lists, quotes and code blocks as elements, with status words in Japanese", () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const root = document.createElement("div");
+    renderChatText(root, "## 見出し\n\n| タスク | 状態 |\n|---|---|\n| 画面設計 | in_progress |\n| 経費 | `active` |\n1. 一つ目\n* 二つ目\n> 引用\n```\n<b>x</b>\n```");
+    const fake = root as unknown as FakeEl;
+    expect(findAll(fake, (el) => el.tagName === "TABLE")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.tagName === "TH").map((el) => deepText(el))).toEqual(["タスク", "状態"]);
+    const cells = findAll(fake, (el) => el.tagName === "TD").map((el) => deepText(el));
+    expect(cells).toEqual(["画面設計", "作業中", "経費", "進行中"]);
+    expect(findAll(fake, (el) => el.className === "vg-ai-heading")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.className === "vg-ai-li").map((el) => deepText(el))).toEqual(["• 一つ目".replace("•", "1."), "• 二つ目"]);
+    expect(findAll(fake, (el) => el.className === "vg-ai-quote")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.tagName === "PRE" && deepText(el) === "<b>x</b>")).toHaveLength(1);
+    expect(findAll(fake, (el) => ["B", "A", "IMG"].includes(el.tagName))).toHaveLength(0);
+  });
+  it("keeps a half-received reply readable (open fence, header without separator, unclosed bold)", () => {
+    vi.stubGlobal("document", createFakeDocument());
+    for (const partial of ["| a | b |", "| a | b |\n|---", "```\nコード", "**途中", "- "]) {
+      const root = document.createElement("div");
+      expect(() => renderChatText(root, partial), partial).not.toThrow();
+      expect(deepText(root as unknown as FakeEl).length, partial).toBeGreaterThan(0);
+    }
   });
   it("diff text conveys old/new dates and non-date changes without relying on color", () => {
     expect(diffText([{ taskId: "synthetic", name: "作業", fields: [{ field: "plannedStartDate", before: "2026-10-01", after: "2026-10-03" }, { field: "notes", before: "旧", after: "新" }] }])).toBe("作業\n開始日: 2026-10-01 → 2026-10-03\nメモ: 旧 → 新");

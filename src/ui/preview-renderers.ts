@@ -338,18 +338,22 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
   },
   workload: (parent, effect, ctx) => {
     if (!effect.cells.length) { note(parent, "時間の変更はありません。"); return; }
+    const changed = effect.cells.filter((cell) => !same(cell.before, cell.after));
+    const unchanged = effect.cells.length - changed.length;
+    if (!changed.length) { note(parent, "時間の変更はありません。"); return; }
     const grid = h(parent, "div", "vg-pv-table"); grid.setAttribute("role", "table"); grid.setAttribute("aria-label", "日別の作業時間");
-    for (const cell of effect.cells) {
+    for (const cell of changed) {
       const row = h(grid, "div", "vg-pv-trow"); row.setAttribute("role", "row");
       h(row, "div", "vg-pv-tdate", fmtDate(cell.date).replace(/^\d{4}-/, ""));
       h(row, "div", "vg-pv-tcell", "予定 " + cellText(cell.before.plan, cell.after.plan));
       h(row, "div", "vg-pv-tcell", "実績 " + cellText(cell.before.actual, cell.after.actual));
     }
-    const sum = totals(effect.cells);
+    const sum = totals(changed);
     const total = h(grid, "div", "vg-pv-trow is-total"); total.setAttribute("role", "row");
     h(total, "div", "vg-pv-tdate", "合計");
     h(total, "div", "vg-pv-tcell", "予定 " + cellText(sum.planBefore, sum.planAfter));
     h(total, "div", "vg-pv-tcell", "実績 " + cellText(sum.actualBefore, sum.actualAfter));
+    h(parent, "div", "vg-pv-muted", `合計は、変更した${changed.length}日分だけの合計です。` + (unchanged ? `ほか ${unchanged}日は変更なし。` : ""));
     if (ctx.projection) renderAggregates(parent, ctx.projection);
   },
   order: (parent, effect, ctx) => {

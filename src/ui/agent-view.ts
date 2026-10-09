@@ -30,18 +30,60 @@ export function diffText(diffs: TaskDiff[]): string {
 }
 function display(value: unknown): string { return value === "" || value == null ? "未設定" : typeof value === "string" ? value : JSON.stringify(value); }
 
-// Deliberately small Markdown subset: text nodes only, no HTML or executable links.
+// Deliberately small Markdown subset: text nodes only, no HTML, images or executable links.
+// Rendering is line based and stateless, so a half-received reply (open code fence, table
+// without its separator row yet, unclosed bold) stays readable and re-renders cleanly.
+const STATUS_WORDS: Record<string, string> = { active: "進行中", in_progress: "作業中", done: "完了", completed: "完了", todo: "未着手", pending: "未着手", blocked: "保留", cancelled: "中止" };
+function inline(parent: HTMLElement, content: string): void {
+  for (const part of content.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
+    if (!part) continue;
+    const tag = part.startsWith("**") && part.endsWith("**") && part.length > 4 ? "strong" : part.startsWith("`") && part.endsWith("`") && part.length > 2 ? "code" : "span";
+    const node = document.createElement(tag);
+    const raw = tag === "strong" ? part.slice(2, -2) : tag === "code" ? part.slice(1, -1) : part;
+    node.textContent = tag === "code" && STATUS_WORDS[raw] ? STATUS_WORDS[raw] : raw;
+    if (tag === "code" && STATUS_WORDS[raw]) node.title = raw;
+    parent.appendChild(node);
+  }
+}
+const tableCells = (line: string): string[] => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+const isSeparator = (line: string | undefined): boolean => !!line && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line) && line.includes("|");
 export function renderChatText(parent: HTMLElement, text: string): void {
-  for (const line of text.split("\n")) {
-    const block = document.createElement(line.startsWith("- ") ? "div" : "p");
-    parent.appendChild(block);
-    const content = line.startsWith("- ") ? "• " + line.slice(2) : line;
-    for (const part of content.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
-      const tag = part.startsWith("**") && part.endsWith("**") ? "strong" : part.startsWith("`") && part.endsWith("`") ? "code" : "span";
-      const node = document.createElement(tag);
-      node.textContent = tag === "strong" ? part.slice(2, -2) : tag === "code" ? part.slice(1, -1) : part;
-      block.appendChild(node);
+  const lines = text.split("\n");
+  const add = (tag: string, className?: string): HTMLElement => { const node = document.createElement(tag); if (className) node.className = className; parent.appendChild(node); return node; };
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (/^\s*```/.test(line)) {
+      const body: string[] = [];
+      index++;
+      while (index < lines.length && !/^\s*```/.test(lines[index])) body.push(lines[index++]);
+      const code = document.createElement("code"); code.textContent = body.join("\n");
+      add("pre", "vg-ai-codeblock").appendChild(code);
+      continue;
     }
+    if (line.includes("|") && line.trim().startsWith("|") && isSeparator(lines[index + 1])) {
+      const wrap = add("div", "vg-ai-table-wrap"); const table = document.createElement("table"); wrap.appendChild(table);
+      const head = document.createElement("thead"); const headRow = document.createElement("tr"); head.appendChild(headRow); table.appendChild(head);
+      for (const cell of tableCells(line)) { const th = document.createElement("th"); inline(th, cell); headRow.appendChild(th); }
+      const body = document.createElement("tbody"); table.appendChild(body);
+      index += 2;
+      while (index < lines.length && lines[index].trim().startsWith("|")) {
+        const row = document.createElement("tr"); body.appendChild(row);
+        for (const cell of tableCells(lines[index])) { const td = document.createElement("td"); inline(td, STATUS_WORDS[cell] ?? cell); row.appendChild(td); }
+        index++;
+      }
+      index--;
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) { inline(add("p", "vg-ai-heading"), heading[2]); continue; }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { add("hr"); continue; }
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote) { inline(add("p", "vg-ai-quote"), quote[1]); continue; }
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (bullet) { inline(add("div", "vg-ai-li"), "• " + bullet[1]); continue; }
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+    if (numbered) { inline(add("div", "vg-ai-li"), numbered[1] + ". " + numbered[2]); continue; }
+    inline(add("p"), line);
   }
 }
 
@@ -165,7 +207,7 @@ export class AgentView extends ItemView {
       this.element(item, "strong").textContent = message.role === "user" ? "あなた" : "AI";
       if (running && message.role === "assistant" && index === conversation.messages.length - 1) item.dataset.streaming = "true";
       const body = this.element(item, "div"); body.className = "vg-ai-message-body";
-      renderChatText(body, message.text || (running ? "応答中…" : "（テキスト応答なし）"));
+      renderChatText(body, message.text || (running ? "応答中…" : message.proposals.length ? "変更案を作成しました。" : "変更案はありません。"));
       for (const proposal of message.proposals) this.renderProposal(item, proposal, running);
       if (message.role === "assistant" && index === conversation.messages.length - 1) {
         this.renderToolStatus(item);

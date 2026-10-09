@@ -756,7 +756,16 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-assistant { padding: 0; }
 .vg-ai-message-body p, .vg-ai-message-body div { margin: 0 0 6px; white-space: pre-wrap; }
 .vg-ai-message-body > :last-child { margin-bottom: 0; }
-.vg-ai-message-body > div { padding-inline-start: 1.1em; text-indent: -1.1em; }
+.vg-ai-message-body > .vg-ai-li { padding-inline-start: 1.1em; text-indent: -1.1em; }
+.vg-ai-message-body .vg-ai-heading { font-weight: var(--font-semibold); }
+.vg-ai-message-body .vg-ai-quote { padding-inline-start: 10px; border-inline-start: 3px solid var(--background-modifier-border); color: var(--text-muted); }
+.vg-ai-message-body .vg-ai-codeblock { margin: 0 0 6px; padding: 8px 10px; overflow-x: auto; border-radius: var(--radius-s); background: var(--background-modifier-hover); white-space: pre; font-size: var(--font-ui-smaller); }
+.vg-ai-message-body .vg-ai-codeblock code { padding: 0; background: transparent; font-size: inherit; }
+.vg-ai-message-body hr { margin: 8px 0; border: 0; border-top: 1px solid var(--background-modifier-border); }
+.vg-ai-message-body .vg-ai-table-wrap { max-width: 100%; margin: 0 0 6px; overflow-x: auto; white-space: normal; }
+.vg-ai-message-body table { border-collapse: collapse; font-size: var(--font-ui-smaller); }
+.vg-ai-message-body th, .vg-ai-message-body td { padding: 3px 8px; border: 1px solid var(--background-modifier-border); text-align: start; vertical-align: top; white-space: normal; }
+.vg-ai-message-body th { background: var(--background-secondary); font-weight: var(--font-semibold); }
 .vg-ai-message-body code { padding: 1px 5px; border-radius: var(--radius-s); background: var(--background-modifier-hover); font-size: .9em; }
 .vg-ai-message[data-streaming="true"] .vg-ai-message-body > :last-child::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-inline-start: 6px; border-radius: 50%; background: var(--interactive-accent); vertical-align: middle; }
 .vg-ai-tools { margin-top: 10px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
