@@ -7,6 +7,7 @@ import {
 } from "../../src/ui/preview-renderers";
 import { EDITABLE_SETTING_KEYS, } from "../../src/contracts/context";
 import { OPERATION_IDS } from "../../src/contracts/operations";
+import { runtimeFixture } from "../app/operation-runtime-fixture";
 import { cardTitle, renderOperationPreviewCard } from "../../src/ui/operation-preview-card";
 import { OPERATION_LABELS, entryTitle, fieldLabel, operationLabel } from "../../src/ui/preview-renderers";
 import { renderNonGanttPanel } from "../../src/ui/preview-panels";
@@ -19,6 +20,31 @@ const root = () => makeFakeEl("div") as unknown as HTMLElement & FakeEl;
 const text = (el: unknown) => deepText(el as FakeEl);
 
 describe("effect renderers cover every contract variant", () => {
+  it.each(["S30", "S31", "S32"] as const)("%s shows source format, template and creation permission instead of only its unchanged label", async (id) => {
+    const f = await runtimeFixture();
+    f.settings.dailyTodoSources[0].format = "[daily/]YYYY-MM-DD";
+    f.settings.dailyTodoSources[0].creatableFromGantt = false;
+    const input = id === "S30" ? { sourceKey: "main", momentFormat: "[other/]YYYY-MM-DD" }
+      : id === "S31" ? { sourceKey: "main", templatePath: "templates/daily.md" } : { sourceKey: "main", creatableFromGantt: true };
+    const preview = await f.service.propose(id, input as any, f.context);
+    const parent = root(); for (const entry of preview.entries) renderEntryEffects(parent, entry, {});
+    const before = byClass(parent as any, "vg-pv-before")[0], after = byClass(parent as any, "vg-pv-after")[0];
+    expect(text(before)).toContain("日次"); expect(text(after)).toContain("日次");
+    expect(text(before)).toContain("ファイル名形式"); expect(text(after)).toContain("ファイル名形式");
+    expect(text(before)).toContain("[daily/]YYYY-MM-DD");
+    expect(text(after)).toContain(id === "S30" ? "[other/]YYYY-MM-DD" : "[daily/]YYYY-MM-DD");
+    expect(text(before)).toContain("テンプレート"); expect(text(before)).toContain("未設定");
+    expect(text(after)).toContain(id === "S31" ? "templates/daily.md" : "未設定");
+    expect(text(before)).toContain("Ganttから作成"); expect(text(before)).toContain("オフ");
+    expect(text(after)).toContain(id === "S32" ? "オン" : "オフ");
+    for (const internal of ["dailyTodoSources", "templatePath", "creatableFromGantt", '"format"', '"label"']) expect(text(parent)).not.toContain(internal);
+    f.service.dispose();
+  });
+  it("keeps every field of named object arrays in scalar summaries with Japanese labels", () => {
+    const text = formatScalar("dailyTodoSources", [{ label: "日次", format: "[other/]YYYY-MM-DD", templatePath: "templates/daily.md", creatableFromGantt: false }]);
+    for (const value of ["日次", "ファイル名形式: [other/]YYYY-MM-DD", "テンプレート: templates/daily.md", "Ganttから作成: オフ"]) expect(text).toContain(value);
+    expect(text).not.toContain("templatePath"); expect(text).not.toContain("creatableFromGantt");
+  });
   it("has a renderer and a title for each effect kind", () => {
     expect(PREVIEW_EFFECT_KINDS).toHaveLength(18);
     expect(Object.keys(EFFECT_RENDERERS).sort()).toEqual([...PREVIEW_EFFECT_KINDS].sort());

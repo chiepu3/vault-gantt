@@ -282,6 +282,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
     return new OperationService({ get settings() { return settings(); }, historyManager: this.historyManager, coordinator: this.operations,
       persistSettings: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
+      publishesSettings: true,
       get ui() { return ui(); }, get chatSession() { return session(); }, get logger() { return logger(); },
       integration: { get pluginVersion() { return version(); }, fetchNationalHolidays: (current) => this.holidayFetcher(current), detectDailyNoteSettings: () => detectConfiguredDailyNoteSettings(this.app) },
       sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },

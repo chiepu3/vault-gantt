@@ -381,6 +381,22 @@ describe("TaskWorkbenchPlugin", () => {
       callback({ path: "external.md" }); await flush();
       expect(h.plugin.previewPort.focusedPreviewId()).toBeNull(); expect(h.plugin.previewPort.inspectOutcome(preview.previewId)).toBeDefined();
     });
+    it("does not republish the AI setting over UI changes that returned to the original value", async () => {
+      const h = createHarness({ autoPriorityEnabled: false, currentStatusRows: 28 }); await h.plugin.onload();
+      const service = h.plugin.operationService;
+      const preview = await service.propose("S04", { currentStatusRows: 50 }, service.legacyContext());
+      let release!: () => void, started!: () => void;
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const ai = service.humanApprovalPort.approve(preview.previewId); await writing;
+      h.plugin.settings.currentStatusRows = 60; const first = h.plugin.saveSettings();
+      h.plugin.settings.currentStatusRows = 28; const last = h.plugin.saveSettings();
+      release(); expect((await ai).status).toBe("success"); expect(h.plugin.settings.currentStatusRows).toBe(28);
+      await Promise.all([first, last]);
+      expect(h.plugin.settings.currentStatusRows).toBe(28); expect(await h.plugin.loadData()).toMatchObject({ currentStatusRows: 28 });
+    });
   });
 
   describe("onload: holiday migration", () => {

@@ -110,8 +110,9 @@ export function formatScalar(field: string, value: unknown): string {
   }
   if (Array.isArray(value) && !value.length) return "なし";
   if (Array.isArray(value)) {
-    const items = value.map((item) => typeof item === "string" || typeof item === "number" ? String(item) : isRecord(item) ? String(item.name ?? item.label ?? item.title ?? "") : "");
-    if (items.every(Boolean)) return items.join("、");
+    return value.map((item) => isRecord(item)
+      ? Object.entries(item).filter(([key]) => key !== "id").map(([key, value]) => `${fieldLabel(key)}: ${formatScalar(key, value)}`).join(" / ")
+      : formatScalar(field, item)).join("、");
   }
   return JSON.stringify(value);
 }
@@ -134,6 +135,17 @@ export function renderValue(parent: HTMLElement, field: string, value: unknown):
   if (field === "ganttMarkers" && Array.isArray(value)) {
     if (!value.length) { h(parent, "span", "vg-pv-muted", "なし"); return; }
     for (const marker of value) h(parent, "div", "vg-pv-line", isRecord(marker) ? `◆ ${String(marker.title)}（${String(marker.date)}）` : String(marker));
+    return;
+  }
+  if (Array.isArray(value) && value.some(isRecord)) {
+    for (const item of value) {
+      if (field === "dailyTodoSources" && isRecord(item)) {
+        // Stable source IDs stay in the tooltip. Show every editable field,
+        // including absent templates, on both sides of the change.
+        describeObject(parent, { id: item.key, label: item.label, format: item.format,
+          templatePath: item.templatePath ?? null, creatableFromGantt: item.creatableFromGantt });
+      } else describeObject(parent, item);
+    }
     return;
   }
   const text = formatScalar(field, value);

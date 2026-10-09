@@ -42,6 +42,8 @@ export interface OperationServiceHost {
   readonly coordinator: Pick<OperationRegistry, "coordinate">;
   /** Persist the candidate copy. Live settings are published only after success. No timers/network here. */
   persistSettings?(candidate: TaskWorkbenchSettings, keys: readonly (keyof TaskWorkbenchSettings)[]): Promise<void>;
+  /** The host publishes live settings with its own UI generation guards. */
+  readonly publishesSettings?: boolean;
   readonly ui?: UiPort;
   readonly chatSession?: ChatSession;
   readonly logger?: Logger;
@@ -65,6 +67,7 @@ export class OperationService implements OperationServicePort {
   private disposed = false;
   private readonly lifecycle = new AbortController();
   private readonly ownWrites = new Map<string, { content: string; until: number }>();
+  private projectionChangeGeneration = 0;
   constructor(private readonly host: OperationServiceHost, private readonly vaultFactory: () => VaultAdapter, readonly vaultInstanceId: string) {
     this.contextPort = new ContextIndex(vaultFactory, () => host.settings, vaultInstanceId);
     this.previewPort = new PreviewStore({ reject: (id) => this.pending.delete(id), repreview: (id) => this.repreview(id) });
@@ -76,6 +79,7 @@ export class OperationService implements OperationServicePort {
     for (const [id, plan] of this.pending) if (plan.snapshot.revision !== snapshot.revision) { this.pending.delete(id); this.previewPort.setStatus(id, "stale"); }
   }
   clearSavedProjection(): void {
+    this.projectionChangeGeneration++;
     this.ownWrites.clear();
     const id = this.previewPort.focusedPreviewId();
     if (id && this.previewPort.inspectOutcome(id)) this.previewPort.focus(null);
@@ -303,6 +307,7 @@ export class OperationService implements OperationServicePort {
     signal = signal ? AbortSignal.any([signal, this.lifecycle.signal]) : this.lifecycle.signal;
     const stored = this.pending.get(id);
     if (!stored) return Promise.reject(new Error("PLAN_CONSUMED"));
+    const projectionGeneration = this.projectionChangeGeneration;
     if (Date.parse(stored.preview.expiresAt) > Date.now()) this.previewPort.markApproved(id);
     else this.previewPort.setStatus(id, "expired");
     this.pending.delete(id);
@@ -355,7 +360,7 @@ export class OperationService implements OperationServicePort {
           const settingsActions = stored.preview.entries.filter((entry) => entry.entity.kind !== "task" && !entry.effects.some((effect) => effect.kind === "external-send"));
           const beforeSettings = structuredClone(this.host.settings);
           try { await this.host.persistSettings!(candidate, stored.settingKeys); } catch (error) { settingsActions.forEach((entry) => failed.add(entry.actionId)); throw error; }
-          for (const key of stored.settingKeys) if (canonical(this.host.settings[key]) === canonical(beforeSettings[key])) Object.assign(this.host.settings, { [key]: structuredClone(candidate[key]) });
+          if (!this.host.publishesSettings) for (const key of stored.settingKeys) if (canonical(this.host.settings[key]) === canonical(beforeSettings[key])) Object.assign(this.host.settings, { [key]: structuredClone(candidate[key]) });
           this.host.historyManager.clear(); settingsActions.forEach((entry) => committed.add(entry.actionId));
           if (stored.integration?.restartSync) this.host.restartSync!();
         }
@@ -393,7 +398,13 @@ export class OperationService implements OperationServicePort {
         ...(history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action))) ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries) : project(stored.snapshot, parents, stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
       if (committed.size && !this.disposed) { try { await this.host.invalidate(); } catch { /* Saved bytes remain authoritative. */ } }
       const validated = validatePreviewOutcome(stored.preview, outcome);
-      if (!this.disposed) this.previewPort.publish(validated); return structuredClone(validated);
+      if (!this.disposed) {
+        // An external change while applying cannot clear an outcome that
+        // does not exist yet. Clear its focus before listeners see the result.
+        if (projectionGeneration !== this.projectionChangeGeneration && this.previewPort.focusedPreviewId() === id) this.previewPort.focus(null);
+        this.previewPort.publish(validated);
+      }
+      return structuredClone(validated);
     });
   }
   // Compatibility backend for the original six tools and existing human chat cards.

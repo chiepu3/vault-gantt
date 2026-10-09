@@ -7,6 +7,39 @@ import { holidaySet } from "../../src/app/gantt-actions";
 
 afterEach(() => vi.useRealTimers());
 describe("final review operation regressions", () => {
+  it("also detects an external change while an approved operation is waiting for the queue", async () => {
+    const f = await runtimeFixture();
+    const preview = await f.service.propose("T07", { taskId: CHILD_ID, name: "saved" }, f.context);
+    f.service.previewPort.focus(preview.previewId);
+    let release!: () => void, started!: () => void;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const blocked = f.registry.coordinate(() => new Promise<void>((resolve) => { release = resolve; started(); }));
+    await waiting;
+    const approved = f.service.humanApprovalPort.approve(preview.previewId);
+    expect(f.service.previewPort.inspect(preview.previewId)?.status).toBe("applying");
+    await f.vault.create("outside.md", "external"); await f.service.handleVaultChange("outside.md", "create");
+    release(); await blocked; const outcome = await approved;
+    expect(outcome.status).toBe("success"); expect(f.service.previewPort.focusedPreviewId()).toBeNull();
+    expect(f.service.previewPort.inspectOutcome(preview.previewId)).toEqual(outcome); f.service.dispose();
+  });
+  it("clears applying focus when an external edit precedes outcome publication and keeps the receipt", async () => {
+    const f = await runtimeFixture();
+    const preview = await f.service.propose("T07", { taskId: CHILD_ID, name: "saved" }, f.context);
+    f.service.previewPort.focus(preview.previewId);
+    let release!: () => void, started!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const writing = new Promise<void>((resolve) => { started = resolve; });
+    const original = f.vault.modify.bind(f.vault);
+    vi.spyOn(f.vault, "modify").mockImplementationOnce(async (file, content) => { await original(file, content); started(); await blocked; });
+    const approved = f.service.humanApprovalPort.approve(preview.previewId); await writing;
+    expect(f.service.previewPort.inspect(preview.previewId)?.status).toBe("applying");
+    expect(f.service.previewPort.inspectOutcome(preview.previewId)).toBeUndefined();
+    await original(f.vault.getFileByPath(PARENT_ID)!, f.vault.getFileContent(PARENT_ID)! + "\nexternal edit\n");
+    await f.service.handleVaultChange(PARENT_ID, "modify");
+    release(); const outcome = await approved;
+    expect(f.service.previewPort.focusedPreviewId()).toBeNull();
+    expect(outcome.status).toBe("success"); expect(f.service.previewPort.inspectOutcome(preview.previewId)).toEqual(outcome); f.service.dispose();
+  });
   it("does not mistake an external edit matching a failed write for its own successful save", async () => {
     const f = await runtimeFixture();
     const saved = await f.service.propose("T07", { taskId: CHILD_ID, name: "saved" }, f.context);

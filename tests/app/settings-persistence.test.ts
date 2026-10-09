@@ -12,6 +12,33 @@ function fixture() {
   return { settings, writer, write, read, coordinate, disk: () => disk };
 }
 describe("shared settings persistence", () => {
+  it("also protects UI patches already queued before the AI publisher starts", async () => {
+    const f = fixture(); let release!: () => void;
+    const blocked = f.coordinate(() => new Promise<void>((resolve) => { release = resolve; }));
+    await Promise.resolve();
+    const candidate = { ...f.settings, ganttZoom: 50 };
+    const ai = f.coordinate(() => f.writer.persist(candidate, ["ganttZoom"]));
+    f.settings.ganttZoom = 60; const first = f.writer.save();
+    f.settings.ganttZoom = 28; const last = f.writer.save();
+    release(); await blocked; await ai; expect(f.settings.ganttZoom).toBe(28);
+    await Promise.all([first, last]); expect(f.disk().ganttZoom).toBe(28);
+  });
+  it("keeps the last UI zoom of 28 after AI saves 50 while UI saves 60 then 28", async () => {
+    const f = fixture(); expect(f.settings.ganttZoom).toBe(28);
+    let release!: () => void, started!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const writing = new Promise<void>((resolve) => { started = resolve; });
+    const originalWrite = f.write.getMockImplementation()!;
+    f.write.mockImplementationOnce(async (candidate) => { started(); await blocked; await originalWrite(candidate); });
+    const ai = f.coordinate(() => f.writer.persist({ ...f.settings, ganttZoom: 50 }, ["ganttZoom"]));
+    await writing;
+    f.settings.ganttZoom = 60; const first = f.writer.save();
+    f.settings.ganttZoom = 28; const last = f.writer.save();
+    release(); await ai; expect(f.settings.ganttZoom).toBe(28);
+    await Promise.all([first, last]);
+    expect(f.write.mock.calls.map(([candidate]) => candidate.ganttZoom)).toEqual([50, 60, 28]);
+    expect(f.settings.ganttZoom).toBe(28); expect(f.disk().ganttZoom).toBe(28);
+  });
   it.each([false, true])("preserves UI changes made while an AI save awaits disk (same key: %s)", async (sameKey) => {
     const f = fixture();
     let release!: () => void;
