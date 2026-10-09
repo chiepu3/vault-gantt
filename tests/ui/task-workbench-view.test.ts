@@ -212,6 +212,7 @@ function buttonByText(root: FakeEl, text: string): FakeEl {
 describe("TaskWorkbenchView", () => {
   beforeEach(() => {
     vi.stubGlobal("document", createFakeDocument());
+    vi.stubGlobal("window", makeFakeEl("window"));
   });
 
   afterEach(() => {
@@ -577,6 +578,21 @@ describe("TaskWorkbenchView", () => {
 
       expect(h.loadTasks).toHaveBeenCalledTimes(2);
       expect(bodyRows(container)).toHaveLength(1);
+    });
+
+    it("routes history keys only while focused in the view and removes listeners on close", async () => {
+      const { view, container, h } = await openView([]);
+      const win = window as unknown as FakeEl;
+      const stopImmediatePropagation = vi.fn();
+      dispatch(win, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      dispatch(win, "keydown", { target: container, key: "Z", ctrlKey: true, shiftKey: true, stopImmediatePropagation });
+      dispatch(win, "keydown", { target: container, key: "y", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+      expect(h.redoLastAction).toHaveBeenCalledTimes(2);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
+      await view.onClose();
+      dispatch(win, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
     });
 
     it("Undo/Redo buttons delegate to their host actions", async () => {

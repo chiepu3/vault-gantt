@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { WorkspaceLeaf } from "obsidian";
+import type { Vault } from "obsidian";
 import { startMcpServer, DEFAULT_MCP_SETTINGS } from "../../src/mcp/server";
 import { ApprovalView } from "../../src/ui/approval-view";
 import { ViewStateService } from "../../src/app/view-state-service";
@@ -15,6 +16,25 @@ import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("P3 real runtime and transport integration", () => {
+  it("records an approved chat save in the shared human undo/redo history", async () => {
+    const { service, context, vault, historyManager, registry } = await runtimeFixture();
+    try {
+      const before = vault.getFileContent(PARENT_ID);
+      const preview = await service.propose("T07", { taskId: CHILD_ID, name: "チャットの変更" }, context);
+      const outcome = await service.humanApprovalPort.approve(preview.previewId);
+      expect(outcome.status).toBe("success");
+      expect(outcome.undoEntryId).toBe(historyManager.peekUndoLabel());
+      const after = vault.getFileContent(PARENT_ID);
+      expect(after).toContain("チャットの変更");
+      await registry.coordinate(() => historyManager.undo(vault as unknown as Vault));
+      expect(vault.getFileContent(PARENT_ID)).toBe(before);
+      expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("already-undone");
+      await registry.coordinate(() => historyManager.redo(vault as unknown as Vault));
+      expect(vault.getFileContent(PARENT_ID)).toBe(after);
+      expect(historyManager.peekUndoLabel()).toBe(outcome.undoEntryId);
+    } finally { service.dispose(); }
+  });
+
   it("proposes over loopback HTTP, saves only through an approval card, and revokes pending previews on token rotation", async () => {
     vi.stubGlobal("document", createFakeDocument());
     const { service, vault, historyManager } = await runtimeFixture();

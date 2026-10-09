@@ -105,6 +105,7 @@ import {
   updateWeeklyWorkSchedule,
 } from "../app/gantt-task-service";
 import { WeeklyWorkScheduleModal } from "./modals";
+import { registerHistoryHotkeys } from "./history-hotkeys";
 
 
 /**
@@ -830,6 +831,7 @@ export function computeRichPopoverPosition(
 
 
 export class TaskGanttView extends ItemView {
+  private unregisterHistoryHotkeys?: () => void;
   // --- Data ---
   /** Last loaded task list returned by host.loadTasks. */
   private tasks: TaskRow[] = [];
@@ -1276,6 +1278,8 @@ export class TaskGanttView extends ItemView {
     return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before, after: { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter], request: args as import("../contracts/context").Json }, affectedIds: [this.host.viewId!] }] };
   }
   async onOpen(): Promise<void> {
+    this.unregisterHistoryHotkeys?.();
+    this.unregisterHistoryHotkeys = registerHistoryHotkeys(this, this.containerEl, this.host);
     if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "gantt", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [...this.activeTagFilter], dayWidth: this.dayWidth }), (id, input) => this.requestViewOperation(id, input));
 
     this.host.logger.info?.("TaskGanttView", "view opened", {});
@@ -1363,6 +1367,7 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
     this.unregisterState?.(); this.unregisterState = undefined;
     // The overlay never outlives the view; a pending plan itself stays in the store.
     this.unsubscribePreview?.(); this.unsubscribePreview = undefined;

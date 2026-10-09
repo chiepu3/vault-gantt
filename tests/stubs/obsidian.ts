@@ -43,6 +43,9 @@ export class Modal {
 
 export class ItemView {
   containerEl: HTMLElement = document.createElement("div");
+  registerDomEvent(el: EventTarget, type: string, callback: (event: Event) => void, options?: boolean): void {
+    el.addEventListener(type, callback, options);
+  }
   getViewType(): string {
     return "";
   }
@@ -357,4 +360,4 @@ export async function requestUrl(
   );
 }
 
-export const Platform = { isDesktopApp: true, isMobileApp: false };
+export const Platform = { isDesktopApp: true, isMobileApp: false, isMacOS: false };
