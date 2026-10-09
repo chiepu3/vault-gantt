@@ -109,6 +109,7 @@ export class AgentView extends ItemView {
     const session = this.host.session; const conversation = session.active;
     const names = { idle: "待機中", running: "実行中", preview: "確認待ち", failed: "失敗", cancelled: "停止済み" };
     this.statusEl.textContent = session.connected ? names[conversation.status] : "未接続";
+    this.statusEl.dataset.state = session.connected ? conversation.status : "disconnected";
     this.statusEl.title = (session.connected ? "接続設定あり" : "未接続") + " · " + names[conversation.status] + (conversation.error ? " — " + conversation.error : "");
     this.historyEl.empty();
     for (const item of session.conversations) {
@@ -132,13 +133,15 @@ export class AgentView extends ItemView {
     this.messagesEl.empty();
     if (!conversation.messages.length) {
       const empty = this.element(this.messagesEl, "div"); empty.className = "vg-ai-empty";
-      this.element(empty, "strong").textContent = "予定の整理を、会話から";
-      this.element(empty, "p").textContent = "タスクを探して、変更案を確認。保存は確認して実行したときだけ。";
+      const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");
+      this.element(empty, "strong").textContent = "AIチャット";
+      this.element(empty, "p").textContent = "タスクの検索や変更ができます。変更は「確認して実行」を押すと保存されます。";
       if (!session.connected) this.element(empty, "p").textContent = "歯車から接続先を設定してください。";
     }
     for (const [index, message] of conversation.messages.entries()) {
       const item = this.element(this.messagesEl, "section"); item.className = "vg-ai-message vg-ai-" + message.role;
       this.element(item, "strong").textContent = message.role === "user" ? "あなた" : "AI";
+      if (running && message.role === "assistant" && index === conversation.messages.length - 1) item.dataset.streaming = "true";
       const body = this.element(item, "div"); body.className = "vg-ai-message-body";
       renderChatText(body, message.text || (running ? "応答中…" : "（テキスト応答なし）"));
       for (const proposal of message.proposals) this.renderProposal(item, proposal, running);
@@ -182,6 +185,8 @@ export class AgentView extends ItemView {
   }
   private renderProposal(parent: HTMLElement, proposal: Proposal, running: boolean): void {
     const item = this.element(parent, "div"); item.className = "vg-ai-diff";
+    const undone = !!proposal.result && this.host.undoStatus?.(proposal.result) === "undone";
+    item.dataset.state = proposal.result ? (undone ? "undone" : proposal.result.kind) : "proposal";
     const outcomes = { success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み", stale: "失効" };
     const status = this.element(item, "span"); status.className = "vg-ai-result-status"; status.setAttribute("role", "status");
     status.textContent = proposal.result ? (this.host.undoStatus?.(proposal.result) === "undone" ? "元に戻しました" : outcomes[proposal.result.kind]) : "変更案";
@@ -197,7 +202,7 @@ export class AgentView extends ItemView {
       this.element(details, "p").textContent = proposal.result.message;
     }
     const actions = this.element(item, "div"); actions.className = "vg-ai-actions";
-    if (!proposal.consumed) this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }).disabled = running;
+    if (!proposal.consumed) { const confirm = this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }); confirm.classList.add("mod-cta"); confirm.disabled = running; }
     if (proposal.consumed && !proposal.retryPrepared && proposal.result?.kind !== "success" && (!proposal.result || proposal.result.committed < proposal.result.total)) this.button(actions, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
     if (proposal.result?.committed) {
       const result = proposal.result;
