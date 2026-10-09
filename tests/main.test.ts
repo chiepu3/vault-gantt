@@ -1,7 +1,10 @@
+import * as McpModule from "../src/mcp/server";
+import { VIEW_TYPE_AI_APPROVAL } from "../src/ui/approval-view";
+import { VIEW_TYPE_AI_CHAT } from "../src/ui/agent-view";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Mock } from "vitest";
-import { Modal, Notice, PluginSettingTab, requestUrl, TFile } from "obsidian";
+import { Modal, Notice, PluginSettingTab, requestUrl, TFile, Platform } from "obsidian";
 import TaskWorkbenchPlugin, {
   VIEW_TYPE_TASK_WORKBENCH,
   VIEW_TYPE_TASK_GANTT,
@@ -196,9 +199,11 @@ function createHarness(storedData: unknown = undefined): Harness {
       processors.set(lang, handler);
     }
   );
-  (plugin as any).loadData = vi.fn(async () => storedData);
+  let persistedData = storedData;
+  (plugin as any).loadData = vi.fn(async () => persistedData);
   (plugin as any).saveData = vi.fn(async (data: any) => {
     savedData.push(data);
+    persistedData = structuredClone(data);
   });
 
   return {
@@ -256,6 +261,57 @@ describe("TaskWorkbenchPlugin", () => {
     vi.useRealTimers();
   });
 
+  describe("P3 hosts and MCP lifecycle", () => {
+    it("passes shared ports to each view and registers actual view state for the approval list", async () => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      await h.plugin.onload();
+      for (const type of [VIEW_TYPE_TASK_WORKBENCH, VIEW_TYPE_TASK_GANTT, VIEW_TYPE_AI_CHAT, VIEW_TYPE_AI_APPROVAL]) {
+        const view = h.views.get(type)!({});
+        const ports = type === VIEW_TYPE_AI_CHAT ? (view as any).host.previewPorts : (view as any).host;
+        expect(ports.operationService).toBe(h.plugin.operationService);
+        expect(ports.previewPort).toBe(h.plugin.previewPort); expect(ports.projectionDetailPort).toBe(h.plugin.previewPort);
+        expect(ports.humanApprovalPort).toBe(h.plugin.humanApprovalPort); expect(ports.historyPort).toBe(h.plugin.historyPort);
+        expect(ports.uiPort).toBe(h.plugin.uiPort); expect(ports.undoPort.undoEntry).toBeTypeOf("function");
+        if (type === VIEW_TYPE_AI_APPROVAL) {
+          await (view as any).onOpen(); expect(h.plugin.uiPort.inspectView(ports.viewId)?.kind).toBe("approval");
+          await (view as any).onClose(); expect(h.plugin.uiPort.inspectView(ports.viewId)).toBeUndefined();
+        }
+      }
+      h.plugin.onunload();
+    });
+    it("starts MCP only when enabled, persists secret references, rotates tokens and stops on unload", async () => {
+      const stop = vi.fn(async () => undefined), regenerateToken = vi.fn(async () => "b".repeat(43));
+      const handle = { running: true, endpoint: "http://127.0.0.1:8788/mcp", sessionToken: "a".repeat(43), stop, regenerateToken };
+      const start = vi.spyOn(McpModule, "startMcpServer").mockResolvedValue(handle);
+      const secrets = new Map<string, string>();
+      const h = createHarness({ autoPriorityEnabled: false, mcp: { ...McpModule.DEFAULT_MCP_SETTINGS, enabled: true } });
+      (h.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, token: string) => secrets.set(id, token) };
+      await h.plugin.onload(); expect(start).toHaveBeenCalledTimes(1);
+      expect(start.mock.calls[0][0]).toMatchObject({ operations: h.plugin.operationService, previews: h.plugin.previewPort, context: h.plugin.contextReadPort, history: h.plugin.historyPort, isDesktop: true });
+      expect(secrets.get(h.plugin.settings.mcp!.secretId!)).toBe("a".repeat(43));
+      expect(JSON.stringify(h.savedData)).not.toContain("a".repeat(43));
+      await h.plugin.generateMcpToken(true); expect(regenerateToken).toHaveBeenCalledTimes(1);
+      expect(secrets.get(h.plugin.settings.mcp!.secretId!)).toBe("b".repeat(43));
+      h.plugin.onunload(); await (h.plugin as any).mcpTail; expect(stop).toHaveBeenCalledTimes(1);
+    });
+    it("keeps MCP disabled on mobile and closes a late-starting server after unload", async () => {
+      const start = vi.spyOn(McpModule, "startMcpServer");
+      const platform = Platform as { isDesktopApp: boolean }; platform.isDesktopApp = false;
+      const mobile = createHarness({ autoPriorityEnabled: false, mcp: { ...McpModule.DEFAULT_MCP_SETTINGS, enabled: true } });
+      try { await mobile.plugin.onload(); expect(start).not.toHaveBeenCalled(); mobile.plugin.onunload(); }
+      finally { platform.isDesktopApp = true; }
+      let resolve!: (handle: McpModule.McpServerHandle) => void;
+      start.mockImplementation(() => new Promise((done) => { resolve = done; }));
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      h.plugin.settings.mcp = { ...McpModule.DEFAULT_MCP_SETTINGS, enabled: true };
+      const starting = h.plugin.configureMcp();
+      while (!resolve) await Promise.resolve();
+      h.plugin.onunload(); const stop = vi.fn(async () => undefined);
+      resolve({ running: true, endpoint: "http://127.0.0.1:8788/mcp", sessionToken: null, stop, regenerateToken: async () => "unused" });
+      await starting; await (h.plugin as any).mcpTail; expect(stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("onload: settings", () => {
     it("loads once and merges stored data over defaults", async () => {
       const h = createHarness({
@@ -297,8 +353,33 @@ describe("TaskWorkbenchPlugin", () => {
       await h.plugin.saveSettings();
 
       expect(h.savedData).toHaveLength(1);
-      expect(h.savedData[0]).toBe(h.plugin.settings);
+      expect(h.savedData[0]).toEqual(h.plugin.settings);
       expect(h.savedData[0].taskFolder).toBe("changed");
+    });
+    it("UI persistence shares the approval queue and keeps unrelated settings edited during the AI save", async () => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      const service = h.plugin.operationService;
+      const preview = await service.propose("S01", { taskFolder: "AI-folder" }, service.legacyContext());
+      let started!: () => void, release!: () => void;
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const ai = service.humanApprovalPort.approve(preview.previewId); await writing;
+      h.plugin.settings.ganttZoom = 60; const ui = h.plugin.saveSettings();
+      expect(h.plugin.saveData).toHaveBeenCalledTimes(1);
+      release(); expect((await ai).status).toBe("success"); await ui;
+      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "AI-folder", ganttZoom: 60 });
+      expect(h.plugin.settings).toMatchObject({ taskFolder: "AI-folder", ganttZoom: 60 });
+    });
+    it.each(["modify", "create", "delete", "rename"])("Vault %s clears the new saved projection without deleting the receipt", async (event) => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      (h.plugin as any).registerEvent = vi.fn(); h.vaultApi.on = vi.fn(); await h.plugin.onload();
+      const preview = await h.plugin.operationService.propose("S02", { filenameUsesDatePrefix: false }, h.plugin.operationService.legacyContext());
+      await h.plugin.humanApprovalPort.approve(preview.previewId); h.plugin.previewPort.focus(preview.previewId);
+      const callback = h.vaultApi.on.mock.calls.find(([name]: [string]) => name === event)[1];
+      callback({ path: "external.md" }); await flush();
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull(); expect(h.plugin.previewPort.inspectOutcome(preview.previewId)).toBeDefined();
     });
   });
 
@@ -343,9 +424,9 @@ describe("TaskWorkbenchPlugin", () => {
         expect.any(Error)
       );
 
-      expect(h.commands).toHaveLength(13);
+      expect(h.commands).toHaveLength(14);
 
-      expect(h.views.size).toBe(3);
+      expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
       expect(h.settingTabs).toHaveLength(1);
     });
@@ -387,9 +468,9 @@ describe("TaskWorkbenchPlugin", () => {
 
       expect(refresh).toHaveBeenCalledTimes(1);
 
-      expect(h.commands).toHaveLength(13);
+      expect(h.commands).toHaveLength(14);
 
-      expect(h.views.size).toBe(3);
+      expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
     });
   });
@@ -483,6 +564,7 @@ describe("TaskWorkbenchPlugin", () => {
         "open-ai-chat-tab",
         "open-ai-chat-left",
         "open-ai-chat-right",
+        "open-ai-approval",
       ]);
       expect(h.commands.map((c) => c.name)).toEqual([
         "Open task workbench",
@@ -500,6 +582,7 @@ describe("TaskWorkbenchPlugin", () => {
         "AI チャットを開く（タブ）",
         "AI チャットを開く（左サイドバー）",
         "AI チャットを開く（右サイドバー）",
+        "AIの承認一覧を開く",
       ]);
     });
 
@@ -537,6 +620,8 @@ describe("TaskWorkbenchPlugin", () => {
     it("undo/redo actions report history outcomes and refresh both open views after success", async () => {
       const h = createHarness({});
       await h.plugin.onload();
+      const preview = await h.plugin.operationService.propose("S02", { filenameUsesDatePrefix: false }, h.plugin.operationService.legacyContext());
+      await h.plugin.humanApprovalPort.approve(preview.previewId); h.plugin.previewPort.focus(preview.previewId);
       const workbenchView = Object.create(
         TaskWorkbenchView.prototype
       ) as TaskWorkbenchView;
@@ -564,11 +649,13 @@ describe("TaskWorkbenchPlugin", () => {
 
       await h.plugin.undoLastAction();
       expect(undo).toHaveBeenCalledWith(h.fakeApp.vault);
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(workbenchRender).toHaveBeenCalledTimes(1);
       expect(ganttRender).toHaveBeenCalledTimes(1);
       expect(NoticeMock).toHaveBeenLastCalledWith("元に戻しました: タスク更新");
 
-      await h.plugin.redoLastAction();
+      h.plugin.previewPort.focus(preview.previewId); await h.plugin.redoLastAction();
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(redo).toHaveBeenCalledWith(h.fakeApp.vault);
       expect(workbenchRender).toHaveBeenCalledTimes(2);
       expect(ganttRender).toHaveBeenCalledTimes(2);
@@ -1191,9 +1278,9 @@ describe("TaskWorkbenchPlugin", () => {
 
       // startup registrations all happened
 
-      expect(h.commands).toHaveLength(13);
+      expect(h.commands).toHaveLength(14);
 
-      expect(h.views.size).toBe(3);
+      expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
       // auto priority ran once on startup
       expect(

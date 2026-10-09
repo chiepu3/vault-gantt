@@ -2,6 +2,8 @@ import { ItemView, Menu, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import { ChatSession, Proposal } from "../ai/chat-session";
 import type { OperationResult, TaskDiff } from "../app/operation-registry";
+import type { PreviewUiHostPorts } from "../contracts/ports";
+import { captureFocusKey, PreviewCardController, renderOperationPreviewCard, restoreFocusKey } from "./operation-preview-card";
 import { renderScheduleTimeline } from "./schedule-timeline";
 
 export const VIEW_TYPE_AI_CHAT = "vault-gantt-ai-chat";
@@ -14,6 +16,10 @@ export interface AgentViewHost {
   undo(result: OperationResult): Promise<void> | void;
   canUndo(result: OperationResult): boolean;
   undoStatus?(result: OperationResult): "available" | "undone" | "unavailable";
+  /** Ports for operation previews (cards for every effect). Absent = legacy cards only. */
+  previewPorts?: PreviewUiHostPorts;
+  /** Reverse the history entry an outcome refers to; the ports only inspect history. */
+  undoEntry?(entryId: string): Promise<void> | void;
 }
 const fieldNames: Record<string, string> = { plannedStartDate: "開始日", plannedEndDate: "終了日", dueDate: "期限", notes: "メモ", displayName: "表示名", title: "名前", create: "作成" };
 export function diffText(diffs: TaskDiff[]): string {
@@ -37,7 +43,11 @@ export function renderChatText(parent: HTMLElement, text: string): void {
 }
 
 export class AgentView extends ItemView {
+  private unregisterState?: () => void;
   private unsubscribe?: () => void;
+  private unsubscribePreviews: (() => void)[] = [];
+  private cards?: PreviewCardController;
+  private lastConversationId?: string;
   private timer?: ReturnType<typeof setTimeout>;
   private messagesEl!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -56,6 +66,8 @@ export class AgentView extends ItemView {
   getDisplayText(): string { return "AI チャット"; }
   getIcon(): string { return "messages-square"; }
   async onOpen(): Promise<void> {
+    const portsForState = this.host.previewPorts;
+    if (portsForState?.viewId) this.unregisterState = portsForState.viewStatePort?.register(portsForState.viewId, () => ({ viewId: portsForState.viewId!, kind: "chat", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [] }));
     const root = (this.containerEl.children[1] ?? this.containerEl) as HTMLElement;
     root.empty(); root.classList.add("vg-ai-chat");
     const headerShell = this.element(root, "header"); headerShell.className = "vg-ai-header";
@@ -101,14 +113,33 @@ export class AgentView extends ItemView {
     this.unsubscribe = this.host.session.subscribe(() => {
       if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40);
     });
+    const ports = this.host.previewPorts;
+    if (ports) {
+      const rerender = () => { if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40); };
+      this.cards = new PreviewCardController(ports, { openGantt: () => this.host.openGantt(), undoEntry: this.host.undoEntry }, rerender);
+      this.unsubscribePreviews = [ports.previewPort.subscribe(rerender), ports.historyPort.subscribe(rerender)];
+    }
     this.render();
   }
-  async onClose(): Promise<void> { this.modelMenu?.hide(); this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  async onClose(): Promise<void> {
+    this.unregisterState?.(); this.unregisterState = undefined;
+    this.releasePreviewFocus();
+    for (const stop of this.unsubscribePreviews) stop();
+    this.unsubscribePreviews = []; this.cards = undefined;
+    this.modelMenu?.hide(); this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  /** The Gantt overlay of a chat proposal is dropped on conversation switch and view close. The pending plan itself stays. */
+  private releasePreviewFocus(keepConversationId?: string): void {
+    const port = this.host.previewPorts?.previewPort; if (!port) return;
+    const focused = port.focusedPreviewId(); const preview = focused ? port.inspect(focused) : undefined;
+    if (preview?.origin.kind === "chat" && preview.origin.conversationId !== keepConversationId) port.focus(null);
+  }
   render(): void {
     if (!this.messagesEl) return;
     const session = this.host.session; const conversation = session.active;
+    if (this.lastConversationId !== conversation.id) { if (this.lastConversationId !== undefined) this.releasePreviewFocus(conversation.id); this.lastConversationId = conversation.id; }
     const names = { idle: "待機中", running: "実行中", preview: "確認待ち", failed: "失敗", cancelled: "停止済み" };
     this.statusEl.textContent = session.connected ? names[conversation.status] : "未接続";
+    this.statusEl.dataset.state = session.connected ? conversation.status : "disconnected";
     this.statusEl.title = (session.connected ? "接続設定あり" : "未接続") + " · " + names[conversation.status] + (conversation.error ? " — " + conversation.error : "");
     this.historyEl.empty();
     for (const item of session.conversations) {
@@ -129,16 +160,19 @@ export class AgentView extends ItemView {
     this.modelEl.dataset.model = session.config.model;
     if (running) this.modelMenu?.hide();
     const stickToBottom = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 64;
+    const focusKey = captureFocusKey();
     this.messagesEl.empty();
     if (!conversation.messages.length) {
       const empty = this.element(this.messagesEl, "div"); empty.className = "vg-ai-empty";
-      this.element(empty, "strong").textContent = "予定の整理を、会話から";
-      this.element(empty, "p").textContent = "タスクを探して、変更案を確認。保存は確認して実行したときだけ。";
+      const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");
+      this.element(empty, "strong").textContent = "AIチャット";
+      this.element(empty, "p").textContent = "タスクの検索や変更ができます。変更は「確認して実行」を押すと保存されます。";
       if (!session.connected) this.element(empty, "p").textContent = "歯車から接続先を設定してください。";
     }
     for (const [index, message] of conversation.messages.entries()) {
       const item = this.element(this.messagesEl, "section"); item.className = "vg-ai-message vg-ai-" + message.role;
       this.element(item, "strong").textContent = message.role === "user" ? "あなた" : "AI";
+      if (running && message.role === "assistant" && index === conversation.messages.length - 1) item.dataset.streaming = "true";
       const body = this.element(item, "div"); body.className = "vg-ai-message-body";
       renderChatText(body, message.text || (running ? "応答中…" : "（テキスト応答なし）"));
       for (const proposal of message.proposals) this.renderProposal(item, proposal, running);
@@ -150,7 +184,20 @@ export class AgentView extends ItemView {
         }
       }
     }
+    this.renderPreviewCards(conversation.id);
+    restoreFocusKey(this.messagesEl, focusKey);
     if (stickToBottom) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  }
+  /** Operation previews raised by this conversation, in creation order. */
+  private renderPreviewCards(conversationId: string): void {
+    const controller = this.cards; const ports = this.host.previewPorts;
+    if (!controller || !ports) return;
+    const previews = ports.previewPort.list().filter((preview) => preview.origin.kind === "chat" && preview.origin.conversationId === conversationId)
+      .slice().sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    controller.pager.prune(new Set(ports.previewPort.list().map((preview) => preview.previewId)));
+    if (!previews.length) return;
+    const section = this.element(this.messagesEl, "section"); section.className = "vg-pv-chat-previews"; section.setAttribute("aria-label", "変更案");
+    for (const preview of previews) renderOperationPreviewCard(section, preview, controller.optionsFor(preview));
   }
   private openModelMenu(): void {
     if (this.modelEl.disabled || this.host.session.active.status === "running") return;
@@ -181,7 +228,10 @@ export class AgentView extends ItemView {
     for (const tool of tools) this.element(details, "div").textContent = names[tool] ?? tool;
   }
   private renderProposal(parent: HTMLElement, proposal: Proposal, running: boolean): void {
+    if (this.cards && this.host.previewPorts?.previewPort.inspect(proposal.plan.previewId)) return;
     const item = this.element(parent, "div"); item.className = "vg-ai-diff";
+    const undone = !!proposal.result && this.host.undoStatus?.(proposal.result) === "undone";
+    item.dataset.state = proposal.result ? (undone ? "undone" : proposal.result.kind) : "proposal";
     const outcomes = { success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み", stale: "失効" };
     const status = this.element(item, "span"); status.className = "vg-ai-result-status"; status.setAttribute("role", "status");
     status.textContent = proposal.result ? (this.host.undoStatus?.(proposal.result) === "undone" ? "元に戻しました" : outcomes[proposal.result.kind]) : "変更案";
@@ -197,7 +247,7 @@ export class AgentView extends ItemView {
       this.element(details, "p").textContent = proposal.result.message;
     }
     const actions = this.element(item, "div"); actions.className = "vg-ai-actions";
-    if (!proposal.consumed) this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }).disabled = running;
+    if (!proposal.consumed) { const confirm = this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }); confirm.classList.add("mod-cta"); confirm.disabled = running; }
     if (proposal.consumed && !proposal.retryPrepared && proposal.result?.kind !== "success" && (!proposal.result || proposal.result.committed < proposal.result.total)) this.button(actions, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
     if (proposal.result?.committed) {
       const result = proposal.result;

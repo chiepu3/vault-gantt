@@ -9,6 +9,8 @@
 
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { ViewStateService } from "../../src/app/view-state-service";
+import { PreviewStore } from "../../src/app/preview-store";
 import moment from "moment";
 import { TaskWorkbenchView } from "../../src/ui/task-workbench-view";
 import type { TaskWorkbenchViewHost } from "../../src/ui/task-workbench-view";
@@ -221,6 +223,15 @@ describe("TaskWorkbenchView", () => {
 
 
 
+
+  it("registered view requests change real filters and unregister on close without saving", async () => {
+    const previews = new PreviewStore({ reject: () => {}, repreview: async () => { throw new Error("unused"); } }), ui = new ViewStateService(previews);
+    const { view, container, h } = await openView([makeParent({ id: "tasks/a.md", displayName: "Alpha" }), makeParent({ id: "tasks/b.md", displayName: "Beta" })], {}, { viewId: "workbench-live", viewStatePort: ui });
+    expect(bodyRows(container)).toHaveLength(2);
+    expect(await ui.request("V07", { viewId: "workbench-live", text: "Beta" })).toMatchObject({ status: "applied" });
+    expect(bodyRows(container)).toHaveLength(1); expect(deepText(bodyRows(container)[0])).toContain("Beta"); expect(ui.inspectView("workbench-live")?.filterText).toBe("Beta"); expect(h.updateTaskItem).not.toHaveBeenCalled();
+    await view.onClose(); expect(ui.inspectView("workbench-live")).toBeUndefined(); expect(await ui.request("V07", { viewId: "workbench-live", text: "Alpha" })).toMatchObject({ status: "unavailable" }); previews.dispose();
+  });
 
   describe("identity and onOpen", () => {
     it("exposes view type, title and icon", () => {

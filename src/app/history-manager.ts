@@ -1,3 +1,5 @@
+import type { HistoryPort, HistoryChangeV1, HistoryEntryUndoStateV1 } from "../contracts/ports";
+import type { VaultAdapter } from "./task-operations";
 import type { TFile, Vault } from "obsidian";
 
 export interface HistoryFileChange {
@@ -36,7 +38,32 @@ type PendingMutation =
  * Disk writes are deliberately kept out of push; callers record a completed
  * mutation and invoke undo/redo only when the user requests it.
  */
-export class HistoryManager {
+export class HistoryManager implements HistoryPort {
+  private revision = 0;
+  private readonly listeners = new Set<(change: HistoryChangeV1) => void>();
+  private readonly conflicts = new Set<string>();
+  private checking = false;
+  private checkGeneration = 0;
+  private vaultReader?: () => VaultAdapter;
+  attachVault(reader: () => VaultAdapter): void { this.vaultReader = reader; void this.refreshEligibility(); }
+  subscribe(listener: (change: HistoryChangeV1) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  inspectUndo(entryId: string): HistoryEntryUndoStateV1 {
+    const entry = this.undoStack.find((entry) => entry.label === entryId);
+    const state = this.operationDepth > 0 || this.checking ? "busy" : !entry ? this.redoStack.some((entry) => entry.label === entryId) ? "already-undone" : "missing" : entry !== this.undoStack.at(-1) ? "not-latest" : this.conflicts.has(entryId) ? "conflict" : "available";
+    return { entryId, historyRevision: `history-${this.revision}`, state, reason: state === "available" ? null : "履歴先頭・現在内容・操作状態を確認してください。" };
+  }
+  private notify(): void { this.revision++; for (const listener of this.listeners) { try { listener({ historyRevision: `history-${this.revision}`, changedEntryIds: null }); } catch { /* Detached subscriber. */ } } }
+  async refreshEligibility(): Promise<void> {
+    if (!this.vaultReader) return;
+    const generation = ++this.checkGeneration;
+    const entry = this.undoStack.at(-1), vault = this.vaultReader();
+    this.checking = true; this.notify();
+    let conflict = false;
+    if (entry) for (const change of entry.files) { try { const file = vault.getFileByPath(change.path); if (!file || await vault.read(file) !== change.after) conflict = true; } catch { conflict = true; } }
+    if (generation !== this.checkGeneration) return;
+    if (entry === this.undoStack.at(-1)) { if (entry) { if (conflict) this.conflicts.add(entry.label); else this.conflicts.delete(entry.label); } }
+    this.checking = false; this.notify();
+  }
   private readonly undoStack: HistoryEntry[] = [];
   private readonly redoStack: HistoryEntry[] = [];
   private readonly maxEntries = 50;
@@ -77,6 +104,7 @@ export class HistoryManager {
   private pushEntry(entry: HistoryEntry): void {
     this.redoStack.length = 0;
     this.undoStack.push(entry);
+    this.conflicts.delete(entry.label);
 
     while (this.undoStack.length > this.maxEntries) {
       this.undoStack.shift();
@@ -87,6 +115,9 @@ export class HistoryManager {
       this.undoStack.shift();
       totalBytes = this.getUndoStackBytes();
     }
+    for (const label of this.conflicts) if (!this.undoStack.some((entry) => entry.label === label) && !this.redoStack.some((entry) => entry.label === label)) this.conflicts.delete(label);
+    this.notify();
+    void this.refreshEligibility();
   }
 
   /**
@@ -107,6 +138,7 @@ export class HistoryManager {
   private clearNow(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    this.conflicts.clear(); this.notify();
   }
 
   canUndo(): boolean {
@@ -123,6 +155,13 @@ export class HistoryManager {
 
   peekRedoLabel(): string | undefined {
     return this.redoStack[this.redoStack.length - 1]?.label;
+  }
+
+  /** Frozen read-only input for approval-based undo/redo; execution still uses undo/redo. */
+  inspectTransition(direction: "undo" | "redo"): { historyRevision: string; busy: boolean; entry: HistoryEntry | null } {
+    const stack = direction === "undo" ? this.undoStack : this.redoStack;
+    const entry = stack[stack.length - 1];
+    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map((file) => ({ ...file })) } : null };
   }
 
   undo(vault: Vault): Promise<HistoryOpResult> {
@@ -174,6 +213,7 @@ export class HistoryManager {
    */
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
     this.operationDepth += 1;
+    this.notify();
     const run = this.operationTail.then(
       async () => {
         try {
@@ -199,6 +239,8 @@ export class HistoryManager {
 
   private finishOperation(): void {
     this.operationDepth -= 1;
+    this.notify();
+    void this.refreshEligibility();
     const pendingMutations = this.pendingMutations.splice(0);
     for (const mutation of pendingMutations) {
       if (mutation.kind === "clear") {

@@ -23,4 +23,12 @@ describe("compact shared-axis result timeline", () => {
   it("keeps backward movement and duration deltas signed", () => {
     expect(compactDelta({ ...schedule, after: { start: "2026-09-29", end: "2026-10-03" } })).toBe("-2d · 期間+2d");
   });
+  it("draws a one-sided period as a tick with a note, not as a bar", () => {
+    vi.stubGlobal("document", createFakeDocument()); const root = makeFakeEl();
+    renderScheduleTimeline(root as unknown as HTMLElement, { before: schedule.before, after: { start: null, end: "2026-10-03" } });
+    expect(byClass(root, "vg-ai-mini-bar")).toHaveLength(1); expect(byClass(root, "vg-ai-mini-tick")).toHaveLength(1);
+    expect(byClass(root, "vg-ai-mini-unset")[0].textContent).toBe("開始日未設定");
+    expect(compactDelta({ before: schedule.before, after: { start: null, end: "2026-10-03" } })).toBe("片日のみ");
+    expect(compactDelta({ before: { start: null, end: null }, after: { start: null, end: null } })).toBe("未設定");
+  });
 });
