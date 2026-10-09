@@ -25,6 +25,7 @@ import type {
   WorkbenchDisplayRow,
 } from "../app/workbench-display";
 import { TaskFinderModal } from "./task-finder-modal";
+import { registerHistoryHotkeys } from "./history-hotkeys";
 
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
@@ -95,6 +96,7 @@ export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
 
 
 export class TaskWorkbenchView extends ItemView {
+  private unregisterHistoryHotkeys?: () => void;
   // --- Header control state (persists for the view's lifetime) ---
 
   private unregisterState?: () => void;
@@ -192,6 +194,8 @@ export class TaskWorkbenchView extends ItemView {
     return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before, after: { filterText: this.filterText, statusFilter: this.statusFilter, showCompleted: this.showCompleted, sort: this.sortKey, direction: this.sortDir, flatDueSort: this.flatDueSort }, affectedIds: [this.host.viewId!] }] };
   }
   async onOpen(): Promise<void> {
+    this.unregisterHistoryHotkeys?.();
+    this.unregisterHistoryHotkeys = registerHistoryHotkeys(this, this.containerEl, this.host);
     if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "workbench", filterText: this.filterText, statusFilter: this.statusFilter as ViewStateV1["statusFilter"], showCompleted: this.showCompleted, tagNames: [] }), (id, input) => this.requestViewOperation(id, input));
     const container = this.containerEl;
     // Obsidian's HTMLElement.empty extension.
@@ -289,6 +293,7 @@ export class TaskWorkbenchView extends ItemView {
  * may target the detached view.
  */
   onClose(): Promise<void> {
+    this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
     this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
     return Promise.resolve();
