@@ -275,8 +275,8 @@ describe("part 1 — file rules and prohibitions", () => {
   });
 
   it("uses no unapproved hardcoded colors in declaration values", () => {
-    // Scan CSS named colors while allowing the two intentional priority-star
-    // colors. Mask variable interiors before scanning to avoid false positives
+    // Scan CSS named colors while allowing the one intentional hardcoded
+    // color (#4da3ff). Mask variable interiors before scanning to avoid false positives
     // from names such as --color-red-rgb.
     const COLOR_KEYWORDS = new Set(
       (
@@ -347,9 +347,9 @@ describe("part 1 — file rules and prohibitions", () => {
             (rule.selectors.includes(".task-workbench-priority-readonly.priority-auto") &&
               decl.value === "#4da3ff") ||
             (rule.selectors.includes(".task-workbench-priority-star.priority-manual") &&
-              decl.value === "#f5c542") ||
+              decl.value === "var(--color-yellow)") ||
             (rule.selectors.includes(".task-workbench-priority-readonly.priority-manual") &&
-              decl.value === "#f5c542"));
+              decl.value === "var(--color-yellow)"));
 
         // Allow the known black-with-alpha shadows used for semantic depth,
         // regardless of light or dark theme.
@@ -748,12 +748,12 @@ describe("part 3 — Workbench readability", () => {
     expectDecl(
       ".task-workbench-priority-star.priority-manual",
       "color",
-      "#f5c542"
+      "var(--color-yellow)"
     );
     expectDecl(
       ".task-workbench-priority-readonly.priority-manual",
       "color",
-      "#f5c542"
+      "var(--color-yellow)"
     );
     expect(
       offsetOf(".task-workbench-priority-star.priority-auto")
@@ -847,7 +847,7 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(
       ".task-gantt-day-cell",
       "border-right",
-      "1px solid var(--background-modifier-border)"
+      "1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent)"
     );
   });
 
@@ -894,7 +894,7 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(
       ".task-gantt-fixed-bg.is-weekend",
       "background",
-      "color-mix(in srgb, var(--text-muted) 10%, transparent)"
+      "color-mix(in srgb, var(--text-muted) 6%, transparent)"
     );
     expectDecl(
       ".task-gantt-fixed-bg.is-holiday",
@@ -1219,7 +1219,7 @@ describe("part 5 — Gantt readability", () => {
   it("weekend compound gets a hue-neutral gray tint", () => {
     const decls = declsFor(".task-gantt-bg.is-weekend");
     expect(decls.get("background"), "weekend background").toBe(
-      "color-mix(in srgb, var(--text-muted) 10%, transparent)"
+      "color-mix(in srgb, var(--text-muted) 6%, transparent)"
     );
     // Header-cell compounds must share this rule so they have equal specificity.
     const rule = rulesFor(".task-gantt-bg.is-weekend")[0];

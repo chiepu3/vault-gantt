@@ -143,8 +143,8 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-workbench-priority-readonly.priority-auto { color: #4da3ff; }
 
 
-.task-workbench-priority-star.priority-manual { color: #f5c542; }
-.task-workbench-priority-readonly.priority-manual { color: #f5c542; }
+.task-workbench-priority-star.priority-manual { color: var(--color-yellow); }
+.task-workbench-priority-readonly.priority-manual { color: var(--color-yellow); }
 
 
 
@@ -168,7 +168,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 
 
-.task-gantt-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--background-modifier-border); }
+.task-gantt-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--background-modifier-border); }
 
 
 
@@ -192,13 +192,14 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-month-cell, .task-gantt-day-cell, .task-gantt-dow-cell { flex: 0 0 auto; text-align: center; overflow: hidden; white-space: nowrap; font-size: 12px; line-height: 18px; }
 .task-gantt-month-cell { text-align: left; padding-left: 4px; font-weight: 600; }
-.task-gantt-day-cell { border-right: 1px solid var(--background-modifier-border); }
+.task-gantt-day-cell { border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent); }
+.task-gantt-dow-cell { color: var(--text-muted); }
 
 
 
 
 
-.task-gantt-parent-row { display: flex; border-bottom: 1px solid var(--background-modifier-border); width: max-content; }
+.task-gantt-parent-row { display: flex; border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent); width: max-content; }
 
 
 
@@ -349,7 +350,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 
 
-.task-gantt-bg.is-weekend, .task-gantt-fixed-bg.is-weekend, .task-gantt-month-cell.is-weekend, .task-gantt-day-cell.is-weekend, .task-gantt-dow-cell.is-weekend { background: color-mix(in srgb, var(--text-muted) 10%, transparent); }
+.task-gantt-bg.is-weekend, .task-gantt-fixed-bg.is-weekend, .task-gantt-month-cell.is-weekend, .task-gantt-day-cell.is-weekend, .task-gantt-dow-cell.is-weekend { background: color-mix(in srgb, var(--text-muted) 6%, transparent); }
 
 
 .task-gantt-bg.is-holiday, .task-gantt-fixed-bg.is-holiday, .task-gantt-month-cell.is-holiday, .task-gantt-day-cell.is-holiday, .task-gantt-dow-cell.is-holiday { background: rgba(var(--color-red-rgb), 0.12); }
@@ -382,9 +383,12 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-bar { background: var(--interactive-accent); border-radius: 8px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
 
+.task-gantt-bar { border: 1px solid color-mix(in srgb, var(--text-on-accent) 22%, transparent); background-clip: padding-box; }
+.task-gantt-bar:hover { filter: brightness(1.08); box-shadow: var(--shadow-s); }
+.task-gantt-bar.is-bulk-move-follower:hover { box-shadow: 0 0 0 1px var(--text-muted), var(--shadow-s); }
 .task-gantt-bar.is-completed { background: var(--text-muted); opacity: .7; }
 .task-gantt-bar.is-tag-colored-completed { opacity: .48; filter: saturate(.35) brightness(.96); }
-.task-gantt-bar-title { display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-ui-small); line-height: 24px; color: var(--text-on-accent); }
+.task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-ui-small); line-height: 24px; color: var(--text-on-accent); }
 .task-gantt-bar.has-tag-badge { display: flex; align-items: center; }
 .task-gantt-bar.has-tag-badge .task-gantt-bar-title { flex: 0 1 calc(100% - 62px); min-width: 0; }
 
@@ -398,6 +402,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 
 /*  long titles ellipsize inside the 320px column. */
+.task-gantt-parent-left:hover:not(.is-drag-over) { background: var(--background-primary-alt); }
 .task-gantt-parent-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 
@@ -430,7 +435,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 
 
-.task-gantt-empty { padding: 16px; text-align: center; color: var(--text-muted); }
+.task-gantt-empty { padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: var(--font-ui-medium); }
 
 
 
