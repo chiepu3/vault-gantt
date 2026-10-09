@@ -392,6 +392,72 @@ describe("TaskWorkbenchPlugin", () => {
       expect(JSON.stringify(next.savedData.at(-1))).not.toContain("sk-synthetic-secret");
       next.plugin.onunload();
     });
+    it.each(["secret-failure", "write-failure", "success"] as const)("migrates a plaintext AI key: %s", async (outcome) => {
+      const key = "sk-synthetic-migration";
+      const h = createHarness({ ai: { apiKey: key } });
+      const secrets = new Map<string, string>();
+      const setSecret = vi.fn((id: string, value: string) => {
+        if (outcome === "secret-failure") throw new Error("secret unavailable");
+        secrets.set(id, value);
+      });
+      h.fakeApp.secretStorage = { setSecret, getSecret: (id: string) => secrets.get(id) ?? null };
+      if (outcome === "write-failure") (h.plugin.saveData as Mock).mockRejectedValueOnce(new Error("write unavailable"));
+
+      await h.plugin.loadSettings();
+
+      expect(setSecret).toHaveBeenCalledWith(AI_SECRET_ID, key);
+      expect(secrets.get(AI_SECRET_ID)).toBe(outcome === "secret-failure" ? undefined : key);
+      expect(h.plugin.aiSettings.apiKey).toBe(outcome === "success" ? undefined : key);
+      expect((await h.plugin.loadData()).ai.apiKey).toBe(outcome === "success" ? undefined : key);
+      expect(h.plugin.aiKeyStorage()).toBe(outcome === "success" ? "secret" : "data");
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(h.plugin.getAiSettings()).not.toHaveProperty("apiKey");
+      if (outcome === "success") expect(NoticeMock).not.toHaveBeenCalled();
+      else {
+        expect(NoticeMock).toHaveBeenCalledWith(outcome === "secret-failure"
+          ? "APIキーを秘密ストレージへ移せませんでした。"
+          : "data.json の平文のAPIキーを削除できませんでした。");
+        expect(h.plugin.saveData).toHaveBeenCalledTimes(outcome === "secret-failure" ? 0 : 1);
+        setSecret.mockImplementation((id, value) => { secrets.set(id, value); });
+        await h.plugin.loadSettings();
+        expect(h.plugin.aiSettings).not.toHaveProperty("apiKey");
+        expect((await h.plugin.loadData()).ai).not.toHaveProperty("apiKey");
+        expect(h.plugin.aiKeyStorage()).toBe("secret");
+      }
+    });
+    it("keeps the plaintext key when migration readback still contains it", async () => {
+      const h = createHarness({ ai: { apiKey: "sk-synthetic-migration" } });
+      h.fakeApp.secretStorage = { setSecret: vi.fn(), getSecret: () => "sk-synthetic-migration" };
+      (h.plugin.saveData as Mock).mockResolvedValue(undefined);
+      await h.plugin.loadSettings();
+      expect(h.plugin.aiSettings.apiKey).toBe("sk-synthetic-migration");
+      expect(h.plugin.aiKeyStorage()).toBe("data");
+      expect(NoticeMock).toHaveBeenCalledWith("data.json の平文のAPIキーを削除できませんでした。");
+    });
+    it("rejects an AI settings save when readback does not match", async () => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      (h.plugin.saveData as Mock).mockResolvedValueOnce(undefined);
+      await expect(h.plugin.updateAiSettings({ model: "new-model" })).rejects.toThrow("SETTINGS_SAVE_CONFLICT");
+    });
+    it.each(["ai-first", "settings-first"])("preserves AI and workbench settings through concurrent saves: %s", async (order) => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      let started!: () => void, release!: () => void;
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const saveWorkbench = () => { h.plugin.settings.taskFolder = "new-folder"; return h.plugin.saveSettings(); };
+      const saveAi = () => h.plugin.updateAiSettings({ model: "new-model" });
+      const first = order === "ai-first" ? saveAi() : saveWorkbench();
+      await writing;
+      const second = order === "ai-first" ? saveWorkbench() : saveAi();
+      expect(save).toHaveBeenCalledTimes(1);
+      release(); await Promise.all([first, second]);
+      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "new-folder", ai: { model: "new-model" } });
+      expect(h.plugin.settings.taskFolder).toBe("new-folder");
+      expect(h.plugin.aiSettings.model).toBe("new-model");
+      expect(h.plugin.settings).not.toHaveProperty("ai");
+    });
     it("UI persistence shares the approval queue and keeps unrelated settings edited during the AI save", async () => {
       const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
       const service = h.plugin.operationService;

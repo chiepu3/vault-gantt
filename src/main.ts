@@ -8,6 +8,7 @@ import type { PreviewUiHostPorts } from "./contracts/ports";
 import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
 import { SettingsPersistence } from "./app/settings-persistence";
+import { canonical } from "./app/operations/runtime";
 import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
@@ -447,22 +448,39 @@ export default class TaskWorkbenchPlugin extends Plugin {
     const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
     this.aiSettings = normalizeAiSettings(ai);
-    if (this.aiSettings.apiKey && this.app.secretStorage) {
-      // Move a key saved in data.json into secret storage as soon as it is available.
-      try { this.app.secretStorage.setSecret(AI_SECRET_ID, this.aiSettings.apiKey); delete this.aiSettings.apiKey; await this.writeAiSettings(); }
-      catch { new Notice("APIキーを秘密ストレージへ移せませんでした。"); }
-    }
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
     this.settingsPersistence = undefined; this.settingsWriter();
+    if (this.aiSettings.apiKey && this.app.secretStorage) {
+      // Move a key saved in data.json into secret storage as soon as it is available.
+      try { this.app.secretStorage.setSecret(AI_SECRET_ID, this.aiSettings.apiKey); }
+      catch { new Notice("APIキーを秘密ストレージへ移せませんでした。"); return; }
+      const { apiKey: _key, ...migrated } = this.aiSettings;
+      void _key;
+      try { await this.writeAiSettings(migrated); delete this.aiSettings.apiKey; }
+      catch { new Notice("data.json の平文のAPIキーを削除できませんでした。"); }
+    }
   }
 
   /**
  *
  * Persists the in-memory settings object to disk.
  */
-  private writeAiSettings(): Promise<void> {
-    return this.operations.coordinate(() => this.saveData({ ...this.settings, ai: this.aiSettings }));
+  private writeAiSettings(ai = this.aiSettings): Promise<void> {
+    const candidate = structuredClone(ai);
+    // AI settings stay outside TaskWorkbenchSettings. Use its persistence path
+    // with no workbench patch, and verify the separate AI payload on readback.
+    const writer = new SettingsPersistence({
+      settings: () => this.settings,
+      coordinate: (run) => this.operations.coordinate(run),
+      write: (settings) => this.saveData({ ...settings, ai: candidate }),
+      read: async () => {
+        const actual = await this.loadData();
+        if (canonical(actual?.ai) !== canonical(candidate)) throw new Error("SETTINGS_SAVE_CONFLICT");
+        return actual;
+      },
+    });
+    return this.operations.coordinate(() => writer.persist(this.settings, [], false));
   }
   /** Applies the saved connection to the chat session; the session is only touched when something changed. */
   applyAiConnection(): void {
@@ -475,9 +493,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.writeAiSettings();
     this.applyAiConnection();
   }
-  aiKeyStorage(): "secret" | "data" { return this.app.secretStorage ? "secret" : "data"; }
+  aiKeyStorage(): "secret" | "data" { return this.aiSettings.apiKey || !this.app.secretStorage ? "data" : "secret"; }
   private readAiApiKey(): string | null {
-    const stored = this.app.secretStorage ? this.app.secretStorage.getSecret(AI_SECRET_ID) : this.aiSettings.apiKey ?? null;
+    const stored = this.aiSettings.apiKey ?? this.app.secretStorage?.getSecret(AI_SECRET_ID);
     return stored ? stored : null;
   }
   hasAiApiKey(): boolean { return !!this.readAiApiKey(); }
