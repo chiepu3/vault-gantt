@@ -801,13 +801,24 @@ export function operationDescription<K extends OperationId>(id: K): OperationDef
   if (id.startsWith("S")) sideEffects.push("taskFolder変更はファイル移動ではない。機能OFFは保存データ削除ではない。タグ定義rename/deleteで既存タスクのタグ名参照は保持し、一括移行しない。ソースmain削除後はmainへの新規Daily追加はできない。");
   if (["S18", "S19", "S20", "S21"].includes(id)) sideEffects.push("同期有効化・URL/間隔の変更は直後の外部送信を伴い得る。送信先とpayloadを承認対象とする。取り消しても送信済み情報は戻せない。");
   if (id.startsWith("D")) constraints.push("既存行はpath+line+fingerprint+file revisionで照合。新規挿入はmain固定。空文字や一覧からの省略を削除と推定しない。templateは計画時に実行せず、動的副作用は未知として明示。");
+  if (id.startsWith("D")) constraints.push("fingerprintはCRを除いた元checkbox行のSHA-256。template付き新規作成は未確定として警告し、保存を拒否。人間用UIで作成後に再プレビューする。コード/YAML内等の未モデル化checkboxも保存拒否。");
+  if (id === "D07") constraints.push("nextItemsは編集・追加だけ。省略行と空文面の既存行は保持し、削除はD06を明示する。全既存行は元の行番号で照合する。");
+  if (id === "D09") sideEffects.push("mainへ『新しいタスク』を1件追加する保存提案。ノートを開くだけの操作ではない。");
+  if (["S18", "S19", "S20", "S21"].includes(id)) constraints.push("承認対象の送信先・payload bytes・SHA-256 digestを固定し、保存時に最新snapshotへ差し替えない。同期URLは認証情報/query/fragmentなしのHTTP(S)。S18〜S20は将来の定期送信も設定する。");
+  if (id === "S08") constraints.push("計画時は祝日取得portから候補を読み取り、設定保存は承認後。取得失敗時は既存祝日を保持する。");
+  if (id === "S27") constraints.push("expectedRevisionは対象タスクファイルの内容hash。同名/keyの定義を再利用し、設定作成と対象への付与を別actionとして部分保存を報告する。");
+  if (id === "V14") constraints.push("ganttZoomを保存するためoperationRequestDenialによりchat/MCPから拒否。人間が直接UIで操作する。");
+  if (id === "V20" || id === "V21") constraints.push("履歴先頭・history revision・ファイルbefore/afterを固定した保存提案。承認後に既存のUndo/Redo経路で実行し、履歴が変われば拒否する。");
+  if (id === "V23") constraints.push("記録中ログのrevision・出力path・件数を固定して承認待ちにする。ログが増えたら再プレビュー。保存失敗時は記録bufferを保持する。");
+  if (["Q04", "Q05", "Q06"].includes(id)) constraints.push("対象は選択中の会話に限定。送信・停止で別会話を暗黙に切り替えない。再試行は失敗応答のみ。送信と再試行はexternal capabilityも必要。");
+  if (id === "T30" || id === "S05") constraints.push("専用の管理値保存effectが契約にないため今回は未実装。契約変更が必要。");
   if (id === "Q07") sideEffects.push("人間へ承認を要求するだけで、保存権限を付与しない。SDK/MCPから実承認は不可。");
   return { purpose: row.purpose, targetKinds: id.startsWith("M") || id >= "T19" && id <= "T26" ? ["subtask"] : id.startsWith("T") ? ["parent", "subtask"] : id.startsWith("E") ? ["event"] : id.startsWith("W") ? ["weekly"] : id.startsWith("D") ? ["daily-todo", "daily-file"] : id.startsWith("S") ? ["setting", "tag-definition", "source"] : id.startsWith("V") ? ["view", "integration"] : ["conversation"],
     parameters: Object.keys(schema.properties ?? {}).map((name) => ({ name, required: schema.required?.includes(name) ?? false, description: name === "patch" && id === "M02" ? "既存マーカーのtitle/dateのみ部分更新。省略fieldとkey/tagsは保持。" : name === "patch" && id === "W02" ? "title/dayOfWeek/minutesPerWeekだけを部分更新。省略は保持。分数は30分単位へ丸め。" : PARAMETER_DOCS[name] ?? `${name}: ${row.input}。schemaの型・範囲に従う。省略した任意値は既存値を保持する。` })),
     constraints, sideEffects, clearSemantics: ["省略は保持。日付の空文字は解除、tags/markersの[]・時間mapの{}は全解除。操作固有の解除入力のみ使用する。"],
     examples: [{ input: OPERATION_EXAMPLES[id] as OperationDefinition<K>["description"]["examples"][number]["input"], explanation: `${row.purpose}の入力例。実ID/hashは事前取得の値へ置き換える。${write ? "返る提案を人間が承認するまで保存されない。" : "返る結果のscopeと省略件数を確認する。"}` }],
     errors: ["INVALID_INPUT", "KIND_MISMATCH", "NOT_FOUND", "REVISION_CONFLICT", "PLAN_EXPIRED", "PLAN_CONSUMED", "POLICY_DENIED", "PARTIAL"],
-    undo: write ? id === "T03" || id === "T05" || id.startsWith("S") || id.startsWith("E") || id.startsWith("W") ? "Undo不可（新規親ファイル/設定保存は履歴対象外）。" : "Markdown更新はUndo対応。履歴先頭かつ現在内容一致が必要。外部編集は上書きしない。" : id === "V14" ? "Undo不可。ズームをsettingsへ保存する直接UI操作。" : OPERATION_CONTRACTS[id][0] === "read" ? "データ変更なし。" : `プラグイン履歴なし（表示/会話状態の操作）。台帳: ${row.undo}` };
+    undo: write ? id.startsWith("D") || id === "V23" ? "Undo不可。Daily保存・診断出力は既存の履歴barrierとして扱う。" : id === "V20" || id === "V21" ? "既存Undo/Redo履歴を移動する。新しい履歴entryを追加しない。" : id === "T03" || id === "T05" || id.startsWith("S") || id.startsWith("E") || id.startsWith("W") ? "Undo不可（新規親ファイル/設定保存は履歴対象外）。" : "Markdown更新はUndo対応。履歴先頭かつ現在内容一致が必要。外部編集は上書きしない。" : id === "V14" ? "Undo不可。ズームをsettingsへ保存する直接UI操作。" : OPERATION_CONTRACTS[id][0] === "read" ? "データ変更なし。" : `プラグイン履歴なし（表示/会話状態の操作）。台帳: ${row.undo}` };
 }
 export function fullDescription(id: OperationId): string {
   const description = operationDescription(id);
