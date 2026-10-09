@@ -174,7 +174,7 @@ export class OperationRegistry {
         if (signal?.aborted) throw new Error("CANCELLED");
         const file = await vault.create(path, content);
         result.committed = 1; result.diffs = plan.public.diffs;
-        this.host.historyManager.clear();
+        this.host.historyManager.discardRedo();
         return file;
       },
       read: (file) => vault.read(file),

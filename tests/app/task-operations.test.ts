@@ -9,6 +9,7 @@ import {
   getTaskFolderForDate,
   getAvailableTaskPath,
 } from "../../src/app/task-operations";
+import type { Vault } from "obsidian";
 import { FakeVault } from "./fake-vault";
 import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
@@ -49,6 +50,43 @@ describe("Task Operations - Integration Tests", () => {
     vault.clear();
   });
 
+
+  it("keeps earlier edits undoable through Gantt subtask addition and deletion", async () => {
+    const history = new HistoryManager();
+    const parent = await createTask(vault, settings, "Parent");
+    const original = vault.getFileContent(parent.file.path);
+    await updateTaskItemsBatch(vault, settings, cache, [{ row: parent, patch: { dueDate: "2026-08-01" } }], undefined, history);
+    const edited = vault.getFileContent(parent.file.path);
+    const updated = (await loadTasks(vault, settings, cache))[0];
+    const subtask = await addSubtaskWithPlan(vault, settings, updated, "Child", "2026-07-27", history);
+    const added = vault.getFileContent(parent.file.path);
+    await deleteSubtaskTaskItem(vault, settings, subtask, history);
+    const deleted = vault.getFileContent(parent.file.path);
+    const undoVault = {
+      getFileByPath: vault.getFileByPath.bind(vault),
+      read: vault.read.bind(vault),
+      process: async (file: { path: string }, fn: (content: string) => string) => {
+        const content = fn(await vault.read(file));
+        await vault.modify(file, content);
+        return content;
+      },
+    } as unknown as Vault;
+    for (const expected of [added, edited, original]) {
+      expect((await history.undo(undoVault)).kind).toBe("success");
+      expect(vault.getFileContent(parent.file.path)).toBe(expected);
+    }
+    for (const expected of [edited, added, deleted]) {
+      expect((await history.redo(undoVault)).kind).toBe("success");
+      expect(vault.getFileContent(parent.file.path)).toBe(expected);
+    }
+  });
+
+  it("preserves undo history when creating a new task file", async () => {
+    const history = new HistoryManager();
+    history.push({ label: "以前の変更", files: [{ path: "other.md", before: "before", after: "after" }] });
+    await createTask(vault, settings, "New task", history);
+    expect(history.peekUndoLabel()).toBe("以前の変更");
+  });
 
   // TASK CREATION TESTS
 

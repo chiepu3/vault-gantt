@@ -8427,7 +8427,7 @@ export class TaskGanttView extends ItemView {
   private async deleteSubtaskInteractively(task: TaskRow): Promise<void> {
     const name = task.displayName || task.title || "サブタスク";
     const confirmed = window.confirm(
-      `サブタスク『${name}』をタスクとして削除します。元に戻せません。`
+      `サブタスク『${name}』をタスクとして削除します。`
     );
     if (!confirmed) {
       return;

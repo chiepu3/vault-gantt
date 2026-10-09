@@ -3,7 +3,7 @@ import type { App, Vault, Workspace } from "obsidian";
 
 import type { Logger } from "../core/logger";
 
-import type { HistoryManager } from "./history-manager";
+import type { HistoryFileChange, HistoryManager } from "./history-manager";
 import {
   createDailyTodoFile,
   ensureParentFolderExists,
@@ -501,8 +501,12 @@ export async function updateDailyTodoItem(
   const nextCompleted = patch.completed ?? item.completed;
 
   lines[item.line] = formatDailyTodoLine(nextCompleted, nextText);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo更新",
+    files: [{ path: file.path, before: content, after }],
+  });
 
   // sync the caller's in-memory item on success.
   item.text = nextText;
@@ -537,8 +541,12 @@ export async function deleteDailyTodoItem(
   }
 
   lines.splice(item.line, 1);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo削除",
+    files: [{ path: file.path, before: content, after }],
+  });
   return true;
 }
 
@@ -585,6 +593,18 @@ export async function insertDailyTodoItems(
   settings: TaskWorkbenchSettings,
   historyManager?: HistoryManager
 ): Promise<boolean> {
+  return insertDailyTodoItemsWithHistory(dateStr, items, app, settings, (change) => {
+    historyManager?.push({ label: "Daily ToDo追加", files: [change] });
+  });
+}
+
+async function insertDailyTodoItemsWithHistory(
+  dateStr: string,
+  items: DailyTodoItem[],
+  app: App,
+  settings: TaskWorkbenchSettings,
+  record: (change: HistoryFileChange) => void
+): Promise<boolean> {
   const vault = app.vault;
   const file = await requireMainDailyTodoFile(dateStr, app, settings);
   if (!file) {
@@ -602,8 +622,9 @@ export async function insertDailyTodoItems(
   const lines = content === "" ? [] : content.split("\n");
   const insertIndex = getDailyTodoInsertIndex(lines);
   lines.splice(insertIndex, 0, ...newLines);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  record({ path: file.path, before: content, after });
   return true;
 }
 
@@ -807,50 +828,62 @@ export async function updateDailyTodos(
     }
   }
 
-  for (const [path, originals] of byPath) {
-    const file = vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) {
-      continue;
-    }
+  const changes = new Map<string, HistoryFileChange>();
+  const record = (change: HistoryFileChange): void => {
+    const previous = changes.get(change.path);
+    changes.set(change.path, { ...change, before: previous?.before ?? change.before });
+  };
 
-    const content = await vault.read(file);
-    const lines = content.split("\n");
-
-    // descending line-number order.
-    const sorted = [...originals].sort((a, b) => b.line - a.line);
-
-    let changed = false;
-    for (const original of sorted) {
-      if (original.line >= lines.length) {
+  try {
+    for (const [path, originals] of byPath) {
+      const file = vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) {
         continue;
       }
-      const match = matchByKey.get(`${original.path}::${original.line}`);
-      if (!match) {
-        continue;
+
+      const content = await vault.read(file);
+      const lines = content.split("\n");
+
+      // descending line-number order.
+      const sorted = [...originals].sort((a, b) => b.line - a.line);
+
+      let changed = false;
+      for (const original of sorted) {
+        if (original.line >= lines.length) {
+          continue;
+        }
+        const match = matchByKey.get(`${original.path}::${original.line}`);
+        if (!match) {
+          continue;
+        }
+        // skip (leave the line untouched) when the matched
+        // next-item's text is empty.
+        if (!match.text || match.text.trim() === "") {
+          continue;
+        }
+        lines[original.line] = formatDailyTodoLine(match.completed, match.text);
+        changed = true;
       }
-      // skip (leave the line untouched) when the matched
-      // next-item's text is empty.
-      if (!match.text || match.text.trim() === "") {
-        continue;
+
+      if (changed) {
+        const after = lines.join("\n");
+        await vault.modify(file, after);
+        record({ path: file.path, before: content, after });
       }
-      lines[original.line] = formatDailyTodoLine(match.completed, match.text);
-      changed = true;
     }
 
-    if (changed) {
-      await vault.modify(file, lines.join("\n"));
-      historyManager?.clear();
+    // insert the unmatched new items.
+    if (newItems.length > 0) {
+      await insertDailyTodoItemsWithHistory(
+        summary.date,
+        newItems,
+        app,
+        settings,
+        record
+      );
     }
-  }
-
-  // insert the unmatched new items.
-  if (newItems.length > 0) {
-    await insertDailyTodoItems(
-      summary.date,
-      newItems,
-      app,
-      settings,
-      historyManager
-    );
+  } finally {
+    // Keep completed writes undoable even if a later file failed to save.
+    historyManager?.push({ label: "Daily ToDo保存", files: [...changes.values()] });
   }
 }

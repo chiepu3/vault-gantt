@@ -170,8 +170,8 @@ export async function createTask(
   // Write via vault.create + buildFullNote
   const content = buildFullNote(defaultRow, new Map());
   await vault.create(taskPath, content);
-  // Creation bypasses batch before/after capture, so it is a history barrier.
-  historyManager?.clear();
+  // File creation itself is not recorded for undo.
+  historyManager?.discardRedo();
 
   // Re-parse and return the task row
   const file = vault.getFileByPath(taskPath);
@@ -572,9 +572,13 @@ export async function addSubtask(
     throw new Error("Task file not found");
   }
 
+  const before = await vault.read(parentFile);
   const content = buildFullNote(parentRow, parentRow.subtasks);
   await vault.modify(parentFile, content);
-  historyManager?.clear();
+  historyManager?.push({
+    label: "サブタスク追加",
+    files: [{ path: parentFile.path, before, after: content }],
+  });
 
   // Re-parse to get fresh state
   const fileContent = await vault.read(parentFile);
@@ -667,5 +671,8 @@ export async function deleteSubtaskTaskItem(
   // Write updated parent
   const content = buildFullNote(parent, parent.subtasks);
   await vault.modify(parentFile, content);
-  historyManager?.clear();
+  historyManager?.push({
+    label: "サブタスク削除",
+    files: [{ path: parentFile.path, before: parentContent, after: content }],
+  });
 }
