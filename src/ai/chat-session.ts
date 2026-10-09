@@ -1,3 +1,6 @@
+import type { OperationPreviewV1 } from "../contracts/preview";
+import type { WriteOperationId } from "../contracts/operations";
+import type { OperationService } from "../app/operation-service";
 import type { ModelMessage } from "ai";
 import type { OperationName, OperationPlan, OperationRegistry, OperationResult } from "../app/operation-registry";
 
@@ -8,14 +11,14 @@ export interface ConnectionConfig {
   auth: "secret" | "none";
   secretId: string;
 }
-export type ChatEvent = { type: "text"; text: string } | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown } | { type: "context"; messages: ModelMessage[] };
-export interface ChatRequest { config: ConnectionConfig; messages: ModelMessage[]; signal: AbortSignal }
+export type ChatEvent = { type: "text"; text: string } | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown; preview?: OperationPreviewV1; operationId?: WriteOperationId } | { type: "context"; messages: ModelMessage[] };
+export interface ChatRequest { config: ConnectionConfig; messages: ModelMessage[]; signal: AbortSignal; conversationId?: string }
 export interface ChatProvider {
   connected(config: ConnectionConfig): boolean;
   stream(request: ChatRequest): AsyncIterable<ChatEvent>;
 }
 export type ChatStatus = "idle" | "running" | "preview" | "failed" | "cancelled";
-export interface Proposal { plan: OperationPlan; operation: OperationName; input: unknown; result?: OperationResult; consumed: boolean; retryPrepared?: boolean }
+export interface Proposal { preview?: OperationPreviewV1; operationId?: WriteOperationId; plan: OperationPlan; operation: OperationName; input: unknown; result?: OperationResult; consumed: boolean; retryPrepared?: boolean }
 export interface ChatMessage { role: "user" | "assistant"; text: string; proposals: Proposal[] }
 export interface Conversation { id: string; title: string; messages: ChatMessage[]; context: ModelMessage[]; status: ChatStatus; error: string; draft: string }
 const emptyConfig = (): ConnectionConfig => ({ provider: "disconnected", endpoint: "", model: "", auth: "secret", secretId: "" });
@@ -30,7 +33,7 @@ export class ChatSession {
   private readonly owners = new WeakMap<Conversation, AbortController>();
   private disposed = false;
   private readonly listeners = new Set<() => void>();
-  constructor(readonly scope: object, private readonly registry: OperationRegistry, private readonly provider: ChatProvider, private readonly changed: (result: OperationResult) => void = () => undefined) { this.newConversation(); }
+  constructor(readonly scope: object, private readonly registry: Pick<OperationRegistry, "plan" | "commit" | "discard">, private readonly provider: ChatProvider, private readonly changed: (result: OperationResult) => void = () => undefined, private readonly operationService?: OperationService) { this.newConversation(); }
   get connected(): boolean { return this.provider.connected(this.config); }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private emit(): void { for (const listener of this.listeners) listener(); }
@@ -77,7 +80,7 @@ export class ChatSession {
     this.emit();
     try {
       let context: ModelMessage[] | undefined;
-      for await (const event of this.provider.stream({ config: { ...this.config }, messages, signal: controller.signal })) {
+      for await (const event of this.provider.stream({ config: { ...this.config }, messages, signal: controller.signal, conversationId: conversation.id })) {
         if (controller.signal.aborted) {
           if (event.type === "plan") this.registry.discard(event.plan.previewId);
           break;
@@ -86,7 +89,7 @@ export class ChatSession {
           assistant.text += event.text;
           if (assistant.text.length > 100000) throw new Error("RESPONSE_LIMIT");
         }
-        if (event.type === "plan") assistant.proposals.push({ plan: event.plan, operation: event.operation, input: event.input, consumed: false });
+        if (event.type === "plan" && !assistant.proposals.some((proposal) => proposal.plan.previewId === event.plan.previewId)) assistant.proposals.push({ preview: event.preview, operationId: event.operationId, plan: event.plan, operation: event.operation, input: event.input, consumed: false });
         if (event.type === "context") context = event.messages;
         this.emit();
       }
@@ -139,10 +142,11 @@ export class ChatSession {
       if (["schedule-batch", "update-batch"].includes(proposal.operation)) {
         input = { changes: (input as { changes: Record<string, unknown>[] }).changes.map(({ expectedRevision: _revision, ...fresh }) => { void _revision; return fresh; }) };
       }
-      const plan = await this.registry.plan(proposal.operation, input);
+      const preview = proposal.operationId && this.operationService ? await this.operationService.previewPort.requestRepreview(proposal.plan.previewId) : undefined;
+      const plan = preview ? this.operationService!.legacyPlan(preview, proposal.operation) : await this.registry.plan(proposal.operation, input);
       if (controller.signal.aborted || this.owners.get(conversation) !== controller) { this.registry.discard(plan.previewId); throw new Error("CANCELLED"); }
       this.registry.discard(proposal.plan.previewId);
-      message.proposals.push({ plan, operation: proposal.operation, input, consumed: false });
+      message.proposals.push({ plan, preview, operationId: proposal.operationId, operation: proposal.operation, input, consumed: false });
       conversation.status = "preview"; conversation.error = "";
     } catch {
       proposal.retryPrepared = false;

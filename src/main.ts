@@ -1,3 +1,5 @@
+import { ViewStateService } from "./app/view-state-service";
+import { OperationService } from "./app/operation-service";
 import { Notice, Plugin, TFile, moment } from "obsidian";
 import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
@@ -263,6 +265,19 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }, () => this.vaultAdapter());
   }
   readonly operations = this.createOperations();
+  private createOperationService(): OperationService {
+    const settings = () => this.settings;
+    return new OperationService({ get settings() { return settings(); }, historyManager: this.historyManager, coordinator: this.operations,
+      persistSettings: (candidate) => this.saveData(candidate),
+      invalidate: async () => { this.scheduleGhosts.clear(); this.taskCache.clear(); await this.refreshOpenViews(); },
+    }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  }
+  readonly operationService = this.createOperationService();
+  get previewPort() { return this.operationService.previewPort; }
+  get humanApprovalPort() { return this.operationService.humanApprovalPort; }
+  get contextReadPort() { return this.operationService.contextPort; }
+  readonly uiPort = new ViewStateService(this.previewPort);
+  get historyPort() { return this.historyManager; }
   chatSession!: ChatSession;
 
 
@@ -307,6 +322,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
  */
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    await this.operationService.invalidatePreviews();
   }
 
   async onload(): Promise<void> {
@@ -319,8 +335,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     // settings load failures propagate — plugin load fails
     await this.loadSettings();
+    this.historyManager.attachVault(() => this.vaultAdapter());
 
-    this.chatSession = new ChatSession(this.app.vault, this.operations, new SdkChatProvider(this.operations, (id) => this.app.secretStorage?.getSecret(id) ?? null), (result) => this.scheduleGhosts.show(result));
+    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id) => this.app.secretStorage?.getSecret(id) ?? null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,
       closeDiff: () => this.scheduleGhosts.clear(),
@@ -412,7 +429,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     );
 
     if (typeof this.registerEvent === "function") {
-      const clear = () => this.scheduleGhosts.clear();
+      const clear = () => { this.scheduleGhosts.clear(); void this.historyManager.refreshEligibility(); void this.operationService.invalidatePreviews(); };
       this.registerEvent(this.app.vault.on("modify", clear));
       this.registerEvent(this.app.vault.on("create", clear));
       this.registerEvent(this.app.vault.on("delete", clear));
@@ -474,6 +491,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
   onunload(): void {
     this.chatSession?.dispose();
+    this.operationService.dispose();
     this.scheduleGhosts.clear();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_CHAT);
     // stop the Gantt sync timer; with a null handle
