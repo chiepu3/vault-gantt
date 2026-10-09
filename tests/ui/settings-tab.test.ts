@@ -1008,6 +1008,86 @@ describe("TaskWorkbenchSettingTab", () => {
       expect(ai).toMatchObject({ preset: "custom", baseUrl: "http://localhost:1234/v1" });
     });
 
+    describe("取得の開始・完了で入力中の欄を作り直さない", () => {
+      const count = (name: string) => RecordingSetting.all.filter((setting) => setting.name === name).length;
+      function deferredFetch() {
+        let resolve!: (value: any) => void;
+        fetchAiModels.mockImplementation(() => new Promise((done) => { resolve = done; }));
+        return (value: any) => resolve(value);
+      }
+
+      it("keeps the manual model field when the fetch fails", async () => {
+        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const field = row.texts[0];
+        field.value = "typing-in-progress";
+        const settingsBefore = RecordingSetting.all.length;
+        finish({ ok: false, reason: "接続できませんでした。" });
+        await flush();
+        expect(RecordingSetting.all.length).toBe(settingsBefore);
+        expect(last("モデル")).toBe(row);
+        expect(last("モデル").texts[0]).toBe(field);
+        expect(field.value).toBe("typing-in-progress");
+        expect(row.desc).toContain("一覧を取得できませんでした");
+      });
+
+      it("applies a successful list after the focused manual field loses focus", async () => {
+        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const inputEl: any = row.texts[0].inputEl;
+        inputEl.ownerDocument = { activeElement: inputEl };
+        finish({ ok: true, models: ["a/one"] });
+        await flush();
+        expect(count("モデル")).toBe(1);
+        expect(row.dropdowns).toHaveLength(0);
+        expect(row.desc).toContain("1件");
+        inputEl.ownerDocument = { activeElement: null };
+        inputEl.listeners.focusout();
+        expect(last("モデル").dropdowns).toHaveLength(1);
+      });
+
+      it("keeps an unsaved API key typed before the fetch completes", async () => {
+        ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
+        hostPlugin.hasAiApiKey = () => true;
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const keyRow = last("APIキー");
+        keyRow.texts[0].setValue("sk-typed-not-saved");
+        finish({ ok: true, models: ["a/one", "b/two"] });
+        await flush();
+        expect(count("APIキー")).toBe(1);
+        expect(last("APIキー")).toBe(keyRow);
+        expect(keyRow.texts[0].value).toBe("sk-typed-not-saved");
+        expect(last("モデル").dropdowns).toHaveLength(1);
+      });
+
+      it("does not destroy the model field when the URL field blurs into it", async () => {
+        ai = { preset: "custom", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const field = row.texts[0];
+        const urlRow = last("接続先URL");
+        const finish = deferredFetch();
+        (urlRow.texts[0].inputEl as any).listeners.change();
+        expect(row.desc).toContain("取得しています");
+        field.value = "clicked-and-typing";
+        finish({ ok: false, reason: "接続できませんでした。" });
+        await flush();
+        expect(count("モデル")).toBe(1);
+        expect(last("モデル").texts[0]).toBe(field);
+        expect(field.value).toBe("clicked-and-typing");
+      });
+    });
+
     it("reports the connection test result in the section", async () => {
       ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "x", useApiKey: false };
       tab.display();

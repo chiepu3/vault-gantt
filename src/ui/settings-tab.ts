@@ -167,6 +167,8 @@ export function ensureGanttTagDefinitions(
 
 
 
+interface AiModelRow { setting: Setting; mode: "dropdown" | "text"; input?: TextComponent; refetch?: { setDisabled(disabled: boolean): unknown } }
+
 export class TaskWorkbenchSettingTab extends PluginSettingTab {
   constructor(
     app: App,
@@ -498,6 +500,9 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
   private aiKeyVisible = false;
   private aiFetchSeq = 0;
   private aiEl: HTMLElement | null = null;
+  private aiModelHost: HTMLElement | null = null;
+  private aiModelRow: AiModelRow | null = null;
+  private aiTestSetting: Setting | null = null;
 
   private renderAiSettings(containerEl: HTMLElement): void {
     const host = this.hostPlugin;
@@ -521,11 +526,12 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       this.aiModels = [];
       this.aiModelNote = "APIキーを登録すると、モデルの一覧を取得できます。";
       this.aiLoading = false;
-      this.drawAiSettings();
+      this.drawAiModelPart();
       return null;
     }
     this.aiLoading = true;
-    this.drawAiSettings();
+    // Only the status text changes here: the field the user may be typing in stays.
+    this.updateAiModelStatus();
     const result = await host.fetchAiModels();
     if (seq !== this.aiFetchSeq) return result;
     this.aiLoading = false;
@@ -536,8 +542,82 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       this.aiModels = [];
       this.aiModelNote = `一覧を取得できませんでした。${result.reason}モデルIDは直接入力できます。`;
     }
-    this.drawAiSettings();
+    this.drawAiModelPart();
     return result;
+  }
+
+  private aiModelDesc(): string {
+    return this.aiLoading
+      ? "モデルの一覧を取得しています…"
+      : this.aiModels.length
+        ? `接続先から${this.aiModels.length}件のモデルを取得しました。`
+        : this.aiModelNote || "「再取得」で接続先からモデルの一覧を取得します。";
+  }
+
+  private updateAiModelStatus(): void {
+    this.aiModelRow?.setting.setDesc(this.aiModelDesc());
+    this.aiModelRow?.refetch?.setDisabled(this.aiLoading);
+  }
+
+  private setAiTestNote(note: string): void {
+    this.aiTestNote = note;
+    this.aiTestSetting?.setDesc(this.aiTestNote || "接続先とAPIキーが使えるかを確認します。");
+  }
+
+  /**
+   * Redraws the model row only. A manual model field that has focus is kept (the
+   * list is applied when it loses focus); other fields are never touched.
+   */
+  private drawAiModelPart(): void {
+    const hostEl = this.aiModelHost;
+    const settings = this.hostPlugin.getAiSettings?.();
+    if (!hostEl || !settings) return;
+    const mode = this.aiModels.length ? "dropdown" : "text";
+    const row = this.aiModelRow;
+    if (row?.mode === "text") {
+      const inputEl = row.input?.inputEl as (HTMLInputElement | undefined);
+      const focused = !!inputEl && inputEl.ownerDocument?.activeElement === inputEl;
+      if (mode === "text" || focused) { this.updateAiModelStatus(); return; }
+    }
+    hostEl.replaceChildren();
+    const modelSetting = new Setting(hostEl).setName("モデル");
+    const created: AiModelRow = { setting: modelSetting, mode };
+    this.aiModelRow = created;
+    modelSetting.setDesc(this.aiModelDesc());
+    if (mode === "dropdown") {
+      const options: Record<string, string> = {};
+      if (!settings.model) options[""] = "選択してください";
+      else if (!this.aiModels.includes(settings.model)) options[settings.model] = `${settings.model}（一覧にありません）`;
+      for (const id of this.aiModels) options[id] = id;
+      modelSetting.addDropdown((dropdown) =>
+        dropdown.addOptions(options).setValue(settings.model).onChange(async (value: string) => {
+          await this.changeAiSettings({ model: value }, false);
+        })
+      );
+    } else {
+      modelSetting.addText((text) => {
+        created.input = text;
+        text.inputEl.addEventListener("focusout", () => {
+          if (this.aiModels.length && this.aiModelRow === created) this.drawAiModelPart();
+        });
+        return text
+          .setValue(settings.model)
+          .setPlaceholder("モデルID")
+          .onChange(async (value: string) => {
+            await this.changeAiSettings({ model: value.trim() }, false);
+          });
+      });
+    }
+    modelSetting.addButton((button) => {
+      created.refetch = button;
+      return button
+        .setButtonText("再取得")
+        .setDisabled(this.aiLoading)
+        .onClick(() => {
+          this.setAiTestNote("");
+          void this.refreshAiModels();
+        });
+    });
   }
 
   private async changeAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey">>, refetch: boolean): Promise<void> {
@@ -548,7 +628,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       return;
     }
     if (refetch) {
-      this.aiTestNote = "";
+      this.setAiTestNote("");
       await this.refreshAiModels();
     }
   }
@@ -599,7 +679,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       .addText((text) => {
         text.inputEl.disabled = settings.preset === "openrouter";
         text.inputEl.addEventListener("change", () => {
-          this.aiTestNote = "";
+          this.setAiTestNote("");
           void this.refreshAiModels();
         });
         return text
@@ -623,57 +703,22 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     if (settings.useApiKey) this.drawAiKeySetting(el);
 
-    const modelSetting = new Setting(el).setName("モデル");
-    modelSetting.setDesc(
-      this.aiLoading
-        ? "モデルの一覧を取得しています…"
-        : this.aiModels.length
-          ? `接続先から${this.aiModels.length}件のモデルを取得しました。`
-          : this.aiModelNote || "「再取得」で接続先からモデルの一覧を取得します。"
-    );
-    if (this.aiModels.length) {
-      const options: Record<string, string> = {};
-      if (!settings.model) options[""] = "選択してください";
-      else if (!this.aiModels.includes(settings.model)) options[settings.model] = `${settings.model}（一覧にありません）`;
-      for (const id of this.aiModels) options[id] = id;
-      modelSetting.addDropdown((dropdown) =>
-        dropdown.addOptions(options).setValue(settings.model).onChange(async (value: string) => {
-          await this.changeAiSettings({ model: value }, false);
-        })
-      );
-    } else {
-      modelSetting.addText((text) =>
-        text
-          .setValue(settings.model)
-          .setPlaceholder("モデルID")
-          .onChange(async (value: string) => {
-            await this.changeAiSettings({ model: value.trim() }, false);
-          })
-      );
-    }
-    modelSetting.addButton((button) =>
-      button
-        .setButtonText("再取得")
-        .setDisabled(this.aiLoading)
-        .onClick(() => {
-          this.aiTestNote = "";
-          void this.refreshAiModels();
-        })
-    );
+    this.aiModelHost = el.createDiv();
+    this.aiModelRow = null;
+    this.drawAiModelPart();
 
-    new Setting(el)
+    this.aiTestSetting = new Setting(el)
       .setName("接続テスト")
       .setDesc(this.aiTestNote || "接続先とAPIキーが使えるかを確認します。")
       .addButton((button) =>
         button.setButtonText("接続テスト").onClick(async () => {
           const result = await this.refreshAiModels();
           const model = host.getAiSettings?.().model ?? "";
-          this.aiTestNote = !result
+          this.setAiTestNote(!result
             ? "APIキーを登録してから試してください。"
             : result.ok
               ? `接続できました。モデルは${result.models.length}件あります。${model && !result.models.includes(model) ? "選択中のモデルは一覧にありません。" : ""}`
-              : `接続できませんでした。${result.reason}`;
-          this.drawAiSettings();
+              : `接続できませんでした。${result.reason}`);
         })
       );
   }
@@ -717,6 +762,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
           }
           new Notice("APIキーを保存しました");
           this.aiTestNote = "";
+          this.drawAiSettings();
           await this.refreshAiModels();
         })
       )
@@ -730,6 +776,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
           }
           new Notice("APIキーを削除しました");
           this.aiTestNote = "";
+          this.drawAiSettings();
           await this.refreshAiModels();
         })
       );
