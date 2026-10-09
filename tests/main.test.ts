@@ -1493,7 +1493,7 @@ describe("TaskWorkbenchPlugin", () => {
       const h = createHarness({});
       stubHolidays(h.plugin, {});
       await h.plugin.onload();
-      await seedParentTask(h, "Done Task", { completed: true });
+      await seedParentTask(h, "Done Task", { statusLabel: "done", completed: false });
 
       const hiddenEl = await renderTaskListEmbed(h, "showCompleted=false");
       expect(deepText(hiddenEl)).toContain("表示対象のタスクがありません");
