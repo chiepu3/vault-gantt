@@ -181,6 +181,137 @@ New-InstallerOwnedDirectory -Path $root
 
 Write-Host 'Vault Gantt Windows installer tests'
 
+Check 'cloud tag allowlist accepts CLOUD and CLOUD_1 through CLOUD_F only' {
+    foreach ($index in 0..15) {
+        $tag = [uint32](2415919130 + $index * 4096)
+        Assert-True (Test-VaultGanttCloudReparseTag $tag) ('cloud tag refused: {0:X8}' -f $tag)
+    }
+    foreach ($tag in 0, 2684354572, 2684354563, 2147483675, 2415984666, 2415919146) {
+        Assert-True (-not (Test-VaultGanttCloudReparseTag ([uint32]$tag))) ('other tag accepted: {0:X8}' -f $tag)
+    }
+}
+
+Check 'overridable tag reader allows cloud files and directories but rejects links and unknown tags' {
+    function Get-VaultGanttReparseTag { param([string]$Path); return $script:TestReparseTag }
+    foreach ($directory in $false, $true) {
+        $item = [pscustomobject]@{ FullName = (Join-Path $root 'ドキュメント'); Attributes = [IO.FileAttributes]::ReparsePoint; PSIsContainer = $directory }
+        foreach ($tag in 2415919130, 2415947802, 2415980570) {
+            $script:TestReparseTag = [uint32]$tag
+            Assert-InstallerSafeReparsePoint $item
+            $caught = $null
+            try { Assert-InstallerSafeReparsePoint $item -Strict } catch { $caught = $_ }
+            Assert-True ($null -ne $caught) 'strict work/cleanup policy accepted cloud reparse point'
+        }
+        foreach ($tag in 2684354572, 2684354563, 2147483671, 0) {
+            $script:TestReparseTag = [uint32]$tag
+            # Cloud attribute bits must not bypass the tag allowlist.
+            $item.Attributes = 0x400 -bor 0x1000 -bor 0x400000
+            $caught = $null
+            try { Assert-InstallerSafeReparsePoint $item } catch { $caught = $_ }
+            Assert-True ($null -ne $caught -and $caught.Exception.Message -match 'reparse point') 'unsafe/unknown tag accepted'
+        }
+    }
+    function Get-VaultGanttReparseTag { param([string]$Path); throw 'simulated tag query failure' }
+    $caught = $null
+    try { Assert-InstallerSafeReparsePoint $item } catch { $caught = $_ }
+    Assert-True ($null -ne $caught -and $caught.Exception.Message -match 'tag query failure') 'tag query failure was ignored'
+}
+
+Check 'Japanese destination with cloud ancestors and existing cloud files installs and preserves backup' {
+    $cloudRoot = Join-Path $root 'cloud-ドキュメント'
+    $destination = New-TestDestination $cloudRoot 'Obsidian Vault\.obsidian\plugins\vault-gantt'
+    $before = Get-Hashes $destination
+    $work = Join-Path $root 'cloud-work'
+    function Get-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [switch]$Force)
+        $item = Microsoft.PowerShell.Management\Get-Item @PSBoundParameters
+        if ($item.FullName.StartsWith($cloudRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ FullName = $item.FullName; Attributes = $item.Attributes -bor [IO.FileAttributes]::ReparsePoint; PSIsContainer = $item.PSIsContainer }
+        }
+        return $item
+    }
+    function Get-VaultGanttReparseTag { param([string]$Path); return [uint32]2415947802 }
+    Reset-Mock
+    Invoke-VaultGanttInstaller -Branch main -DestinationPath $destination -WorkRoot $work
+    $backups = @(Get-ChildItem -LiteralPath $work -Directory -Filter 'backup-*')
+    Assert-True ($backups.Count -eq 1) 'cloud installation did not retain backup'
+    foreach ($name in $script:InstallerFiles) {
+        Assert-True ((Get-FileHash -LiteralPath (Join-Path $backups[0].FullName $name)).Hash -ceq $before[$name]) "$name cloud backup mismatch"
+    }
+    Assert-True ((Get-Content -LiteralPath (Join-Path $destination 'main.js') -Raw) -ceq $script:MainContent) 'cloud installation did not deploy'
+    Assert-True ($script:CleanupWarnings.Count -eq 0) 'cloud stage cleanup warned'
+    Assert-True (@(Get-ChildItem -LiteralPath $destination -Force).Count -eq 5) 'cloud stage was not removed'
+}
+
+Check 'read-only cloud stage cleanup deletes only owned known files and leaves unexpected entries' {
+    function Get-VaultGanttReparseTag { param([string]$Path); return [uint32]2415976474 } # CLOUD_E
+    function Get-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [switch]$Force)
+        $item = Microsoft.PowerShell.Management\Get-Item @PSBoundParameters
+        if ($item.FullName -ceq $stagePath) {
+            return [pscustomobject]@{ FullName = $item.FullName; Attributes = $item.Attributes -bor [IO.FileAttributes]::ReparsePoint; PSIsContainer = $item.PSIsContainer }
+        }
+        return $item
+    }
+    foreach ($unexpected in $false, $true) {
+        Reset-Mock
+        $stagePath = Join-Path $root ('.vault-gantt-installer-' + [guid]::NewGuid().ToString('N'))
+        New-InstallerOwnedDirectory $stagePath -AllowCloudAncestors
+        [IO.File]::WriteAllText((Join-Path $stagePath 'main.js'), 'stage file')
+        if ($unexpected) { [IO.File]::WriteAllText((Join-Path $stagePath 'keep.txt'), 'leave untouched') }
+        [IO.File]::SetAttributes($stagePath, [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReadOnly)
+        Remove-InstallerPath -Path $stagePath -OwnedRoot $stagePath -CloudStage
+        if ($unexpected) {
+            Assert-True ($script:CleanupWarnings.Count -eq 1) 'unknown stage entry was accepted'
+            Assert-True (Test-Path -LiteralPath (Join-Path $stagePath 'main.js')) 'stage cleanup partially deleted before refusal'
+            Assert-True ((Get-Content -LiteralPath (Join-Path $stagePath 'keep.txt') -Raw) -ceq 'leave untouched') 'unknown entry deleted'
+        } else {
+            Assert-True ($script:CleanupWarnings.Count -eq 0 -and -not (Test-Path -LiteralPath $stagePath)) 'read-only cloud stage was not removed'
+        }
+    }
+}
+
+Check 'cloud-only read failure stops before staging or replacement and gives OneDrive guidance' {
+    $nativeRead = ${function:Read-InstallerExistingFile}
+    foreach ($failedName in 'manifest.json', 'styles.css') {
+        $destination = New-TestDestination $root ('cloud-read-failure-' + $failedName)
+        $before = Get-Hashes $destination
+        $work = Join-Path $root ('cloud-read-work-' + $failedName)
+        $source = New-TestSource (Join-Path $root ('cloud-read-source-' + $failedName))
+        New-Item -ItemType Directory -Path $work | Out-Null
+        function Read-InstallerExistingFile {
+            param([string]$Path)
+            if ([IO.Path]::GetFileName($Path) -ceq $failedName) {
+                # Exercise the real read-error handler with an inaccessible/missing path.
+                return & $nativeRead -Path ($Path + '.unavailable')
+            }
+            return & $nativeRead @PSBoundParameters
+        }
+        $caught = $null
+        try { Install-BuiltFiles -SourceDirectory $source -DestinationPath $destination -WorkDirectory $work } catch { $caught = $_ }
+        Assert-True ($null -ne $caught -and $caught.Exception.Message -match 'このデバイス上に常に保持する') 'cloud read failure lacked guidance'
+        $after = Get-Hashes $destination
+        foreach ($name in $before.Keys) { Assert-True ($after[$name] -ceq $before[$name]) "$name changed after read failure" }
+        Assert-True (@(Get-ChildItem -LiteralPath $destination -Force).Count -eq 5) 'read failure created stage files'
+    }
+}
+
+Check 'native tag reader and ancestor checks reject a real junction on a Japanese path' {
+    $outside = New-TestDestination $root 'junction-ドキュメント'
+    $link = Join-Path $root 'junction-destination'
+    New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+    try {
+        Assert-True ((Get-VaultGanttReparseTag $link) -eq [uint32]2684354563) 'junction tag mismatch'
+        foreach ($path in $link, (Join-Path $link 'manifest.json')) {
+            $caught = $null
+            try { Assert-InstallerNoReparseChain $path } catch { $caught = $_ }
+            Assert-True ($null -ne $caught) 'real junction ancestor accepted'
+        }
+    } finally { [IO.Directory]::Delete($link) }
+}
+
 Check 'native command nonzero exit is treated as failure' {
     $threw = $false
     try { & $script:NativeImplementation -FilePath $env:ComSpec -Arguments @('/c', 'exit', '23') -Operation 'test nonzero' }
@@ -348,8 +479,8 @@ Check 'partial deployment failure restores old bundle and preserves user files' 
     Assert-True (@(Get-ChildItem -LiteralPath $work -Force).Count -eq 0) 'backup files were not cleaned'
 }
 
-Check 'all three installer scripts are UTF-8 with BOM' {
-    foreach ($name in 'Install-VaultGantt.ps1', 'VaultGanttInstaller.Lib.ps1', 'Test-VaultGanttInstaller.ps1') {
+Check 'installer scripts and shared path library are UTF-8 with BOM' {
+    foreach ($name in 'Install-VaultGantt.ps1', 'VaultGanttInstaller.Lib.ps1', 'VaultGanttPathSafety.Lib.ps1', 'Test-VaultGanttInstaller.ps1') {
         $bytes = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $name))
         Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf) "$name lacks UTF-8 BOM"
     }

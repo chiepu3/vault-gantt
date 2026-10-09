@@ -1,4 +1,5 @@
 ﻿Set-StrictMode -Version 2.0
+. (Join-Path $PSScriptRoot 'VaultGanttPathSafety.Lib.ps1')
 
 $script:InstallerRepositoryUrl = 'https://github.com/chiepu3/vault-gantt.git'
 $script:InstallerFiles = @('main.js', 'manifest.json', 'styles.css')
@@ -101,17 +102,34 @@ function Get-InstallerNormalizedPath {
     return $full
 }
 
+# Overridable separately from the native tag reader in unit tests.
+function Assert-InstallerSafeReparsePoint {
+    param($Item, [switch]$Strict)
+    if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) { return }
+    if (-not $Strict) {
+        $tag = Get-VaultGanttReparseTag -Path $Item.FullName
+        if (Test-VaultGanttCloudReparseTag -Tag $tag) { return }
+    }
+    Stop-Installer "パスに許可されていないreparse pointがあります: $($Item.FullName)"
+}
+
 function Assert-InstallerNoReparseChain {
-    param([string]$Path)
+    param([string]$Path, [switch]$Strict)
     $current = Get-InstallerNormalizedPath $Path
     while ($current) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
-            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                Stop-Installer "パスにreparse pointがあります: $current"
-            }
+            Assert-InstallerSafeReparsePoint -Item $item -Strict:$Strict
         }
         $current = [System.IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Read-InstallerExistingFile {
+    param([string]$Path)
+    try { return ,([System.IO.File]::ReadAllBytes($Path)) }
+    catch {
+        Stop-Installer "既存ファイルを読み込めません: $Path。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)"
     }
 }
 
@@ -126,10 +144,12 @@ function Resolve-InstallerDestination {
     $manifestPath = Join-Path $fullPath 'manifest.json'
     if (Test-Path -LiteralPath $manifestPath) {
         $item = Get-Item -LiteralPath $manifestPath -Force
-        if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        if ($item.PSIsContainer) {
             Stop-Installer '配置先のmanifest.jsonが通常ファイルではありません。'
         }
-        try { $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+        Assert-InstallerSafeReparsePoint -Item $item
+        $manifestBytes = Read-InstallerExistingFile -Path $manifestPath
+        try { $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json }
         catch { Stop-Installer '配置先のmanifest.jsonを解析できません。' }
         if (-not $manifest -or -not $manifest.PSObject.Properties['id'] -or $manifest.id -cne $script:InstallerPluginId) {
             Stop-Installer '配置先のmanifest.jsonのidがvault-ganttではありません。'
@@ -181,9 +201,9 @@ function Enter-InstallerLock {
 }
 
 function New-InstallerOwnedDirectory {
-    param([string]$Path)
+    param([string]$Path, [switch]$AllowCloudAncestors)
     $full = Get-InstallerNormalizedPath $Path
-    Assert-InstallerNoReparseChain $full
+    Assert-InstallerNoReparseChain $full -Strict:(-not $AllowCloudAncestors)
     if (Test-Path -LiteralPath $full) { Stop-Installer "作業フォルダーが既に存在します: $full" }
     New-Item -ItemType Directory -Path $full -ErrorAction Stop | Out-Null
     $script:InstallerOwnedDirectories[$full] = $true
@@ -297,7 +317,7 @@ namespace VaultGanttInstaller {
 }
 
 function Remove-InstallerPath {
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$OwnedRoot)
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$OwnedRoot, [switch]$CloudStage)
     try {
         $full = Get-InstallerNormalizedPath $Path
         $owned = Get-InstallerNormalizedPath $OwnedRoot
@@ -306,8 +326,35 @@ function Remove-InstallerPath {
              -not $full.StartsWith($owned + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
             Stop-Installer 'cleanup対象はこのinstallerが作成した作業フォルダー内に限定されます。'
         }
-        Assert-InstallerNoReparseChain $full
-        if (Test-Path -LiteralPath $full) { Remove-InstallerTree -Path $full }
+        if ($CloudStage -and (-not $full.Equals($owned, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($full) -cnotmatch '^\.vault-gantt-installer-[0-9a-f]{32}$')) {
+            Stop-Installer 'クラウド上のcleanupはこの実行が作成したstageだけに限定されます。'
+        }
+        Assert-InstallerNoReparseChain $full -Strict:(-not $CloudStage)
+        if (Test-Path -LiteralPath $full) {
+            if ($CloudStage) {
+                # A OneDrive stage may itself become a cloud directory. Remove only
+                # known stage files, then delete the empty directory without traversing
+                # any reparse point. WorkRoot/backup cleanup remains fully strict.
+                $entries = @(Get-ChildItem -LiteralPath $full -Force -ErrorAction Stop)
+                foreach ($entry in $entries) {
+                    if ($entry.PSIsContainer -or ($entry.Name -cnotin $script:InstallerFiles -and
+                        $entry.Name -cnotin @($script:InstallerFiles | ForEach-Object { 'restore-' + $_ }))) {
+                        Stop-Installer "stageに想定外のファイルがあります: $($entry.FullName)"
+                    }
+                    Assert-InstallerSafeReparsePoint -Item $entry
+                }
+                foreach ($entry in $entries) { Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop }
+                $stageItem = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+                Assert-InstallerSafeReparsePoint -Item $stageItem
+                if (($stageItem.Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+                    # OneDrive may mark our cloud stage read-only while syncing it.
+                    # Clear only this owned directory's read-only bit, after tag validation.
+                    [IO.File]::SetAttributes($full, [Enum]::ToObject([IO.FileAttributes], ([int]$stageItem.Attributes -band (-bnot 1))))
+                }
+            }
+            Remove-InstallerTree -Path $full
+        }
         if ($full.Equals($owned, [StringComparison]::OrdinalIgnoreCase)) { $script:InstallerOwnedDirectories.Remove($owned) }
     } catch {
         Write-Warning -Message "cleanupに失敗しました。残留パス: $Path ($($_.Exception.Message))" -WarningAction Continue
@@ -337,17 +384,20 @@ function Install-BuiltFiles {
             if (Test-Path -LiteralPath $target) {
                 $item = Get-Item -LiteralPath $target -Force
                 if ($item.PSIsContainer) { Stop-Installer "配置先の$nameがファイルではありません。" }
-                if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { Stop-Installer "配置先の$nameがreparse pointです。" }
+                Assert-InstallerSafeReparsePoint -Item $item
                 $original[$name] = $true
-                Copy-Item -LiteralPath $target -Destination (Join-Path $backup $name) -ErrorAction Stop
-                $sourceHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256 -ErrorAction Stop).Hash
+                # Read the contents to hydrate cloud-only files before any destination writes.
+                $bytes = Read-InstallerExistingFile -Path $target
+                [System.IO.File]::WriteAllBytes((Join-Path $backup $name), $bytes)
+                try { $sourceHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256 -ErrorAction Stop).Hash }
+                catch { Stop-Installer "既存$nameのhashを読み込めません。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)" }
                 $backupHash = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256 -ErrorAction Stop).Hash
                 $originalHashes[$name] = $sourceHash
                 if ($sourceHash -cne $backupHash) { Stop-Installer "既存$nameのbackup検証に失敗しました。" }
             } else { $original[$name] = $false }
         }
 
-        New-InstallerOwnedDirectory -Path $stage
+        New-InstallerOwnedDirectory -Path $stage -AllowCloudAncestors
         foreach ($name in $script:InstallerFiles) {
             Copy-Item -LiteralPath (Join-Path $SourceDirectory $name) -Destination (Join-Path $stage $name) -ErrorAction Stop
             $sourceHash = (Get-FileHash -LiteralPath (Join-Path $SourceDirectory $name) -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -411,7 +461,7 @@ function Install-BuiltFiles {
         Stop-Installer "配置に失敗したため既存ファイルを復元しました。$reason"
     } finally {
         try {
-            if ($script:InstallerOwnedDirectories.ContainsKey($stage)) { Remove-InstallerPath -Path $stage -OwnedRoot $stage }
+            if ($script:InstallerOwnedDirectories.ContainsKey($stage)) { Remove-InstallerPath -Path $stage -OwnedRoot $stage -CloudStage }
             if (-not $preserveBackup -and $script:InstallerOwnedDirectories.ContainsKey($backup)) { Remove-InstallerPath -Path $backup -OwnedRoot $backup }
         } finally {
             try { $mutex.ReleaseMutex() } finally { $mutex.Dispose() }

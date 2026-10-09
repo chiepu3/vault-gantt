@@ -5,11 +5,11 @@
 - `Install-VaultGantt.ps1`: 公開branchを一覧から選び、そのcommitを取得してビルドした後、指定フォルダーへ配置します。
 - `Update-VaultGantt.ps1`: GitHub Actionsが検証済みcommitから作成したartifactを検証し、dry-run/apply/rollbackします。
 
-両方式とも `main.js` / `manifest.json` / `styles.css` だけを対象にし、branch-build installerはartifact updaterのartifactを使いません。
+両方式とも `main.js` / `manifest.json` / `styles.css` だけを対象にし、branch-build installerはartifact updaterのartifactを使いません。実行用script、対応する `Lib.ps1` と共通ライブラリ `VaultGanttPathSafety.Lib.ps1` は同じフォルダーに置いてください。
 
 ## Branch-build installer
 
-Windows PowerShell 5.1、Git、Node.js/npmが必要です。installerの3つの `.ps1` は日本語を正しく読み込めるUTF-8 BOM付きです。`-DestinationPath` はVaultのpluginフォルダーそのものを指定してください。フォルダーは事前に作成しておきます。既存の `manifest.json` がある場合は `id` が `vault-gantt` と完全一致することが必須です。manifestがない初回配置は `<Vault>\.obsidian\plugins\vault-gantt` の構造のみ許可します。配置先と親ディレクトリのreparse pointも拒否します。
+Windows PowerShell 5.1、Git、Node.js/npmが必要です。installerの `.ps1`（共通ライブラリ `VaultGanttPathSafety.Lib.ps1` を含む）は日本語を正しく読み込めるUTF-8 BOM付きです。`-DestinationPath` はVaultのpluginフォルダーそのものを指定してください。フォルダーは事前に作成しておきます。既存の `manifest.json` がある場合は `id` が `vault-gantt` と完全一致することが必須です。manifestがない初回配置は `<Vault>\.obsidian\plugins\vault-gantt` の構造のみ許可します。日本語・空白を含む配置先やOneDrive配下でも使用できます。配置先の親チェーンと既存3ファイルのreparseタグを検査し、クラウドファイル系の `IO_REPARSE_TAG_CLOUD` / `CLOUD_1`〜`CLOUD_F`（`0x9000001A`〜`0x9000F01A`）だけを許可します。シンボリックリンク、ジャンクション／マウントポイント、その他のreparse point、タグを取得できないパスは拒否します。タグ取得には[Unicode版FindFirstFileW](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags)を使用します。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-VaultGantt.ps1 `
@@ -23,11 +23,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-VaultGantt.ps1
   -Branch main -DestinationPath "D:\Vault\.obsidian\plugins\vault-gantt"
 ```
 
+OneDriveのクラウドのみ（未ダウンロード）の既存ファイルは、manifestの検査やbackupのために内容を読み込む際に自動ダウンロードされます。読み込みに失敗した場合は配置先を書き換えずに停止します。OneDriveでこのフォルダを「このデバイス上に常に保持する」にして、ダウンロード完了後に再実行してください。
+
 branch headの40桁SHAを専用の一時作業フォルダーにfetchし、そのSHAへdetach checkoutしたことを確認してから `npm ci` → `npm run build` を実行します。両方成功し、3成果物とmanifest idを検証できた場合だけ配置します。配置前に既存3ファイルをbackupし、置換を試みる前にrollback対象へ登録します。途中失敗時は例外が発生したファイルも含めて復元し、元のSHA256と存在状態（初回配置では元の不存在）を検証します。元のhashのまま残っているファイルは再置換を省きます。成功時は既存ファイルのbackupを `%TEMP%\vault-gantt-installer-<GUID>\backup-<GUID>` に保持し、場所とmanifest.jsonのversionを表示します。rollbackの復元処理が失敗した場合、または復元後のhash・存在状態を確認できない場合はbackupとWorkRoot全体を保持し、両方のパスと手動復元が必要なことを表示します。表示されたbackupから元のファイルを配置先へ戻し、初回配置で新たにできたファイルは取り除いてください。取得・依存導入・buildの失敗では配置先を変更しません。`data.json`、ノート、その他のファイルは読み書きしません。
 
 backup前から配置後の検証・rollback・stage cleanup完了までnamed mutexを保持します。同じ対象で処理中なら待たずにエラー終了（終了コード1）します。標準配置ではVaultルートを `GetFullPath` → 末尾区切り除去（ルートは維持）→ 小文字化 → UTF-8 → SHA256とし、先頭32桁の大文字hexから `Global\VaultGanttUpdater-<hash>` を作ります。artifact updaterと同じ名前なのでinstall/update/rollback間でも競合を防ぎます。既存manifestで確認した標準構造以外の配置先では、配置先そのものを同様に正規化した `Global\VaultGanttInstaller-<hash>` を使います。ロック取得後にもmanifestと配置先を再検証します。
 
-成功時にはbuild用repositoryを削除し、既存ファイルがあった場合だけbackupとその親WorkRootを保持します。初回成功または検証済みrollbackではWorkRootも削除します。cleanupはPowerShell 5.1の `Remove-Item -Recurse` を使わず、[長いパス対応のUnicode API](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirstfilew) に `\\?\`（UNCでは `\\?\UNC\`）を付けて削除します。OSの長いパス設定に依存せず、深い `node_modules` と読み取り専用ファイルを扱います。削除はこの実行で作成・登録したWorkRoot内と、この実行のbackup/stageに限定し、親のreparse pointを拒否します。内部のjunction/linkは辿らず、リンク自体だけを削除します。cleanup失敗時は元の成功・失敗結果を維持し、残留パス付きの警告を表示します。
+成功時にはbuild用repositoryを削除し、既存ファイルがあった場合だけbackupとその親WorkRootを保持します。初回成功または検証済みrollbackではWorkRootも削除します。cleanupはPowerShell 5.1の `Remove-Item -Recurse` を使わず、[長いパス対応のUnicode API](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirstfilew) に `\\?\`（UNCでは `\\?\UNC\`）を付けて削除します。OSの長いパス設定に依存せず、深い `node_modules` と読み取り専用ファイルを扱います。削除はこの実行で作成・登録したWorkRoot内と、この実行のbackup/stageに限定し、WorkRoot/backupはクラウドを含む親の全reparse pointを拒否します。OneDrive配下のstageだけはクラウドタグの親を許可し、登録済みstageの既知のファイルだけを削除し、タグ検証済みのstageが読み取り専用になった場合はその属性だけを解除してから空のフォルダーを削除します。内部のjunction/linkは辿らず、リンク自体だけを削除します。cleanup失敗時は元の成功・失敗結果を維持し、残留パス付きの警告を表示します。
 
 **選択branchのコードは信頼できることを確認してください。** installerは選択commitの `npm ci` lifecycle scriptsとbuild scriptを実行します。installerは配置先フォルダーを自動生成せず、既存のpluginフォルダーを対象にします。
 

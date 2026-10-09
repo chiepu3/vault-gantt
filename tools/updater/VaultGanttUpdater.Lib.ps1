@@ -70,29 +70,7 @@ function Test-InOneDrive {
     return $false
 }
 
-# Strict: any reparse point counts (our own temp dirs). Non-strict (Vault): only
-# symlinks/junctions/reparse directories, so OneDrive cloud placeholder files pass.
-function Test-IsLink {
-    param([string]$Path, [switch]$Strict)
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    $reparse = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-    if ($Strict) { return $reparse }
-    $lt = Get-Prop $item 'LinkType'
-    if ($lt -eq 'SymbolicLink' -or $lt -eq 'Junction') { return $true }
-    return ($reparse -and $item.PSIsContainer)
-}
-
-# Target files: reject symlinks/junctions and any other reparse point, except OneDrive
-# cloud placeholders (reparse + a cloud-file attribute: Offline/RecallOnOpen/Pinned/Unpinned/RecallOnDataAccess).
-function Test-IsUnsafeTargetFile {
-    param($Item)
-    $lt = Get-Prop $Item 'LinkType'
-    if ($lt) { return $true }
-    $attr = [int]$Item.Attributes
-    if (($attr -band 0x400) -eq 0) { return $false }
-    $cloudBits = 0x1000 -bor 0x40000 -bor 0x80000 -bor 0x100000 -bor 0x400000
-    return (($attr -band $cloudBits) -eq 0)
-}
+. (Join-Path $PSScriptRoot 'VaultGanttPathSafety.Lib.ps1')
 
 # Walks Path -> Root (inclusive of Path, exclusive of Root's parents) and rejects links.
 function Assert-NoLinkChain {
