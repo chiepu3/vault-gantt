@@ -107,16 +107,21 @@ export const ganttParentStateSchema = z.object({
   id: idSchema, name: z.string(), enabled: z.boolean(), order: z.number().finite(), tags: tagNamesSchema,
   children: z.array(ganttChildStateSchema), period: periodSchema, progress: z.number().min(0).max(1), effectivePriority: z.number().min(0).max(5), appearance,
 }).strict().refine((parent) => parent.children.every((child) => child.parentId === parent.id), "親子IDが不一致");
+/** File existence is independent of parsed ToDo items, including an empty Daily file. */
+export const dailyFileSnapshotSchema = z.object({ path: idSchema, sourceKey: idSchema, exists: z.boolean() }).strict();
+export type DailyFileSnapshotV1 = DeepReadonly<z.infer<typeof dailyFileSnapshotSchema>>;
 export const ganttStateSchema = z.object({
   parents: z.array(ganttParentStateSchema),
   events: z.array(z.object({ key: idSchema, title: z.string(), date: dateOnlySchema, hours: z.array(hoursCellSchema) }).strict()),
   weekly: z.array(weeklyStateSchema), daily: z.array(dailySummarySchema), tagDefinitions: z.array(namedDefinitionSchema),
+  /** Optional for existing producers; required snapshots for any daily-file projection target. */
+  dailyFiles: z.array(dailyFileSnapshotSchema).optional(),
   // Domain totals retain hidden task hours; viewport/tag filters do not erase stored contributions.
   settings: publicSettingsSchema, calendar: calendarStateSchema, aggregates: z.array(dailyAggregateSchema),
 }).strict().superRefine((state, ctx) => {
   const taskIds = state.parents.flatMap((parent) => [parent.id, ...parent.children.map((child) => child.id)]);
   if (new Set(taskIds).size !== taskIds.length) ctx.addIssue({ code: "custom", message: "snapshotのtask IDは一意" });
-  for (const ids of [state.events.map((event) => event.key), state.weekly.map((weekly) => weekly.key), state.tagDefinitions.map((tag) => tag.key), state.daily.map((day) => day.date), state.aggregates.map((day) => day.date)]) {
+  for (const ids of [state.events.map((event) => event.key), state.weekly.map((weekly) => weekly.key), state.tagDefinitions.map((tag) => tag.key), state.daily.map((day) => day.date), state.aggregates.map((day) => day.date), (state.dailyFiles ?? []).map((file) => JSON.stringify([file.path, file.sourceKey]))]) {
     if (new Set(ids).size !== ids.length) ctx.addIssue({ code: "custom", message: "snapshotのentity/dateは一意" });
   }
 });
@@ -140,7 +145,7 @@ function represented(entity: EntityRef, state: GanttStateV1): boolean {
     case "source": return state.settings.dailyTodoSources?.some((source) => source.key === entity.sourceKey) ?? false;
     case "setting": return Object.prototype.hasOwnProperty.call(state.settings, entity.key);
     case "daily-todo": return state.daily.some((day) => day.items?.some((item) => item.path === entity.path && item.line === entity.line && item.itemFingerprint === entity.itemFingerprint));
-    case "daily-file": return state.daily.some((day) => day.items?.some((item) => item.path === entity.path && item.sourceKey === entity.sourceKey));
+    case "daily-file": return state.dailyFiles?.some((file) => file.path === entity.path && file.sourceKey === entity.sourceKey && file.exists) ?? false;
     // These have no natural Gantt entity; their view/panel details are in effects.
     case "view": case "conversation": case "integration": return true;
   }
@@ -201,6 +206,7 @@ function mergeStates(left: GanttStateV1, right: GanttStateV1): GanttStateV1 {
     ...left, parents: unionByKey(left.parents, right.parents, (parent) => parent.id), events: unionByKey(left.events, right.events, (event) => event.key),
     weekly: unionByKey(left.weekly, right.weekly, (weekly) => weekly.key), daily: unionByKey(left.daily, right.daily, (day) => day.date),
     tagDefinitions: unionByKey(left.tagDefinitions, right.tagDefinitions, (tag) => tag.key), aggregates: unionByKey(left.aggregates, right.aggregates, (day) => day.date),
+    ...(left.dailyFiles || right.dailyFiles ? { dailyFiles: unionByKey(left.dailyFiles ?? [], right.dailyFiles ?? [], (file) => JSON.stringify([file.path, file.sourceKey])) } : {}),
   };
 }
 /** Pure DTO validation/union only. No layout, business projection or persistence is computed here.
@@ -268,6 +274,126 @@ export const operationOutcomeSchema = z.object({
   if (outcome.actualProjection && outcome.actualProjection.coverage.offset !== 0) ctx.addIssue({ code: "custom", message: "outcomeには先頭投影ページが必要です" });
 });
 export type OperationOutcomeV1 = DeepReadonly<z.infer<typeof operationOutcomeSchema>>;
+/** Validate snapshot provenance, not layout. Contextual siblings remain in both snapshots:
+ * their stored fields cannot change without committed effects, even if targets omit them.
+ * Parent summaries and inherited appearance may change as a consequence of saved children.
+ */
+function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: GanttProjectionV1, saved: readonly PreviewEntry[], issue: (message: string) => void): void {
+  if (planned) {
+    try { mergeStates(planned.before, projection.before); }
+    catch { issue("actualProjection.beforeの共通snapshotがpreviewと一致しません"); }
+  }
+  const { before, after } = projection;
+  const allEffects = saved.flatMap((entry) => entry.effects);
+  const fields = (effects: readonly PreviewEffect[]) => effects.flatMap((effect) => effect.kind === "fields" || effect.kind === "settings" ? effect.fields : []);
+  const hasKind = (effects: readonly PreviewEffect[], ...kinds: PreviewEffectKind[]) => effects.some((effect) => kinds.includes(effect.kind));
+  const changed = (left: unknown, right: unknown) => canonical(left) !== canonical(right);
+  const check = (allowed: boolean, left: unknown, right: unknown, label: string) => {
+    if (!allowed && changed(left, right)) issue(`actualProjection.afterに未保存変更が含まれています: ${label}`);
+  };
+  const checkRecords = <T>(left: readonly T[], right: readonly T[], key: (item: T) => string, validate: (id: string, old: T | undefined, next: T | undefined) => void) => {
+    const old = new Map(left.map((item) => [key(item), item])), next = new Map(right.map((item) => [key(item), item]));
+    for (const id of new Set([...old.keys(), ...next.keys()])) validate(id, old.get(id), next.get(id));
+  };
+  const taskEffects = (id: string) => saved.filter((entry) => entry.entity.kind === "task" && entry.entity.taskId === id).flatMap((entry) => entry.effects);
+  const globalAppearance = hasKind(allEffects, "tag-definition") || fields(allEffects).some((field) => ["ganttTags", "ganttFeatureTagsEnabled", "ganttShowTagsOnBars", "ganttShowParentTagsOnChildBars", "ganttShowTagsOnParents"].includes(field.field));
+  const aliases: Record<string, readonly string[]> = {
+    name: ["displayName", "title"], status: ["statusLabel"], enabled: ["ganttEnabled"], order: ["ganttOrder"],
+    period: ["plannedStartDate", "plannedEndDate"], due: ["dueDate"], hours: ["workloadPlan", "workloadActual"], markers: ["ganttMarkers"],
+  };
+  const kinds: Record<string, readonly PreviewEffectKind[]> = { enabled: ["membership"], order: ["order"], period: ["schedule"], due: ["deadline"], hours: ["workload"], markers: ["marker"] };
+  const checkHours = (id: string, old: readonly z.infer<typeof hoursCellSchema>[], next: readonly z.infer<typeof hoursCellSchema>[], effects: readonly PreviewEffect[]) => {
+    const expected = new Map(old.map((cell) => [cell.date, { ...cell }]));
+    const cellAt = (date: string) => expected.get(date) ?? { date, plan: 0, actual: 0 };
+    for (const effect of effects) {
+      if (effect.kind === "workload") for (const cell of effect.cells) {
+        if (changed(cellAt(cell.date), cell.before)) issue(`actual workloadのbeforeがsnapshotと一致しません: ${id}/${cell.date}`);
+        expected.set(cell.date, { ...cell.after });
+      }
+      if (effect.kind === "fields") for (const change of effect.fields) {
+        if (change.field !== "workloadPlan" && change.field !== "workloadActual") continue;
+        const channel = change.field === "workloadPlan" ? "plan" : "actual";
+        for (const cell of expected.values()) cell[channel] = 0;
+        if (change.after === null || typeof change.after !== "object" || Array.isArray(change.after)) { issue(`actual workload mapが不正です: ${id}`); continue; }
+        for (const [date, hours] of Object.entries(change.after)) {
+          if (typeof hours !== "number") { issue(`actual workload mapが不正です: ${id}/${date}`); continue; }
+          expected.set(date, { ...cellAt(date), [channel]: hours });
+        }
+      }
+    }
+    const normalized = (cells: readonly z.infer<typeof hoursCellSchema>[]) => cells.filter((cell) => cell.plan !== 0 || cell.actual !== 0).slice().sort((a, b) => a.date.localeCompare(b.date));
+    if (changed(normalized([...expected.values()]), normalized(next))) issue(`actualProjectionの時間cellが実保存effectsと一致しません: ${id}`);
+  };
+  const checkTask = (id: string, old: GanttChildStateV1 | GanttParentStateV1 | undefined, next: GanttChildStateV1 | GanttParentStateV1 | undefined, parentId?: string) => {
+    const effects = taskEffects(id);
+    const parentPresence = parentId !== undefined && hasKind(taskEffects(parentId), "presence");
+    if (!old || !next) { check(hasKind(effects, "presence") || parentPresence, old, next, id); return; }
+    const markerEffects = saved.filter((entry) => entry.entity.kind === "marker" && entry.entity.taskId === id).flatMap((entry) => entry.effects);
+    const childEffects = "children" in old && "children" in next ? [...new Set([...old.children, ...next.children].map((child) => child.id))].flatMap(taskEffects) : [];
+    const parentTagChange = parentId !== undefined && fields(taskEffects(parentId)).some((field) => field.field === "tags");
+    const ownFields = fields(effects).map((field) => field.field);
+    for (const [field, value] of Object.entries(old)) {
+      if (field === "children") continue; // Each child is checked independently below.
+      const updated = (next as unknown as Record<string, unknown>)[field];
+      const derived = ["appearance", "effectivePriority", "progress"].includes(field) || (field === "period" && "children" in old);
+      const relevant = [...effects, ...childEffects];
+      const derivedAllowed = field === "appearance" ? ownFields.includes("tags") || globalAppearance || parentTagChange
+        : field === "period" ? hasKind(relevant, "schedule", "presence") || fields(relevant).some((change) => ["plannedStartDate", "plannedEndDate", "derivedPeriod"].includes(change.field))
+        : field === "progress" ? hasKind(relevant, "presence") || fields(relevant).some((change) => ["completed", "statusLabel", "progress"].includes(change.field))
+        : relevant.length > 0 || hasKind(allEffects, "calendar") || fields(allEffects).some((change) => change.field === "autoPriorityEnabled");
+      const allowed = derived
+        ? derivedAllowed
+        : (aliases[field] ?? [field]).some((alias) => ownFields.includes(alias as PublicEntityField))
+          || hasKind(effects, ...(kinds[field] ?? [])) || (field === "markers" && markerEffects.length > 0)
+          || (field === "order" && allEffects.some((effect) => effect.kind === "order" && effect.after.includes(id)));
+      check(allowed, value, updated, `${id}/${field}`);
+    }
+    if ("hours" in old && "hours" in next) checkHours(id, old.hours, next.hours, effects);
+  };
+  checkRecords(before.parents, after.parents, (parent) => parent.id, (id, old, next) => checkTask(id, old, next));
+  checkRecords(before.parents.flatMap((parent) => parent.children), after.parents.flatMap((parent) => parent.children), (child) => child.id,
+    (id, old, next) => checkTask(id, old, next, old?.parentId ?? next?.parentId));
+  const entityEffects = (entity: EntityRef) => saved.filter((entry) => entityRefKey(entry.entity) === entityRefKey(entity)).flatMap((entry) => entry.effects);
+  checkRecords(before.events, after.events, (event) => event.key, (key, old, next) => {
+    const effects = entityEffects({ kind: "event", eventKey: key });
+    if (!old || !next) { check(hasKind(effects, "presence"), old, next, `event/${key}`); return; }
+    for (const field of ["title", "date", "hours"] as const) check(fields(effects).some((change) => (aliases[field] ?? [field]).includes(change.field))
+      || hasKind(effects, ...(field === "date" ? ["schedule" as const] : kinds[field] ?? [])), old[field], next[field], `event/${key}/${field}`);
+    checkHours(key, old.hours, next.hours, effects);
+  });
+  checkRecords(before.weekly, after.weekly, (schedule) => schedule.key, (key, old, next) => check(hasKind(entityEffects({ kind: "weekly", scheduleKey: key }), "weekly", "fields", "presence"), old, next, `weekly/${key}`));
+  checkRecords(before.tagDefinitions, after.tagDefinitions, (tag) => tag.key, (key, old, next) => check(hasKind(entityEffects({ kind: "tag-definition", tagKey: key }), "tag-definition", "fields", "presence", "order")
+    || allEffects.some((effect) => effect.kind === "order" && effect.after.includes(key)), old, next, `tag/${key}`));
+  checkRecords(before.dailyFiles ?? [], after.dailyFiles ?? [], (file) => JSON.stringify([file.path, file.sourceKey]), (key, old, next) => {
+    const file = next ?? old!;
+    check(hasKind(entityEffects({ kind: "daily-file", path: file.path, sourceKey: file.sourceKey }), "presence"), old, next, `daily-file/${key}`);
+  });
+  const settingsFields = fields(saved.filter((entry) => ["setting", "source", "tag-definition"].includes(entry.entity.kind)).flatMap((entry) => entry.effects));
+  for (const key of new Set([...Object.keys(before.settings), ...Object.keys(after.settings)])) {
+    const derived = (key === "ganttTags" && hasKind(allEffects, "tag-definition")) || (key === "dailyTodoSources" && saved.some((entry) => entry.entity.kind === "source"));
+    check(derived || settingsFields.some((field) => field.field === key), (before.settings as Record<string, unknown>)[key], (after.settings as Record<string, unknown>)[key], `settings/${key}`);
+  }
+  for (const key of ["weekends", "manual", "special", "national"] as const) check(allEffects.some((effect) => effect.kind === "calendar" && effect.source === key)
+    || settingsFields.some((field) => field.field === ({ manual: "ganttManualHolidays", special: "ganttSpecialHolidays", national: "ganttNationalHolidays", weekends: "weekends" })[key]), before.calendar[key], after.calendar[key], `calendar/${key}`);
+  checkRecords(before.daily, after.daily, (day) => day.date, (date, old, next) => {
+    const dailySaved = saved.some((entry) => ["daily-todo", "daily-file", "source"].includes(entry.entity.kind));
+    check(dailySaved, old, next, `daily/${date}`);
+  });
+  // Check arithmetic deltas against stored cells, including hidden siblings, without
+  // recomputing the projector's baseline totals or adding repeated page aggregates.
+  const totals = (state: GanttStateV1, date: string) => {
+    const cells = [...state.parents.flatMap((parent) => parent.children.flatMap((child) => child.hours)), ...state.events.flatMap((event) => event.hours)].filter((cell) => cell.date === date);
+    const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+    return { plan: cells.reduce((sum, cell) => sum + cell.plan, 0) + state.weekly.filter((schedule) => schedule.dayOfWeek === weekday).reduce((sum, schedule) => sum + schedule.minutesPerWeek / 60, 0), actual: cells.reduce((sum, cell) => sum + cell.actual, 0) };
+  };
+  checkRecords(before.aggregates, after.aggregates, (day) => day.date, (date, old, next) => {
+    if (!old || !next) { issue(`actualProjectionの集計にはbefore/afterの同日snapshotが必要です: ${date}`); return; }
+    const previous = totals(before, date), updated = totals(after, date);
+    if (Math.abs(next.plan - old.plan - updated.plan + previous.plan) > 1e-9 || Math.abs(next.actual - old.actual - updated.actual + previous.actual) > 1e-9) issue(`actualProjectionの集計が実保存分と一致しません: ${date}`);
+    check(changed(before.calendar, after.calendar) || settingsFields.some((field) => ["ganttWorkloadDailyCapacityHours", "ganttWorkloadMaxHours"].includes(field.field)), old.capacity, next.capacity, `aggregate/${date}/capacity`);
+    if (next.overCapacity !== (next.plan > next.capacity)) issue(`actualProjectionの計画時間超過判定が実保存分と一致しません: ${date}`);
+  });
+}
 export const previewOutcomePairSchema = z.object({ preview: operationPreviewSchema, outcome: operationOutcomeSchema }).strict().superRefine(({ preview, outcome }, ctx) => {
   if (preview.previewId !== outcome.previewId) ctx.addIssue({ code: "custom", message: "別previewの結果です" });
   const expected = new Set(preview.entries.map((entry) => entry.actionId)), actual = new Set(outcome.actions.map((action) => action.actionId));
@@ -281,6 +407,8 @@ export const previewOutcomePairSchema = z.object({ preview: operationPreviewSche
     if (projection.coverage.targetCount !== committedEntities.size) ctx.addIssue({ code: "custom", message: "actualProjectionの全target数は保存済みentity数と一致する必要があります" });
     if (projection.targets.some((target) => !committedEntities.has(entityRefKey(target)))) ctx.addIssue({ code: "custom", message: "actualProjectionに未保存targetが含まれています" });
     if (!projection.coverage.truncated && preview.projection && committedEntities.size !== projection.targets.length) ctx.addIssue({ code: "custom", message: "actualProjectionに保存済みtargetが欠落しています" });
+    const saved = preview.entries.filter((entry) => committedIds.has(entry.actionId)).map((entry) => ({ ...entry, effects: outcome.actions.find((action) => action.actionId === entry.actionId)!.actual }));
+    validateActualSnapshots(preview.projection, projection, saved, (message) => ctx.addIssue({ code: "custom", message }));
   }
   for (const action of outcome.actions) {
     const entry = preview.entries.find((entry) => entry.actionId === action.actionId);

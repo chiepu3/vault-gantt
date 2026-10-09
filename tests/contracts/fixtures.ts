@@ -161,11 +161,21 @@ export const FILTERED_PREVIEW: OperationPreviewV1 = { ...filtered, projection: {
 const outside = preview("outside-fixture", "T19", [{ kind: "schedule", before: CHILD_STATE.period, after: { start: "2026-12-13", end: "2026-12-15" }, unit: "calendar-day" }],
   { ...GANTT_STATE, parents: [{ ...parentState, period: { start: "2026-12-13", end: "2026-12-15" }, children: [{ ...CHILD_STATE, period: { start: "2026-12-13", end: "2026-12-15" } }] }] });
 export const OUTSIDE_RANGE_PREVIEW: OperationPreviewV1 = { ...outside, projection: { ...outside.projection!, affectedDates: [DATE, "2026-10-15", "2026-12-13", "2026-12-15"], visibility: [{ entity: partialTargets[0], state: "outside-range", reason: "viewport 2026-10-01〜2026-10-31の範囲外" }] } };
-export const PREVIEW_FIXTURES = { create: CREATE_PREVIEW, delete: DELETE_PREVIEW, marker: MARKER_PREVIEW, workload: WORKLOAD_PREVIEW, settings: SETTINGS_PREVIEW, partial: PARTIAL_PREVIEW, mcpOrigin: MCP_PREVIEW, oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW } as const;
+const emptyDailyFile = { path: daily.path, sourceKey: "main" };
+const emptyDailyState: GanttStateV1 = { ...GANTT_STATE, daily: [{ date: DATE, totalCount: 0, completedCount: 0, items: [] }], dailyFiles: [{ ...emptyDailyFile, exists: false }] };
+const emptyDaily = preview("empty-daily-file-fixture", "D02", [{ kind: "presence", action: "create", before: null, after: emptyDailyFile }]);
+export const D02_EMPTY_FILE_PREVIEW: OperationPreviewV1 = {
+  ...emptyDaily, undo: { support: "none", reason: "Dailyファイル作成は履歴対象外" },
+  entries: [{ ...emptyDaily.entries[0], entity: { kind: "daily-file", ...emptyDailyFile }, displayName: "空のDailyファイル" }],
+  projection: { ...projection(emptyDailyState), before: structuredClone(emptyDailyState), after: { ...structuredClone(emptyDailyState), dailyFiles: [{ ...emptyDailyFile, exists: true }] },
+    targets: [{ kind: "daily-file", ...emptyDailyFile }], visibility: [{ entity: { kind: "daily-file", ...emptyDailyFile }, state: "visible", reason: "ToDo項目0件でもDailyファイルは存在する" }], affectedParentIds: [], affectedDates: [DATE] },
+};
+export const PREVIEW_FIXTURES = { create: CREATE_PREVIEW, delete: DELETE_PREVIEW, marker: MARKER_PREVIEW, workload: WORKLOAD_PREVIEW, settings: SETTINGS_PREVIEW, partial: PARTIAL_PREVIEW, mcpOrigin: MCP_PREVIEW, oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW, emptyDailyFile: D02_EMPTY_FILE_PREVIEW } as const;
 function successOutcome(preview: OperationPreviewV1): OperationOutcomeV1 {
   return { previewId: preview.previewId, status: "success", actions: preview.entries.map((entry) => ({ actionId: entry.actionId, state: "committed", actual: entry.effects })), actualProjection: structuredClone(preview.projection) };
 }
-export const BOUNDARY_OUTCOMES = { oneSided: successOutcome(ONE_SIDED_PREVIEW), filtered: successOutcome(FILTERED_PREVIEW), featureDisabled: successOutcome(SETTINGS_PREVIEW), outsideRange: successOutcome(OUTSIDE_RANGE_PREVIEW), partial: PARTIAL_OUTCOME } as const;
+export const D02_EMPTY_FILE_OUTCOME = successOutcome(D02_EMPTY_FILE_PREVIEW);
+export const BOUNDARY_OUTCOMES = { oneSided: successOutcome(ONE_SIDED_PREVIEW), filtered: successOutcome(FILTERED_PREVIEW), featureDisabled: successOutcome(SETTINGS_PREVIEW), outsideRange: successOutcome(OUTSIDE_RANGE_PREVIEW), partial: PARTIAL_OUTCOME, emptyDailyFile: D02_EMPTY_FILE_OUTCOME } as const;
 export const PROJECTION_PAGE_FIXTURES: readonly ProjectionPageV1[] = [
   { schemaVersion: 1, previewId: PARTIAL_PREVIEW.previewId, vaultInstanceId: PARTIAL_PREVIEW.vaultInstanceId, projectionKind: "planned", requestCursor: null,
     projection: { ...partialProjection, targets: partialTargets.slice(0, 2), visibility: partialProjection.visibility.slice(0, 2), coverage: { targetCount: 3, offset: 0, includedCount: 2, truncated: true, nextCursor: "projection-page-2" } } },

@@ -84,6 +84,11 @@ export interface OperationService {
   propose<K extends WriteOperationId>(id: K, input: OperationInputMap[K], context: RequestContext): Promise<OperationPreviewV1>;
   request<K extends ExternalRequestOperationId>(id: K, input: OperationInputMap[K], context: RequestContext): Promise<OperationOutputMap[K]>;
   inspect(previewId: string, context: RequestContext): OperationPreviewV1;
+  /** Authorize read capability and the stored Vault/principal binding using server-created context.
+   * Foreign receipts must fail with POLICY_DENIED. undefined means no outcome yet for an
+   * authorized preview. Return only an outcome validated against the entire stored preview.
+   */
+  inspectOutcome(previewId: string, context: RequestContext): OperationOutcomeV1 | undefined;
 }
 // Signatures for future handlers; P0 provides no implementations or registration.
 export type ReadHandler<K extends ReadOperationId> = (input: OperationInputMap[K], context: RequestContext) => Promise<OperationOutputMap[K]>;

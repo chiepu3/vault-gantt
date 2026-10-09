@@ -3,8 +3,10 @@ import type { OperationPlan } from "../../src/app/operation-registry";
 import { adaptLegacyOperationPlan } from "../../src/contracts/legacy-operation-plan";
 import { operationPreviewSchema, operationOutcomeSchema, previewEffectSchema, ganttProjectionSchema, PREVIEW_EFFECT_KINDS, mergeProjectionPages, validatePreviewOutcome, projectionPageRequestSchema, projectionPageResultSchema, entityRefKey } from "../../src/contracts/preview";
 import { OPERATION_CONTRACTS, type ExternalRequestOperationId } from "../../src/contracts/operations";
+import type { RequestContext } from "../../src/contracts/context";
+import type { OperationOutcomeV1 } from "../../src/contracts/preview";
 import { historyEntryUndoStateSchema, historyChangeSchema, type HistoryPort, type HumanApprovalPort, type OperationService, type PreviewPort, type PreviewUiHostPorts } from "../../src/contracts/ports";
-import { PREVIEW_FIXTURES, EFFECT_FIXTURES, PARTIAL_PREVIEW, PARTIAL_OUTCOME, CHILD_ID, SECOND_CHILD_ID, SECOND_PARENT_ID, PROJECTION_PAGE_FIXTURES, BOUNDARY_OUTCOMES, PROJECTION_STALE_ERROR } from "./fixtures";
+import { PREVIEW_FIXTURES, EFFECT_FIXTURES, PARTIAL_PREVIEW, PARTIAL_OUTCOME, CHILD_ID, SECOND_CHILD_ID, SECOND_PARENT_ID, PROJECTION_PAGE_FIXTURES, BOUNDARY_OUTCOMES, PROJECTION_STALE_ERROR, D02_EMPTY_FILE_PREVIEW, D02_EMPTY_FILE_OUTCOME } from "./fixtures";
 
 describe("P0 preview contracts", () => {
   it.each(Object.entries(PREVIEW_FIXTURES))("%s is schema-valid JSON", (_name, fixture) => {
@@ -59,7 +61,9 @@ describe("P0 preview contracts", () => {
   });
   it("keeps human approval separate from model service and preview inspection", () => {
     expectTypeOf<keyof HumanApprovalPort>().toEqualTypeOf<"approve">();
-    expectTypeOf<keyof OperationService>().toEqualTypeOf<"describe" | "read" | "propose" | "request" | "inspect">();
+    expectTypeOf<keyof OperationService>().toEqualTypeOf<"describe" | "read" | "propose" | "request" | "inspect" | "inspectOutcome">();
+    expectTypeOf<Parameters<OperationService["inspectOutcome"]>>().toEqualTypeOf<[previewId: string, context: RequestContext]>();
+    expectTypeOf<ReturnType<OperationService["inspectOutcome"]>>().toEqualTypeOf<OperationOutcomeV1 | undefined>();
     expectTypeOf<keyof PreviewPort>().toEqualTypeOf<"list" | "inspect" | "focusedPreviewId" | "inspectOutcome" | "subscribe" | "focus" | "reject" | "requestRepreview" | "getProjectionPage">();
     expectTypeOf<PreviewUiHostPorts["humanApprovalPort"]>().toEqualTypeOf<HumanApprovalPort>();
     expect(PREVIEW_FIXTURES.mcpOrigin.origin).toEqual({ kind: "mcp", principalId: "principal-fixture", clientLabel: "ローカルMCPクライアント" });
@@ -118,6 +122,56 @@ describe("outcome matching and actual projection", () => {
     expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, { ...PARTIAL_OUTCOME, actualProjection: { ...PARTIAL_OUTCOME.actualProjection!, baseRevision: "different" } })).toThrow("同じbefore前提");
     expect(validatePreviewOutcome(PARTIAL_PREVIEW, PARTIAL_OUTCOME)).toEqual(PARTIAL_OUTCOME);
   });
+  it("rejects the planned after snapshot even with only the committed target and original revisions", () => {
+    const forged = { ...PARTIAL_OUTCOME, actualProjection: { ...PARTIAL_OUTCOME.actualProjection!, after: PARTIAL_PREVIEW.projection!.after } };
+    expect(operationOutcomeSchema.safeParse(forged).success).toBe(true);
+    expect(forged.actualProjection.targets).toHaveLength(1);
+    expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, forged)).toThrow("未保存変更");
+  });
+  it.each(["name", "hours", "appearance", "aggregate", "actual", "capacity", "overCapacity"] as const)("rejects independently forged uncommitted %s in after", (field) => {
+    const forged = operationOutcomeSchema.parse(PARTIAL_OUTCOME);
+    const state = forged.actualProjection!.after;
+    if (field === "name") state.parents[1].name = "変更予定";
+    if (field === "hours") state.parents[1].children[0].hours[0].plan = 10;
+    if (field === "appearance") state.parents[1].children[0].appearance.color = "#22aa66";
+    if (field === "aggregate") state.aggregates[0].plan = 18;
+    if (field === "actual") state.aggregates[0].actual = 8;
+    if (field === "capacity") state.aggregates[0].capacity = 19;
+    if (field === "overCapacity") state.aggregates[0].overCapacity = false;
+    expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, forged)).toThrow();
+  });
+  it.each(["aggregate", "task", "settings", "calendar"] as const)("rejects changed common before %s snapshots even at the same revision", (field) => {
+    const forged = operationOutcomeSchema.parse(PARTIAL_OUTCOME);
+    const state = forged.actualProjection!.before;
+    if (field === "aggregate") state.aggregates[0].plan = 11;
+    if (field === "task") state.parents[1].name = "変更予定";
+    if (field === "settings") state.settings.ganttWorkloadDailyCapacityHours = 10;
+    if (field === "calendar") state.calendar.manual = ["2026-10-13"];
+    expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, forged)).toThrow("共通snapshot");
+  });
+  it("still accepts saved-only projections with omitted contextual parents on a partial page", () => {
+    const actual = PARTIAL_OUTCOME.actualProjection!;
+    const subset = { ...PARTIAL_OUTCOME, actualProjection: { ...actual, before: { ...actual.before, parents: actual.before.parents.slice(0, 1) }, after: { ...actual.after, parents: actual.after.parents.slice(0, 1) } } };
+    expect(validatePreviewOutcome(PARTIAL_PREVIEW, subset)).toEqual(subset);
+  });
+  it("does not grant unrelated fields permission just because the same task has a saved action", () => {
+    const forged = operationOutcomeSchema.parse(PARTIAL_OUTCOME);
+    forged.actualProjection!.after.parents[0].children[0].name = "未保存名";
+    expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, forged)).toThrow("未保存変更");
+  });
+  it("requires saved time cells to match actual effects even when the forged aggregate matches those cells", () => {
+    const forged = operationOutcomeSchema.parse(PARTIAL_OUTCOME);
+    forged.actualProjection!.after.parents[0].children[0].hours[0].plan = 16;
+    forged.actualProjection!.after.aggregates[0].plan = 18;
+    expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, forged)).toThrow("実保存effects");
+    const extraDate = operationOutcomeSchema.parse(PARTIAL_OUTCOME);
+    extraDate.actualProjection!.after.parents[0].children[0].hours.push({ date: "2026-10-14", plan: 8, actual: 0 });
+    expect(() => validatePreviewOutcome(PARTIAL_PREVIEW, extraDate)).toThrow("実保存effects");
+  });
+  it.each([PREVIEW_FIXTURES.create, PREVIEW_FIXTURES.delete, PREVIEW_FIXTURES.marker, PREVIEW_FIXTURES.workload])("accepts complete saved snapshots for %s without reverting derived parent state", (preview) => {
+    const outcome = { previewId: preview.previewId, status: "success", actions: preview.entries.map((entry) => ({ actionId: entry.actionId, state: "committed", actual: entry.effects })), actualProjection: preview.projection };
+    expect(validatePreviewOutcome(preview, outcome)).toEqual(outcome);
+  });
   it("keeps saved totals/color/visibility and failed targets distinct from the planned after state", () => {
     const actual = PARTIAL_OUTCOME.actualProjection!, planned = PARTIAL_PREVIEW.projection!;
     expect(actual.before.aggregates[0]).toEqual({ date: "2026-10-13", plan: 3.5, actual: 1, capacity: 7, overCapacity: false });
@@ -149,6 +203,31 @@ describe("outcome matching and actual projection", () => {
       expect(result.actualProjection!.after.parents[0].children[0].hours).toEqual(result.actualProjection!.before.parents[0].children[0].hours);
     }
     if (visibility === "outside-range") expect(result.actualProjection!.after.parents[0].children[0].period).toEqual({ start: "2026-12-13", end: "2026-12-15" });
+  });
+});
+
+describe("empty Daily file projection", () => {
+  it("represents D02 existence independently of zero ToDo items and preserves saved totals", () => {
+    const preview = operationPreviewSchema.parse(D02_EMPTY_FILE_PREVIEW);
+    const outcome = validatePreviewOutcome(preview, D02_EMPTY_FILE_OUTCOME);
+    expect(preview.projection!.before.dailyFiles).toEqual([{ path: "daily/2026-10-13.md", sourceKey: "main", exists: false }]);
+    expect(outcome.actualProjection!.after.dailyFiles).toEqual([{ path: "daily/2026-10-13.md", sourceKey: "main", exists: true }]);
+    expect(outcome.actualProjection!.after.daily).toEqual([{ date: "2026-10-13", totalCount: 0, completedCount: 0, items: [] }]);
+    expect(outcome.actualProjection!.after.aggregates).toEqual(outcome.actualProjection!.before.aggregates);
+  });
+  it("requires a matching, existing file snapshot rather than inferring existence from items", () => {
+    const projection = D02_EMPTY_FILE_PREVIEW.projection!;
+    for (const dailyFiles of [undefined, [{ path: "daily/2026-10-13.md", sourceKey: "main", exists: false }], [{ path: "other.md", sourceKey: "main", exists: true }], [{ path: "daily/2026-10-13.md", sourceKey: "other", exists: true }]]) {
+      expect(ganttProjectionSchema.safeParse({ ...projection, after: { ...projection.after, dailyFiles } }).success).toBe(false);
+    }
+    expect(ganttProjectionSchema.safeParse({ ...projection, after: { ...projection.after, dailyFiles: [...projection.after.dailyFiles!, ...projection.after.dailyFiles!] } }).success).toBe(false);
+  });
+  it("merges file snapshots by path/sourceKey and rejects conflicting existence on pages", () => {
+    const pages = PROJECTION_PAGE_FIXTURES.map((page) => ({ ...page, projection: { ...page.projection,
+      before: { ...page.projection.before, dailyFiles: D02_EMPTY_FILE_PREVIEW.projection!.before.dailyFiles },
+      after: { ...page.projection.after, dailyFiles: D02_EMPTY_FILE_PREVIEW.projection!.after.dailyFiles } } }));
+    expect(mergeProjectionPages(pages).after.dailyFiles).toEqual(D02_EMPTY_FILE_PREVIEW.projection!.after.dailyFiles);
+    expect(() => mergeProjectionPages([pages[0], { ...pages[1], projection: { ...pages[1].projection, after: { ...pages[1].projection.after, dailyFiles: D02_EMPTY_FILE_PREVIEW.projection!.before.dailyFiles } } }])).toThrow("CURSOR_STALE");
   });
 });
 
