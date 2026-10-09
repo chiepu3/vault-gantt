@@ -9,7 +9,10 @@ import { renderScheduleTimeline } from "./schedule-timeline";
 export const VIEW_TYPE_AI_CHAT = "vault-gantt-ai-chat";
 export interface AgentViewHost {
   session: ChatSession;
-  secretIds(): string[];
+  /** Opens the plugin settings tab, where the connection is configured. */
+  openSettings(): void;
+  /** Model IDs fetched from the connection in the settings tab. */
+  modelOptions?(): string[];
   selectedTask?(): string | undefined;
   closeDiff?(): void;
   openGantt(): Promise<void> | void;
@@ -56,7 +59,6 @@ export class AgentView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private modelEl!: HTMLButtonElement;
   private modelLabelEl!: HTMLElement;
-  private modelSettingEl!: HTMLInputElement;
   private modelMenu?: Menu;
   private readonly models = new Set<string>();
   private sendEl!: HTMLButtonElement;
@@ -78,19 +80,7 @@ export class AgentView extends ItemView {
     const history = this.element(header, "details"); history.className = "vg-ai-menu";
     const historyToggle = this.element(history, "summary"); this.decorateIcon(historyToggle, "history", "会話履歴を開く");
     this.historyEl = this.element(history, "div"); this.historyEl.className = "vg-ai-popover vg-ai-history";
-    const connection = this.element(header, "details"); connection.className = "vg-ai-menu";
-    const settingsToggle = this.element(connection, "summary"); this.decorateIcon(settingsToggle, "settings", "接続設定を開く");
-    const settings = this.element(connection, "div"); settings.className = "vg-ai-popover";
-    this.element(settings, "strong").textContent = "接続設定（このセッションのみ）";
-    const config = this.host.session.config;
-    const provider = this.select(settings, "プロバイダー", [["disconnected", "未接続"], ["openai-compatible", "OpenAI 互換"]], config.provider);
-    const endpoint = this.input(settings, "接続先URL", config.endpoint); endpoint.placeholder = "https://…/v1 または http://localhost:…/v1";
-    const model = this.input(settings, "モデルID", config.model); model.placeholder = "接続先で利用できるモデルID"; this.modelSettingEl = model;
-    const auth = this.select(settings, "認証方式", [["secret", "既存のObsidian秘密ストレージ"], ["none", "認証なし（明示選択）"]], config.auth);
-    const secret = this.select(settings, "既存の秘密ID", [["", "選択してください"], ...this.host.secretIds().map((id): [string, string] => [id, id])], config.secretId);
-    const apply = this.button(settings, "接続設定を適用", () => this.host.session.configure({ provider: provider.value as typeof config.provider, endpoint: endpoint.value.trim(), model: model.value.trim(), auth: auth.value as typeof config.auth, secretId: secret.value }));
-    apply.title = "設定の変更だけでは接続リクエストを送信しません";
-    this.element(settings, "p").textContent = "秘密は作成・コピー・保存しません。送信すると会話と必要なタスク情報がこの接続先へ送られます。";
+    this.iconButton(header, "settings", "接続設定を開く", () => this.host.openSettings());
     this.messagesEl = this.element(root, "div"); this.messagesEl.className = "vg-ai-messages"; this.messagesEl.setAttribute("role", "log"); this.messagesEl.setAttribute("aria-label", "会話履歴");
     const composer = this.element(root, "div"); composer.className = "vg-ai-content vg-ai-composer";
     this.contextEl = this.element(composer, "div"); this.contextEl.className = "vg-ai-context";
@@ -153,10 +143,11 @@ export class AgentView extends ItemView {
     if (this.inputEl.value !== conversation.draft) { this.inputEl.value = conversation.draft; this.resizeInput(); }
     const running = conversation.status === "running";
     this.sendEl.disabled = running || !session.connected; this.sendEl.hidden = running; this.stopEl.hidden = !running;
+    for (const id of this.host.modelOptions?.() ?? []) this.models.add(id);
     if (session.config.model) this.models.add(session.config.model);
     this.modelEl.disabled = running || !this.models.size;
     this.modelLabelEl.textContent = session.config.model || "モデル";
-    this.modelEl.title = session.config.model || "接続設定でモデルIDを指定";
+    this.modelEl.title = session.config.model || "設定画面でモデルを選択";
     this.modelEl.dataset.model = session.config.model;
     if (running) this.modelMenu?.hide();
     const stickToBottom = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 64;
@@ -167,7 +158,7 @@ export class AgentView extends ItemView {
       const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");
       this.element(empty, "strong").textContent = "AIチャット";
       this.element(empty, "p").textContent = "タスクの検索や変更ができます。変更は「確認して実行」を押すと保存されます。";
-      if (!session.connected) this.element(empty, "p").textContent = "歯車から接続先を設定してください。";
+      if (!session.connected) this.element(empty, "p").textContent = "歯車ボタンから設定画面を開き、接続先とモデルを設定してください。";
     }
     for (const [index, message] of conversation.messages.entries()) {
       const item = this.element(this.messagesEl, "section"); item.className = "vg-ai-message vg-ai-" + message.role;
@@ -205,7 +196,6 @@ export class AgentView extends ItemView {
     const menu = new Menu(); this.modelMenu = menu;
     for (const id of this.models) menu.addItem((item) => item.setTitle(id).setChecked(id === this.host.session.config.model).onClick(() => {
       if (this.host.session.active.status === "running") return;
-      this.modelSettingEl.value = id;
       this.host.session.configure({ ...this.host.session.config, model: id });
       menu.hide();
     }));
@@ -272,6 +262,4 @@ export class AgentView extends ItemView {
   private button(parent: HTMLElement, text: string, action: () => void): HTMLButtonElement { const button = this.element(parent, "button"); button.type = "button"; button.textContent = text; button.addEventListener("click", action); return button; }
   private decorateIcon(element: HTMLElement, icon: string, label: string): void { element.className = "clickable-icon vg-ai-icon-button"; element.title = label; element.setAttribute("aria-label", label); setIcon(element, icon); }
   private iconButton(parent: HTMLElement, icon: string, label: string, action: () => void): HTMLButtonElement { const button = this.button(parent, "", action); this.decorateIcon(button, icon, label); return button; }
-  private input(parent: HTMLElement, text: string, value: string): HTMLInputElement { const label = this.element(parent, "label"); label.textContent = text; const input = this.element(label, "input"); input.value = value; return input; }
-  private select(parent: HTMLElement, text: string, choices: [string, string][], value: string): HTMLSelectElement { const label = this.element(parent, "label"); label.textContent = text; const select = this.element(label, "select"); for (const [id, name] of choices) { const option = this.element(select, "option"); option.value = id; option.textContent = name; } select.value = value; return select; }
 }

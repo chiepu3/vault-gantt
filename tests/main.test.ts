@@ -1,4 +1,5 @@
 import * as McpModule from "../src/mcp/server";
+import { AI_SECRET_ID } from "../src/ai/connection-settings";
 import { VIEW_TYPE_AI_APPROVAL } from "../src/ui/approval-view";
 import { VIEW_TYPE_AI_CHAT } from "../src/ui/agent-view";
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -353,8 +354,43 @@ describe("TaskWorkbenchPlugin", () => {
       await h.plugin.saveSettings();
 
       expect(h.savedData).toHaveLength(1);
-      expect(h.savedData[0]).toEqual(h.plugin.settings);
+      expect(h.savedData[0]).toEqual({ ...h.plugin.settings, ai: h.plugin.aiSettings });
       expect(h.savedData[0].taskFolder).toBe("changed");
+    });
+    it("keeps the AI connection outside settings and the API key out of data.json when secret storage exists", async () => {
+      const secrets = new Map<string, string>();
+      const h = createHarness({ autoPriorityEnabled: false, ai: { preset: "local", baseUrl: "http://localhost:1234/v1", model: "m", useApiKey: false } });
+      (h.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, v: string) => secrets.set(id, v) };
+      await h.plugin.onload();
+      expect("ai" in h.plugin.settings).toBe(false);
+      expect(h.plugin.chatSession.config).toMatchObject({ provider: "openai-compatible", endpoint: "http://localhost:1234/v1", model: "m", auth: "none" });
+      await h.plugin.updateAiSettings({ useApiKey: true });
+      await h.plugin.setAiApiKey("sk-synthetic-secret");
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(secrets.get(AI_SECRET_ID)).toBe("sk-synthetic-secret");
+      expect(JSON.stringify(h.savedData)).not.toContain("sk-synthetic-secret");
+      expect(JSON.stringify(h.plugin.getAiSettings())).not.toContain("sk-synthetic-secret");
+      expect(JSON.stringify(h.plugin.chatSession.config)).not.toContain("sk-synthetic-secret");
+      expect(h.plugin.chatSession.connected).toBe(true);
+      await h.plugin.clearAiApiKey();
+      expect(h.plugin.hasAiApiKey()).toBe(false); expect(h.plugin.chatSession.connected).toBe(false);
+      h.plugin.onunload();
+    });
+    it("stores the API key in data.json only without secret storage, and moves it into secret storage later", async () => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      await h.plugin.onload();
+      expect(h.plugin.aiKeyStorage()).toBe("data");
+      await h.plugin.setAiApiKey("sk-synthetic-secret");
+      expect(h.savedData.at(-1).ai.apiKey).toBe("sk-synthetic-secret");
+      expect(h.plugin.getAiSettings()).not.toHaveProperty("apiKey");
+      h.plugin.onunload();
+      const secrets = new Map<string, string>();
+      const next = createHarness(structuredClone(h.savedData.at(-1)));
+      (next.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, v: string) => secrets.set(id, v) };
+      await next.plugin.onload();
+      expect(secrets.get(AI_SECRET_ID)).toBe("sk-synthetic-secret");
+      expect(JSON.stringify(next.savedData.at(-1))).not.toContain("sk-synthetic-secret");
+      next.plugin.onunload();
     });
     it("UI persistence shares the approval queue and keeps unrelated settings edited during the AI save", async () => {
       const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();

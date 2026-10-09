@@ -22,7 +22,7 @@ async function setup(result: OperationResult, canUndo: () => boolean) {
   };
   session.active.messages = [{ role: "assistant", text: "Synthetic result", proposals: [proposal] }];
   const undo = vi.fn();
-  const view = new AgentView({} as WorkspaceLeaf, { session, secretIds: () => [], openGantt: vi.fn(), undo, canUndo });
+  const view = new AgentView({} as WorkspaceLeaf, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo, canUndo });
   await view.onOpen();
   const root = view.containerEl as unknown as FakeEl;
   const undoButton = () => findAll(root, el => el.tagName === "BUTTON" && el.textContent === "元に戻す")[0];
