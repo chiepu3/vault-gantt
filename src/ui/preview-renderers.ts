@@ -27,7 +27,7 @@ export const EFFECT_TITLES: Record<PreviewEffectKind, string> = {
 
 export const FIELD_LABELS: Record<string, string> = {
   displayName: "表示名", title: "タイトル", statusLabel: "状態", createdAt: "作成日", updatedAt: "更新日", dueDate: "期限",
-  priority: "優先度", priorityMode: "優先度の決め方", tags: "タグ", completed: "完了", ganttEnabled: "Ganttに表示", ganttOrder: "Gantt順",
+  priority: "優先度", priorityMode: "優先度の決め方", tags: "タグ", completed: "完了", ganttEnabled: "Ganttに表示", ganttOrder: "Ganttでの並び順",
   currentStatus: "現在の状況", notes: "メモ", plannedStartDate: "開始日", plannedEndDate: "終了日", workloadPlan: "予定時間",
   workloadActual: "実績時間", ganttMarkers: "マーカー", derivedPeriod: "親の集計期間", progress: "進捗", effectivePriority: "実効優先度", children: "子タスク",
   key: "キー", date: "日付", dayOfWeek: "曜日", minutesPerWeek: "週あたりの分数", text: "内容", path: "ファイル", sourceKey: "ソース",

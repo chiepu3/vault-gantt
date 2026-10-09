@@ -8,7 +8,7 @@ import {
 import type { PointGhost } from "./ghost-layer";
 import { originLabel, STATE_LABELS, cardState } from "./operation-preview-card";
 import { renderNonGanttPanel } from "./preview-panels";
-import { buildNameMap, fieldLabel, fmtDate, formatScalar, h, renderAggregates, renderEffect } from "./preview-renderers";
+import { buildNameMap, entityKindLabel, entryTitle, fieldLabel, fmtDate, formatScalar, h, renderAggregates, renderEffect } from "./preview-renderers";
 import { periodText } from "./schedule-summary";
 
 export interface PointChange extends PointGhost { readonly taskId: string }
@@ -31,12 +31,12 @@ const complete = (period: { start: string | null; end: string | null }): boolean
 function pointsOf(before: GanttChildStateV1 | undefined, after: GanttChildStateV1 | undefined, id: string): PointChange[] {
   const result: PointChange[] = [];
   const dueBefore = before?.due ?? null; const dueAfter = after?.due ?? null;
-  if (dueBefore !== dueAfter) result.push({ taskId: id, kind: "deadline", key: "due", label: (after ?? before)?.name ?? id, before: dueBefore, after: dueAfter });
+  if (dueBefore !== dueAfter) result.push({ taskId: id, kind: "deadline", key: "due", label: (after ?? before)?.name ?? "名前なし", before: dueBefore, after: dueAfter });
   const keys = [...new Set([...(before?.markers ?? []), ...(after?.markers ?? [])].map((marker) => marker.key))];
   for (const key of keys) {
     const oldMarker = before?.markers.find((marker) => marker.key === key); const newMarker = after?.markers.find((marker) => marker.key === key);
     if (same(oldMarker, newMarker)) continue;
-    result.push({ taskId: id, kind: "marker", key, label: (newMarker ?? oldMarker)?.title ?? key, before: oldMarker?.date ?? null, after: newMarker?.date ?? null });
+    result.push({ taskId: id, kind: "marker", key, label: (newMarker ?? oldMarker)?.title ?? "名前なし", before: oldMarker?.date ?? null, after: newMarker?.date ?? null });
   }
   return result;
 }
@@ -52,8 +52,8 @@ export function deriveOverlay(projection: GanttProjectionV1): Overlay {
     const notes: string[] = [];
     if (before && after) {
       if (before.name !== after.name) notes.push(`名前: ${before.name} → ${after.name}`);
-      if (before.enabled !== after.enabled) notes.push(`Gantt表示: ${before.enabled ? "表示" : "非表示"} → ${after.enabled ? "表示" : "非表示"}`);
-      if (before.order !== after.order) notes.push(`順序: ${before.order} → ${after.order}`);
+      if (before.enabled !== after.enabled) notes.push(`Ganttに表示: ${before.enabled ? "する" : "しない"} → ${after.enabled ? "する" : "しない"}`);
+      if (before.order !== after.order) notes.push("並び順が変わります");
       if (!same(before.period, after.period)) notes.push(`集計期間: ${periodText(before.period)} → ${periodText(after.period)}`);
       if (!same(before.tags, after.tags)) notes.push(`タグ: ${before.tags.join("、") || "なし"} → ${after.tags.join("、") || "なし"}`);
     }
@@ -77,7 +77,7 @@ export function deriveOverlay(projection: GanttProjectionV1): Overlay {
     }
     const state: RowState = !before ? "created" : !after ? "deleted" : notes.length || children.some((child) => child.state !== "context") ? "changed" : "context";
     if (state === "created" && after && !after.enabled) unplaced.push({ id, name: after.name, reason: "Gantt表示がオフのため、置かれません" });
-    parents.push({ id, name: (after ?? before)?.name ?? id, state, before, after, notes, children });
+    parents.push({ id, name: (after ?? before)?.name ?? "名前なし", state, before, after, notes, children });
   }
   return { ghosts, points, deleted, created, parents, unplaced };
 }
@@ -185,7 +185,7 @@ export class PreviewGanttLayer {
           const section = h(dock, "section", "vg-pv-unsaved"); section.setAttribute("aria-label", "未保存の変更案");
           h(section, "strong", "vg-pv-subtitle", `未保存の変更案（${unsaved.length}件）`);
           h(section, "p", "vg-pv-note", "以下は変更案の内容です。保存されていません。");
-          for (const entry of unsaved) { h(section, "div", "vg-pv-muted", entry.displayName); for (const effect of entry.effects) renderEffect(section, effect, { entity: entry.entity, projection: null }); }
+          for (const entry of unsaved) { h(section, "div", "vg-pv-muted", entryTitle(entry)); for (const effect of entry.effects) renderEffect(section, effect, { entity: entry.entity, projection: null }); }
         }
       }
     };
@@ -209,7 +209,7 @@ export class PreviewGanttLayer {
       const id = item.entity.kind === "task" ? item.entity.taskId : item.entity.kind === "marker" ? item.entity.taskId : "";
       const line = h(dock, "div", "vg-pv-hidden"); line.dataset.state = item.state;
       h(line, "span", "vg-pv-hidden-title", { filtered: "絞り込みで非表示", "feature-disabled": "機能オフで非表示", unscheduled: "日程未設定", "outside-range": "表示範囲外", visible: "" }[item.state]);
-      h(line, "span", "vg-pv-muted", ` ${id ? (names.get(id) ?? id) : item.entity.kind}: ${item.reason}`);
+      h(line, "span", "vg-pv-muted", ` ${id ? (names.get(id) ?? "名前を取得できない項目") : entityKindLabel(item.entity.kind)}: ${item.reason}`);
     }
     if (hidden.length > 6) h(dock, "div", "vg-pv-muted", `ほか ${hidden.length - 6}件は詳細で確認できます。`);
     if (projection.coverage.truncated) {
@@ -345,7 +345,7 @@ function weeklyLines(before: GanttStateV1, after: GanttStateV1): string[] {
 }
 function tagLines(before: GanttStateV1, after: GanttStateV1): string[] {
   const keys = [...new Set([...before.tagDefinitions, ...after.tagDefinitions].map((item) => item.key))];
-  const text = (item?: { name: string; color: string; order: number }) => item ? `${item.name}（色 ${item.color}・順序 ${item.order}）` : "なし";
+  const text = (item?: { name: string; color: string }) => item ? `${item.name}（色 ${item.color}）` : "なし";
   return keys.flatMap((key) => { const oldItem = before.tagDefinitions.find((i) => i.key === key); const newItem = after.tagDefinitions.find((i) => i.key === key); return same(oldItem, newItem) ? [] : [`${text(oldItem)} → ${text(newItem)}`]; });
 }
 function calendarLines(before: GanttStateV1, after: GanttStateV1): string[] {

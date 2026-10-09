@@ -201,4 +201,28 @@ describe("live chart ghosts", () => {
       expect(() => layer.renderDock(host()), name).not.toThrow();
     }
   });
+  it("does not show internal names, raw kinds or raw ids in the dock", () => {
+    const ALLOWED_LATIN = /^(AI|Gantt|Daily|ToDo|Notes|MCP|OpenAI|Vault|KB|MB|URL|ID|px|h|B|x)$/;
+    const latinWords = (value: string): string[] => (value.replace(/\S*[/:.#]\S*/g, "").match(/[A-Za-z][A-Za-z0-9_]*/g) ?? []).filter((word) => word.length > 1 && !ALLOWED_LATIN.test(word));
+    const forbidden = ["setting:", "task:", "marker:", "ganttOrder", "Gantt順", "ganttFeatureWorkloadEnabled", "tasks/2026/10/"];
+    const previews = [SETTINGS_PREVIEW, MARKER_PREVIEW, CREATE_PREVIEW, DELETE_PREVIEW, WORKLOAD_PREVIEW, PARTIAL_PREVIEW, FILTERED_PREVIEW, OUTSIDE_RANGE_PREVIEW];
+    for (const preview of previews) {
+      const port = new FakePreviewPort([preview]); const layer = new PreviewGanttLayer(port); port.focus(preview.previewId);
+      const dock = host(); layer.renderDock(dock); const shown = text(dock);
+      for (const word of forbidden) expect(shown, `${preview.previewId}: ${word}`).not.toContain(word);
+      // Hour units are stripped because the fake DOM text has no separators; "OFF" and "viewport" come from the fixture's projector-supplied reason text, not from this layer.
+      expect(latinWords(shown.replace(/\d+(\.\d+)?h/g, "")).filter((word) => !["OFF", "viewport"].includes(word)), preview.previewId).toEqual([]);
+    }
+    const settingsPort = new FakePreviewPort([SETTINGS_PREVIEW]); const settingsLayer = new PreviewGanttLayer(settingsPort); settingsPort.focus("settings-fixture");
+    const settingsDock = host(); settingsLayer.renderDock(settingsDock);
+    expect(text(settingsDock)).toContain("設定: "); expect(text(settingsDock)).not.toMatch(/setting/i);
+  });
+  it("describes parent changes in plain Japanese without raw order numbers", () => {
+    const projection = structuredClone(CREATE_PREVIEW.projection!) as any;
+    projection.after.parents[0].order = projection.before.parents[0].order + 3;
+    projection.after.parents[0].enabled = !projection.before.parents[0].enabled;
+    const notes = deriveOverlay(projection).parents.flatMap((parent) => parent.notes).join("\n");
+    expect(notes).toContain("並び順が変わります"); expect(notes).toContain("Ganttに表示");
+    expect(notes).not.toMatch(/Gantt順|順序|ganttOrder/); expect(notes).not.toMatch(/\d+ → \d+/);
+  });
 });
