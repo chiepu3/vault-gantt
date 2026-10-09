@@ -11,7 +11,7 @@ function Write-Warning {
 }
 $script:NativeCleanup = ${function:Remove-InstallerTree}
 function Remove-InstallerTree {
-    param([string]$Path)
+    param([string]$Path, [switch]$EmptyDirectoryOnly)
     foreach ($pattern in $script:CleanupFailurePatterns) {
         if ($pattern -and $Path.Contains($pattern)) { throw [System.IO.IOException]::new("simulated cleanup failure for $Path") }
     }
@@ -270,6 +270,40 @@ Check 'read-only cloud stage cleanup deletes only owned known files and leaves u
         } else {
             Assert-True ($script:CleanupWarnings.Count -eq 0 -and -not (Test-Path -LiteralPath $stagePath)) 'read-only cloud stage was not removed'
         }
+    }
+}
+
+Check 'cloud stage cleanup preserves unknown files and directories added after enumeration' {
+    function Get-ChildItem {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [switch]$Force)
+        $entries = @(Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters)
+        if ($LiteralPath -ceq $stagePath -and -not $script:ConcurrentStageEntryInjected) {
+            $script:ConcurrentStageEntryInjected = $true
+            # Simulate OneDrive adding an entry after the allowlist snapshot was taken.
+            if ($entryKind -eq 'directory') { New-Item -ItemType Directory -Path $unknownPath | Out-Null }
+            [IO.File]::WriteAllText($sentinelPath, 'preserve concurrent content')
+        }
+        return $entries
+    }
+    foreach ($entryKind in 'file', 'directory') {
+        Reset-Mock
+        $script:ConcurrentStageEntryInjected = $false
+        $stagePath = Join-Path $root ('.vault-gantt-installer-' + [guid]::NewGuid().ToString('N'))
+        New-InstallerOwnedDirectory $stagePath -AllowCloudAncestors
+        $knownPath = Join-Path $stagePath 'main.js'
+        [IO.File]::WriteAllText($knownPath, 'owned stage content')
+        $unknownPath = Join-Path $stagePath 'concurrent-entry'
+        $sentinelPath = if ($entryKind -eq 'directory') { Join-Path $unknownPath 'keep.txt' } else { $unknownPath }
+        # Leave the directory as a normal directory: the old recursive native path
+        # would follow it and delete the concurrent entry, even with -CloudStage.
+        Remove-InstallerPath -Path $stagePath -OwnedRoot $stagePath -CloudStage
+        Assert-True ($script:ConcurrentStageEntryInjected) 'concurrent entry was not injected'
+        Assert-True (-not (Test-Path -LiteralPath $knownPath)) 'known stage file was not removed'
+        Assert-True (Test-Path -LiteralPath $stagePath -PathType Container) 'nonempty stage was removed'
+        Assert-True ((Get-Content -LiteralPath $sentinelPath -Raw) -ceq 'preserve concurrent content') 'concurrent entry was deleted or modified'
+        Assert-True ($script:CleanupWarnings.Count -eq 1 -and $script:CleanupWarnings[0].Contains($stagePath)) 'nonempty stage did not report its residual path'
+        Assert-True ($script:InstallerOwnedDirectories.ContainsKey($stagePath)) 'failed cleanup lost ownership tracking'
     }
 }
 

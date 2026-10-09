@@ -238,7 +238,7 @@ function Restore-InstallerFile {
 }
 
 function Remove-InstallerTree {
-    param([string]$Path)
+    param([string]$Path, [switch]$EmptyDirectoryOnly)
     # PS 5.1 Remove-Item cannot reliably enumerate deep node_modules paths.
     # Unicode Win32 APIs with extended paths also work without LongPathsEnabled.
     if (-not ('VaultGanttInstaller.NativeCleanup' -as [type])) {
@@ -282,6 +282,9 @@ namespace VaultGanttInstaller {
             throw new Win32Exception(error, path);
         }
         public static void DeleteTree(string path) { DeleteEntry(Extended(path)); }
+        public static void DeleteEmptyDirectory(string path) {
+            if (!RemoveDirectoryW(Extended(path))) Fail(path);
+        }
         static void DeleteEntry(string path) {
             uint attr = GetFileAttributesW(path);
             if (attr == UInt32.MaxValue) { Fail(path); }
@@ -312,7 +315,8 @@ namespace VaultGanttInstaller {
 }
 '@ -ErrorAction Stop
     }
-    [VaultGanttInstaller.NativeCleanup]::DeleteTree($Path)
+    if ($EmptyDirectoryOnly) { [VaultGanttInstaller.NativeCleanup]::DeleteEmptyDirectory($Path) }
+    else { [VaultGanttInstaller.NativeCleanup]::DeleteTree($Path) }
     if ([VaultGanttInstaller.NativeCleanup]::Exists($Path)) { Stop-Installer "削除後もパスが存在します: $Path" }
 }
 
@@ -353,7 +357,7 @@ function Remove-InstallerPath {
                     [IO.File]::SetAttributes($full, [Enum]::ToObject([IO.FileAttributes], ([int]$stageItem.Attributes -band (-bnot 1))))
                 }
             }
-            Remove-InstallerTree -Path $full
+            Remove-InstallerTree -Path $full -EmptyDirectoryOnly:$CloudStage
         }
         if ($full.Equals($owned, [StringComparison]::OrdinalIgnoreCase)) { $script:InstallerOwnedDirectories.Remove($owned) }
     } catch {
