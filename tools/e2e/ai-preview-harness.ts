@@ -24,6 +24,7 @@ const EFFECT_META: Record<string, { op: string; entity: unknown; name: string }>
   weekly: { op: "W01", entity: { kind: "weekly", scheduleKey: "weekly-1" }, name: "定例" },
   "daily-todo": { op: "D03", entity: { kind: "daily-todo", path: "daily/2026-10-13.md", line: 3, itemFingerprint: "line-sha256:fixture" }, name: "確認" },
   calendar: { op: "S06", entity: { kind: "setting", key: "ganttManualHolidays" }, name: "手動の休日" },
+  "service-state": { op: "T30", entity: { kind: "integration", targetId: "priority-service" }, name: "優先度の最終計算日" },
   settings: { op: "S10", entity: { kind: "setting", key: "ganttFeatureWorkloadEnabled" }, name: "作業時間機能" },
   view: { op: "V09", entity: { kind: "view", viewId: "gantt-1" }, name: "Gantt" },
   "external-send": { op: "S21", entity: { kind: "integration", targetId: "sync" }, name: "同期" },

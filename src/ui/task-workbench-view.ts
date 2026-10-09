@@ -1,4 +1,5 @@
 import { ItemView, moment } from "obsidian";
+import type { PreviewUiHostPorts, ViewStateV1 } from "../contracts/ports";
 import type { WorkspaceLeaf } from "obsidian";
 
 import type { Logger } from "../core/logger";
@@ -52,7 +53,7 @@ const FILTER_RENDER_DEBOUNCE_MS = 200;
 
 
 
-export interface TaskWorkbenchViewHost {
+export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
 
   logger: Logger;
 
@@ -94,6 +95,7 @@ export interface TaskWorkbenchViewHost {
 export class TaskWorkbenchView extends ItemView {
   // --- Header control state (persists for the view's lifetime) ---
 
+  private unregisterState?: () => void;
   private filterText = "";
 
   private statusFilter = "all";
@@ -172,6 +174,7 @@ export class TaskWorkbenchView extends ItemView {
  * open, so all control/collapse state starts from its defaults.
  */
   async onOpen(): Promise<void> {
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "workbench", filterText: this.filterText, statusFilter: this.statusFilter as ViewStateV1["statusFilter"], showCompleted: this.showCompleted, tagNames: [] }));
     const container = this.containerEl;
     // Obsidian's HTMLElement.empty extension.
     container.empty();
@@ -268,6 +271,7 @@ export class TaskWorkbenchView extends ItemView {
  * may target the detached view.
  */
   onClose(): Promise<void> {
+    this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
     return Promise.resolve();
   }

@@ -1,3 +1,4 @@
+import type { McpSettings } from "../mcp/server";
 /* global __VG_VERSION__, __VG_COMMIT__, __VG_BUILT_AT__ */
 import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
@@ -18,6 +19,12 @@ import { addDailyTodoSource as appendDailyTodoSource } from "../app/daily-todo-s
 
 
 export interface SettingsTabHost {
+  getMcpVaultInstanceId?(): string;
+  getMcpSettings?(): McpSettings;
+  getMcpStatus?(): string;
+  configureMcp?(): Promise<void>;
+  generateMcpToken?(regenerate?: boolean): Promise<void>;
+  copyMcpToken?(): Promise<void>;
   settings: TaskWorkbenchSettings;
   holidays: HolidayService;
   saveSettings(): Promise<void>;
@@ -431,6 +438,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
           })
       );
 
+    this.renderMcpSettings(containerEl);
     const version =
       typeof __VG_VERSION__ === "undefined" ? "unknown" : __VG_VERSION__;
     const commit =
@@ -472,6 +480,26 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
  *
  * Render only the tag-definition portion of the settings tab.
  */
+  private renderMcpSettings(containerEl: HTMLElement): void {
+    const settings = this.hostPlugin.getMcpSettings?.(); if (!settings) return;
+    new Setting(containerEl).setName("MCP接続").setHeading();
+    const run = async (action: () => Promise<void>) => { try { await action(); this.display(); } catch { new Notice("MCPの設定を適用できませんでした。ポートと秘密ストレージを確認してください。"); } };
+    new Setting(containerEl).setName("MCPを有効にする").setDesc("このPCのAIから接続します。変更は承認一覧で承認すると保存されます。")
+      .addToggle((toggle) => toggle.setValue(settings.enabled).onChange(async (enabled: boolean) => { this.hostPlugin.settings.mcp = { ...this.hostPlugin.getMcpSettings!(), enabled }; await run(async () => { await this.hostPlugin.saveSettings(); await this.hostPlugin.configureMcp?.(); }); }));
+    let portInput = String(settings.port);
+    new Setting(containerEl).setName("ポート").setDesc("1〜65535。既定値は8788です。変更すると既存接続と保留提案が失効します。")
+      .addText((text) => text.setValue(portInput).onChange((value: string) => { portInput = value; }))
+      .addButton((button) => button.setButtonText("適用").onClick(async () => {
+        const port = Number(portInput); if (!Number.isInteger(port) || port < 1 || port > 65535) { new Notice("ポートは1〜65535の整数で指定してください"); return; }
+        this.hostPlugin.settings.mcp = { ...this.hostPlugin.getMcpSettings!(), port };
+        await run(async () => { await this.hostPlugin.saveSettings(); await this.hostPlugin.configureMcp?.(); });
+      }));
+    new Setting(containerEl).setName("接続トークン").setDesc("トークンは秘密ストレージに保存します。非対応の場合はこの起動中だけ有効です。再生成すると既存接続と保留提案が失効します。")
+      .addButton((button) => button.setButtonText("生成").onClick(() => run(async () => { await this.hostPlugin.generateMcpToken?.(); })))
+      .addButton((button) => button.setButtonText("再生成").onClick(() => run(async () => { await this.hostPlugin.generateMcpToken?.(true); })))
+      .addButton((button) => button.setButtonText("コピー").onClick(() => run(async () => { await this.hostPlugin.copyMcpToken?.(); })));
+    new Setting(containerEl).setName("接続方法").setDesc(`接続先: http://127.0.0.1:${settings.port}/mcp。AI側でBearerトークンを設定します。stdio接続はMCP.mdのbridge手順を使います。Obsidianの起動中のみ利用できます。Vault instance ID: ${this.hostPlugin.getMcpVaultInstanceId?.() ?? ""}。状態: ${this.hostPlugin.getMcpStatus?.() ?? "未接続"}`);
+  }
   private renderTagList(containerEl: HTMLElement): void {
     const definitions = ensureGanttTagDefinitions(this.hostPlugin.settings);
     containerEl.replaceChildren();

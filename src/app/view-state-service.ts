@@ -5,7 +5,7 @@ import type { PreviewPort } from "../contracts/ports";
 /** View callbacks are supplied by their owning UI track at integration. No synthetic view IDs. */
 export class ViewStateService implements UiPort {
   private readonly views = new Map<string, { read: () => ViewStateV1; request?: (id: ViewOperationId, input: unknown) => Promise<OperationRequestResultV1> }>();
-  constructor(private readonly previews: PreviewPort) {}
+  constructor(private readonly previews: PreviewPort, private readonly openApproval?: (previewId: string) => Promise<void>) {}
   register(viewId: string, read: () => ViewStateV1, request?: (id: ViewOperationId, input: unknown) => Promise<OperationRequestResultV1>): () => void {
     const entry = { read, request }; this.views.set(viewId, entry);
     return () => { if (this.views.get(viewId) === entry) this.views.delete(viewId); };
@@ -20,6 +20,7 @@ export class ViewStateService implements UiPort {
   }
   async requestApproval(previewId: string): Promise<OperationRequestResultV1> {
     this.previews.focus(previewId);
+    await this.openApproval?.(previewId);
     return { schemaVersion: 1, resultKind: "request", operationId: "Q07", status: "requested", effects: [{ kind: "conversation", action: "request-approval", before: null, after: { previewId } }] };
   }
 }

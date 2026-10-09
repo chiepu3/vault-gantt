@@ -2,12 +2,12 @@ import type { GanttProjectionV1, OperationPreviewV1, PreviewEffect, PreviewEffec
 import { buildNameMap, h, renderEffect, effectIsNoop } from "./preview-renderers";
 
 /** Effects with no natural Gantt shape. A bar here would invent a schedule that does not exist. */
-export const PANEL_EFFECT_KINDS = ["settings", "view", "external-send", "diagnostic", "conversation"] as const satisfies readonly PreviewEffectKind[];
+export const PANEL_EFFECT_KINDS = ["service-state", "settings", "view", "external-send", "diagnostic", "conversation"] as const satisfies readonly PreviewEffectKind[];
 const PANEL_TITLES: Record<(typeof PANEL_EFFECT_KINDS)[number], string> = {
-  settings: "設定の変更", view: "表示の変更", "external-send": "同期の状態", diagnostic: "診断の状態", conversation: "チャットの状態",
+  "service-state": "管理値の保存", settings: "設定の変更", view: "表示の変更", "external-send": "同期の状態", diagnostic: "診断の状態", conversation: "チャットの状態",
 };
 const PANEL_NOTES: Record<(typeof PANEL_EFFECT_KINDS)[number], string> = {
-  settings: "この変更はGanttのバーとしては表示されません。変更後の設定値を示します。",
+  "service-state": "サービスの管理値を保存します。利用者が編集する設定ではありません。", settings: "この変更はGanttのバーとしては表示されません。変更後の設定値を示します。",
   view: "Ganttの見た目に関わる変更です。バーの日程は変わりません。",
   "external-send": "送信する内容の見本です。Ganttには何も追加されません。",
   diagnostic: "時間軸には何も表示されません。記録の状態だけを示します。",

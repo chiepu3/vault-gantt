@@ -45,6 +45,7 @@ const buildOptions = {
     "@lezer/highlight",
     "@lezer/lr",
     ...builtinModules,
+    "node:*",
   ],
   format: "cjs",
   target: "ES2018",

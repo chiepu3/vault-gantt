@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { BOUNDARY_OUTCOMES, CREATE_PREVIEW, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PREVIEW_FIXTURES, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, READ_FIXTURES, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
+import { BOUNDARY_OUTCOMES, D02_EMPTY_FILE_PREVIEW, CREATE_PREVIEW, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PREVIEW_FIXTURES, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, READ_FIXTURES, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
 import { operationPreviewSchema, validatePreviewOutcome, type OperationPreviewV1 } from "../../src/contracts/preview";
 import { cardState, CardProjectionPager, originLabel, PreviewCardController, renderOperationPreviewCard, renderReadResultCard } from "../../src/ui/operation-preview-card";
 import { createFakeDocument, makeFakeEl, byClass, byTag, deepText, dispatch, type FakeEl } from "../stubs/fake-dom";
@@ -18,7 +18,7 @@ const render = (preview: OperationPreviewV1, options = {}) => renderOperationPre
 describe("shared fixtures are valid contract data", () => {
   it.each(Object.entries(PREVIEW_FIXTURES))("%s parses", (_name, preview) => { expect(operationPreviewSchema.safeParse(preview).success).toBe(true); });
   it.each(Object.entries(BOUNDARY_OUTCOMES))("outcome %s validates against its preview", (name, outcome) => {
-    const preview = { oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, featureDisabled: SETTINGS_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW, partial: PARTIAL_PREVIEW }[name as "partial"];
+    const preview = { oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, featureDisabled: SETTINGS_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW, partial: PARTIAL_PREVIEW, emptyDailyFile: D02_EMPTY_FILE_PREVIEW }[name as "partial"];
     expect(() => validatePreviewOutcome(preview, outcome)).not.toThrow();
   });
 });

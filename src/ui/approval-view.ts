@@ -10,6 +10,7 @@ export interface ApprovalViewHost extends PreviewUiHostPorts, PreviewCardExtras 
 
 /** Human approval list for requests that arrived from outside the chat (MCP). Uses the same card as the chat. */
 export class ApprovalView extends ItemView {
+  private unregisterState?: () => void;
   private unsubscribe: (() => void)[] = [];
   private controller?: PreviewCardController;
   private listEl!: HTMLElement;
@@ -21,6 +22,7 @@ export class ApprovalView extends ItemView {
   getDisplayText(): string { return "承認一覧"; }
   getIcon(): string { return "shield-check"; }
   async onOpen(): Promise<void> {
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "approval", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [] }));
     const root = (this.containerEl.children[1] ?? this.containerEl) as HTMLElement;
     root.empty(); root.classList.add("vg-pv-approval");
     const header = h(root, "header", "vg-pv-approval-head");
@@ -33,6 +35,7 @@ export class ApprovalView extends ItemView {
     this.render();
   }
   async onClose(): Promise<void> {
+    this.unregisterState?.(); this.unregisterState = undefined;
     for (const stop of this.unsubscribe) stop();
     this.unsubscribe = [];
     if (this.timer) clearTimeout(this.timer); if (this.expiryTimer) clearTimeout(this.expiryTimer);

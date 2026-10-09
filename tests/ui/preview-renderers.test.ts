@@ -15,8 +15,8 @@ const root = () => makeFakeEl("div") as unknown as HTMLElement & FakeEl;
 const text = (el: unknown) => deepText(el as FakeEl);
 
 describe("effect renderers cover every contract variant", () => {
-  it("has a renderer and a title for each of the 17 effect kinds", () => {
-    expect(PREVIEW_EFFECT_KINDS).toHaveLength(17);
+  it("has a renderer and a title for each effect kind", () => {
+    expect(PREVIEW_EFFECT_KINDS).toHaveLength(18);
     expect(Object.keys(EFFECT_RENDERERS).sort()).toEqual([...PREVIEW_EFFECT_KINDS].sort());
     expect(Object.keys(EFFECT_TITLES).sort()).toEqual([...PREVIEW_EFFECT_KINDS].sort());
   });

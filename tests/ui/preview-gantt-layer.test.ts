@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { BOUNDARY_OUTCOMES, CREATE_PREVIEW, DATE, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
+import { BOUNDARY_OUTCOMES, D02_EMPTY_FILE_PREVIEW, CREATE_PREVIEW, DATE, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
 import { deriveOverlay, PreviewGanttLayer } from "../../src/ui/preview-gantt-layer";
 import { renderPointGhosts, renderGhost } from "../../src/ui/ghost-layer";
 import { renderNonGanttPanel, panelEffects } from "../../src/ui/preview-panels";
@@ -177,7 +177,7 @@ describe("live chart ghosts", () => {
   });
   it("a boundary outcome set renders without throwing for the dock", () => {
     for (const [name, outcome] of Object.entries(BOUNDARY_OUTCOMES)) {
-      const preview = { oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, featureDisabled: SETTINGS_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW, partial: PARTIAL_PREVIEW }[name as "partial"];
+      const preview = { oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, featureDisabled: SETTINGS_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW, partial: PARTIAL_PREVIEW, emptyDailyFile: D02_EMPTY_FILE_PREVIEW }[name as "partial"];
       const port = new FakePreviewPort([preview]); port.outcomes.set(preview.previewId, outcome); const layer = new PreviewGanttLayer(port); port.focus(preview.previewId);
       expect(() => layer.renderDock(host()), name).not.toThrow();
     }

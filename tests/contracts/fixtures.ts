@@ -197,6 +197,7 @@ export const EFFECT_FIXTURES = [
   { kind: "external-send", destination: "https://example.test/api/snapshot", payloadDigest: "payload-sha256:fixture", taskCount: 1, fieldsSent: ["title", "period"], bytes: 100 },
   { kind: "diagnostic", recording: false, outputPath: "_vault-gantt-logs/fixture.log", entryCount: 10 },
   { kind: "conversation", action: "request-approval", before: null, after: { previewId: "mcp-fixture" } },
+  { kind: "service-state", fields: [{ field: "lastAutoPriorityUpdate", before: "", after: "2026-10-09", reason: "derived" }] },
 ] as const satisfies readonly PreviewEffect[];
 export const READ_FIXTURES = {
   tasks: {
@@ -214,6 +215,8 @@ export const READ_FIXTURES = {
 } as const satisfies Record<string, ReadResultV1>;
 
 export const CONTEXT_QUERY_FIXTURES = {
+  "events.get": { eventKeys: ["event-1"] },
+  "weekly.get": { daysOfWeek: [2] },
   "context.overview": { scope: { parentIds: [PARENT_ID] } },
   "tasks.search": { name: "レビュー", kind: "subtask", limit: 1, fields: ["identity", "status", "schedule", "priority"] },
   "tasks.get-many": { taskIds: [CHILD_ID], include: ["identity", "status", "schedule", "priority"] },
@@ -225,6 +228,8 @@ export const CONTEXT_QUERY_FIXTURES = {
   "context.changes": { sinceRevision: "snapshot-sha256:previous", scope: { parentIds: [PARENT_ID] } },
 } as const satisfies ContextQueryMap;
 export const CONTEXT_QUERY_OUTPUT_FIXTURES = {
+  "events.get": { ...READ_FIXTURES.tasks, data: { kind: "events", items: [{ key: "event-1", title: "確認会", date: DATE, hours: [], revision }], totalMatched: 1, returned: 1, truncated: false, nextCursor: null } },
+  "weekly.get": { ...READ_FIXTURES.tasks, data: { kind: "weekly", items: [{ key: "weekly-1", title: "定例", dayOfWeek: 2, minutesPerWeek: 30, revision }], totalMatched: 1, returned: 1, truncated: false, nextCursor: null } },
   "context.overview": { ...READ_FIXTURES.tasks, data: { kind: "overview", counts: { parents: 1, children: 1, unplaced: 0, completed: 0, parseFailures: 0 }, settings: GANTT_STATE.settings, capabilities: ["read", "propose"], summaryRevision: READ_FIXTURES.tasks.snapshotRevision } },
   "tasks.search": READ_FIXTURES.tasks,
   "tasks.get-many": { ...READ_FIXTURES.tasks, data: { ...READ_FIXTURES.tasks.data, totalMatched: 1, truncated: false, nextCursor: null } },

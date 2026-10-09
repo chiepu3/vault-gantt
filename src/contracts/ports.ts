@@ -4,7 +4,7 @@ import type {
   OperationId, ReadOperationId, ViewOperationId, WriteOperationId,
   OperationInputMap, OperationOutputMap, OperationDefinition, ExternalRequestOperationId,
 } from "./operations";
-import type { OperationPreviewV1, OperationOutcomeV1, OperationRequestResultV1, PreviewEffect, ProjectionPageRequestV1, ProjectionPageResultV1 } from "./preview";
+import type { OperationPreviewV1, OperationOutcomeV1, OperationRequestResultV1, PreviewEffect, ProjectionPageRequestV1, ProjectionPageResultV1, PreviewEventV1 } from "./preview";
 
 /** Cursor is bound to the authenticated Vault/principal, preview and frozen projection.
  * A stale revision/date/TZ, expired preview or wrong cursor produces an explicit error;
@@ -23,6 +23,9 @@ export interface PreviewPort extends ProjectionDetailPort {
   subscribe(listener: () => void): () => void;
   focus(previewId: string | null): void;
   reject(previewId: string): Promise<void>;
+  /** Additive lifecycle API. Only pending previews may be invalidated; applying receipts remain. */
+  invalidate?(previewId: string, reason: "expired" | "revoked"): Promise<void>;
+  subscribeEvents?(listener: (event: PreviewEventV1) => void): () => void;
   requestRepreview(previewId: string): Promise<OperationPreviewV1>;
 }
 /** Only passed to Obsidian human UI. SDK/MCP consumers receive no approval port. */
@@ -45,6 +48,10 @@ export interface HistoryPort {
   inspectUndo(entryId: string): HistoryEntryUndoStateV1;
   subscribe(listener: (change: HistoryChangeV1) => void): () => void;
 }
+/** Human UI execution port. Checks entry identity and content again inside the shared save queue. */
+export interface HumanUndoPort {
+  undoEntry(entryId: string): Promise<void>;
+}
 export interface ContextReadPort {
   query<K extends ContextQueryId>(id: K, input: ContextQueryMap[K], context: RequestContext): Promise<ContextQueryResult<K>>;
 }
@@ -56,6 +63,10 @@ export interface ViewStateV1 {
   readonly showCompleted: boolean;
   readonly tagNames: readonly string[];
   readonly dayWidth?: number;
+}
+/** View lifecycle registration is supplied only to human UI hosts. */
+export interface ViewStateRegistrationPort {
+  register(viewId: string, read: () => ViewStateV1): () => void;
 }
 /** Obsidian's direct human UI only. Never pass this port to MCP, Chat SDK or transport code.
  * V14 may persist ganttZoom here; external requests use OperationService and are denied.
@@ -72,6 +83,11 @@ export interface PreviewUiHostPorts {
   readonly humanApprovalPort: HumanApprovalPort;
   readonly uiPort: UiPort;
   readonly historyPort: HistoryPort;
+  readonly viewStatePort?: ViewStateRegistrationPort;
+  readonly viewId?: string;
+  readonly undoPort?: HumanUndoPort;
+  readonly operationService?: OperationService;
+  readonly projectionDetailPort?: ProjectionDetailPort;
 }
 export type PublicOperationDescription = {
   [K in OperationId]: Pick<OperationDefinition<K>, "id" | "classification" | "capabilities" | "requestPolicy" | "previewKinds" | "description">

@@ -4,7 +4,7 @@ import {
   revisionSchema, periodSchema, markerStateSchema, hoursCellSchema, namedDefinitionSchema, weeklyStateSchema,
   dailyStateSchema, dailySummarySchema, calendarStateSchema, publicSettingsSchema, dailyAggregateSchema,
   editableSettingKeySchema, EDITABLE_SETTING_KEYS, tagNamesSchema, operationErrorSchema, type DeepReadonly,
-  contributionHoursCellSchema,
+  contributionHoursCellSchema, SERVICE_STATE_KEYS, serviceStateSchema,
 } from "./context";
 import { operationIdSchema } from "./operations";
 
@@ -48,7 +48,7 @@ export const ENTITY_FIELDS = {
   source: ["key", "label", "format", "creatableFromGantt", "templatePath"], setting: EDITABLE_SETTING_KEYS,
   view: ["position", "filterText", "statusFilter", "sortKey", "sortDir", "flatDueSort", "showCompleted", "expanded", "tagNames", "dayWidth", "date", "offset", "mode", "targetId", "selection"],
   conversation: ["provider", "endpoint", "model", "auth", "secretId", "title", "status", "activeConversationId", "messageCount"],
-  integration: ["destination", "enabled", "intervalMinutes", "recording", "outputPath", "entryCount"],
+  integration: [...SERVICE_STATE_KEYS, "destination", "enabled", "intervalMinutes", "recording", "outputPath", "entryCount"],
 } as const satisfies Record<EntityRef["kind"], readonly string[]>;
 export type PublicEntityField = (typeof ENTITY_FIELDS)[keyof typeof ENTITY_FIELDS][number];
 export const fieldChangeSchema = z.object({
@@ -58,7 +58,12 @@ export const fieldChangeSchema = z.object({
   before: jsonSchema, after: jsonSchema, reason: z.enum(["requested", "normalized", "derived"]),
 }).strict();
 export type FieldChange = DeepReadonly<z.infer<typeof fieldChangeSchema>>;
-export const PREVIEW_EFFECT_KINDS = ["fields", "presence", "schedule", "deadline", "marker", "workload", "order", "membership", "tag-definition", "weekly", "daily-todo", "calendar", "settings", "view", "external-send", "diagnostic", "conversation"] as const;
+export const serviceStateChangeSchema = fieldChangeSchema.superRefine((change, ctx) => {
+  if (!(SERVICE_STATE_KEYS as readonly string[]).includes(change.field)) { ctx.addIssue({ code: "custom", message: "管理fieldのみ保存可能" }); return; }
+  const schema = serviceStateSchema.shape[change.field as typeof SERVICE_STATE_KEYS[number]];
+  if (!schema.safeParse(change.before).success || !schema.safeParse(change.after).success) ctx.addIssue({ code: "custom", message: "管理値の型が不正です" });
+});
+export const PREVIEW_EFFECT_KINDS = ["fields", "presence", "schedule", "deadline", "marker", "workload", "order", "membership", "tag-definition", "weekly", "daily-todo", "calendar", "settings", "view", "external-send", "diagnostic", "conversation", "service-state"] as const;
 export const previewEffectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fields"), fields: z.array(fieldChangeSchema) }).strict(),
   z.object({ kind: z.literal("presence"), before: jsonSchema, after: jsonSchema, action: z.enum(["create", "delete", "duplicate"]) }).strict(),
@@ -72,6 +77,7 @@ export const previewEffectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("weekly"), before: weeklyStateSchema.nullable(), after: weeklyStateSchema.nullable() }).strict(),
   z.object({ kind: z.literal("daily-todo"), before: dailyStateSchema.nullable(), after: dailyStateSchema.nullable() }).strict(),
   z.object({ kind: z.literal("calendar"), added: z.array(dateOnlySchema), removed: z.array(dateOnlySchema), source: z.enum(["manual", "special", "national"]) }).strict(),
+  z.object({ kind: z.literal("service-state"), fields: z.array(serviceStateChangeSchema) }).strict(),
   z.object({ kind: z.literal("settings"), fields: z.array(fieldChangeSchema) }).strict(),
   z.object({ kind: z.literal("view"), before: jsonSchema, after: jsonSchema, affectedIds: z.array(idSchema) }).strict(),
   z.object({ kind: z.literal("external-send"), destination: z.string().min(1).max(2000), payloadDigest: revisionSchema, taskCount: countSchema, fieldsSent: z.array(z.string()), bytes: countSchema }).strict(),
@@ -87,6 +93,7 @@ export const previewEntrySchema = z.object({
     if (effect.kind === "workload" && ["task", "marker", "event"].includes(entry.entity.kind)) {
       for (const cell of effect.cells) if (!hoursCellSchema.safeParse(cell.before).success || !hoursCellSchema.safeParse(cell.after).success) ctx.addIssue({ code: "custom", message: "task/eventの時間は24h以下" });
     }
+    if (effect.kind === "service-state" && entry.entity.kind !== "integration") ctx.addIssue({ code: "custom", message: "管理値の保存先はintegrationです" });
     if (effect.kind !== "fields" && effect.kind !== "settings") continue;
     const allowed: readonly string[] = ENTITY_FIELDS[entry.entity.kind];
     for (const change of effect.fields) {
@@ -115,7 +122,7 @@ export const ganttStateSchema = z.object({
   events: z.array(z.object({ key: idSchema, title: z.string(), date: dateOnlySchema, hours: z.array(hoursCellSchema) }).strict()),
   weekly: z.array(weeklyStateSchema), daily: z.array(dailySummarySchema), tagDefinitions: z.array(namedDefinitionSchema),
   /** Optional for existing producers; required snapshots for any daily-file projection target. */
-  dailyFiles: z.array(dailyFileSnapshotSchema).optional(),
+  dailyFiles: z.array(dailyFileSnapshotSchema).optional(), serviceState: serviceStateSchema.optional(),
   // Domain totals retain hidden task hours; viewport/tag filters do not erase stored contributions.
   settings: publicSettingsSchema, calendar: calendarStateSchema, aggregates: z.array(dailyAggregateSchema),
 }).strict().superRefine((state, ctx) => {
@@ -201,7 +208,7 @@ function unionByKey<T>(left: readonly T[], right: readonly T[], key: (value: T) 
   return [...items.values()];
 }
 function mergeStates(left: GanttStateV1, right: GanttStateV1): GanttStateV1 {
-  if (canonical(left.settings) !== canonical(right.settings) || canonical(left.calendar) !== canonical(right.calendar)) throw new Error("CURSOR_STALE: 設定/休日snapshotが異なります");
+  if (canonical(left.settings) !== canonical(right.settings) || canonical(left.calendar) !== canonical(right.calendar) || canonical(left.serviceState) !== canonical(right.serviceState)) throw new Error("CURSOR_STALE: 設定/休日snapshotが異なります");
   return {
     ...left, parents: unionByKey(left.parents, right.parents, (parent) => parent.id), events: unionByKey(left.events, right.events, (event) => event.key),
     weekly: unionByKey(left.weekly, right.weekly, (weekly) => weekly.key), daily: unionByKey(left.daily, right.daily, (day) => day.date),
@@ -237,17 +244,21 @@ export function mergeProjectionPages(pages: readonly ProjectionPageV1[]): GanttP
   }
   return combined;
 }
-export const previewStatusSchema = z.enum(["pending", "applying", "success", "partial", "failed", "cancelled", "rejected", "stale", "expired"]);
+export const previewStatusSchema = z.enum(["pending", "applying", "success", "partial", "failed", "cancelled", "rejected", "stale", "expired", "revoked"]);
+export const approvedPreviewEventSchema = z.object({ schemaVersion: z.literal(1), kind: z.literal("approved"), eventId: idSchema, previewId: idSchema, occurredAt: timestampSchema }).strict();
+export const previewEventSchema = z.union([approvedPreviewEventSchema, z.object({ schemaVersion: z.literal(1), kind: z.enum(["expired", "revoked"]), eventId: idSchema, previewId: idSchema, occurredAt: timestampSchema }).strict()]);
+export type PreviewEventV1 = DeepReadonly<z.infer<typeof previewEventSchema>>;
 export const operationPreviewSchema = z.object({
   schemaVersion: z.literal(1), previewId: idSchema, vaultInstanceId: idSchema,
   // Lazy enum access keeps the operation/preview module cycle safe in either import order.
-  operationId: z.lazy(() => operationIdSchema), origin: requestOriginSchema, status: previewStatusSchema,
-  createdAt: timestampSchema, expiresAt: timestampSchema,
+  operationId: z.lazy(() => operationIdSchema), operationLabel: z.string().min(1).max(20000).optional(), origin: requestOriginSchema, status: previewStatusSchema,
+  createdAt: timestampSchema, expiresAt: timestampSchema, approvedEvent: approvedPreviewEventSchema.optional(),
   summary: z.object({ targetCount: countSchema, actionCount: countSchema }).strict(),
   entries: z.array(previewEntrySchema), warnings: z.array(z.object({ code: z.string().min(1), detail: z.string() }).strict()),
   undo: z.object({ support: z.enum(["full", "partial", "none"]), reason: z.string().optional() }).strict(),
   projection: ganttProjectionSchema.nullable(),
 }).strict().superRefine((preview, ctx) => {
+  if (preview.approvedEvent && preview.approvedEvent.previewId !== preview.previewId) ctx.addIssue({ code: "custom", message: "別previewの承認イベントです" });
   if (new Set(preview.entries.map((entry) => entry.actionId)).size !== preview.entries.length) ctx.addIssue({ code: "custom", message: "actionIdは一意" });
   if (preview.summary.actionCount !== preview.entries.length) ctx.addIssue({ code: "custom", message: "承認対象actionを省略できません" });
   if (Date.parse(preview.createdAt) >= Date.parse(preview.expiresAt)) ctx.addIssue({ code: "custom", message: "期限は作成時刻より後" });
@@ -285,7 +296,7 @@ function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: 
   }
   const { before, after } = projection;
   const allEffects = saved.flatMap((entry) => entry.effects);
-  const fields = (effects: readonly PreviewEffect[]) => effects.flatMap((effect) => effect.kind === "fields" || effect.kind === "settings" ? effect.fields : []);
+  const fields = (effects: readonly PreviewEffect[]) => effects.flatMap((effect) => effect.kind === "fields" || effect.kind === "settings" || effect.kind === "service-state" ? effect.fields : []);
   const hasKind = (effects: readonly PreviewEffect[], ...kinds: PreviewEffectKind[]) => effects.some((effect) => kinds.includes(effect.kind));
   const changed = (left: unknown, right: unknown) => canonical(left) !== canonical(right);
   const check = (allowed: boolean, left: unknown, right: unknown, label: string) => {
@@ -303,16 +314,28 @@ function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: 
   };
   const kinds: Record<string, readonly PreviewEffectKind[]> = { enabled: ["membership"], order: ["order"], period: ["schedule"], due: ["deadline"], hours: ["workload"], markers: ["marker"] };
   const checkHours = (id: string, old: readonly z.infer<typeof hoursCellSchema>[], next: readonly z.infer<typeof hoursCellSchema>[], effects: readonly PreviewEffect[]) => {
+    const original = new Map(old.map((cell) => [cell.date, { ...cell }]));
     const expected = new Map(old.map((cell) => [cell.date, { ...cell }]));
+    const workloadAfter = new Map<string, z.infer<typeof hoursCellSchema>>();
     const cellAt = (date: string) => expected.get(date) ?? { date, plan: 0, actual: 0 };
-    for (const effect of effects) {
+    // Both effect forms describe the same frozen change, not successive mutations.
+    const ordered = [...effects.filter((effect) => effect.kind === "workload"), ...effects.filter((effect) => effect.kind !== "workload")];
+    for (const effect of ordered) {
       if (effect.kind === "workload") for (const cell of effect.cells) {
-        if (changed(cellAt(cell.date), cell.before)) issue(`actual workloadのbeforeがsnapshotと一致しません: ${id}/${cell.date}`);
+        if (changed(original.get(cell.date) ?? { date: cell.date, plan: 0, actual: 0 }, cell.before)) issue(`actual workloadのbeforeがsnapshotと一致しません: ${id}/${cell.date}`);
+        if (workloadAfter.has(cell.date) && changed(workloadAfter.get(cell.date), cell.after)) issue(`同じ日の日別工数effectsが矛盾しています: ${id}/${cell.date}`);
+        workloadAfter.set(cell.date, { ...cell.after });
         expected.set(cell.date, { ...cell.after });
       }
       if (effect.kind === "fields") for (const change of effect.fields) {
         if (change.field !== "workloadPlan" && change.field !== "workloadActual") continue;
         const channel = change.field === "workloadPlan" ? "plan" : "actual";
+        if (hasKind(effects, "workload")) {
+          const fromCells = Object.fromEntries([...expected.values()].filter((cell) => cell[channel] !== 0).map((cell) => [cell.date, cell[channel]]));
+          const fromMap = change.after && typeof change.after === "object" && !Array.isArray(change.after)
+            ? Object.fromEntries(Object.entries(change.after).filter(([, value]) => value !== 0)) : change.after;
+          if (changed(fromCells, fromMap)) issue(`actual workloadのmapとcellが一致しません: ${id}/${channel}`);
+        }
         for (const cell of expected.values()) cell[channel] = 0;
         if (change.after === null || typeof change.after !== "object" || Array.isArray(change.after)) { issue(`actual workload mapが不正です: ${id}`); continue; }
         for (const [date, hours] of Object.entries(change.after)) {
@@ -369,9 +392,17 @@ function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: 
     check(hasKind(entityEffects({ kind: "daily-file", path: file.path, sourceKey: file.sourceKey }), "presence"), old, next, `daily-file/${key}`);
   });
   const settingsFields = fields(saved.filter((entry) => ["setting", "source", "tag-definition"].includes(entry.entity.kind)).flatMap((entry) => entry.effects));
+  const managementFields = saved.filter((entry) => entry.entity.kind === "integration").flatMap((entry) => entry.effects.flatMap((effect) => effect.kind === "service-state" ? effect.fields : []));
+  for (const key of SERVICE_STATE_KEYS) {
+    const change = managementFields.find((field) => field.field === key);
+    const derivedHolidayUnion = key === "ganttHolidays" && hasKind(allEffects, "calendar");
+    check(!!change || derivedHolidayUnion, before.serviceState?.[key], after.serviceState?.[key], `service-state/${key}`);
+    if (derivedHolidayUnion && after.serviceState?.ganttHolidays !== undefined && changed(after.serviceState.ganttHolidays, [...new Set([...after.calendar.manual, ...after.calendar.special, ...after.calendar.national])].sort())) issue("統合休日が実保存calendarと一致しません");
+    if (change && (changed(before.serviceState?.[key], change.before) || changed(after.serviceState?.[key], change.after))) issue(`管理値の実保存がsnapshotと一致しません: ${key}`);
+  }
   for (const key of new Set([...Object.keys(before.settings), ...Object.keys(after.settings)])) {
     const derived = (key === "ganttTags" && hasKind(allEffects, "tag-definition")) || (key === "dailyTodoSources" && saved.some((entry) => entry.entity.kind === "source"));
-    check(derived || settingsFields.some((field) => field.field === key), (before.settings as Record<string, unknown>)[key], (after.settings as Record<string, unknown>)[key], `settings/${key}`);
+    check(derived || (key === "ganttNationalHolidays" && managementFields.some((field) => field.field === key)) || settingsFields.some((field) => field.field === key), (before.settings as Record<string, unknown>)[key], (after.settings as Record<string, unknown>)[key], `settings/${key}`);
   }
   for (const key of ["weekends", "manual", "special", "national"] as const) check(allEffects.some((effect) => effect.kind === "calendar" && effect.source === key)
     || settingsFields.some((field) => field.field === ({ manual: "ganttManualHolidays", special: "ganttSpecialHolidays", national: "ganttNationalHolidays", weekends: "weekends" })[key]), before.calendar[key], after.calendar[key], `calendar/${key}`);
@@ -391,7 +422,7 @@ function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: 
     const previous = totals(before, date), updated = totals(after, date);
     if (Math.abs(next.plan - old.plan - updated.plan + previous.plan) > 1e-9 || Math.abs(next.actual - old.actual - updated.actual + previous.actual) > 1e-9) issue(`actualProjectionの集計が実保存分と一致しません: ${date}`);
     check(changed(before.calendar, after.calendar) || settingsFields.some((field) => ["ganttWorkloadDailyCapacityHours", "ganttWorkloadMaxHours"].includes(field.field)), old.capacity, next.capacity, `aggregate/${date}/capacity`);
-    if (next.overCapacity !== (next.plan > next.capacity)) issue(`actualProjectionの計画時間超過判定が実保存分と一致しません: ${date}`);
+    if (next.overCapacity !== (next.plan > next.capacity || next.actual > next.capacity)) issue(`actualProjectionの計画時間超過判定が実保存分と一致しません: ${date}`);
   });
 }
 export const previewOutcomePairSchema = z.object({ preview: operationPreviewSchema, outcome: operationOutcomeSchema }).strict().superRefine(({ preview, outcome }, ctx) => {

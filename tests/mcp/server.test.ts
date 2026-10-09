@@ -101,7 +101,7 @@ describe("HTTP SDK interoperability", () => {
       expect(result.isError, name).not.toBe(true);
       expect(resultData(result).status).toBe("success");
     }
-    expect(fake.calls.query).toHaveBeenCalledTimes(9);
+    expect(fake.calls.query).toHaveBeenCalledTimes(Object.keys(CONTEXT_QUERY_FIXTURES).length);
     fake.hooks.query = async () => ({ status: "success", result: { invalid: true } });
     expect(resultError(await client.callTool({ name: "context.overview", arguments: {} }))).toBe("RESET_REQUIRED");
   });

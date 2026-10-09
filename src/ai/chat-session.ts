@@ -32,8 +32,40 @@ export class ChatSession {
   private controller?: AbortController;
   private readonly owners = new WeakMap<Conversation, AbortController>();
   private disposed = false;
+  private unsubscribePreviews?: () => void;
+  private readonly recordedOutcomes = new Set<string>();
   private readonly listeners = new Set<() => void>();
-  constructor(readonly scope: object, private readonly registry: Pick<OperationRegistry, "plan" | "commit" | "discard">, private readonly provider: ChatProvider, private readonly changed: (result: OperationResult) => void = () => undefined, private readonly operationService?: OperationService) { this.newConversation(); }
+  constructor(readonly scope: object, private readonly registry: Pick<OperationRegistry, "plan" | "commit" | "discard">, private readonly provider: ChatProvider, private readonly changed: (result: OperationResult) => void = () => undefined, private readonly operationService?: OperationService) { this.newConversation(); this.unsubscribePreviews = operationService?.previewPort.subscribe(() => this.observeOutcomes()); }
+  private observeOutcomes(): void {
+    if (this.disposed || !this.operationService) return;
+    for (const conversation of this.conversations) {
+      const proposals = conversation.messages.flatMap((message) => message.proposals);
+      for (const preview of this.operationService.previewPort.list().filter((preview) => preview.origin.kind === "chat" && preview.origin.conversationId === conversation.id)) {
+        const outcome = this.operationService.previewPort.inspectOutcome(preview.previewId);
+        if (outcome && !this.recordedOutcomes.has(preview.previewId)) {
+          this.recordedOutcomes.add(preview.previewId);
+          // Direct confirm already records its result. Cards/repreviews must record actual saved effects too.
+          if (!proposals.some((proposal) => proposal.plan.previewId === preview.previewId && proposal.consumed)) {
+            const { actualProjection: _projection, ...receipt } = outcome; void _projection;
+            conversation.context.push({ role: "user", content: "人間の承認後の実保存結果: " + JSON.stringify(receipt) });
+          }
+        }
+      }
+      while (this.recordedOutcomes.size > 100) this.recordedOutcomes.delete(this.recordedOutcomes.values().next().value!);
+      for (const proposal of proposals) {
+        if (proposal.consumed) continue;
+        const id = proposal.plan.previewId, outcome = this.operationService.previewPort.inspectOutcome(id);
+        if (outcome) {
+          proposal.consumed = true;
+        } else {
+          const preview = this.operationService.previewPort.inspect(id);
+          if (preview && ["rejected", "stale", "expired", "revoked"].includes(preview.status)) proposal.consumed = true;
+        }
+      }
+      if (conversation.status === "preview" && proposals.length && proposals.every((proposal) => proposal.consumed)) conversation.status = "idle";
+    }
+    this.emit();
+  }
   get connected(): boolean { return this.provider.connected(this.config); }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private emit(): void { for (const listener of this.listeners) listener(); }
@@ -173,5 +205,5 @@ export class ChatSession {
     }
     finally { if (this.controller === controller) this.controller = undefined; this.emit(); }
   }
-  dispose(): void { this.disposed = true; this.stop(); for (const conversation of this.conversations) this.discard(conversation); this.listeners.clear(); this.config = emptyConfig(); }
+  dispose(): void { this.unsubscribePreviews?.(); this.unsubscribePreviews = undefined; this.disposed = true; this.stop(); for (const conversation of this.conversations) this.discard(conversation); this.listeners.clear(); this.config = emptyConfig(); }
 }

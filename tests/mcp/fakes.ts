@@ -48,6 +48,11 @@ export function createFakeMcp(capabilities?: readonly Capability[]) {
       }
       return { schemaVersion: 1, resultKind: "request", operationId: id, status: "requested", effects: [] } as unknown as OperationOutputMap[K];
     },
+    inspectOutcome(id, context) {
+      const preview = previews.get(id);
+      if (!context.capabilities.includes("read") || (preview && (preview.vaultInstanceId !== context.vaultInstanceId || (preview.origin.kind === "mcp" && preview.origin.principalId !== context.principalId)))) throw { code: "POLICY_DENIED", retryable: false, nextAction: "再認証" };
+      return outcomes.get(id);
+    },
     inspect(id) {
       const preview = previews.get(id);
       if (!preview) throw { code: "NOT_FOUND", retryable: false, nextAction: "再取得" };

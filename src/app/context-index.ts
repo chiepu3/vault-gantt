@@ -73,6 +73,18 @@ export class ContextIndex implements ContextReadPort {
     if (nextCursor) { this.cursors.set(nextCursor, { binding, revision: snapshot.revision, offset: offset + items.length }); while (this.cursors.size > 500) this.cursors.delete(this.cursors.keys().next().value!); }
     return { kind: "tasks", fieldsIncluded: [...fields], items, totalMatched: rows.length, returned: items.length, truncated, nextCursor };
   }
+  private definitionPage<T>(rows: readonly T[], snapshot: TaskSnapshot, limit: number, cursor: string | undefined, binding: string) {
+    let offset = 0;
+    if (cursor) {
+      const saved = this.cursors.get(cursor);
+      if (!saved || saved.binding !== binding || saved.revision !== snapshot.revision) fail("CURSOR_STALE", "cursorを破棄し同じqueryを先頭から再取得してください。", "cursor");
+      offset = saved.offset;
+    }
+    const items = rows.slice(offset, offset + limit), truncated = offset + items.length < rows.length;
+    const nextCursor = truncated ? `context-${++this.counter}` : null;
+    if (nextCursor) { this.cursors.set(nextCursor, { binding, revision: snapshot.revision, offset: offset + items.length }); while (this.cursors.size > 500) this.cursors.delete(this.cursors.keys().next().value!); }
+    return { items, totalMatched: rows.length, returned: items.length, truncated, nextCursor };
+  }
   async query<K extends ContextQueryId>(id: K, input: ContextQueryMap[K], context: RequestContext): Promise<ContextQueryResult<K>> {
     try {
       if (context.vaultInstanceId !== this.vaultInstanceId || !context.capabilities.includes("read")) fail("POLICY_DENIED", "このVaultに対するread権限が必要です。");
@@ -130,6 +142,17 @@ export class ContextIndex implements ContextReadPort {
         const oldRows = new Map(scoped(old).map((row) => [row.id, row])), newRows = new Map(scoped(snapshot).map((row) => [row.id, row]));
         const allFields: TaskFieldGroup[] = ["identity", "status", "schedule", "priority", "tags", "content", "markers", "workload", "children", "derived"];
         data = { kind: "changes", sinceRevision: args.sinceRevision, added: [...newRows.values()].filter((row) => !oldRows.has(row.id)).map((row) => compactTask(row, snapshot, allFields)), changed: [...newRows.values()].filter((row) => oldRows.has(row.id) && canonical(compactTask(oldRows.get(row.id)!, old, allFields)) !== canonical(compactTask(row, snapshot, allFields))).map((row) => compactTask(row, snapshot, allFields)), deletedIds: [...oldRows.keys()].filter((taskId) => !newRows.has(taskId)) };
+      } else if (id === "events.get") {
+        const args = contextQueryInputSchemas["events.get"].parse(input);
+        const rows = snapshot.settings.ganttEvents.filter((event) => (!args.eventKeys || args.eventKeys.includes(event.key)) && (!args.dateRange || event.date >= args.dateRange.from && event.date <= args.dateRange.to))
+          .slice().sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key))
+          .map((event) => ({ key: event.key, title: event.title, date: event.date, hours: hours(event), revision: snapshot.settingsRevision }));
+        data = { kind: "events", ...this.definitionPage(rows, snapshot, args.limit, args.cursor, binding) };
+      } else if (id === "weekly.get") {
+        const args = contextQueryInputSchemas["weekly.get"].parse(input);
+        const rows = snapshot.settings.weeklyWorkSchedules.filter((weekly) => (!args.scheduleKeys || args.scheduleKeys.includes(weekly.key)) && (!args.daysOfWeek || args.daysOfWeek.includes(weekly.dayOfWeek)))
+          .slice().sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.key.localeCompare(b.key)).map((weekly) => ({ ...weekly, revision: snapshot.settingsRevision }));
+        data = { kind: "weekly", ...this.definitionPage(rows, snapshot, args.limit, args.cursor, binding) };
       } else if (id === "workload.get") {
         const args = parsed.data as ReturnType<typeof contextQueryInputSchemas["workload.get"]["parse"]>;
         const from = args.from ?? snapshot.today, to = args.to ?? addDays(from, 30), dates: string[] = [];

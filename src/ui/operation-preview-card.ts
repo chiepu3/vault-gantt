@@ -3,10 +3,10 @@ import type { ReadResultV1, RequestOrigin } from "../contracts/context";
 import { mergeProjectionPages, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
 import { buildNameMap, h, renderEntryEffects, type RenderContext } from "./preview-renderers";
 
-export type CardState = "pending" | "applying" | "success" | "partial" | "failed" | "cancelled" | "rejected" | "stale" | "expired" | "undone";
+export type CardState = "pending" | "applying" | "success" | "partial" | "failed" | "cancelled" | "rejected" | "stale" | "expired" | "revoked" | "undone";
 export const STATE_LABELS: Record<CardState, string> = {
   pending: "未承認", applying: "適用中", success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み",
-  rejected: "却下", stale: "失効", expired: "期限切れ", undone: "元に戻しました",
+  rejected: "却下", stale: "失効", expired: "期限切れ", revoked: "接続の失効", undone: "元に戻しました",
 };
 const GROUP_LABELS: Record<string, string> = { T: "タスク", M: "マーカー・時間", E: "イベント", W: "定例作業", D: "Daily ToDo", S: "設定", V: "表示", Q: "チャット" };
 const UNDO_STATE_TEXT: Record<HistoryEntryUndoStateV1["state"], string> = {
@@ -74,7 +74,7 @@ function renderHeader(card: HTMLElement, preview: OperationPreviewV1, state: Car
   const header = h(card, "header", "vg-pv-header");
   const top = h(header, "div", "vg-pv-headtop");
   const status = h(top, "span", "vg-pv-status", STATE_LABELS[state]); status.setAttribute("role", "status");
-  h(top, "strong", "vg-pv-title", operationTitle(preview.operationId));
+  h(top, "strong", "vg-pv-title", (preview.operationLabel ?? operationTitle(preview.operationId)));
   const meta = h(header, "div", "vg-pv-meta");
   h(meta, "span", "", `対象 ${preview.summary.targetCount}件 · 操作 ${preview.summary.actionCount}件`);
   const origin = h(meta, "span", "vg-pv-origin", "要求元: " + originLabel(preview.origin)); origin.dataset.origin = preview.origin.kind;
@@ -172,7 +172,7 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
   const card = h(parent, "article", "vg-pv-card");
   card.dataset.state = state; card.dataset.previewId = preview.previewId; card.dataset.origin = preview.origin.kind;
   if (options.focused) card.dataset.focused = "true";
-  card.setAttribute("role", "group"); card.setAttribute("aria-label", `${operationTitle(preview.operationId)}（${STATE_LABELS[state]}）`);
+  card.setAttribute("role", "group"); card.setAttribute("aria-label", `${(preview.operationLabel ?? operationTitle(preview.operationId))}（${STATE_LABELS[state]}）`);
   renderHeader(card, preview, state);
 
   for (const warning of preview.warnings) { const line = h(card, "p", "vg-pv-note is-warn", warning.detail || warning.code); line.dataset.code = warning.code; }
@@ -234,19 +234,21 @@ export function renderReadResultCard(parent: HTMLElement, result: ReadResultV1, 
   const card = h(parent, "article", "vg-pv-card is-read");
   const data = result.data;
   card.dataset.state = "read"; card.setAttribute("role", "group");
-  const titles = { tasks: "タスクの取得結果", daily: "Daily ToDoの取得結果", overview: "全体の概要", project: "親タスクの取得結果", calendar: "休日の取得結果", workload: "作業時間の取得結果", settings: "設定の取得結果", changes: "前回からの変更" } as const;
+  const titles = { events: "イベントの取得結果", weekly: "定例作業の取得結果", tasks: "タスクの取得結果", daily: "Daily ToDoの取得結果", overview: "全体の概要", project: "親タスクの取得結果", calendar: "休日の取得結果", workload: "作業時間の取得結果", settings: "設定の取得結果", changes: "前回からの変更" } as const;
   card.setAttribute("aria-label", titles[data.kind]);
   const header = h(card, "header", "vg-pv-header");
   const top = h(header, "div", "vg-pv-headtop"); h(top, "span", "vg-pv-status", "読み取り"); h(top, "strong", "vg-pv-title", titles[data.kind]);
   h(header, "div", "vg-pv-meta", `基準日 ${result.today} · ${result.timezone}`);
-  if (data.kind === "tasks" || data.kind === "daily") {
+  if (data.kind === "tasks" || data.kind === "daily" || data.kind === "events" || data.kind === "weekly") {
     const total = data.totalMatched;
     h(card, "div", "vg-pv-result", `該当 ${total}件のうち ${data.returned}件を取得`);
     const list = h(card, "ul", "vg-pv-readlist");
     if (data.kind === "tasks") for (const item of data.items) {
       const schedule = "schedule" in item && item.schedule ? `${item.schedule.start ?? "未設定"} ～ ${item.schedule.end ?? "未設定"}` : "";
       h(list, "li", "", `${item.kind === "parent" ? "親" : "子"} · ${item.name}${schedule ? ` · ${schedule}` : ""}`);
-    } else for (const day of data.days) h(list, "li", "", `${day.date} · ${day.completedCount}/${day.totalCount}件完了`);
+    } else if (data.kind === "events") for (const item of data.items) h(list, "li", "", `${item.title} · ${item.date}`);
+    else if (data.kind === "weekly") for (const item of data.items) h(list, "li", "", `${item.title} · 曜日${item.dayOfWeek} · ${item.minutesPerWeek}分/週`);
+    else for (const day of data.days) h(list, "li", "", `${day.date} · ${day.completedCount}/${day.totalCount}件完了`);
     if (data.truncated) {
       const more = h(card, "div", "vg-pv-coverage");
       h(more, "span", "", `省略あり: 残り ${total - data.returned}件`);
@@ -330,7 +332,7 @@ export class PreviewCardController {
   private readonly errors = new Map<string, string>();
   readonly pager: CardProjectionPager;
   constructor(private readonly ports: PreviewUiHostPorts, private readonly extras: PreviewCardExtras, private readonly onChange: () => void) {
-    this.pager = new CardProjectionPager(ports.previewPort, onChange);
+    this.pager = new CardProjectionPager(ports.projectionDetailPort ?? ports.previewPort, onChange);
   }
   private async run(previewId: string, action: () => Promise<unknown>, failure: string): Promise<void> {
     this.busy.add(previewId); this.errors.delete(previewId); this.onChange();
@@ -353,7 +355,7 @@ export class PreviewCardController {
         onApprove: () => { void this.run(id, () => humanApprovalPort.approve(id), "保存できませんでした"); },
         onReject: () => { void this.run(id, () => previewPort.reject(id), "却下できませんでした"); },
         onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); }, "再プレビューできませんでした"); },
-        onUndo: this.extras.undoEntry ? (entryId) => { void this.run(id, async () => { await this.extras.undoEntry?.(entryId); }, "元に戻せませんでした"); } : undefined,
+        onUndo: (this.ports.undoPort || this.extras.undoEntry) ? (entryId) => { void this.run(id, async () => { if (this.ports.undoPort) await this.ports.undoPort.undoEntry(entryId); else await this.extras.undoEntry?.(entryId); }, "元に戻せませんでした"); } : undefined,
         onLoadMore: () => { void this.pager.loadMore(preview, outcome); },
       },
     };

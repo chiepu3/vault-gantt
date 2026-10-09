@@ -22,7 +22,7 @@ export function h(parent: HTMLElement, tag: string, className = "", text?: strin
 export const EFFECT_TITLES: Record<PreviewEffectKind, string> = {
   fields: "項目の変更", presence: "作成・削除", schedule: "日程", deadline: "期限", marker: "マーカー", workload: "作業時間",
   order: "並び順", membership: "Ganttへの表示", "tag-definition": "タグ定義", weekly: "定例作業", "daily-todo": "Daily ToDo",
-  calendar: "休日", settings: "設定", view: "表示", "external-send": "外部への送信", diagnostic: "診断ログ", conversation: "チャット",
+  "service-state": "管理値の保存", calendar: "休日", settings: "設定", view: "表示", "external-send": "外部への送信", diagnostic: "診断ログ", conversation: "チャット",
 };
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -38,6 +38,7 @@ export const FIELD_LABELS: Record<string, string> = {
   endpoint: "接続先URL", model: "モデル", auth: "認証方式", secretId: "秘密ID", status: "状態", activeConversationId: "表示中の会話",
   messageCount: "メッセージ数", destination: "送信先", enabled: "有効", intervalMinutes: "間隔（分）", recording: "記録", outputPath: "保存先", entryCount: "ログ件数",
   taskFolder: "タスクフォルダ", filenameUsesDatePrefix: "ファイル名に日付", hideCompletedByDefault: "完了を既定で隠す", currentStatusRows: "現在の状況の行数",
+  lastAutoPriorityUpdate: "優先度の最終計算日", ganttNationalHolidaysUpdatedAt: "祝日の最終取得時刻", ganttNationalHolidays: "公式の祝日", ganttHolidays: "統合した休日",
   autoPriorityEnabled: "優先度の自動計算", ganttManualHolidays: "手動の休日", ganttSpecialHolidays: "特別休日",
   ganttFeatureDailyTodoEnabled: "Daily ToDo機能", ganttFeatureWorkloadEnabled: "作業時間機能", ganttFeatureEventsEnabled: "イベント機能",
   ganttFeatureSyncEnabled: "同期機能", ganttFeatureTagsEnabled: "タグ機能", incrementalGanttRender: "差分描画", ganttShowTagsOnBars: "バーにタグ表示",
@@ -255,6 +256,7 @@ const CALENDAR_SOURCES = { manual: "手動の休日", special: "特別休日", n
 
 export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
   fields: (parent, effect) => renderFieldChanges(parent, effect.fields),
+  "service-state": (parent, effect) => renderFieldChanges(parent, effect.fields),
   settings: (parent, effect) => renderFieldChanges(parent, effect.fields),
   presence: (parent, effect, ctx) => {
     const labels = { create: "作成", delete: "削除", duplicate: "複製" } as const;
@@ -405,7 +407,7 @@ export function renderGenericEffect(parent: HTMLElement, effect: { readonly kind
 
 export function effectIsNoop(effect: PreviewEffect): boolean {
   switch (effect.kind) {
-    case "fields": case "settings": return effect.fields.every((change) => same(change.before, change.after));
+    case "fields": case "settings": case "service-state": return effect.fields.every((change) => same(change.before, change.after));
     case "presence": return false;
     case "schedule": case "marker": case "tag-definition": case "weekly": case "daily-todo": case "view": return same(effect.before, effect.after);
     case "deadline": return effect.before === effect.after;

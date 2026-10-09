@@ -43,6 +43,7 @@ export function renderChatText(parent: HTMLElement, text: string): void {
 }
 
 export class AgentView extends ItemView {
+  private unregisterState?: () => void;
   private unsubscribe?: () => void;
   private unsubscribePreviews: (() => void)[] = [];
   private cards?: PreviewCardController;
@@ -65,6 +66,8 @@ export class AgentView extends ItemView {
   getDisplayText(): string { return "AI チャット"; }
   getIcon(): string { return "messages-square"; }
   async onOpen(): Promise<void> {
+    const portsForState = this.host.previewPorts;
+    if (portsForState?.viewId) this.unregisterState = portsForState.viewStatePort?.register(portsForState.viewId, () => ({ viewId: portsForState.viewId!, kind: "chat", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [] }));
     const root = (this.containerEl.children[1] ?? this.containerEl) as HTMLElement;
     root.empty(); root.classList.add("vg-ai-chat");
     const headerShell = this.element(root, "header"); headerShell.className = "vg-ai-header";
@@ -119,6 +122,7 @@ export class AgentView extends ItemView {
     this.render();
   }
   async onClose(): Promise<void> {
+    this.unregisterState?.(); this.unregisterState = undefined;
     this.releasePreviewFocus();
     for (const stop of this.unsubscribePreviews) stop();
     this.unsubscribePreviews = []; this.cards = undefined;
@@ -224,6 +228,7 @@ export class AgentView extends ItemView {
     for (const tool of tools) this.element(details, "div").textContent = names[tool] ?? tool;
   }
   private renderProposal(parent: HTMLElement, proposal: Proposal, running: boolean): void {
+    if (this.cards && this.host.previewPorts?.previewPort.inspect(proposal.plan.previewId)) return;
     const item = this.element(parent, "div"); item.className = "vg-ai-diff";
     const undone = !!proposal.result && this.host.undoStatus?.(proposal.result) === "undone";
     item.dataset.state = proposal.result ? (undone ? "undone" : proposal.result.kind) : "proposal";

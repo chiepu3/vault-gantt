@@ -1,3 +1,4 @@
+import type { PreviewUiHostPorts } from "../contracts/ports";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
 import type { PreviewPort } from "../contracts/ports";
@@ -244,7 +245,7 @@ function getPrimaryGanttTagDefinition(
 
 
 
-export interface TaskGanttViewHost {
+export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
   ghosts?: ScheduleGhostStore;
   /** Pending/saved operation previews to project onto the chart. Absent = no preview overlay. */
   previewPort?: PreviewPort;
@@ -839,6 +840,7 @@ export class TaskGanttView extends ItemView {
   /** Number of consecutive days from rangeStart. */
   private rangeDays = 90;
   /** Pixels per day, initialized from settings.ganttZoom. */
+  private unregisterState?: () => void;
   private dayWidth: number;
   /**
  * The date list last built by renderChart (buildDates(rangeStart,
@@ -1235,6 +1237,7 @@ export class TaskGanttView extends ItemView {
  * left edge.
  */
   async onOpen(): Promise<void> {
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "gantt", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [...this.activeTagFilter], dayWidth: this.dayWidth }));
 
     this.host.logger.info?.("TaskGanttView", "view opened", {});
 
@@ -1305,6 +1308,7 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    this.unregisterState?.(); this.unregisterState = undefined;
     // The overlay never outlives the view; a pending plan itself stays in the store.
     this.unsubscribePreview?.(); this.unsubscribePreview = undefined;
     if (this.previewLayer?.active) this.previewLayer.close();

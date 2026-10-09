@@ -15,7 +15,7 @@ describe("P0 preview contracts", () => {
     const allowed: readonly string[] = OPERATION_CONTRACTS[fixture.operationId][1];
     for (const entry of fixture.entries) for (const effect of entry.effects) expect(allowed).toContain(effect.kind);
   });
-  it("has a representative fixture for all 17 effect kinds", () => {
+  it("has a representative fixture for all effect kinds", () => {
     expect(EFFECT_FIXTURES.map((effect) => effect.kind)).toEqual(PREVIEW_EFFECT_KINDS);
     for (const fixture of EFFECT_FIXTURES) expect(previewEffectSchema.parse(fixture)).toEqual(fixture);
   });
@@ -64,7 +64,7 @@ describe("P0 preview contracts", () => {
     expectTypeOf<keyof OperationService>().toEqualTypeOf<"describe" | "read" | "propose" | "request" | "inspect" | "inspectOutcome">();
     expectTypeOf<Parameters<OperationService["inspectOutcome"]>>().toEqualTypeOf<[previewId: string, context: RequestContext]>();
     expectTypeOf<ReturnType<OperationService["inspectOutcome"]>>().toEqualTypeOf<OperationOutcomeV1 | undefined>();
-    expectTypeOf<keyof PreviewPort>().toEqualTypeOf<"list" | "inspect" | "focusedPreviewId" | "inspectOutcome" | "subscribe" | "focus" | "reject" | "requestRepreview" | "getProjectionPage">();
+    expectTypeOf<keyof PreviewPort>().toEqualTypeOf<"list" | "inspect" | "focusedPreviewId" | "inspectOutcome" | "subscribe" | "focus" | "reject" | "requestRepreview" | "getProjectionPage" | "invalidate" | "subscribeEvents">();
     expectTypeOf<PreviewUiHostPorts["humanApprovalPort"]>().toEqualTypeOf<HumanApprovalPort>();
     expect(PREVIEW_FIXTURES.mcpOrigin.origin).toEqual({ kind: "mcp", principalId: "principal-fixture", clientLabel: "ローカルMCPクライアント" });
     expect(PREVIEW_FIXTURES.mcpOrigin.status).toBe("pending");

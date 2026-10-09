@@ -69,6 +69,13 @@ export const namedDefinitionSchema = z.object({ key: idSchema, name: z.string().
 export type NamedDefinition = DeepReadonly<z.infer<typeof namedDefinitionSchema>>;
 export const weeklyStateSchema = z.object({ key: idSchema, title: z.string().max(200), dayOfWeek: z.number().int().min(0).max(6), minutesPerWeek: z.number().int().nonnegative().multipleOf(30) }).strict();
 export type WeeklyState = DeepReadonly<z.infer<typeof weeklyStateSchema>>;
+/** Event/weekly identity and edit revision are available without a workload query. */
+export const eventStateSchema = z.object({ key: idSchema, title: z.string().max(20000), date: dateOnlySchema, hours: z.array(hoursCellSchema) }).strict();
+/** Service-owned values are never user editable settings or secrets. */
+export const SERVICE_STATE_KEYS = ["lastAutoPriorityUpdate", "ganttNationalHolidaysUpdatedAt", "ganttNationalHolidays", "ganttHolidays"] as const;
+export const serviceStateKeySchema = z.enum(SERVICE_STATE_KEYS);
+export const serviceStateSchema = z.object({ lastAutoPriorityUpdate: dateOnlySchema.or(z.literal("")), ganttNationalHolidaysUpdatedAt: dateOnlySchema.or(timestampSchema).or(z.literal("")), ganttNationalHolidays: z.array(dateOnlySchema), ganttHolidays: z.array(dateOnlySchema) }).partial().strict();
+export type ServiceStateV1 = DeepReadonly<z.infer<typeof serviceStateSchema>>;
 export const dailyStateSchema = z.object({ path: idSchema, sourceKey: idSchema, text: z.string().max(20000), completed: z.boolean() }).strict();
 export type DailyState = DeepReadonly<z.infer<typeof dailyStateSchema>>;
 export const sourceDefinitionSchema = z.object({ key: idSchema, label: z.string().max(200), format: z.string().max(1000), creatableFromGantt: z.boolean(), templatePath: idSchema.optional() }).strict();
@@ -119,6 +126,13 @@ export const compactTaskSchema = z.discriminatedUnion("kind", [
 export type CompactTaskV1 = DeepReadonly<z.infer<typeof compactTaskSchema>>;
 export const pageInfoSchema = z.object({ totalMatched: countSchema, returned: countSchema, truncated: z.boolean(), nextCursor: idSchema.nullable() }).strict();
 export type PageInfoV1 = DeepReadonly<z.infer<typeof pageInfoSchema>>;
+function validateDefinitionPage(page: { items: readonly { key: string }[]; returned: number; totalMatched: number; truncated: boolean; nextCursor: string | null }, ctx: z.RefinementCtx) {
+  if (page.returned !== page.items.length || page.returned > page.totalMatched || page.truncated !== (page.nextCursor !== null)) ctx.addIssue({ code: "custom", message: "定義の件数とcursorが不一致" });
+  if (new Set(page.items.map((item) => item.key)).size !== page.items.length) ctx.addIssue({ code: "custom", message: "定義keyは一意" });
+}
+export const eventReadSchema = z.object({ kind: z.literal("events"), items: z.array(eventStateSchema.extend({ revision: revisionSchema })), ...pageInfoSchema.shape }).strict().superRefine(validateDefinitionPage);
+export const weeklyReadSchema = z.object({ kind: z.literal("weekly"), items: z.array(weeklyStateSchema.extend({ revision: revisionSchema })), ...pageInfoSchema.shape }).strict().superRefine(validateDefinitionPage);
+
 export const taskReadSchema = z.object({
   kind: z.literal("tasks"), fieldsIncluded: z.array(taskFieldGroupSchema), items: z.array(compactTaskSchema), ...pageInfoSchema.shape,
 }).strict().superRefine((page, ctx) => {
@@ -149,7 +163,7 @@ export const calendarStateSchema = z.object({ weekends: z.array(z.number().int()
 export const dailyAggregateSchema = z.object({ date: dateOnlySchema, plan: z.number().finite().nonnegative(), actual: z.number().finite().nonnegative(), capacity: z.number().finite().nonnegative(), overCapacity: z.boolean() }).strict();
 export type DailyAggregateV1 = DeepReadonly<z.infer<typeof dailyAggregateSchema>>;
 export const readPayloadSchema = z.discriminatedUnion("kind", [
-  taskReadSchema, dailyReadSchema,
+  taskReadSchema, dailyReadSchema, eventReadSchema, weeklyReadSchema,
   z.object({ kind: z.literal("overview"), counts: z.object({ parents: countSchema, children: countSchema, unplaced: countSchema, completed: countSchema, parseFailures: countSchema }).strict(), settings: publicSettingsSchema, capabilities: z.array(capabilitySchema), summaryRevision: revisionSchema }).strict(),
   z.object({ kind: z.literal("project"), parent: compactTaskSchema.refine((task) => task.kind === "parent", "projectは親タスク"), children: taskReadSchema.optional(), derived: z.object({ period: periodSchema, progress: z.number().min(0).max(1) }).strict() }).strict(),
   z.object({ kind: z.literal("calendar"), from: dateOnlySchema, to: dateOnlySchema, revision: revisionSchema, calendar: calendarStateSchema }).strict(),
@@ -165,6 +179,8 @@ export const readResultSchema = z.object({
 }).strict();
 export type ReadResultV1 = DeepReadonly<z.infer<typeof readResultSchema>>;
 export type TaskReadResultV1 = ReadResultV1 & { readonly data: TaskReadV1 };
+export type EventReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof eventReadSchema>> };
+export type WeeklyReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof weeklyReadSchema>> };
 export type DailyReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof dailyReadSchema>> };
 
 export const operationErrorSchema = z.object({
@@ -194,6 +210,8 @@ export const contextQueryInputSchemas = {
   // Omitted range = evaluated today through +30 calendar days, inclusive, in the server timezone.
   "workload.get": z.object({ from: dateOnlySchema.optional(), to: dateOnlySchema.optional(), parentIds: z.array(idSchema).max(100).optional(), mode: z.enum(["plan", "actual", "both"]).default("both"), detail: z.boolean().default(false) }).strict()
     .refine(({ from, to }) => (!from && !to) || (!!from && !!to && from <= to && (Date.parse(to) - Date.parse(from)) / 86400000 < CONTEXT_QUERY_LIMITS.workloadMaxDays), "両端指定、最大366暦日"),
+  "events.get": z.object({ eventKeys: z.array(idSchema).max(100).optional(), dateRange: queryRange.optional(), cursor: idSchema.optional(), limit: z.number().int().min(1).max(100).default(20) }).strict(),
+  "weekly.get": z.object({ scheduleKeys: z.array(idSchema).max(100).optional(), daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7).optional(), cursor: idSchema.optional(), limit: z.number().int().min(1).max(100).default(20) }).strict(),
   "daily.get": z.object({ dateRange: queryRange, sourceKeys: z.array(idSchema).max(100).optional(), cursor: idSchema.optional(), includeItems: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(20) }).strict(),
   "settings.get": z.object({ sections: settingsSections }).strict(),
   "context.changes": z.object({ sinceRevision: revisionSchema, scope: queryScope }).strict(),
@@ -202,6 +220,7 @@ export type ContextQueryId = keyof typeof contextQueryInputSchemas;
 export type ContextQueryMap = { [K in ContextQueryId]: DeepReadonly<z.input<(typeof contextQueryInputSchemas)[K]>> };
 export const CONTEXT_QUERY_KINDS = {
   "context.overview": "overview", "tasks.search": "tasks", "tasks.get-many": "tasks", "projects.get": "project",
+  "events.get": "events", "weekly.get": "weekly",
   "calendar.get": "calendar", "workload.get": "workload", "daily.get": "daily", "settings.get": "settings", "context.changes": "changes",
 } as const satisfies Record<ContextQueryId, ReadResultV1["data"]["kind"]>;
 export type ContextQueryOutputMap = { [K in ContextQueryId]: ReadResultV1 & { readonly data: Extract<ReadResultV1["data"], { readonly kind: (typeof CONTEXT_QUERY_KINDS)[K] }> } };

@@ -356,3 +356,5 @@ export async function requestUrl(
     "tests/stubs/obsidian.ts: requestUrl() was not mocked for this test"
   );
 }
+
+export const Platform = { isDesktopApp: true, isMobileApp: false };

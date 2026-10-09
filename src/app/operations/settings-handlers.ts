@@ -34,7 +34,7 @@ export function settingsPlan<K extends OperationId>(id: K, input: OperationInput
     const after = id === "S06" ? args.enabled ? [...new Set([...before, args.date])].sort() : before.filter((date) => date !== args.date) : [...new Set(args.dates)].sort();
     settings[key] = after;
     settings.ganttHolidays = [...new Set([...settings.ganttManualHolidays, ...settings.ganttSpecialHolidays, ...settings.ganttNationalHolidays])].sort();
-    entries.push({ entity: { kind: "setting", key }, displayName: key, effects: [{ kind: "calendar", added: after.filter((date) => !before.includes(date)), removed: before.filter((date) => !after.includes(date)), source: id === "S06" ? "manual" : "special" }] });
+    entries.push({ entity: { kind: "setting", key }, displayName: key, effects: [{ kind: "settings", fields: [{ field: key, before, after, reason: "requested" }] }, { kind: "calendar", added: after.filter((date) => !before.includes(date)), removed: before.filter((date) => !after.includes(date)), source: id === "S06" ? "manual" : "special" }] });
   } else if (id >= "S22" && id <= "S26") {
     key = "ganttTags";
     const before = settings.ganttTags.find((tag) => tag.key === args.tagKey);

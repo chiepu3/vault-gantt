@@ -81,12 +81,12 @@ const publicDescriptionSchema = z.object({
   }).strict(),
 }).strict();
 const proposalResponseSchema = z.object({
-  status: z.enum(["pending_approval", "applying", "committed", "partial", "failed", "cancelled", "rejected", "stale", "expired"]), previewId: idSchema, expiresAt: z.string(),
+  status: z.enum(["pending_approval", "applying", "committed", "partial", "failed", "cancelled", "rejected", "stale", "expired", "revoked"]), previewId: idSchema, expiresAt: z.string(),
   summary: operationPreviewSchema.shape.summary, descriptor: operationPreviewSchema,
   outcome: operationOutcomeSchema.nullable().optional(), undo: historyEntryUndoStateSchema.nullable().optional(),
 }).strict();
 const statusResponseSchema = z.object({
-  status: z.enum(["pending_approval", "applying", "committed", "partial", "failed", "cancelled", "rejected", "stale", "expired"]),
+  status: z.enum(["pending_approval", "applying", "committed", "partial", "failed", "cancelled", "rejected", "stale", "expired", "revoked"]),
   descriptor: operationPreviewSchema, outcome: operationOutcomeSchema.nullable(), undo: historyEntryUndoStateSchema.nullable(),
 }).strict();
 export function protocolPreviewStatus(status: z.infer<typeof previewStatusSchema>) {
@@ -245,7 +245,7 @@ export class McpAdapter {
   }
   private status(previewId: string, context: RequestContext) {
     const descriptor = this.inspect(previewId, context);
-    const stored = this.deps.previews.inspectOutcome(previewId);
+    const stored = this.deps.operations.inspectOutcome(previewId, context);
     const outcome = stored ? validatePreviewOutcome(descriptor, stored) : null;
     const expired = this.expiredIds.has(previewId) || (descriptor.status === "pending" && Date.parse(descriptor.expiresAt) <= Date.now());
     return {
@@ -288,7 +288,7 @@ export class McpAdapter {
         : await this.deps.operations.propose(id, input as OperationInputMap[WriteOperationId], context));
       this.assertOwner(preview, context);
       if (preview.operationId !== expectedOperationId || preview.status !== "pending" || Date.parse(preview.expiresAt) > Date.now() + 600_000 || Date.parse(preview.expiresAt) <= Date.now()) {
-        if (preview.status === "pending") await this.deps.previews.reject(preview.previewId);
+        if (preview.status === "pending") await (this.deps.previews.invalidate ? this.deps.previews.invalidate(preview.previewId, "expired") : this.deps.previews.reject(preview.previewId));
         failure("RESET_REQUIRED", "提案portは操作ID一致・pending・10分以内の期限を返す必要があります。");
       }
       if (this.revoked) {
@@ -426,7 +426,7 @@ export class McpAdapter {
     for (const preview of this.deps.previews.list()) {
       if (preview.status === "pending" && preview.vaultInstanceId === this.deps.vaultInstanceId && preview.origin.kind === "mcp"
         && preview.origin.principalId === this.deps.principal.id) {
-        try { await this.deps.previews.reject(preview.previewId); } catch (error) { errors.push(error); }
+        try { await (this.deps.previews.invalidate ? this.deps.previews.invalidate(preview.previewId, "revoked") : this.deps.previews.reject(preview.previewId)); } catch (error) { errors.push(error); }
       }
     }
     this.intents.clear();

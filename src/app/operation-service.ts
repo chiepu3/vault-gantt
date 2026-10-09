@@ -2,7 +2,7 @@ import type { OperationService as OperationServicePort } from "../contracts/port
 import type { OperationId, OperationInputMap, OperationOutputMap, ReadOperationId, WriteOperationId, ExternalRequestOperationId } from "../contracts/operations";
 import { operationInputSchemas, operationOutputSchemas, operationRequestDenial } from "../contracts/operations";
 import type { RequestContext } from "../contracts/context";
-import { operationPreviewSchema, type OperationPreviewV1, type OperationOutcomeV1, type PreviewEntry } from "../contracts/preview";
+import { operationPreviewSchema, validatePreviewOutcome, type OperationPreviewV1, type OperationOutcomeV1, type PreviewEntry } from "../contracts/preview";
 import { adaptLegacyOperationInput } from "../contracts/legacy-operation-plan";
 import { applyPatchToParent } from "../core/task-patch";
 import { buildFullNote, parseTaskFile } from "../core/note-format";
@@ -34,6 +34,7 @@ export interface OperationServiceHost {
   readonly coordinator: Pick<OperationRegistry, "coordinate">;
   /** Persist the candidate copy. Live settings are published only after success. No timers/network here. */
   persistSettings?(candidate: TaskWorkbenchSettings): Promise<void>;
+  requestApproval?(previewId: string): Promise<void>;
   invalidate(): void | Promise<void>;
 }
 export class OperationService implements OperationServicePort {
@@ -179,7 +180,7 @@ export class OperationService implements OperationServicePort {
       if (actions.length) writes.push({ path: parent.file.path, before, after, actionIds: actions });
     }
     const now = Date.now();
-    const preview = operationPreviewSchema.parse({ schemaVersion: 1, previewId, vaultInstanceId: this.vaultInstanceId, operationId: id, origin: context.origin, status: "pending", createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 600000).toISOString(),
+    const preview = operationPreviewSchema.parse({ schemaVersion: 1, previewId, vaultInstanceId: this.vaultInstanceId, operationId: id, operationLabel: this.catalog.get(id).description.purpose, origin: context.origin, status: "pending", createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 600000).toISOString(),
       summary: { targetCount: entries.length, actionCount: entries.length }, entries, warnings,
       undo: settingKeys.length || writes.some((write) => write.before === null) ? { support: "none", reason: "設定保存・親の新規ファイル作成はUndo対象外です。" } : { support: "full", reason: "履歴先頭かつ内容一致時にMarkdown差分を戻せます。" },
       projection: project(snapshot, afterParents, afterSettings, entries) });
@@ -198,6 +199,15 @@ export class OperationService implements OperationServicePort {
     if (!stored || stored.context.principalId !== context.principalId || context.vaultInstanceId !== this.vaultInstanceId) fail("NOT_FOUND", "この要求者に属する提案IDを使用してください。");
     return this.previewPort.inspect(previewId)!;
   }
+  inspectOutcome(previewId: string, context: RequestContext): OperationOutcomeV1 | undefined {
+    const stored = this.stored.get(previewId);
+    if (this.disposed || context.signal?.aborted || !context.capabilities.includes("read") || context.vaultInstanceId !== this.vaultInstanceId
+      || (stored && (stored.context.vaultInstanceId !== context.vaultInstanceId || stored.context.principalId !== context.principalId)))
+      fail("POLICY_DENIED", "このVault・要求者に対するread権限が必要です。");
+    if (!stored) fail("NOT_FOUND", "保持期間を超えました。対象の状態を取得し直してください。");
+    const outcome = this.previewPort.inspectOutcome(previewId);
+    return outcome ? structuredClone(validatePreviewOutcome(stored.preview, outcome)) : undefined;
+  }
   async request<K extends ExternalRequestOperationId>(id: K, input: OperationInputMap[K], context: RequestContext): Promise<OperationOutputMap[K]> {
     this.guard(id, input, context);
     if (!["Q07", "Q08"].includes(id)) fail("POLICY_DENIED", "このrequest操作は未実装です。");
@@ -205,6 +215,7 @@ export class OperationService implements OperationServicePort {
     this.inspect(args.previewId, context);
     if (id === "Q08") return await this.repreview(args.previewId) as OperationOutputMap[K];
     this.previewPort.focus(args.previewId);
+    await this.host.requestApproval?.(args.previewId);
     return operationOutputSchemas[id].parse({ schemaVersion: 1, resultKind: "request", operationId: id, status: "requested", effects: [{ kind: "conversation", action: "request-approval", before: null, after: { previewId: args.previewId } }] });
   }
   private async repreview(id: string): Promise<OperationPreviewV1> {
@@ -217,13 +228,15 @@ export class OperationService implements OperationServicePort {
       const committed = new Set(outcome?.actions.filter((action) => action.state === "committed").map((action) => stored.preview.entries.find((entry) => entry.actionId === action.actionId)!.entity).flatMap((entity) => entity.kind === "task" ? [entity.taskId] : []) ?? []);
       input.changes = (input.changes as Record<string, unknown>[]).filter((change) => !committed.has(String(change.taskId))).map(({ expectedRevision: _expected, ...change }) => { void _expected; return change; });
     }
-    const preview = await this.propose(stored.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], { ...stored.context, requestId: `repreview-${++this.counter}` });
+    const preview = await this.propose(stored.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], { ...stored.context, callerIntentId: undefined, requestId: `repreview-${++this.counter}` });
     this.discard(id); return preview;
   }
   private executeApproved(id: string, signal?: AbortSignal): Promise<OperationOutcomeV1> {
     const stored = this.pending.get(id);
     if (!stored) return Promise.reject(new Error("PLAN_CONSUMED"));
-    this.pending.delete(id); this.previewPort.setStatus(id, "applying");
+    if (Date.parse(stored.preview.expiresAt) > Date.now()) this.previewPort.markApproved(id);
+    else this.previewPort.setStatus(id, "expired");
+    this.pending.delete(id);
     return this.host.coordinator.coordinate(async () => {
       const vault = this.vaultFactory(), history: HistoryFileChange[] = [];
       const committed = new Set<string>(), failed = new Set<string>();
