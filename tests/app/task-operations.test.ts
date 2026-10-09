@@ -348,6 +348,47 @@ describe("Task Operations - Integration Tests", () => {
   });
 
 
+  describe("custom note content", () => {
+    it("preserves custom content across updates, subtask addition and deletion", async () => {
+      const parent = await createTask(vault, settings, "親タスク");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const extra = "project: 顧客A\nreferences:\n  - 資料A\n";
+      const section = "\n## 参考資料\n[資料](https://example.com)\n";
+      await vault.modify(file, (await vault.read(file)).replace("type: task\n", `type: task\n${extra}`) + section);
+      const history = new HistoryManager();
+      await updateTaskItemsBatch(vault, settings, cache, [{ row: parent, patch: { dueDate: "2026-10-20" } }], {}, history);
+      expect(await vault.read(file)).toContain("dueDate: 2026-10-20");
+      expect(await vault.read(file)).toContain(extra);
+      expect(await vault.read(file)).toContain(section.trim());
+      const fresh = (await loadTasks(vault, settings, cache)).find((row) => row.id === parent.id)!;
+      const subtask = await addSubtask(vault, settings, fresh, "作業");
+      await updateTaskItemsBatch(vault, settings, cache, [{ row: subtask, patch: { notes: "作業メモ" } }], {});
+      await deleteSubtaskTaskItem(vault, settings, subtask);
+      const saved = await vault.read(file);
+      expect(saved).toContain(extra);
+      expect(saved).toContain(section.trim());
+      expect(saved).not.toContain("subtask__");
+    });
+
+    it("refuses a subtask rewrite with custom inner sections without writing or mutating the row", async () => {
+      const parent = await createTask(vault, settings, "親タスク");
+      const subtask = await addSubtask(vault, settings, parent, "作業");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const original = await vault.read(file) + "\n#### 参考資料\n消してはいけない資料\n";
+      await vault.modify(file, original);
+      vault.resetCounters();
+      await expect(updateTaskItemsBatch(vault, settings, cache, [{ row: subtask, patch: { displayName: "変更" } }], {}))
+        .rejects.toThrow("保持できない記述があります: ## Subtasks");
+      await expect(addSubtask(vault, settings, parent, "追加"))
+        .rejects.toThrow("保持できない記述があります: ## Subtasks");
+      await expect(deleteSubtaskTaskItem(vault, settings, subtask))
+        .rejects.toThrow("保持できない記述があります: ## Subtasks");
+      expect(parent.subtasks?.size).toBe(1);
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(await vault.read(file)).toBe(original);
+    });
+  });
+
   // TASK UPDATE TESTS
 
 

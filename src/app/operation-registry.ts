@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { TaskPatch, TaskRow, TaskUpdateCommand, TaskUpdateResult, TaskWorkbenchSettings } from "../core/types";
 import { applyPatchToParent } from "../core/task-patch";
 import { buildFullNote, parseTaskFile } from "../core/note-format";
+import { NotePreservationError } from "../core/note-update";
 import { buildFileRevision, todayStr } from "../core/utils";
 import { addSubtask, createTask, getAvailableTaskPath, loadTasks, updateTaskItemsBatch } from "./task-operations";
 import type { VaultAdapter } from "./task-operations";
@@ -222,6 +223,7 @@ export class OperationRegistry {
     } catch (error) {
       result.kind = error instanceof Error && error.message === "CANCELLED" ? "cancelled" : result.committed ? "partial" : (error instanceof Error && error.message === "REVISION_CONFLICT" ? "stale" : "failed");
       result.message = result.kind === "stale" ? "元データが変わりました。再試行で再プレビューしてください。" : "保存に失敗しました。保存済みの変更は残ります。再試行は再プレビューが必要です。";
+      if (error instanceof NotePreservationError) result.message = `${error.message} 保存済みの変更は残ります。`;
     } finally {
       if (history.length) {
         result.undoLabel = "タスク変更 " + plan.public.previewId;

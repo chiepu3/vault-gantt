@@ -19,6 +19,7 @@ import {
   parseTaskFile,
   buildFullNote,
 } from "../core/note-format";
+import { mergeTaskNote } from "../core/note-update";
 import { applyPatchToParent } from "../core/task-patch";
 import type { HistoryFileChange, HistoryManager } from "./history-manager";
 
@@ -432,6 +433,8 @@ export async function updateTaskItemsBatch(
         }
       }
 
+      const beforeNote = buildFullNote(parent, parent.subtasks);
+
       // Apply each command in order via applyPatchToParent in memory
       for (const cmd of fileCommands) {
         const taskId = cmd.row.id;
@@ -439,7 +442,7 @@ export async function updateTaskItemsBatch(
       }
 
       // Single vault.modify per file for the whole batch
-      const newContent = buildFullNote(parent, parent.subtasks);
+      const newContent = mergeTaskNote(parentContent, beforeNote, buildFullNote(parent, parent.subtasks));
       await vault.modify(parentFile, newContent);
       appliedChanges.push({
         path: parentPath,
@@ -559,21 +562,22 @@ export async function addSubtask(
     }
   }
 
-  // Add to parent's subtasks and bump updatedAt
-  if (!parentRow.subtasks) {
-    parentRow.subtasks = new Map();
-  }
-  parentRow.subtasks.set(subtaskKey, defaultSubtask);
-  parentRow.updatedAt = todayStr();
-
-  // Write and re-parse
   const parentFile = vault.getFileByPath(parentRow.file.path);
   if (!parentFile) {
     throw new Error("Task file not found");
   }
+  const parentContent = await vault.read(parentFile);
+  const beforeNote = buildFullNote(parentRow, parentRow.subtasks);
 
-  const content = buildFullNote(parentRow, parentRow.subtasks);
+  // Build separately so a refused save leaves the caller's row unchanged.
+  const updatedParent = { ...parentRow, subtasks: new Map(parentRow.subtasks) };
+  updatedParent.subtasks.set(subtaskKey, defaultSubtask);
+  updatedParent.updatedAt = todayStr();
+
+  // Write and re-parse
+  const content = mergeTaskNote(parentContent, beforeNote, buildFullNote(updatedParent, updatedParent.subtasks));
   await vault.modify(parentFile, content);
+  Object.assign(parentRow, updatedParent);
   historyManager?.clear();
 
   // Re-parse to get fresh state
@@ -654,6 +658,8 @@ export async function deleteSubtaskTaskItem(
     throw new Error("Managed task not found");
   }
 
+  const beforeNote = buildFullNote(parent, parent.subtasks);
+
   // Filter by key
   const countBefore = parent.subtasks.size;
   parent.subtasks.delete(row.key);
@@ -665,7 +671,7 @@ export async function deleteSubtaskTaskItem(
   }
 
   // Write updated parent
-  const content = buildFullNote(parent, parent.subtasks);
+  const content = mergeTaskNote(parentContent, beforeNote, buildFullNote(parent, parent.subtasks));
   await vault.modify(parentFile, content);
   historyManager?.clear();
 }
