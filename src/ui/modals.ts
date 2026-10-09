@@ -1,4 +1,4 @@
-import { Modal, Setting } from "obsidian";
+import { Modal, Notice, Setting } from "obsidian";
 import type { App } from "obsidian";
 import type {
   DailyTodoItem,
@@ -236,13 +236,14 @@ function pickerMatches(query: string, item: TaskRow): boolean {
  */
 export class DailyTodoModal extends Modal {
   private readonly rows: DailyTodoItem[];
+  private readonly deletedItems: DailyTodoItem[] = [];
   private listEl: HTMLElement | null = null;
 
   constructor(
     app: App,
     private readonly title: string,
     summary: DailyTodoSummary | null,
-    private readonly onSubmit: (items: DailyTodoItem[]) => void
+    private readonly onSubmit: (items: DailyTodoItem[], deletedItems: DailyTodoItem[]) => void
   ) {
     super(app);
     // null summary → iterate over an empty array. Copies keep
@@ -328,10 +329,14 @@ export class DailyTodoModal extends Modal {
 
   /**
  * collect the rows — identity fields pass
- * through, text is trimmed, empty-text rows are filtered out — then
+ * through, text is trimmed, empty new rows are filtered out — then
  * onSubmit and close.
  */
   save(): void {
+    if (this.rows.some((item) => !item.isNew && !item.text.trim())) {
+      new Notice("空欄のToDoがあります。文字を入力するか、削除ボタンで削除してください。");
+      return;
+    }
     const items: DailyTodoItem[] = this.rows
       .map((item) => ({
         sourceKey: item.sourceKey,
@@ -343,7 +348,7 @@ export class DailyTodoModal extends Modal {
         isNew: item.isNew,
       }))
       .filter((item) => item.text);
-    this.onSubmit(items);
+    this.onSubmit(items, this.deletedItems);
     this.close();
   }
 
@@ -378,6 +383,15 @@ export class DailyTodoModal extends Modal {
     source.className = "task-workbench-daily-todo-source";
     source.textContent = item.sourceLabel;
     row.appendChild(source);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.textContent = "削除";
+    deleteButton.addEventListener("click", () => {
+      this.rows.splice(this.rows.indexOf(item), 1);
+      if (!item.isNew) this.deletedItems.push(item);
+      row.remove();
+    });
+    row.appendChild(deleteButton);
 
     if (list) {
       list.appendChild(row);

@@ -776,9 +776,16 @@ export async function updateDailyTodos(
   nextItems: DailyTodoItem[],
   app: App,
   settings: TaskWorkbenchSettings,
-  historyManager?: HistoryManager
+  historyManager?: HistoryManager,
+  deletedItems: DailyTodoItem[] = []
 ): Promise<void> {
+  const deletedKeys = new Set(deletedItems.map((item) => `${item.path}::${item.line}`));
+  if (nextItems.some((item) => !item.isNew && item.path && item.line >= 0 && !item.text.trim())) {
+    new Notice("空欄のToDoがあります。文字を入力するか、削除ボタンで削除してください。");
+    return;
+  }
   const vault = app.vault;
+  const historyFiles: { path: string; before: string; after: string }[] = [];
   // entries with no corresponding existing line.
   const newItems = nextItems.filter(
     (item) => !item.path || item.line < 0 || item.isNew === true
@@ -807,50 +814,73 @@ export async function updateDailyTodos(
     }
   }
 
-  for (const [path, originals] of byPath) {
-    const file = vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) {
-      continue;
-    }
-
-    const content = await vault.read(file);
-    const lines = content.split("\n");
-
-    // descending line-number order.
-    const sorted = [...originals].sort((a, b) => b.line - a.line);
-
-    let changed = false;
-    for (const original of sorted) {
-      if (original.line >= lines.length) {
+  try {
+    for (const [path, originals] of byPath) {
+      const file = vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) {
         continue;
       }
-      const match = matchByKey.get(`${original.path}::${original.line}`);
-      if (!match) {
-        continue;
+  
+      const content = await vault.read(file);
+      const lines = content.split("\n");
+  
+      // descending line-number order.
+      const sorted = [...originals].sort((a, b) => b.line - a.line);
+  
+      let changed = false;
+      for (const original of sorted) {
+        if (original.line < 0 || original.line >= lines.length) {
+          continue;
+        }
+        if (deletedKeys.has(`${original.path}::${original.line}`)) {
+          lines.splice(original.line, 1);
+          changed = true;
+          continue;
+        }
+        const match = matchByKey.get(`${original.path}::${original.line}`);
+        if (!match) {
+          continue;
+        }
+        lines[original.line] = formatDailyTodoLine(match.completed, match.text);
+        changed = true;
       }
-      // skip (leave the line untouched) when the matched
-      // next-item's text is empty.
-      if (!match.text || match.text.trim() === "") {
-        continue;
+  
+      if (changed) {
+        await vault.modify(file, lines.join("\n"));
+        if (deletedItems.length > 0) {
+          historyFiles.push({ path, before: content, after: lines.join("\n") });
+        } else {
+          historyManager?.clear();
+        }
       }
-      lines[original.line] = formatDailyTodoLine(match.completed, match.text);
-      changed = true;
     }
-
-    if (changed) {
-      await vault.modify(file, lines.join("\n"));
-      historyManager?.clear();
+  
+    // Include additions in the same undo entry as deletions.
+    if (newItems.length > 0) {
+      if (deletedItems.length > 0) {
+        const mainFile = await requireMainDailyTodoFile(summary.date, app, settings);
+        if (mainFile && !historyFiles.some((change) => change.path === mainFile.path)) {
+          historyFiles.push({ path: mainFile.path, before: await vault.read(mainFile), after: "" });
+        }
+      }
+      await insertDailyTodoItems(
+        summary.date,
+        newItems,
+        app,
+        settings,
+        historyManager
+      );
     }
-  }
-
-  // insert the unmatched new items.
-  if (newItems.length > 0) {
-    await insertDailyTodoItems(
-      summary.date,
-      newItems,
-      app,
-      settings,
-      historyManager
-    );
+    for (const change of historyFiles) {
+      const file = vault.getAbstractFileByPath(change.path);
+      if (file instanceof TFile) change.after = await vault.read(file);
+    }
+    if (historyFiles.length > 0) {
+      historyManager?.push({ label: "Daily ToDoの削除", files: historyFiles });
+    }
+  } catch (error) {
+    historyManager?.clear();
+    throw error;
   }
 }
+

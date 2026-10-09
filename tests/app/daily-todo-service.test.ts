@@ -4,6 +4,7 @@ import type { Mock } from "vitest";
 import { Notice, TFile, moment } from "obsidian";
 
 import type { App, Vault, Workspace } from "obsidian";
+import { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import {
   DailyTodoService,
@@ -105,6 +106,10 @@ function makeFakeVault(
   });
 
   const vault = {
+    getFileByPath: (path: string) => {
+      const entry = files.get(path);
+      return entry ? makeFile(path, entry.mtime, entry.size) : null;
+    },
     getMarkdownFiles: () =>
       Array.from(files.entries()).map(([path, e]) =>
         makeFile(path, e.mtime, e.size)
@@ -117,6 +122,13 @@ function makeFakeVault(
       }
       return entry.content;
     }),
+    process: async (file: TFile, transform: (content: string) => string) => {
+      const entry = files.get(file.path);
+      if (!entry) throw new Error(`fake vault: file not found: ${file.path}`);
+      const content = transform(entry.content);
+      await modifySpy(file, content);
+      return content;
+    },
     modify: modifySpy,
     create: createSpy,
     createFolder: vi.fn(async () => undefined),
@@ -1040,6 +1052,7 @@ describe("daily-todo-service", () => {
 
   describe("updateDailyTodos", () => {
     const MAIN_PATH = "デイリー/2026/07/260725_デイリー.md";
+    const MEETING_PATH = "meeting.md";
 
     it("updates matched existing lines and inserts unmatched new items", async () => {
       const { vault, getContent } = makeFakeVault({
@@ -1085,7 +1098,7 @@ describe("daily-todo-service", () => {
       );
     });
 
-    it("leaves a matched line untouched when the next item's text is empty", async () => {
+    it("rejects blank existing rows before writing", async () => {
       const { vault, getContent } = makeFakeVault({
         [MAIN_PATH]: "- [ ] keep me",
       });
@@ -1105,9 +1118,10 @@ describe("daily-todo-service", () => {
       );
 
       expect(getContent(MAIN_PATH)).toBe("- [ ] keep me");
+      expect(NoticeMock).toHaveBeenCalledWith("空欄のToDoがあります。文字を入力するか、削除ボタンで削除してください。");
     });
 
-    it("leaves an original item untouched when it has no corresponding nextItems entry", async () => {
+    it("deletes an explicitly removed item and supports undo and redo", async () => {
       const { vault, getContent } = makeFakeVault({
         [MAIN_PATH]: ["- [ ] a", "- [ ] b"].join("\n"),
       });
@@ -1120,17 +1134,39 @@ describe("daily-todo-service", () => {
         totalCount: 2,
       };
 
-      // b was dropped entirely (e.g. user deleted the row) — only a survives.
+      const history = new HistoryManager();
+      // Only explicitly deleted rows are removed.
       await updateDailyTodos(
         summary,
         [{ ...a, completed: true }],
         appFor(vault),
-        DEFAULT_SETTINGS
+        DEFAULT_SETTINGS,
+        history,
+        [b]
       );
 
-      expect(getContent(MAIN_PATH)).toBe(
-        ["- [x] a", "- [ ] b"].join("\n")
-      );
+      expect(getContent(MAIN_PATH)).toBe("- [x] a");
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent(MAIN_PATH)).toBe("- [ ] a\n- [ ] b");
+      expect((await history.redo(vault)).kind).toBe("success");
+      expect(getContent(MAIN_PATH)).toBe("- [x] a");
+    });
+
+    it("undoes deletions in multiple files together with new items", async () => {
+      const { vault, getContent } = makeFakeVault({
+        [MAIN_PATH]: "- [ ] main",
+        [MEETING_PATH]: "- [ ] meeting",
+      });
+      const main = todoItem({ path: MAIN_PATH, line: 0, text: "main" });
+      const meeting = todoItem({ path: MEETING_PATH, line: 0, text: "meeting" });
+      const summary = { date: "2026-07-25", items: [main, meeting], completedCount: 0, totalCount: 2 };
+      const history = new HistoryManager();
+      await updateDailyTodos(summary, [todoItem({ path: "", line: -1, text: "new", isNew: true })], appFor(vault), DEFAULT_SETTINGS, history, [main, meeting]);
+      expect(getContent(MAIN_PATH)).toBe("- [ ] new");
+      expect(getContent(MEETING_PATH)).toBe("");
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent(MAIN_PATH)).toBe("- [ ] main");
+      expect(getContent(MEETING_PATH)).toBe("- [ ] meeting");
     });
 
     it("processes multiple edits in the same file safely regardless of declaration order", async () => {

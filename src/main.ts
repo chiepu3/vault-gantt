@@ -1347,8 +1347,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.app,
       `デイリーToDo（${dateStr}）`,
       summary,
-      (items: DailyTodoItem[]) => {
-        void this.saveDailyTodoItems(summary, dateStr, items).then(() =>
+      (items: DailyTodoItem[], deletedItems: DailyTodoItem[]) => {
+        void this.saveDailyTodoItems(summary, dateStr, items, deletedItems).then(() =>
           onSaved?.()
         );
       }
@@ -1363,7 +1363,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private async saveDailyTodoItems(
     summary: DailyTodoSummary | null,
     dateStr: string,
-    items: DailyTodoItem[]
+    items: DailyTodoItem[],
+    deletedItems: DailyTodoItem[]
   ): Promise<void> {
     const effectiveSummary: DailyTodoSummary = summary ?? {
       date: dateStr,
@@ -1377,7 +1378,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       items,
       this.app,
       this.settings,
-      this.historyManager
+      this.historyManager,
+      deletedItems
     );
 
   }

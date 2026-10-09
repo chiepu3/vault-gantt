@@ -498,7 +498,31 @@ describe("DailyTodoModal", () => {
     );
   });
 
-  it("save trims text, drops empty-text rows, passes identity fields through and closes after onSubmit", () => {
+  it("blocks saving a blank existing row and keeps the modal open", () => {
+    const { modal, contentEl, onSubmit, closeSpy } = openModal(makeSummary());
+    const input = byClass(rows(contentEl)[0], "task-workbench-daily-todo-text")[0];
+    input.value = "   ";
+    dispatch(input, "input");
+    modal.save();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores blank new rows and cancels deletions without submitting", () => {
+    const { modal, contentEl, onSubmit } = openModal(null);
+    modal.addRow();
+    const input = byClass(rows(contentEl)[0], "task-workbench-daily-todo-text")[0];
+    input.value = " ";
+    dispatch(input, "input");
+    modal.save();
+    expect(onSubmit).toHaveBeenCalledWith([], []);
+    const opened = openModal(makeSummary());
+    dispatch(rows(opened.contentEl)[0].children[3], "click");
+    dispatch(buttons(opened.contentEl)[2], "click");
+    expect(opened.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("save trims text, passes identity fields through and submits explicit deletions", () => {
     const summary = makeSummary();
     const { contentEl, onSubmit, closeSpy } = openModal(summary);
 
@@ -510,11 +534,12 @@ describe("DailyTodoModal", () => {
     row0.children[0].checked = true;
     dispatch(row0.children[0], "change");
 
-    // blank out row 1's text entirely — it must be filtered out on save
+    // Explicitly delete row 1 before saving.
     const row1 = rows(contentEl)[1];
     const text1 = byClass(row1, "task-workbench-daily-todo-text")[0];
     text1.value = "   ";
     dispatch(text1, "input");
+    dispatch(row1.children[3], "click");
 
     // add a brand-new row and keep its default text
     dispatch(buttons(contentEl)[0], "click");
@@ -523,6 +548,7 @@ describe("DailyTodoModal", () => {
     dispatch(saveButton, "click");
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit.mock.calls[0][1]).toEqual([{ ...summary.items[1], text: "   " }]);
     const submitted = onSubmit.mock.calls[0][0] as DailyTodoItem[];
     expect(submitted).toEqual([
       {
@@ -578,7 +604,7 @@ describe("DailyTodoModal", () => {
     // save with no rows submits an empty list
     dispatch(buttons(contentEl)[1], "click");
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith([]);
+    expect(onSubmit).toHaveBeenCalledWith([], []);
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 });
