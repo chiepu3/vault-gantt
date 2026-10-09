@@ -1007,6 +1007,29 @@ describe("TaskWorkbenchSettingTab", () => {
       await last("接続先").dropdowns[0].handler!("custom");
       expect(ai).toMatchObject({ preset: "custom", baseUrl: "http://localhost:1234/v1" });
     });
+    it("shows the saved origin warning after a custom URL edit and stops model fetching until the key is replaced", async () => {
+      ai = { ...ai, model: "a/one", apiKeyOrigin: "https://openrouter.ai" };
+      hostPlugin.hasAiApiKey = () => true;
+      hostPlugin.setAiApiKey = vi.fn(async () => { ai.apiKeyOrigin = new URL(ai.baseUrl).origin; });
+      tab.display(); await flush();
+      await last("接続先").dropdowns[0].handler!("custom"); await flush();
+      fetchAiModels.mockClear();
+      const field = last("接続先URL").texts[0];
+      await field.handler!("https://other.example/v1");
+      field.inputEl.listeners.change(); await flush();
+      const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+      expect(RecordingSetting.all.some((row) => row.desc === reason)).toBe(true);
+      expect(last("モデル").desc).toBe(reason);
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain(reason);
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      last("APIキー").texts[0].setValue("sk-synthetic-replacement");
+      await last("APIキー").buttons.find((button) => button.text === "保存")!.handler!();
+      expect(ai.apiKeyOrigin).toBe("https://other.example");
+      expect(last("モデル").desc).not.toContain(reason);
+      expect(fetchAiModels).toHaveBeenCalledOnce();
+    });
 
     describe("取得の開始・完了で入力中の欄を作り直さない", () => {
       const count = (name: string) => RecordingSetting.all.filter((setting) => setting.name === name).length;

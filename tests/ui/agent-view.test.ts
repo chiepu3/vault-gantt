@@ -13,6 +13,25 @@ import { CREATE_PREVIEW, MCP_PREVIEW } from "../contracts/fixtures";
 import { fakePorts } from "./preview-fakes";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("independent AgentView", () => {
+  it("shows the origin warning and blocks sending with existing conversation history", async () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const provider = new FakeProvider();
+    const session = new ChatSession(vault, registry, provider);
+    const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+    session.configure({ provider: "openai-compatible", endpoint: "https://other.example/v1", model: "test", auth: "secret", secretId: "test", connectionError: reason });
+    session.active.messages = [{ role: "user", text: "前の会話", proposals: [] }];
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false });
+    await view.onOpen();
+    const root = view.containerEl as unknown as FakeEl;
+    expect(findAll(root, (el) => el.textContent === reason)).toHaveLength(1);
+    expect(findAll(root, (el) => el.textContent === "送信 ↑")[0].disabled).toBe(true);
+    await session.send("テスト");
+    expect(session.active.error).toBe(reason);
+    expect(provider.requests).toHaveLength(0);
+    await view.onClose(); session.dispose();
+  });
   it("pane close/reopen preserves the vault session, draft and streaming state", async () => {
     vi.stubGlobal("document", createFakeDocument());
     const vault = new FakeVault();

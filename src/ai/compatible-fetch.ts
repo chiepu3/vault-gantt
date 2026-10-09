@@ -8,7 +8,8 @@ export function compatibleFetch(endpoint: string): typeof fetch {
   return async (input, init) => {
     const options = { ...init, redirect: "error" as const };
     if (!openRouter || typeof options.body !== "string") return fetch(input, options);
-    const body = JSON.parse(options.body);
+    let body;
+    try { body = JSON.parse(options.body); } catch { return fetch(input, options); }
     if (rejectedSlug) options.body = JSON.stringify({ ...body, provider: { ...body.provider, ignore: [...body.provider?.ignore ?? [], rejectedSlug] } });
     const response = await fetch(input, options);
     if (rejectedSlug || response.status !== 400 || options.signal?.aborted || body.provider?.only || body.provider?.allow_fallbacks === false) return response;

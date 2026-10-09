@@ -2,6 +2,22 @@ import { afterEach, expect, it, vi } from "vitest";
 import { compatibleFetch } from "../../src/ai/compatible-fetch";
 afterEach(() => vi.unstubAllGlobals());
 const rejection = () => new Response(JSON.stringify({ error: { message: "Provider returned error", metadata: { provider_name: "Sail Research", provider_error_code: "invalid_request_error", raw: "invalid parameters" } } }), { status: 400 });
+it("passes a non-JSON OpenRouter body through unchanged, even after learning a rejected upstream", async () => {
+  const response = rejection();
+  const mock = vi.fn().mockResolvedValue(response);
+  vi.stubGlobal("fetch", mock);
+  const endpoint = "https://openrouter.ai/api/v1/chat/completions";
+  const request = compatibleFetch("https://openrouter.ai/api/v1");
+  const init = { method: "POST", body: "not JSON", headers: { authorization: "Bearer sk-synthetic" } };
+  expect(await request(endpoint, init)).toBe(response);
+  expect(mock).toHaveBeenCalledOnce();
+  expect(mock).toHaveBeenLastCalledWith(endpoint, { ...init, redirect: "error" });
+  mock.mockResolvedValueOnce(rejection()).mockResolvedValueOnce(new Response("ok"));
+  await request(endpoint, { body: "{}" });
+  expect(await request(endpoint, init)).toBe(response);
+  expect(mock).toHaveBeenCalledTimes(4);
+  expect(mock).toHaveBeenLastCalledWith(endpoint, { ...init, redirect: "error" });
+});
 it("retries a confirmed upstream rejection once and preserves tool IDs, content, schemas, model and routing privacy", async () => {
   const mock = vi.fn().mockResolvedValueOnce(rejection()).mockResolvedValueOnce(new Response("ok")).mockResolvedValueOnce(rejection()); vi.stubGlobal("fetch", mock);
   const request = compatibleFetch("https://openrouter.ai/api/v1"), body = { model: "deepseek/fixture", tools: [{ function: { parameters: { type: "object" } } }], messages: [{ role: "tool", tool_call_id: "fixture", content: "{}" }], provider: { data_collection: "deny", max_price: { prompt: 1 } } };

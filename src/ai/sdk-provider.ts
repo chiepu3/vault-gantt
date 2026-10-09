@@ -29,15 +29,15 @@ export function registryTools(registry: OperationRegistry, signal: AbortSignal, 
     })]));
 }
 export class SdkChatProvider implements ChatProvider {
-  constructor(private readonly registry: OperationRegistry, private readonly secret: (id: string) => string | null, private readonly operationService?: OperationService) {}
+  constructor(private readonly registry: OperationRegistry, private readonly secret: (id: string, endpoint: string) => string | null, private readonly operationService?: OperationService) {}
   connected(config: ConnectionConfig): boolean {
-    return config.provider === "openai-compatible" && validEndpoint(config.endpoint) && !!config.model.trim() && (config.auth === "none" || (!!config.secretId && !!this.secret(config.secretId)));
+    return !config.connectionError && config.provider === "openai-compatible" && validEndpoint(config.endpoint) && !!config.model.trim() && (config.auth === "none" || (!!config.secretId && !!this.secret(config.secretId, config.endpoint)));
   }
   async *stream(request: ChatRequest): AsyncIterable<ChatEvent> {
     if (!this.connected(request.config)) throw new Error("DISCONNECTED");
     const { config, signal } = request;
     const provider = createOpenAICompatible({
-      name: "configured-endpoint", baseURL: config.endpoint, apiKey: config.auth === "secret" ? this.secret(config.secretId)! : undefined,
+      name: "configured-endpoint", baseURL: config.endpoint, apiKey: config.auth === "secret" ? this.secret(config.secretId, config.endpoint)! : undefined,
       fetch: compatibleFetch(config.endpoint),
     });
     const context = this.operationService ? { ...this.operationService.legacyContext(), origin: { kind: "chat" as const, conversationId: request.conversationId ?? "compatibility" }, signal } : undefined;

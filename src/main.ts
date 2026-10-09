@@ -67,7 +67,7 @@ import { OperationRegistry } from "./app/operation-registry";
 import { ScheduleGhostStore } from "./app/schedule-ghost";
 import { ChatSession } from "./ai/chat-session";
 import { SdkChatProvider } from "./ai/sdk-provider";
-import { AI_SECRET_ID, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig, type AiConnectionSettings, type ModelListResult } from "./ai/connection-settings";
+import { AI_SECRET_ID, aiKeyOriginError, connectionOrigin, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig, type AiConnectionSettings, type ModelListResult } from "./ai/connection-settings";
 import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
 import { NavigationService as ObsidianNavigationService } from "./app/navigation-service";
 import { ToolAdapter } from "./agent-tools/tool-adapter";
@@ -451,6 +451,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
     this.settingsPersistence = undefined; this.settingsWriter();
+    const migrateOrigin = this.hasAiApiKey() && this.aiSettings.apiKeyOrigin === undefined;
+    if (migrateOrigin) this.aiSettings.apiKeyOrigin = connectionOrigin(this.aiSettings.baseUrl) ?? "";
     if (this.aiSettings.apiKey && this.app.secretStorage) {
       // Move a key saved in data.json into secret storage as soon as it is available.
       try { this.app.secretStorage.setSecret(AI_SECRET_ID, this.aiSettings.apiKey); }
@@ -459,6 +461,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
       void _key;
       try { await this.writeAiSettings(migrated); delete this.aiSettings.apiKey; }
       catch { new Notice("data.json の平文のAPIキーを削除できませんでした。"); }
+    } else if (migrateOrigin) {
+      try { await this.writeAiSettings(); }
+      catch { new Notice("APIキーの接続先を保存できませんでした。"); }
     }
   }
 
@@ -488,22 +493,29 @@ export default class TaskWorkbenchPlugin extends Plugin {
     if (JSON.stringify(next) !== JSON.stringify(current)) this.chatSession.configure(next);
   }
   getAiSettings(): AiConnectionSettings { const { apiKey: _key, ...rest } = this.aiSettings; void _key; return { ...rest }; }
-  async updateAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey">>): Promise<void> {
+  async updateAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>): Promise<void> {
     this.aiSettings = normalizeAiSettings({ ...this.aiSettings, ...patch });
     await this.writeAiSettings();
     this.applyAiConnection();
   }
   aiKeyStorage(): "secret" | "data" { return this.aiSettings.apiKey || !this.app.secretStorage ? "data" : "secret"; }
-  private readAiApiKey(): string | null {
+  private storedAiApiKey(): string | null {
     const stored = this.aiSettings.apiKey ?? this.app.secretStorage?.getSecret(AI_SECRET_ID);
     return stored ? stored : null;
   }
-  hasAiApiKey(): boolean { return !!this.readAiApiKey(); }
+  private readAiApiKey(endpoint = this.aiSettings.baseUrl): string | null {
+    const origin = connectionOrigin(endpoint);
+    return this.aiSettings.useApiKey && origin && origin === connectionOrigin(this.aiSettings.baseUrl) && origin === this.aiSettings.apiKeyOrigin ? this.storedAiApiKey() : null;
+  }
+  hasAiApiKey(): boolean { return !!this.storedAiApiKey(); }
   async setAiApiKey(key: string): Promise<void> {
     const value = key.trim();
     if (!value) throw new Error("EMPTY_KEY");
+    const origin = connectionOrigin(this.aiSettings.baseUrl);
+    if (!origin) throw new Error("接続先URLを確認してからAPIキーを保存してください。");
     if (this.app.secretStorage) { this.app.secretStorage.setSecret(AI_SECRET_ID, value); delete this.aiSettings.apiKey; }
     else this.aiSettings = { ...this.aiSettings, apiKey: value };
+    this.aiSettings.apiKeyOrigin = origin;
     await this.writeAiSettings();
     this.applyAiConnection();
   }
@@ -511,11 +523,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
     // Secret storage has no delete; an empty value is treated as not registered.
     this.app.secretStorage?.setSecret(AI_SECRET_ID, "");
     delete this.aiSettings.apiKey;
+    delete this.aiSettings.apiKeyOrigin;
     await this.writeAiSettings();
     this.applyAiConnection();
   }
   async fetchAiModels(): Promise<ModelListResult> {
-    const result = await listModels({ baseUrl: this.aiSettings.baseUrl, apiKey: this.aiSettings.useApiKey ? this.readAiApiKey() : null });
+    const originError = aiKeyOriginError(this.aiSettings);
+    if (originError) return { ok: false, reason: originError };
+    const result = await listModels({ baseUrl: this.aiSettings.baseUrl, apiKey: this.readAiApiKey(), apiKeyOrigin: this.aiSettings.apiKeyOrigin });
     if (result.ok) this.aiModels = result.models;
     return result;
   }
@@ -543,7 +558,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     this.unloading = false;
     this.historyManager.attachVault(() => this.vaultAdapter());
 
-    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id) => id === AI_SECRET_ID ? this.readAiApiKey() : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
+    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === AI_SECRET_ID ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,

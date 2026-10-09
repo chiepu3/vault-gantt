@@ -25,6 +25,7 @@ export interface AiConnectionSettings {
   baseUrl: string;
   model: string;
   useApiKey: boolean;
+  apiKeyOrigin?: string;
   apiKey?: string;
 }
 
@@ -45,19 +46,37 @@ export function normalizeAiSettings(raw: unknown): AiConnectionSettings {
     useApiKey: typeof value.useApiKey === "boolean" ? value.useApiKey : preset === "openrouter",
   };
   if (typeof value.apiKey === "string" && value.apiKey) result.apiKey = value.apiKey;
+  if (value.apiKeyOrigin !== undefined) result.apiKeyOrigin = typeof value.apiKeyOrigin === "string" ? connectionOrigin(value.apiKeyOrigin) ?? "" : "";
   return result;
 }
 
 export function normalizeBaseUrl(url: string): string { return url.trim().replace(/\/+$/, ""); }
 
+/** Only a validated origin can be stored or shown; credentials and paths never appear in messages. */
+export function connectionOrigin(baseUrl: string): string | null {
+  return validEndpoint(baseUrl.trim()) ? new URL(baseUrl.trim()).origin : null;
+}
+
+export function aiKeyOriginError(settings: Pick<AiConnectionSettings, "baseUrl" | "useApiKey" | "apiKeyOrigin">): string | undefined {
+  if (!settings.useApiKey || settings.apiKeyOrigin === undefined) return undefined;
+  const savedOrigin = connectionOrigin(settings.apiKeyOrigin);
+  if (savedOrigin && savedOrigin === connectionOrigin(settings.baseUrl)) return undefined;
+  return savedOrigin
+    ? `保存済みのキーは ${savedOrigin} 用です。この接続先で使うにはキーを入れ直してください。`
+    : "保存済みのキーの接続先を確認できません。この接続先で使うにはキーを入れ直してください。";
+}
+
 export function toConnectionConfig(settings: AiConnectionSettings): ConnectionConfig {
-  return { provider: "openai-compatible", endpoint: normalizeBaseUrl(settings.baseUrl), model: settings.model.trim(), auth: settings.useApiKey ? "secret" : "none", secretId: settings.useApiKey ? AI_SECRET_ID : "" };
+  const connectionError = aiKeyOriginError(settings);
+  return { provider: "openai-compatible", endpoint: normalizeBaseUrl(settings.baseUrl), model: settings.model.trim(), auth: settings.useApiKey ? "secret" : "none", secretId: settings.useApiKey ? AI_SECRET_ID : "", ...(connectionError ? { connectionError } : {}) };
 }
 
 export type ModelListResult = { ok: true; models: string[] } | { ok: false; reason: string };
 
-/** Fixed Japanese messages only: response bodies, URLs and keys are never echoed. */
-export async function listModels(options: { baseUrl: string; apiKey?: string | null; fetchImpl?: typeof fetch; timeoutMs?: number }): Promise<ModelListResult> {
+/** Response bodies and keys are never echoed; only the validated saved origin may appear. */
+export async function listModels(options: { baseUrl: string; apiKey?: string | null; apiKeyOrigin?: string; fetchImpl?: typeof fetch; timeoutMs?: number }): Promise<ModelListResult> {
+  const originError = aiKeyOriginError({ ...options, useApiKey: !!options.apiKey });
+  if (originError) return { ok: false, reason: originError };
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   if (!baseUrl) return { ok: false, reason: "接続先URLを入力してください。" };
   if (!validEndpoint(baseUrl)) return { ok: false, reason: "接続先URLは https:// で始まるものか、http://localhost のものを指定してください。" };

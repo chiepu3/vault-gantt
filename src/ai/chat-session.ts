@@ -11,6 +11,7 @@ export interface ConnectionConfig {
   model: string;
   auth: "secret" | "none";
   secretId: string;
+  connectionError?: string;
 }
 export type ChatEvent = { type: "text"; text: string } | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown; preview?: OperationPreviewV1; operationId?: WriteOperationId } | { type: "context"; messages: ModelMessage[] } | { type: "completion"; completion: ChatCompletion };
 export interface ChatRequest { config: ConnectionConfig; messages: ModelMessage[]; signal: AbortSignal; conversationId?: string }
@@ -67,7 +68,7 @@ export class ChatSession {
     }
     this.emit();
   }
-  get connected(): boolean { return this.provider.connected(this.config); }
+  get connected(): boolean { return !this.config.connectionError && this.provider.connected(this.config); }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private emit(): void { for (const listener of this.listeners) listener(); }
   configure(config: ConnectionConfig): void {
@@ -100,7 +101,7 @@ export class ChatSession {
   async send(text: string): Promise<void> {
     const conversation = this.active;
     if (conversation.status === "running" || !text.trim()) return;
-    if (!this.connected) { conversation.status = "failed"; conversation.error = "未接続です。接続先・モデル・既存の認証設定を確認してください。"; this.emit(); return; }
+    if (!this.connected) { conversation.status = "failed"; conversation.error = this.config.connectionError ?? "未接続です。接続先・モデル・既存の認証設定を確認してください。"; this.emit(); return; }
     if (conversation.messages.length >= 100) { conversation.error = "会話の上限です。新しい会話を開始してください。"; this.emit(); return; }
     const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
     conversation.status = "running"; conversation.error = ""; conversation.draft = ""; conversation.completion = undefined;

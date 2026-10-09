@@ -208,6 +208,9 @@ export class AgentView extends ItemView {
     const stickToBottom = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 64;
     const focusKey = captureFocusKey();
     this.messagesEl.empty();
+    if (session.config.connectionError) {
+      const error = this.element(this.messagesEl, "p"); error.className = "vg-ai-error"; error.textContent = session.config.connectionError;
+    }
     if (!conversation.messages.length) {
       const empty = this.element(this.messagesEl, "div"); empty.className = "vg-ai-empty";
       const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");

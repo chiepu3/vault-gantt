@@ -376,6 +376,59 @@ describe("TaskWorkbenchPlugin", () => {
       expect(h.plugin.hasAiApiKey()).toBe(false); expect(h.plugin.chatSession.connected).toBe(false);
       h.plugin.onunload();
     });
+    it.each(["secret", "data"] as const)("binds a saved key to its origin and blocks model/chat requests to another origin (%s)", async (storage) => {
+      const h = createHarness({ autoPriorityEnabled: false, ai: { model: "test-model" } });
+      const secrets = new Map<string, string>();
+      if (storage === "secret") h.fakeApp.secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, value: string) => secrets.set(id, value) };
+      await h.plugin.onload();
+      await h.plugin.setAiApiKey("sk-synthetic-original");
+      expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe("https://openrouter.ai");
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ data: [{ id: "test-model" }] })));
+      vi.stubGlobal("fetch", fetchMock);
+      await h.plugin.updateAiSettings({ preset: "custom" });
+      await h.plugin.updateAiSettings({ baseUrl: "https://other.example/v1" });
+      const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://openrouter.ai");
+      expect((h.plugin as any).readAiApiKey("https://openrouter.ai/api/v1")).toBeNull();
+      expect(await h.plugin.fetchAiModels()).toEqual({ ok: false, reason });
+      await h.plugin.chatSession.send("テスト");
+      expect(h.plugin.chatSession.active.error).toBe(reason);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(JSON.stringify([h.plugin.chatSession.config, h.plugin.chatSession.active])).not.toContain("sk-synthetic-original");
+
+      await h.plugin.updateAiSettings({ baseUrl: "https://OPENROUTER.ai:443/another/v1" });
+      expect(h.plugin.chatSession.connected).toBe(true);
+      expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+      expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("authorization")).toBe("Bearer sk-synthetic-original");
+      await h.plugin.updateAiSettings({ baseUrl: "https://other.example/v1" });
+      const oldConfig = h.plugin.chatSession.config;
+      await h.plugin.setAiApiKey("sk-synthetic-replacement");
+      expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://other.example");
+      expect(h.plugin.chatSession.config).not.toHaveProperty("connectionError");
+      expect(h.plugin.chatSession.connected).toBe(true);
+      expect((h.plugin as any).readAiApiKey("https://openrouter.ai/api/v1")).toBeNull();
+      expect(oldConfig.connectionError).toBe(reason);
+      expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+      expect(new Headers(fetchMock.mock.calls.at(-1)![1]?.headers).get("authorization")).toBe("Bearer sk-synthetic-replacement");
+
+      await h.plugin.updateAiSettings({ preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false });
+      expect(h.plugin.chatSession.connected).toBe(true);
+      expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+      expect(new Headers(fetchMock.mock.calls.at(-1)![1]?.headers).has("authorization")).toBe(false);
+      await h.plugin.clearAiApiKey();
+      expect((await h.plugin.loadData()).ai).not.toHaveProperty("apiKeyOrigin");
+      h.plugin.onunload();
+    });
+    it.each(["secret", "data"] as const)("persists the current origin for a legacy key once (%s)", async (storage) => {
+      const h = createHarness({ ai: { preset: "custom", baseUrl: "https://legacy.example:8443/v1", ...(storage === "data" ? { apiKey: "sk-synthetic-legacy" } : {}) } });
+      if (storage === "secret") h.fakeApp.secretStorage = { getSecret: () => "sk-synthetic-legacy", setSecret: vi.fn() };
+      await h.plugin.loadSettings();
+      expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://legacy.example:8443");
+      expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe("https://legacy.example:8443");
+      await h.plugin.loadSettings();
+      expect(h.plugin.saveData).toHaveBeenCalledOnce();
+    });
     it("stores the API key in data.json only without secret storage, and moves it into secret storage later", async () => {
       const h = createHarness({ autoPriorityEnabled: false });
       await h.plugin.onload();

@@ -4,7 +4,7 @@ import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
 import type { App, Plugin, ColorComponent, TextComponent } from "obsidian";
 
-import { AI_PRESET_LABELS, AI_PRESET_URLS, type AiConnectionSettings, type AiPreset, type ModelListResult } from "../ai/connection-settings";
+import { AI_PRESET_LABELS, AI_PRESET_URLS, aiKeyOriginError, type AiConnectionSettings, type AiPreset, type ModelListResult } from "../ai/connection-settings";
 
 import type {
   DailyTodoSourceConfig,
@@ -29,7 +29,7 @@ export interface SettingsTabHost {
   copyMcpToken?(): Promise<void>;
   /** AI chat connection. Optional so hosts without AI chat (and tests) skip the section. */
   getAiSettings?(): AiConnectionSettings;
-  updateAiSettings?(patch: Partial<Omit<AiConnectionSettings, "apiKey">>): Promise<void>;
+  updateAiSettings?(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>): Promise<void>;
   hasAiApiKey?(): boolean;
   setAiApiKey?(key: string): Promise<void>;
   clearAiApiKey?(): Promise<void>;
@@ -503,6 +503,8 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
   private aiModelHost: HTMLElement | null = null;
   private aiModelRow: AiModelRow | null = null;
   private aiTestSetting: Setting | null = null;
+  private aiOriginSetting: Setting | null = null;
+  private aiUrlHelp = "";
 
   private renderAiSettings(containerEl: HTMLElement): void {
     const host = this.hostPlugin;
@@ -522,6 +524,14 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     const settings = host.getAiSettings?.();
     if (!settings || !host.fetchAiModels) return null;
     const seq = ++this.aiFetchSeq;
+    const originError = aiKeyOriginError(settings);
+    if (originError) {
+      this.aiModels = [];
+      this.aiModelNote = originError;
+      this.aiLoading = false;
+      this.drawAiModelPart();
+      return { ok: false, reason: originError };
+    }
     if (settings.useApiKey && !host.hasAiApiKey?.()) {
       this.aiModels = [];
       this.aiModelNote = "APIキーを登録すると、モデルの一覧を取得できます。";
@@ -620,9 +630,19 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     });
   }
 
-  private async changeAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey">>, refetch: boolean): Promise<void> {
+  private async changeAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>, refetch: boolean): Promise<void> {
     try {
       await this.hostPlugin.updateAiSettings?.(patch);
+      const settings = this.hostPlugin.getAiSettings?.();
+      const originError = settings ? aiKeyOriginError(settings) : undefined;
+      this.aiOriginSetting?.setDesc(originError ?? this.aiUrlHelp);
+      if (originError) {
+        ++this.aiFetchSeq;
+        this.aiLoading = false;
+        this.aiModels = [];
+        this.aiModelNote = originError;
+        this.drawAiModelPart();
+      }
     } catch {
       new Notice("AI接続設定を保存できませんでした。");
       return;
@@ -673,9 +693,10 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       local: "LM Studio の既定は http://localhost:1234/v1 です。Ollama は http://localhost:11434/v1 を指定します。",
       custom: "末尾が /v1 のURLを指定します。https:// で始まるものか、http://localhost のものが使えます。",
     };
-    new Setting(el)
+    this.aiUrlHelp = urlHelp[settings.preset];
+    this.aiOriginSetting = new Setting(el)
       .setName("接続先URL")
-      .setDesc(urlHelp[settings.preset])
+      .setDesc(aiKeyOriginError(settings) ?? this.aiUrlHelp)
       .addText((text) => {
         text.inputEl.disabled = settings.preset === "openrouter";
         text.inputEl.addEventListener("change", () => {
