@@ -26,9 +26,8 @@ function isInside(container: HTMLElement, target: Node | null): boolean {
   return false;
 }
 
-/** View-local history, intercepted before Obsidian's document keymap. */
+/** View-local history, captured on the container so it follows window moves. */
 export function registerHistoryHotkeys(component: Component, container: HTMLElement, actions: HistoryActions): () => void {
-  const win = container.ownerDocument?.defaultView ?? window;
   container.tabIndex = -1;
   const onPointerDown = (event: PointerEvent): void => {
     // Bars/cells are not normally focusable. Move focus off a previous input
@@ -39,7 +38,7 @@ export function registerHistoryHotkeys(component: Component, container: HTMLElem
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     const target = event.target as Node | null;
-    if (event.defaultPrevented || event.isComposing || event.altKey
+    if (event.repeat || event.defaultPrevented || event.isComposing || event.altKey
       || !(Platform.isMacOS ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)
       || !isInside(container, target) || isEditable(target)) return;
     const key = event.key.toLowerCase();
@@ -51,9 +50,9 @@ export function registerHistoryHotkeys(component: Component, container: HTMLElem
     void (undo ? actions.undoLastAction() : actions.redoLastAction());
   };
   component.registerDomEvent(container, "pointerdown", onPointerDown, true);
-  component.registerDomEvent(win, "keydown", onKeyDown, true);
+  component.registerDomEvent(container, "keydown", onKeyDown, true);
   return () => {
     container.removeEventListener("pointerdown", onPointerDown, true);
-    win.removeEventListener("keydown", onKeyDown, true);
+    container.removeEventListener("keydown", onKeyDown, true);
   };
 }

@@ -1212,16 +1212,23 @@ describe("TaskGanttView", () => {
 
     it("routes history keys only while focused in the view and removes listeners on close", async () => {
       const { view, container, h } = await openView([]);
-      const win = window as unknown as FakeEl;
       const stopImmediatePropagation = vi.fn();
-      dispatch(win, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
-      dispatch(win, "keydown", { target: container, key: "Z", ctrlKey: true, shiftKey: true, stopImmediatePropagation });
-      dispatch(win, "keydown", { target: container, key: "y", ctrlKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "Z", ctrlKey: true, shiftKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "y", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+      expect(h.redoLastAction).toHaveBeenCalledTimes(2);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
+      const input = makeFakeEl("input"); container.appendChild(input);
+      for (const shortcut of [{ key: "z" }, { key: "Z", shiftKey: true }, { key: "y" }]) {
+        const event = dispatch(container, "keydown", { target: input, ctrlKey: true, stopImmediatePropagation, ...shortcut });
+        expect(event.__defaultPrevented).toBeUndefined();
+      }
       expect(h.undoLastAction).toHaveBeenCalledTimes(1);
       expect(h.redoLastAction).toHaveBeenCalledTimes(2);
       expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
       await view.onClose();
-      dispatch(win, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
       expect(h.undoLastAction).toHaveBeenCalledTimes(1);
     });
 
