@@ -40,7 +40,7 @@ const extractDefaultDate = (path?: string): string =>
  * method the read half (loadDailyTodoSummaries: getMarkdownFiles,
  * cachedRead) and the write half (updateDailyTodoItem/deleteDailyTodoItem/
  * insertDailyTodoItems/updateDailyTodos: getAbstractFileByPath, read,
- * modify) actually call. Mirrors the fakeApp/vaultApi idiom already used in
+ * modify, process) actually call. Mirrors the fakeApp/vaultApi idiom already used in
  * tests/main.test.ts (plain object + `as unknown as Vault` cast), which is
  * this repo's established pattern for faking Obsidian's Vault API without
  * needing a full obsidian App instance. Files are real `TFile` instances
@@ -118,6 +118,15 @@ function makeFakeVault(
       return entry.content;
     }),
     modify: modifySpy,
+    process: vi.fn(async (file: TFile, transform: (content: string) => string) => {
+      const entry = files.get(file.path);
+      if (!entry) {
+        throw new Error(`fake vault: file not found: ${file.path}`);
+      }
+      const content = transform(entry.content);
+      await modifySpy(file, content);
+      return content;
+    }),
     create: createSpy,
     createFolder: vi.fn(async () => undefined),
     getAbstractFileByPath: (path: string) => {
@@ -310,6 +319,7 @@ describe("daily-todo-service", () => {
         sourceLabel: "",
         path: "",
         line: 1,
+        originalLine: "- [ ] todo one",
         text: "todo one",
         completed: false,
         isNew: false,
@@ -1040,6 +1050,69 @@ describe("daily-todo-service", () => {
 
   describe("updateDailyTodos", () => {
     const MAIN_PATH = "デイリー/2026/07/260725_デイリー.md";
+
+    beforeEach(() => NoticeMock.mockClear());
+
+    it.each([
+      ["inserted line", "new line\n## ToDoリスト\n- [ ] first\n- [ ] second"],
+      ["deleted line", "## ToDoリスト\n- [ ] second"],
+      ["edited text", "## ToDoリスト\n- [ ] changed\n- [ ] second"],
+      ["edited checkbox", "## ToDoリスト\n- [x] first\n- [ ] second"],
+      ["edited formatting", "## ToDoリスト\n* [ ] first\n- [ ] second"],
+    ])("stops saving after an external %s without overwriting or inserting", async (_kind, changedContent) => {
+      const initial = "## ToDoリスト\n- [ ] first\n- [ ] second";
+      const { vault, setFile, getContent, modifySpy } = makeFakeVault({ [MAIN_PATH]: initial });
+      const items = parseDailyTodos(initial).map((item) => ({ ...item, path: MAIN_PATH }));
+      const summary: DailyTodoSummary = {
+        date: "2026-07-25", items, completedCount: 0, totalCount: items.length,
+      };
+      setFile(MAIN_PATH, changedContent);
+
+      await updateDailyTodos(summary, [
+        ...items.map((item) => ({ ...item, completed: true })),
+        todoItem({ path: "", line: -1, text: "new task", isNew: true }),
+      ], appFor(vault), DEFAULT_SETTINGS);
+
+      expect(getContent(MAIN_PATH)).toBe(changedContent);
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(NoticeMock).toHaveBeenCalledOnce();
+      expect(NoticeMock).toHaveBeenCalledWith(
+        "ノートが変更されたため保存を中止しました。Daily ToDoを開き直して、もう一度操作してください。"
+      );
+    });
+
+    it("checks the content supplied by process, including changes just before saving", async () => {
+      const initial = "## ToDoリスト\n- [ ] task";
+      const changed = "inserted\n" + initial;
+      const { vault, setFile, getContent, modifySpy } = makeFakeVault({ [MAIN_PATH]: initial });
+      const items = parseDailyTodos(initial).map((item) => ({ ...item, path: MAIN_PATH }));
+      const process = vault.process.bind(vault);
+      vi.mocked(vault.process).mockImplementationOnce(async (file, transform) => {
+        setFile(MAIN_PATH, changed);
+        return process(file, transform);
+      });
+
+      await updateDailyTodos({ date: "2026-07-25", items, completedCount: 0, totalCount: 1 },
+        items.map((item) => ({ ...item, completed: true })), appFor(vault), DEFAULT_SETTINGS);
+
+      expect(getContent(MAIN_PATH)).toBe(changed);
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(vault.read).not.toHaveBeenCalled();
+      expect(NoticeMock).toHaveBeenCalledOnce();
+    });
+
+    it("accepts unchanged indented star bullets and CRLF while preserving other edits", async () => {
+      const initial = "## ToDoリスト\r\n  * [X] task\r\nother";
+      const { vault, setFile, getContent } = makeFakeVault({ [MAIN_PATH]: initial });
+      const items = parseDailyTodos(initial).map((item) => ({ ...item, path: MAIN_PATH }));
+      setFile(MAIN_PATH, initial.replace("other", "edited elsewhere"));
+
+      await updateDailyTodos({ date: "2026-07-25", items, completedCount: 1, totalCount: 1 },
+        items.map((item) => ({ ...item, completed: false })), appFor(vault), DEFAULT_SETTINGS);
+
+      expect(getContent(MAIN_PATH)).toBe("## ToDoリスト\r\n- [ ] task\nedited elsewhere");
+      expect(NoticeMock).not.toHaveBeenCalled();
+    });
 
     it("updates matched existing lines and inserts unmatched new items", async () => {
       const { vault, getContent } = makeFakeVault({

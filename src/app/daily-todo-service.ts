@@ -179,6 +179,7 @@ export function parseDailyTodos(content: string): DailyTodoItem[] {
       sourceLabel: "",
       path: "",
       line: index,
+      originalLine: line,
       // empty text is recorded as "" (not skipped).
       text,
       // only the first "[x]"/"[ ]" is recognized as the
@@ -813,34 +814,44 @@ export async function updateDailyTodos(
       continue;
     }
 
-    const content = await vault.read(file);
-    const lines = content.split("\n");
-
-    // descending line-number order.
-    const sorted = [...originals].sort((a, b) => b.line - a.line);
-
-    let changed = false;
-    for (const original of sorted) {
-      if (original.line >= lines.length) {
-        continue;
-      }
+    const edits = originals.flatMap((original) => {
       const match = matchByKey.get(`${original.path}::${original.line}`);
-      if (!match) {
-        continue;
-      }
-      // skip (leave the line untouched) when the matched
-      // next-item's text is empty.
-      if (!match.text || match.text.trim() === "") {
-        continue;
-      }
-      lines[original.line] = formatDailyTodoLine(match.completed, match.text);
-      changed = true;
+      return match?.text.trim() ? [{ original, match }] : [];
+    });
+    if (edits.length === 0) {
+      continue;
     }
 
-    if (changed) {
-      await vault.modify(file, lines.join("\n"));
-      historyManager?.clear();
+    const conflict = new Error("Daily ToDo source line changed");
+    try {
+      await vault.process(file, (content) => {
+        const lines = content.split("\n");
+        // Check every target before replacing any line in this file.
+        for (const { original } of edits) {
+          const currentLine = lines[original.line]?.replace(/\r$/, "");
+          const current = currentLine?.match(CHECKBOX_PATTERN);
+          const matches = original.originalLine !== undefined
+            ? currentLine === original.originalLine
+            : current !== undefined && current !== null &&
+              current[2] === original.text &&
+              (current[1] === "x" || current[1] === "X") === original.completed;
+          if (!matches) {
+            throw conflict;
+          }
+        }
+        for (const { original, match } of edits) {
+          lines[original.line] = formatDailyTodoLine(match.completed, match.text);
+        }
+        return lines.join("\n");
+      });
+    } catch (error) {
+      if (error !== conflict) {
+        throw error;
+      }
+      new Notice("ノートが変更されたため保存を中止しました。Daily ToDoを開き直して、もう一度操作してください。");
+      return;
     }
+    historyManager?.clear();
   }
 
   // insert the unmatched new items.

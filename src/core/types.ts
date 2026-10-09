@@ -237,6 +237,8 @@ export interface DailyTodoItem {
   text: string;
   completed: boolean;
   isNew: boolean;
+  /** Original checkbox line, used to detect edits made while the modal is open. */
+  originalLine?: string;
 }
 
 
