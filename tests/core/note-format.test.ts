@@ -618,34 +618,63 @@ subtaskOrder: [dup, dup]
       expect(result?.subtasks?.size).toBe(2);
     });
 
-    it("parseTaskFile: reordering headings without updating subtaskOrder mis-correlates keys to titles", () => {
-      // subtaskOrder says [alpha, beta], correlated positionally to headings in document order
+    it("parseTaskFile rejects reordered headings instead of attaching another task's metadata", () => {
       const original = `---
 type: task
 displayName: "Test"
 subtaskOrder: [alpha, beta]
+subtask__alpha__title: "設計"
+subtask__alpha__dueDate: 2026-10-12
+subtask__alpha__statusLabel: in_progress
+subtask__alpha__workloadActual: "2026-10-10=2"
+subtask__beta__title: "実装"
+subtask__beta__dueDate: 2026-10-20
 ---
 ## Subtasks
-### Alpha Task
-### Beta Task`;
-      const reordered = `---
-type: task
-displayName: "Test"
-subtaskOrder: [alpha, beta]
----
-## Subtasks
-### Beta Task
-### Alpha Task`;
-
+### 設計
+### 実装`;
       const before = parseTaskFile({ path: "test/file.md" }, original, settings);
-      const after = parseTaskFile({ path: "test/file.md" }, reordered, settings);
+      expect(before?.subtasks?.get("alpha")).toMatchObject({
+        title: "設計",
+        dueDate: "2026-10-12",
+        statusLabel: "in_progress",
+        workloadActual: { "2026-10-10": 2 },
+      });
+      const reordered = original.replace("### 設計\n### 実装", "### 実装\n### 設計");
+      expect(() => parseTaskFile({ path: "test/file.md" }, reordered, settings))
+        .toThrow("一致しないため、編集を止めました");
 
-      // Before reorder: key "alpha" correlates with "Alpha Task"
-      expect(before?.subtasks?.get("alpha")?.title).toBe("Alpha Task");
-      // After reordering headings without updating subtaskOrder, key "alpha" now
-      // incorrectly correlates with "Beta Task" (position-based correlation is broken)
-      expect(after?.subtasks?.get("alpha")?.title).toBe("Beta Task");
+      // An explicit order correction keeps the metadata attached to its title.
+      const corrected = reordered.replace("[alpha, beta]", "[beta, alpha]");
+      const after = parseTaskFile({ path: "test/file.md" }, corrected, settings);
+      expect(after?.subtasks?.get("alpha")).toEqual(before?.subtasks?.get("alpha"));
+      expect(after?.subtasks?.get("beta")).toEqual(before?.subtasks?.get("beta"));
     });
+
+    it("parseTaskFile rejects a heading-only rename", () => {
+      const content = `---
+type: task
+subtaskOrder: [alpha]
+subtask__alpha__title: "設計"
+---
+## Subtasks
+### 基本設計`;
+      expect(() => parseTaskFile({ path: "test/file.md" }, content, settings))
+        .toThrow("subtask__alpha__titleの対応を確認してください");
+    });
+
+    it("parseTaskFile compares decoded saved titles with headings", () => {
+      const content = `---
+type: task
+subtaskOrder: [alpha]
+subtask__alpha__title: "設計 \\"A\\""
+---
+## Subtasks
+### 設計 "A"`;
+      expect(parseTaskFile({ path: "test/file.md" }, content, settings)
+        ?.subtasks?.get("alpha")?.title).toBe('設計 "A"');
+    });
+
   });
 
   describe("buildFrontmatter", () => {

@@ -293,11 +293,19 @@ export function splitSubtasksSection(body: string): SubtaskSectionPart[] {
 
 // PARSING: Main Task File Parser
 
+export class SubtaskHeadingMismatchError extends Error {
+  constructor(path: string, key: string, savedTitle: string, heading: string) {
+    super(`${path}: サブタスク「${savedTitle}」と見出し「${heading}」が一致しないため、編集を止めました。本文の見出し順・名前、subtaskOrder、subtask__${key}__titleの対応を確認してください。`);
+    this.name = "SubtaskHeadingMismatchError";
+  }
+}
+
 
 /**
  *
  * Parse a task file into a TaskRow (or null if type !== "task").
- * Lenient: invalid dates, missing fields, etc. do not throw.
+ * Lenient for invalid dates and missing fields; conflicting saved subtask
+ * titles and headings throw rather than associating metadata by position.
  * Parent tasks parse from the file as a whole.
  * Subtasks are extracted from the "Subtasks" section.
  *
@@ -427,6 +435,16 @@ export function parseTaskFile(
           }
         } else {
           subtaskKey = getSubtaskKey(part.title, usedKeys);
+        }
+
+        // Never attach saved metadata to a different heading by position.
+        // Notes without saved titles retain their legacy parsing behavior.
+        const savedTitleRaw = fm[`subtask__${subtaskKey}__title`];
+        if (savedTitleRaw !== undefined) {
+          const savedTitle = String(parseSimpleValue(String(savedTitleRaw))).trim();
+          if (savedTitle !== part.title) {
+            throw new SubtaskHeadingMismatchError(file.path, subtaskKey, savedTitle, part.title);
+          }
         }
 
         usedKeys.add(subtaskKey);

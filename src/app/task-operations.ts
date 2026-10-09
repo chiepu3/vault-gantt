@@ -1,3 +1,4 @@
+import { Notice } from "obsidian";
 import {
   TaskRow,
   TaskPatch,
@@ -18,6 +19,7 @@ import {
 import {
   parseTaskFile,
   buildFullNote,
+  SubtaskHeadingMismatchError,
 } from "../core/note-format";
 import { applyPatchToParent } from "../core/task-patch";
 import type { HistoryFileChange, HistoryManager } from "./history-manager";
@@ -284,6 +286,9 @@ export async function loadTasks(
       );
     } catch (err) {
       // Parse errors are logged and file is filtered
+      if (err instanceof SubtaskHeadingMismatchError) {
+        new Notice(err.message);
+      }
 
       if (logger) {
         logger.error("loadTasks", `Failed to parse task file ${file.path}:`, err);
@@ -513,6 +518,14 @@ export async function addSubtask(
     throw new Error("Subtask name cannot be empty");
   }
 
+  // The displayed parent may predate a manual heading edit. Validate the
+  // current note before changing either the in-memory row or the file.
+  const parentFile = vault.getFileByPath(parentRow.file.path);
+  if (!parentFile) {
+    throw new Error("Task file not found");
+  }
+  parseTaskFile({ path: parentFile.path }, await vault.read(parentFile), settings);
+
   // Generate unique key
   const existingKeys = parentRow.subtasks
     ? new Set(parentRow.subtasks.keys())
@@ -567,11 +580,6 @@ export async function addSubtask(
   parentRow.updatedAt = todayStr();
 
   // Write and re-parse
-  const parentFile = vault.getFileByPath(parentRow.file.path);
-  if (!parentFile) {
-    throw new Error("Task file not found");
-  }
-
   const content = buildFullNote(parentRow, parentRow.subtasks);
   await vault.modify(parentFile, content);
   historyManager?.clear();

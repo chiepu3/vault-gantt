@@ -146,7 +146,7 @@ describe("serialization guard", () => {
   it("rejects a note patch that changes task structure during round trip", async () => {
     const a = setup(); const parent = await createTask(a.vault, a.settings, "Parent"); await addSubtask(a.vault, a.settings, parent, "Child");
     a.vault.resetCounters();
-    await expect(a.registry.plan("update", { taskId: parent.id, patch: { notes: "memo\n## Subtasks\n### Forged" } })).rejects.toThrow("安全に保存");
+    await expect(a.registry.plan("update", { taskId: parent.id, patch: { notes: "memo\n## Subtasks\n### Forged" } })).rejects.toThrow("一致しないため、編集を止めました");
     expect(a.vault.getModifyCallCount()).toBe(0);
   });
 });

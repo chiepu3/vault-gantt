@@ -9,10 +9,16 @@ import {
   getTaskFolderForDate,
   getAvailableTaskPath,
 } from "../../src/app/task-operations";
+import { Notice } from "obsidian";
 import { FakeVault } from "./fake-vault";
 import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { HistoryManager } from "../../src/app/history-manager";
+
+vi.mock("obsidian", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("obsidian")>();
+  return { ...actual, Notice: vi.fn() };
+});
 
 class FailingBatchVault extends FakeVault {
   private modifyAttempts = 0;
@@ -49,6 +55,46 @@ describe("Task Operations - Integration Tests", () => {
     vault.clear();
   });
 
+
+  describe("subtask heading mismatch", () => {
+    it.each(["update", "delete", "add"])("blocks %s from a stale row without modifying the note", async (operation) => {
+      const parent = await createTask(vault, settings, "Parent");
+      const design = await addSubtask(vault, settings, parent, "設計");
+      await addSubtask(vault, settings, parent, "実装");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const original = await vault.read(file);
+      const reordered = original.replace("### 設計", "### TEMP")
+        .replace("### 実装", "### 設計").replace("### TEMP", "### 実装");
+      await vault.modify(file, reordered);
+      vault.resetCounters();
+      const keysBefore = [...parent.subtasks!.keys()];
+      const action = operation === "update"
+        ? updateTaskItemsBatch(vault, settings, cache, [{ row: design, patch: { dueDate: "2026-10-20" } }])
+        : operation === "delete"
+          ? deleteSubtaskTaskItem(vault, settings, design)
+          : addSubtask(vault, settings, parent, "確認");
+      await expect(action).rejects.toThrow("一致しないため、編集を止めました");
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(await vault.read(file)).toBe(reordered);
+      expect([...parent.subtasks!.keys()]).toEqual(keysBefore);
+    });
+
+    it("warns on load and excludes mismatched tasks from the cache and results", async () => {
+      const parent = await createTask(vault, settings, "Parent");
+      await addSubtask(vault, settings, parent, "設計");
+      const file = vault.getFileByPath(parent.file.path)!;
+      await vault.modify(file, (await vault.read(file)).replace("### 設計", "### 基本設計"));
+      const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      vi.mocked(Notice).mockClear();
+      expect(await loadTasks(vault, settings, cache)).toEqual([]);
+      expect(Notice).toHaveBeenCalledWith(expect.stringContaining("一致しないため、編集を止めました"));
+      expect(cache.get(file.path)?.taskRow).toBeNull();
+      expect(errors).toHaveBeenCalled();
+      const noticeCount = vi.mocked(Notice).mock.calls.length;
+      await loadTasks(vault, settings, cache);
+      expect(vi.mocked(Notice).mock.calls.length).toBe(noticeCount);
+    });
+  });
 
   // TASK CREATION TESTS
 
