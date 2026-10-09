@@ -79,7 +79,6 @@ import {
   pixelDeltaToDayDelta,
   roundHalfHour,
   setValue,
-  shiftMarkers,
   shiftWorkloadMap,
   snapForward,
   snapMarkerDate,
@@ -4776,16 +4775,16 @@ export class TaskGanttView extends ItemView {
       if (!movedPastThreshold) {
         return;
       }
-      // NOT snapped during the drag — the raw
-      // (un-snapped) range is shown; only the confirm step snaps.
+      // Move dates use the same business-day calculation as the saved patch.
       const dayDelta = pixelDeltaToDayDelta(dxPx, dayWidth);
       let tooltipText: string;
       if (kind === "move") {
-        // duration preserved in the preview.
-        tooltipText = formatDragRangeTooltip(
-          addDays(originalStart, dayDelta),
-          addDays(originalEnd, dayDelta)
+        const { nextStart, nextEnd } = moveBarByCalendarDelta(
+          { start: originalStart, end: originalEnd },
+          dayDelta,
+          holidaySet
         );
+        tooltipText = formatDragRangeTooltip(nextStart, nextEnd);
       } else if (kind === "resize-start") {
         // end stays fixed in the preview.
         tooltipText = formatDragRangeTooltip(
@@ -5739,8 +5738,13 @@ export class TaskGanttView extends ItemView {
         return;
       }
       const dayDelta = pixelDeltaToDayDelta(dxPx, dayWidth);
+      const { nextStart } = moveBarByCalendarDelta(
+        { start: anchorStart, end: anchor?.plannedEndDate ?? anchorStart },
+        dayDelta,
+        this.holidaySet
+      );
       this.showDragTooltip(
-        formatBulkMoveDragTooltip(anchorStart, addDays(anchorStart, dayDelta)),
+        formatBulkMoveDragTooltip(anchorStart, nextStart),
         moveEvt.clientX,
         moveEvt.clientY
       );
@@ -5794,12 +5798,17 @@ export class TaskGanttView extends ItemView {
     }
 
 
-    // each target's own oldStart/newStart pair drives its own business-day
-    // offset re-basing (falls back to the plain calendar-day
-    // shiftDays whenever a target's plannedStartDate is missing/invalid).
+    // Preserve each task's working-day duration, just as for a single bar move.
     const commands: TaskUpdateCommand[] = targets.map((task) => {
-      const newStart = addDays(task.plannedStartDate ?? "", shiftDays);
-      const newEnd = addDays(task.plannedEndDate ?? "", shiftDays);
+      const { nextStart: newStart, nextEnd: newEnd, shiftedMarkers } = moveBarByCalendarDelta(
+        {
+          start: task.plannedStartDate ?? "",
+          end: task.plannedEndDate ?? "",
+          markers: task.ganttMarkers,
+        },
+        shiftDays,
+        this.holidaySet
+      );
       const workingDayCalendar = {
         oldStart: task.plannedStartDate,
         newStart,
@@ -5811,15 +5820,7 @@ export class TaskGanttView extends ItemView {
           plannedStartDate: newStart,
           plannedEndDate: newEnd,
 
-          // every caller — Bulk-Move's own start/end shift stays a uniform
-
-          // markers now relocate via the corrected snap/relative-position/
-          // clamp algorithm instead of a blind uniform shift.
-          ganttMarkers: shiftMarkers(task.ganttMarkers, shiftDays, this.holidaySet, {
-            oldStart: task.plannedStartDate ?? "",
-            newStart,
-            newEnd,
-          }),
+          ganttMarkers: shiftedMarkers,
           workloadPlan: shiftWorkloadMap(
             task.workloadPlan,
             shiftDays,

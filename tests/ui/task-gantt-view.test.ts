@@ -4217,6 +4217,46 @@ describe("TaskGanttView", () => {
       void view;
     });
 
+    it.each([
+      { start: "2026-10-09", end: "2026-10-09", delta: 1, holidays: [], nextStart: "2026-10-12", nextEnd: "2026-10-12" },
+      { start: "2026-10-12", end: "2026-10-12", delta: -1, holidays: [], nextStart: "2026-10-09", nextEnd: "2026-10-09" },
+      { start: "2026-10-09", end: "2026-10-12", delta: 1, holidays: ["2026-10-12"], nextStart: "2026-10-13", nextEnd: "2026-10-13" },
+      { start: "2026-10-08", end: "2026-10-09", delta: 1, holidays: [], nextStart: "2026-10-09", nextEnd: "2026-10-12" },
+    ])("single and bulk moves share saved dates and date previews: $start / $delta / $holidays", async ({ start, end, delta, holidays, nextStart, nextEnd }) => {
+      vi.setSystemTime(new Date("2026-10-09T00:00:00"));
+      const { view, container, timeline, h, parent, sub } = await openViewWithBar({
+        plannedStartDate: start,
+        plannedEndDate: end,
+        ganttMarkers: [{ key: "m1", title: "M1", date: start }],
+        workloadPlan: { [start]: 4 },
+      });
+      const holidaySet = new Set(holidays);
+      (view as any).holidaySet = holidaySet;
+      const bar = barElOf(timeline);
+      (view as any).runBarDrag("move", sub, bar, parseFloat(bar.style.left), parseFloat(bar.style.width), [], 100, 1);
+      dispatch(winEl, "pointermove", { clientX: 100 + delta * 28, clientY: 50 });
+      const tooltip = byClass(container, "task-gantt-drag-tooltip")[0];
+      expect(tooltip.textContent).toBe(`${nextStart} → ${nextEnd}`);
+      dispatch(winEl, "pointerup", { clientX: 100 + delta * 28, clientY: 50 });
+      await flush();
+      const singlePatch = h.updateTaskItem.mock.calls[0][1];
+      expect(singlePatch.plannedStartDate).toBe(nextStart);
+      expect(singlePatch.plannedEndDate).toBe(nextEnd);
+
+      (view as any).holidaySet = holidaySet;
+      (view as any).startBulkMoveDrag(parent, start, 100);
+      dispatch(winEl, "pointermove", { clientX: 100 + delta * 28, clientY: 50 });
+      expect(tooltip.textContent).toContain(`${start} → ${nextStart}`);
+      dispatch(winEl, "pointerup", { clientX: 100 + delta * 28, clientY: 50 });
+      await flush();
+      const commands = h.updateTaskItemsBatch.mock.calls[0][0];
+      expect(commands).toHaveLength(1);
+      expect(commands[0].patch.plannedStartDate).toBe(nextStart);
+      expect(commands[0].patch.plannedEndDate).toBe(nextEnd);
+      expect(commands[0].patch.ganttMarkers).toEqual(singlePatch.ganttMarkers);
+      expect(commands[0].patch.workloadPlan).toEqual({ [nextStart]: 4 });
+    });
+
     it("zero net movement resets the preview and saves nothing", async () => {
       const { timeline, h } = await openViewWithBar();
       const bar = barElOf(timeline);
@@ -4645,6 +4685,22 @@ describe("TaskGanttView", () => {
         { key: "m1", title: "M1", date: dateOffset(3) },
       ]);
       expect(commands[0].patch.workloadPlan).toEqual({ [dateOffset(1)]: 4 });
+    });
+
+    it("bulk moves snap each target separately and preserve working-day durations", async () => {
+      const targets = [
+        makeBarSubtask("thursday", { plannedStartDate: "2026-10-08", plannedEndDate: "2026-10-09" }),
+        makeBarSubtask("friday", { plannedStartDate: "2026-10-09", plannedEndDate: "2026-10-09" }),
+      ];
+      const parent = withChildren(makeParent({ ganttEnabled: true }), targets);
+      const { view, h } = await openView([parent]);
+      (view as any).holidaySet = new Set<string>();
+      await (view as any).finishBulkMoveDrag(targets, 1);
+      const commands = h.updateTaskItemsBatch.mock.calls[0][0];
+      expect(commands.map((command: { patch: { plannedStartDate?: string; plannedEndDate?: string } }) => [command.patch.plannedStartDate, command.patch.plannedEndDate])).toEqual([
+        ["2026-10-09", "2026-10-12"],
+        ["2026-10-12", "2026-10-12"],
+      ]);
     });
 
     it("bulk-move preview distinguishes its anchor from follower bars and shows the '一括移動' tooltip", async () => {
