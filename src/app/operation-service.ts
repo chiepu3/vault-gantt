@@ -80,6 +80,9 @@ export class OperationService implements OperationServicePort {
   }
   clearSavedProjection(): void {
     this.projectionChangeGeneration++;
+    this.clearSavedProjectionFocus();
+  }
+  private clearSavedProjectionFocus(): void {
     this.ownWrites.clear();
     const id = this.previewPort.focusedPreviewId();
     if (id && this.previewPort.inspectOutcome(id)) this.previewPort.focus(null);
@@ -321,7 +324,7 @@ export class OperationService implements OperationServicePort {
         if ((await this.contextPort.snapshot()).revision !== stored.snapshot.revision) throw new Error("REVISION_CONFLICT");
         if (todayStr() !== stored.snapshot.today || (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC") !== stored.snapshot.timezone || await contentRevision(this.host.settings) !== stored.snapshot.settingsRevision) throw new Error("REVISION_CONFLICT");
         for (const write of stored.writes) { const file = vault.getFileByPath(write.path); if (write.before === null ? !!file : !file || await vault.read(file) !== write.before) throw new Error("REVISION_CONFLICT"); }
-        if (stored.history) this.clearSavedProjection();
+        if (stored.history) this.clearSavedProjectionFocus();
         for (const [path, write] of this.ownWrites) if (write.until <= Date.now()) this.ownWrites.delete(path);
         for (const write of stored.writes) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
         if (stored.daily) {

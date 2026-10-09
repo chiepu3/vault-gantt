@@ -7,6 +7,23 @@ import { holidaySet } from "../../src/app/gantt-actions";
 
 afterEach(() => vi.useRealTimers());
 describe("final review operation regressions", () => {
+  it.each(["V20", "V21"] as const)("keeps %s's own focused saved projection when no external change occurs", async (operationId) => {
+    const f = await runtimeFixture();
+    const saved = await f.service.propose("T07", { taskId: CHILD_ID, name: "saved" }, f.context);
+    await f.service.humanApprovalPort.approve(saved.previewId);
+    if (operationId === "V21") {
+      const undo = await f.service.propose("V20", {}, f.context);
+      await f.service.humanApprovalPort.approve(undo.previewId);
+    }
+    const preview = await f.service.propose(operationId, {}, f.context);
+    f.service.previewPort.focus(preview.previewId);
+    const outcome = await f.service.humanApprovalPort.approve(preview.previewId);
+    expect(outcome.status).toBe("success");
+    expect(outcome.actualProjection).toBeTruthy();
+    expect(f.service.previewPort.focusedPreviewId()).toBe(preview.previewId);
+    expect(f.service.previewPort.inspectOutcome(preview.previewId)).toEqual(outcome);
+    f.service.dispose();
+  });
   it("also detects an external change while an approved operation is waiting for the queue", async () => {
     const f = await runtimeFixture();
     const preview = await f.service.propose("T07", { taskId: CHILD_ID, name: "saved" }, f.context);
