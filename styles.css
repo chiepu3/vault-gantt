@@ -772,6 +772,8 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-tools summary { cursor: pointer; }
 .vg-ai-tools > div { padding: 3px 12px; }
 .vg-ai-error { margin: 8px 0; padding: 6px 10px; border-inline-start: 3px solid var(--text-error); border-radius: var(--radius-s); background: color-mix(in srgb, var(--text-error) 10%, transparent); color: var(--text-normal); font-size: var(--font-ui-small); }
+.vg-ai-completion { margin: 8px 0 0; padding: 2px 0 2px 8px; border-inline-start: 2px solid var(--background-modifier-border); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; }
+.vg-ai-completion[data-kind="tool-refused"], .vg-ai-completion[data-kind="timeout"], .vg-ai-completion[data-kind="step-limit"], .vg-ai-completion[data-kind="connection-error"] { border-inline-start-color: var(--color-orange); }
 
 /* Proposal / result card */
 .vg-ai-diff { margin-top: 12px; padding: 12px; border: 1px solid var(--background-modifier-border); border-inline-start: 3px solid var(--interactive-accent); border-radius: var(--radius-m); background: var(--background-secondary); }

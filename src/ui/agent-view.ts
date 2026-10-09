@@ -1,6 +1,7 @@
 import { ItemView, Menu, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import { ChatSession, Proposal } from "../ai/chat-session";
+import { completionText, type ChatCompletion } from "../ai/chat-completion";
 import type { OperationResult, TaskDiff } from "../app/operation-registry";
 import type { PreviewUiHostPorts } from "../contracts/ports";
 import { captureFocusKey, PreviewCardController, renderOperationPreviewCard, restoreFocusKey } from "./operation-preview-card";
@@ -85,6 +86,18 @@ export function renderChatText(parent: HTMLElement, text: string): void {
     if (numbered) { inline(add("div", "vg-ai-li"), numbered[1] + ". " + numbered[2]); continue; }
     inline(add("p"), line);
   }
+}
+
+/** One-line turn status under the reply. A created proposal shows as a card, so it gets no line. */
+export function completionLine(completion: ChatCompletion | undefined): string {
+  if (!completion || completion.kind === "proposal-created") return "";
+  const text = completionText[completion.kind];
+  return completion.kind === "connection-error" && completion.httpStatus ? text + "（HTTP " + completion.httpStatus + "）" : text;
+}
+/** The provider also appends the completion sentence to the reply text; drop it so the status line is the only copy. */
+function replyText(text: string, completion: ChatCompletion | undefined): string {
+  const tail = completion ? completionText[completion.kind] : "";
+  return tail && text.endsWith(tail) ? text.slice(0, -tail.length).trimEnd() : text;
 }
 
 export class AgentView extends ItemView {
@@ -207,12 +220,17 @@ export class AgentView extends ItemView {
       this.element(item, "strong").textContent = message.role === "user" ? "あなた" : "AI";
       if (running && message.role === "assistant" && index === conversation.messages.length - 1) item.dataset.streaming = "true";
       const body = this.element(item, "div"); body.className = "vg-ai-message-body";
-      renderChatText(body, message.text || (running ? "応答中…" : message.proposals.length ? "変更案を作成しました。" : "変更案はありません。"));
+      const line = completionLine(message.completion);
+      const shown = replyText(message.text, message.completion);
+      if (shown || !line) renderChatText(body, shown || (running ? "応答中…" : message.proposals.length ? "変更案を作成しました。" : "変更案はありません。"));
       for (const proposal of message.proposals) this.renderProposal(item, proposal, running);
+      if (line && !running && message.completion) {
+        const note = this.element(item, "p"); note.className = "vg-ai-completion"; note.dataset.kind = message.completion.kind; note.setAttribute("role", "status"); note.textContent = line;
+      }
       if (message.role === "assistant" && index === conversation.messages.length - 1) {
         this.renderToolStatus(item);
         if (["failed", "cancelled"].includes(conversation.status)) {
-          const error = this.element(item, "p"); error.className = "vg-ai-error"; error.textContent = conversation.error;
+          if (!message.completion) { const error = this.element(item, "p"); error.className = "vg-ai-error"; error.textContent = conversation.error; }
           this.button(item, "応答を再試行", () => { void session.retry(); }).disabled = running || !session.connected;
         }
       }

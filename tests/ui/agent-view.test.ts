@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { AgentView, diffText, renderChatText } from "../../src/ui/agent-view";
 import { ChatSession } from "../../src/ai/chat-session";
+import { completionText, type ChatCompletion } from "../../src/ai/chat-completion";
 import { OperationRegistry } from "../../src/app/operation-registry";
 import { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
@@ -224,5 +225,64 @@ describe("AgentView operation preview cards", () => {
     const { ports, view, session } = await open([CREATE_PREVIEW, MCP_PREVIEW]);
     ports.previewPort.focused = "mcp-fixture"; await view.onClose();
     expect(ports.previewPort.focused).toBe("mcp-fixture"); session.dispose();
+  });
+});
+
+describe("AgentView turn completion line", () => {
+  async function turn(completion: ChatCompletion | undefined, text = "回答です。", appendSentence = false) {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const provider = new FakeProvider(async function* () {
+      yield { type: "text", text };
+      if (completion && appendSentence) yield { type: "text", text: "\n\n" + completionText[completion.kind] };
+      if (completion) yield { type: "completion", completion };
+    });
+    const session = new ChatSession(vault, registry, provider);
+    session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false });
+    await view.onOpen(); await session.send("質問");
+    view.render();
+    const root = view.containerEl as unknown as FakeEl;
+    return { view, session, root, lines: findAll(root, (el) => el.classList.contains("vg-ai-completion")) };
+  }
+  const base = { proposalIds: [], toolErrors: 0 };
+  for (const kind of ["no-proposal", "tool-refused", "timeout", "step-limit"] as const) {
+    it(kind + " shows one quiet status line under the reply", async () => {
+      const { lines, root, view, session } = await turn({ kind, ...base }, "回答です。", true);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].textContent).toBe(completionText[kind]);
+      expect(deepText(root).split(completionText[kind])).toHaveLength(2);
+      expect(findAll(root, (el) => el.textContent === "回答です。")).toHaveLength(1);
+      await view.onClose(); session.dispose();
+    });
+  }
+  it("connection-error adds the HTTP status when known, and does not repeat the error box", async () => {
+    const { lines, root, view, session } = await turn({ kind: "connection-error", ...base, httpStatus: 503 });
+    expect(lines[0].textContent).toBe(completionText["connection-error"] + "（HTTP 503）");
+    expect(findAll(root, (el) => el.classList.contains("vg-ai-error"))).toHaveLength(0);
+    expect(findAll(root, (el) => el.tagName === "BUTTON" && el.textContent === "応答を再試行")).toHaveLength(1);
+    await view.onClose(); session.dispose();
+  });
+  it("connection-error without a status has no HTTP note", async () => {
+    const { lines, view, session } = await turn({ kind: "connection-error", ...base });
+    expect(lines[0].textContent).toBe(completionText["connection-error"]);
+    await view.onClose(); session.dispose();
+  });
+  it("cancelled shows the stop line", async () => {
+    const { lines, view, session } = await turn({ kind: "cancelled", ...base });
+    expect(lines[0].textContent).toBe(completionText.cancelled);
+    await view.onClose(); session.dispose();
+  });
+  it("proposal-created adds no line (the card is the signal) and hides the duplicated sentence", async () => {
+    const { lines, root, view, session } = await turn({ kind: "proposal-created", proposalIds: ["p"], toolErrors: 0 }, "回答です。", true);
+    expect(lines).toHaveLength(0);
+    expect(deepText(root)).not.toContain(completionText["proposal-created"]);
+    await view.onClose(); session.dispose();
+  });
+  it("never shows internal kind names", async () => {
+    const { root, view, session } = await turn({ kind: "step-limit", ...base });
+    expect(deepText(root)).not.toMatch(/step-limit|tool-refused|connection-error|no-proposal/);
+    await view.onClose(); session.dispose();
   });
 });
