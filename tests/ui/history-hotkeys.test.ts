@@ -6,22 +6,28 @@ import { dispatch, makeFakeEl, type FakeEl } from "../stubs/fake-dom";
 
 describe("view history hotkeys", () => {
   let container: FakeEl, win: FakeEl;
+  let cleanups: Array<() => void>;
   const actions = { undoLastAction: vi.fn(async () => {}), redoLastAction: vi.fn(async () => {}) };
-  const component = { registerDomEvent: (el: EventTarget, type: string, cb: (event: Event) => void, options: boolean) => el.addEventListener(type, cb, options) } as unknown as Component;
-  const key = (target: FakeEl, overrides = {}) => dispatch(win, "keydown", {
+  const component = { registerDomEvent: (el: EventTarget, type: string, cb: (event: Event) => void, options: boolean) => {
+    el.addEventListener(type, cb, options);
+    cleanups.push(() => el.removeEventListener(type, cb, options));
+  } } as unknown as Component;
+  const key = (target: FakeEl, overrides = {}) => dispatch(container, "keydown", {
     target, key: "z", ctrlKey: true, stopImmediatePropagation: vi.fn(), ...overrides,
   });
   beforeEach(() => {
     container = makeFakeEl(); win = makeFakeEl("window");
+    cleanups = [];
     vi.stubGlobal("window", win);
     Platform.isMacOS = false;
   });
   afterEach(() => { Platform.isMacOS = false; vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 
-  it.each([false, true])("uses the platform modifier (mac=%s) and capture before the document keymap", (mac) => {
+  it.each([false, true])("uses the platform modifier (mac=%s) and capture on the container", (mac) => {
     Platform.isMacOS = mac;
     const register = vi.spyOn(component, "registerDomEvent");
     registerHistoryHotkeys(component, container as unknown as HTMLElement, actions);
+    expect(register.mock.calls[1][0]).toBe(container);
     expect(register.mock.calls[1][3]).toBe(true);
     const modifiers = { ctrlKey: !mac, metaKey: mac };
     expect(key(container, modifiers).__defaultPrevented).toBe(true);
@@ -29,6 +35,46 @@ describe("view history hotkeys", () => {
     key(container, { ...modifiers, key: "y" });
     expect(actions.undoLastAction).toHaveBeenCalledOnce();
     expect(actions.redoLastAction).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])("ignores held undo and redo shortcuts (mac=%s)", (mac) => {
+    Platform.isMacOS = mac;
+    registerHistoryHotkeys(component, container as unknown as HTMLElement, actions);
+    const modifiers = { ctrlKey: !mac, metaKey: mac };
+    for (const shortcut of [{ key: "z" }, { key: "z", shiftKey: true }, { key: "y" }]) {
+      key(container, { ...modifiers, ...shortcut });
+      for (let i = 0; i < 3; i++) {
+        const event = key(container, { ...modifiers, ...shortcut, repeat: true });
+        expect(event.__defaultPrevented).toBeUndefined();
+        expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
+      }
+    }
+    expect(actions.undoLastAction).toHaveBeenCalledOnce();
+    expect(actions.redoLastAction).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["dispose", "unload"])("keeps hotkeys after window moves and removes listeners on %s", (cleanup) => {
+    Object.assign(container, { ownerDocument: { defaultView: win } });
+    const dispose = registerHistoryHotkeys(component, container as unknown as HTMLElement, actions);
+    const bar = makeFakeEl(); container.appendChild(bar);
+    const popout = makeFakeEl("window");
+    for (const currentWindow of [popout, win, popout]) {
+      Object.assign(container, { ownerDocument: { defaultView: currentWindow } });
+      expect(key(bar).__defaultPrevented).toBe(true);
+      expect(key(bar, { shiftKey: true }).__defaultPrevented).toBe(true);
+      expect(win.listeners.keydown ?? []).toHaveLength(0);
+      expect(popout.listeners.keydown ?? []).toHaveLength(0);
+    }
+    expect(actions.undoLastAction).toHaveBeenCalledTimes(3);
+    expect(actions.redoLastAction).toHaveBeenCalledTimes(3);
+    if (cleanup === "dispose") dispose();
+    else cleanups.forEach((fn) => fn());
+    expect(container.listeners.keydown).toHaveLength(0);
+    expect(container.listeners.pointerdown).toHaveLength(0);
+    key(bar);
+    dispatch(container, "pointerdown", { button: 0, target: bar });
+    expect(actions.undoLastAction).toHaveBeenCalledTimes(3);
+    expect(container.focused).toBeFalsy();
   });
 
   it.each(["input", "textarea", "select", "contenteditable", "plaintext-only", "cm-editor", "markdown-source-view", "monaco-editor"])("preserves native/editor undo in %s, including nested targets", (kind) => {
@@ -62,6 +108,6 @@ describe("view history hotkeys", () => {
     dispatch(container, "pointerdown", { button: 0, target: bar });
     expect(container.focused).toBe(true);
     dispose();
-    expect(win.listeners.keydown).toHaveLength(0); expect(container.listeners.pointerdown).toHaveLength(0);
+    expect(container.listeners.keydown).toHaveLength(0); expect(container.listeners.pointerdown).toHaveLength(0);
   });
 });
