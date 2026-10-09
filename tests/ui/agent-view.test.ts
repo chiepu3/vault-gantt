@@ -8,6 +8,8 @@ import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { FakeVault } from "../app/fake-vault";
 import { FakeProvider } from "../ai/fake-provider";
 import { createFakeDocument, findAll, type FakeEl } from "../stubs/fake-dom";
+import { CREATE_PREVIEW, MCP_PREVIEW } from "../contracts/fixtures";
+import { fakePorts } from "./preview-fakes";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("independent AgentView", () => {
   it("pane close/reopen preserves the vault session, draft and streaming state", async () => {
@@ -133,5 +135,67 @@ describe("independent AgentView", () => {
   });
   it("diff text conveys old/new dates and non-date changes without relying on color", () => {
     expect(diffText([{ taskId: "synthetic", name: "作業", fields: [{ field: "plannedStartDate", before: "2026-10-01", after: "2026-10-03" }, { field: "notes", before: "旧", after: "新" }] }])).toBe("作業\n開始日: 2026-10-01 → 2026-10-03\nメモ: 旧 → 新");
+  });
+});
+
+describe("AgentView operation preview cards", () => {
+  async function open(previews: readonly any[], extras: Record<string, unknown> = {}) {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const session = new ChatSession(vault, registry, new FakeProvider());
+    session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
+    const ports = fakePorts(previews.map((preview) => ({ ...preview, origin: preview.origin.kind === "chat" ? { kind: "chat", conversationId: session.active.id } : preview.origin })));
+    const view = new AgentView({} as any, { session, secretIds: () => [], openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false, previewPorts: ports, ...extras });
+    await view.onOpen();
+    return { view, session, ports, root: view.containerEl as unknown as FakeEl };
+  }
+  it("shows this conversation's chat previews as cards, not other origins or conversations", async () => {
+    const other = { ...CREATE_PREVIEW, previewId: "elsewhere", origin: { kind: "chat", conversationId: "other-conversation" } };
+    const { root, ports, view, session } = await open([CREATE_PREVIEW, MCP_PREVIEW]);
+    ports.previewPort.set({ ...other, origin: { kind: "chat", conversationId: "other-conversation" } } as any);
+    view.render();
+    const cards = findAll(root, (el) => el.classList.contains("vg-pv-card"));
+    expect(cards.map((card) => card.dataset.previewId)).toEqual(["create-fixture"]);
+    await view.onClose(); session.dispose();
+  });
+  it("renders nothing extra without preview ports (legacy view unchanged)", async () => {
+    const { root, view, session } = await open([], { previewPorts: undefined });
+    expect(findAll(root, (el) => el.classList.contains("vg-pv-card"))).toHaveLength(0);
+    await view.onClose(); session.dispose();
+  });
+  it("keeps keyboard focus on the same button across re-renders", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-09T03:05:00Z"));
+    const { root, view, session } = await open([CREATE_PREVIEW]);
+    const reject = findAll(root, (el) => el.dataset?.action === "reject")[0];
+    (document as any).activeElement = reject;
+    view.render();
+    const again = findAll(root, (el) => el.dataset?.action === "reject")[0];
+    expect(again).not.toBe(reject); expect(again.focused).toBe(true);
+    await view.onClose(); session.dispose();
+  });
+  it("approves through the human port and re-renders with the saved result", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-09T03:05:00Z"));
+    const { root, ports, view, session } = await open([CREATE_PREVIEW]);
+    const approve = findAll(root, (el) => el.dataset?.action === "approve")[0];
+    expect(approve.disabled).toBe(false);
+    for (const listener of approve.listeners.click) listener({});
+    await vi.waitFor(() => expect(ports.approved).toEqual(["create-fixture"]));
+    await vi.waitFor(() => expect(findAll(root, (el) => el.classList.contains("vg-pv-card"))[0]?.dataset.state).toBe("success"));
+    await view.onClose(); session.dispose();
+  });
+  it("drops the Gantt overlay of a chat plan on conversation switch and on close, but keeps the plan", async () => {
+    const { ports, view, session } = await open([CREATE_PREVIEW]);
+    ports.previewPort.focused = "create-fixture";
+    session.newConversation(); view.render();
+    expect(ports.previewPort.focused).toBeNull();
+    ports.previewPort.focused = "create-fixture"; await view.onClose();
+    expect(ports.previewPort.focused).toBeNull(); expect(ports.previewPort.previews.has("create-fixture")).toBe(true);
+    session.dispose();
+  });
+  it("leaves another origin's Gantt focus alone when the chat closes", async () => {
+    const { ports, view, session } = await open([CREATE_PREVIEW, MCP_PREVIEW]);
+    ports.previewPort.focused = "mcp-fixture"; await view.onClose();
+    expect(ports.previewPort.focused).toBe("mcp-fixture"); session.dispose();
   });
 });

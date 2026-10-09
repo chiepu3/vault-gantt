@@ -1,5 +1,7 @@
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
-import { renderGhost } from "./ghost-layer";
+import { renderGhost, renderPointGhosts } from "./ghost-layer";
+import type { PreviewPort } from "../contracts/ports";
+import { PreviewGanttLayer } from "./preview-gantt-layer";
 import { ItemView, Menu, Notice, moment } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
 
@@ -244,6 +246,8 @@ function getPrimaryGanttTagDefinition(
 
 export interface TaskGanttViewHost {
   ghosts?: ScheduleGhostStore;
+  /** Pending/saved operation previews to project onto the chart. Absent = no preview overlay. */
+  previewPort?: PreviewPort;
 
   logger: Logger;
 
@@ -897,6 +901,12 @@ export class TaskGanttView extends ItemView {
   private unsubscribeGhosts?: () => void;
   private readonly ghostNodes = new Map<string, { nodes: HTMLElement[]; current?: HTMLElement }>();
   private ghostLegend?: HTMLElement;
+  private previewLayer?: PreviewGanttLayer;
+  private unsubscribePreview?: () => void;
+  private previewDockHost?: HTMLElement;
+  /** Overlay-only nodes (deadline/marker ghosts, delete labels) and the bars we marked. Live rows are untouched. */
+  private readonly previewNodes = new Map<string, HTMLElement[]>();
+  private readonly previewMarkedBars = new Set<HTMLElement>();
   /** The scrollable element. */
   private wrapEl!: HTMLElement;
   /** Always-visible current-month label, kept in the toolbar so it survives
@@ -1239,6 +1249,19 @@ export class TaskGanttView extends ItemView {
     container.appendChild(this.toolbarEl);
     this.renderToolbar();
 
+    if (this.host.previewPort) {
+      this.previewDockHost = document.createElement("div");
+      this.previewDockHost.classList.add("vg-pv-dockhost");
+      this.previewDockHost.hidden = true;
+      container.appendChild(this.previewDockHost);
+      this.previewLayer = new PreviewGanttLayer(this.host.previewPort);
+      this.unsubscribePreview = this.previewLayer.subscribe(() => {
+        this.clearGhostLayer();
+        this.renderPreviewDock();
+        this.renderChart();
+      });
+      this.renderPreviewDock();
+    }
 
     this.wrapEl = document.createElement("div");
     this.wrapEl.classList.add("task-gantt-wrap");
@@ -1282,6 +1305,10 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    // The overlay never outlives the view; a pending plan itself stays in the store.
+    this.unsubscribePreview?.(); this.unsubscribePreview = undefined;
+    if (this.previewLayer?.active) this.previewLayer.close();
+    this.previewLayer?.dispose(); this.previewLayer = undefined;
     this.unsubscribeGhosts?.(); this.unsubscribeGhosts = undefined;
     this.host.ghosts?.clear();
     this.clearGhostLayer();
@@ -1310,6 +1337,38 @@ export class TaskGanttView extends ItemView {
       nodes.forEach((node) => node.remove()); current?.classList.remove("vg-ai-target");
     }
     this.ghostNodes.clear(); this.ghostLegend?.remove(); this.ghostLegend = undefined;
+    for (const [taskId, nodes] of this.previewNodes) {
+      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      nodes.forEach((node) => node.remove());
+    }
+    this.previewNodes.clear();
+    for (const bar of this.previewMarkedBars) bar.classList.remove("vg-pv-delete-target");
+    this.previewMarkedBars.clear();
+  }
+
+  /** Re-draws the separate preview region (after-state rows, panels) for the focused preview. */
+  private renderPreviewDock(): void {
+    const host = this.previewDockHost; if (!host || !this.previewLayer) return;
+    host.empty();
+    this.previewLayer.renderDock(host);
+    host.hidden = !this.previewLayer.active;
+  }
+
+  /** Deadline/marker ghosts and delete labels for one task, in the same lane as the schedule ghost. */
+  private paintPreviewExtras(timeline: HTMLElement, taskId: string, baseDate: string, dayWidth: number, top: number, bar?: HTMLElement): void {
+    const layer = this.previewLayer; if (!layer?.active) return;
+    this.previewNodes.get(taskId)?.forEach((node) => node.remove());
+    const nodes: HTMLElement[] = [];
+    const points = layer.pointsFor(taskId);
+    if (points.length) nodes.push(...renderPointGhosts(timeline, points, baseDate, dayWidth, top));
+    if (layer.isDeleted(taskId)) {
+      if (bar) { bar.classList.add("vg-pv-delete-target"); this.previewMarkedBars.add(bar); }
+      const note = document.createElement("span"); note.className = "vg-pv-live-delete";
+      note.textContent = "削除予定"; note.title = "承認すると削除されます（元の行は承認まで変わりません）";
+      note.style.top = Math.max(0, top - 10) + "px"; note.style.left = (bar ? Number.parseFloat(bar.style.left || "0") : 0) + "px";
+      timeline.appendChild(note); nodes.push(note);
+    }
+    if (nodes.length) this.previewNodes.set(taskId, nodes);
   }
 
   /** Opens a context menu after closing any prior menu and its native children. */
@@ -1364,11 +1423,12 @@ export class TaskGanttView extends ItemView {
  */
   renderChart(): void {
     this.dateClassesCache.clear();
-    if (this.host.ghosts?.entries.size && !this.ghostLegend) {
+    if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
+      const legend = this.previewLayer?.legend();
       this.ghostLegend = document.createElement("span");
       this.ghostLegend.className = "vg-ai-legend";
-      this.ghostLegend.textContent = "AI変更 · 上: 前（破線） ／ 下: 後 · 60秒";
-      this.ghostLegend.title = "変更前は上段の破線帯、変更後は下段の通常バー。◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
+      this.ghostLegend.textContent = legend?.text ?? "AI変更 · 上: 前（破線） ／ 下: 後 · 60秒";
+      this.ghostLegend.title = legend?.title ?? "変更前は上段の破線帯、変更後は下段の通常バー。◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
       this.toolbarEl.appendChild(this.ghostLegend);
     }
 
@@ -1488,7 +1548,7 @@ export class TaskGanttView extends ItemView {
       const rowEl = this.renderParentRow(parent, dates);
       rowFragment.appendChild(rowEl);
       rowEls.set(parent.file.path, rowEl);
-      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? ""));
+      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? ""));
     }
     this.wrapEl.appendChild(rowFragment);
 
@@ -1591,7 +1651,7 @@ export class TaskGanttView extends ItemView {
       }
 
 
-      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "");
+      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? "");
       if (
         oldEl !== undefined &&
         cache.rowFingerprints.get(path) === fingerprint
@@ -3844,11 +3904,13 @@ export class TaskGanttView extends ItemView {
 
     const renderedIds = new Set(renders.map((item) => item.bar.task.id));
     for (const subtask of parent.subtasks?.values() ?? []) {
-      const ghost = this.host.ghosts?.entries.get(subtask.id);
+      const savedGhost = this.host.ghosts?.entries.get(subtask.id);
+      const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(subtask.id);
       if (ghost && !renderedIds.has(subtask.id)) {
         this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
-        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX) });
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX, undefined, savedGhost ? "saved" : this.previewLayer?.ghostMode) });
       }
+      if (!renderedIds.has(subtask.id)) this.paintPreviewExtras(timeline, subtask.id, baseDate, dayWidth, BAR_VERTICAL_INSET_PX);
     }
     // Bars, their markers and their external labels.
     for (const render of renders) {
@@ -3918,11 +3980,13 @@ export class TaskGanttView extends ItemView {
       resizeEnd.classList.add("task-gantt-resize-end");
       barEl.appendChild(resizeEnd);
       timeline.appendChild(barEl);
-      const ghost = this.host.ghosts?.entries.get(bar.task.id);
+      const savedGhost = this.host.ghosts?.entries.get(bar.task.id);
+      const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(bar.task.id);
       if (ghost) {
         this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
-        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl), current: barEl });
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl, savedGhost ? "saved" : this.previewLayer?.ghostMode), current: barEl });
       }
+      this.paintPreviewExtras(timeline, bar.task.id, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl);
       // Keep a keyed lookup for Bulk-Move previews and drag-state styling.
       this.barElsByTaskId.set(bar.task.id, barEl);
 

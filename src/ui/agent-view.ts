@@ -2,6 +2,8 @@ import { ItemView, Menu, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import { ChatSession, Proposal } from "../ai/chat-session";
 import type { OperationResult, TaskDiff } from "../app/operation-registry";
+import type { PreviewUiHostPorts } from "../contracts/ports";
+import { captureFocusKey, PreviewCardController, renderOperationPreviewCard, restoreFocusKey } from "./operation-preview-card";
 import { renderScheduleTimeline } from "./schedule-timeline";
 
 export const VIEW_TYPE_AI_CHAT = "vault-gantt-ai-chat";
@@ -14,6 +16,10 @@ export interface AgentViewHost {
   undo(result: OperationResult): Promise<void> | void;
   canUndo(result: OperationResult): boolean;
   undoStatus?(result: OperationResult): "available" | "undone" | "unavailable";
+  /** Ports for operation previews (cards for every effect). Absent = legacy cards only. */
+  previewPorts?: PreviewUiHostPorts;
+  /** Reverse the history entry an outcome refers to; the ports only inspect history. */
+  undoEntry?(entryId: string): Promise<void> | void;
 }
 const fieldNames: Record<string, string> = { plannedStartDate: "開始日", plannedEndDate: "終了日", dueDate: "期限", notes: "メモ", displayName: "表示名", title: "名前", create: "作成" };
 export function diffText(diffs: TaskDiff[]): string {
@@ -38,6 +44,9 @@ export function renderChatText(parent: HTMLElement, text: string): void {
 
 export class AgentView extends ItemView {
   private unsubscribe?: () => void;
+  private unsubscribePreviews: (() => void)[] = [];
+  private cards?: PreviewCardController;
+  private lastConversationId?: string;
   private timer?: ReturnType<typeof setTimeout>;
   private messagesEl!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -101,12 +110,29 @@ export class AgentView extends ItemView {
     this.unsubscribe = this.host.session.subscribe(() => {
       if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40);
     });
+    const ports = this.host.previewPorts;
+    if (ports) {
+      const rerender = () => { if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40); };
+      this.cards = new PreviewCardController(ports, { openGantt: () => this.host.openGantt(), undoEntry: this.host.undoEntry }, rerender);
+      this.unsubscribePreviews = [ports.previewPort.subscribe(rerender), ports.historyPort.subscribe(rerender)];
+    }
     this.render();
   }
-  async onClose(): Promise<void> { this.modelMenu?.hide(); this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  async onClose(): Promise<void> {
+    this.releasePreviewFocus();
+    for (const stop of this.unsubscribePreviews) stop();
+    this.unsubscribePreviews = []; this.cards = undefined;
+    this.modelMenu?.hide(); this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  /** The Gantt overlay of a chat proposal is dropped on conversation switch and view close. The pending plan itself stays. */
+  private releasePreviewFocus(keepConversationId?: string): void {
+    const port = this.host.previewPorts?.previewPort; if (!port) return;
+    const focused = port.focusedPreviewId(); const preview = focused ? port.inspect(focused) : undefined;
+    if (preview?.origin.kind === "chat" && preview.origin.conversationId !== keepConversationId) port.focus(null);
+  }
   render(): void {
     if (!this.messagesEl) return;
     const session = this.host.session; const conversation = session.active;
+    if (this.lastConversationId !== conversation.id) { if (this.lastConversationId !== undefined) this.releasePreviewFocus(conversation.id); this.lastConversationId = conversation.id; }
     const names = { idle: "待機中", running: "実行中", preview: "確認待ち", failed: "失敗", cancelled: "停止済み" };
     this.statusEl.textContent = session.connected ? names[conversation.status] : "未接続";
     this.statusEl.dataset.state = session.connected ? conversation.status : "disconnected";
@@ -130,6 +156,7 @@ export class AgentView extends ItemView {
     this.modelEl.dataset.model = session.config.model;
     if (running) this.modelMenu?.hide();
     const stickToBottom = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 64;
+    const focusKey = captureFocusKey();
     this.messagesEl.empty();
     if (!conversation.messages.length) {
       const empty = this.element(this.messagesEl, "div"); empty.className = "vg-ai-empty";
@@ -153,7 +180,20 @@ export class AgentView extends ItemView {
         }
       }
     }
+    this.renderPreviewCards(conversation.id);
+    restoreFocusKey(this.messagesEl, focusKey);
     if (stickToBottom) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  }
+  /** Operation previews raised by this conversation, in creation order. */
+  private renderPreviewCards(conversationId: string): void {
+    const controller = this.cards; const ports = this.host.previewPorts;
+    if (!controller || !ports) return;
+    const previews = ports.previewPort.list().filter((preview) => preview.origin.kind === "chat" && preview.origin.conversationId === conversationId)
+      .slice().sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    controller.pager.prune(new Set(ports.previewPort.list().map((preview) => preview.previewId)));
+    if (!previews.length) return;
+    const section = this.element(this.messagesEl, "section"); section.className = "vg-pv-chat-previews"; section.setAttribute("aria-label", "変更案");
+    for (const preview of previews) renderOperationPreviewCard(section, preview, controller.optionsFor(preview));
   }
   private openModelMenu(): void {
     if (this.modelEl.disabled || this.host.session.active.status === "running") return;
