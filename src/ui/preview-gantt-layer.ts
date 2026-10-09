@@ -172,6 +172,23 @@ export class PreviewGanttLayer {
   renderDock(parent: HTMLElement): HTMLElement | undefined {
     const source = this.source; if (!source) return undefined;
     const { preview, outcome } = source; const projection = this.merged;
+    const savedEntries = outcome ? outcome.actions.filter((action) => action.state === "committed").flatMap((action) => {
+      const entry = preview.entries.find((entry) => entry.actionId === action.actionId);
+      return entry ? [{ ...entry, effects: action.actual }] : [];
+    }) : preview.entries;
+    const renderedPreview = { ...preview, entries: savedEntries };
+    const renderPanels = () => {
+      renderNonGanttPanel(dock, renderedPreview, projection);
+      if (outcome) {
+        const unsaved = preview.entries.filter((entry) => !outcome.actions.some((action) => action.actionId === entry.actionId && action.state === "committed"));
+        if (unsaved.length) {
+          const section = h(dock, "section", "vg-pv-unsaved"); section.setAttribute("aria-label", "未保存の変更案");
+          h(section, "strong", "vg-pv-subtitle", `未保存の変更案（${unsaved.length}件）`);
+          h(section, "p", "vg-pv-note", "以下は変更案の内容です。保存されていません。");
+          for (const entry of unsaved) { h(section, "div", "vg-pv-muted", entry.displayName); for (const effect of entry.effects) renderEffect(section, effect, { entity: entry.entity, projection: null }); }
+        }
+      }
+    };
     const dock = h(parent, "section", "vg-pv-dock"); dock.setAttribute("role", "region");
     dock.setAttribute("aria-label", source.kind === "actual" ? "保存結果のGantt確認" : "変更案のGantt確認");
     const head = h(dock, "div", "vg-pv-dockhead");
@@ -182,7 +199,7 @@ export class PreviewGanttLayer {
     h(head, "span", "vg-pv-origin", "要求元: " + originLabel(preview.origin)).dataset.origin = preview.origin.kind;
     const close = h(head, "button", "vg-pv-button", "閉じる") as HTMLButtonElement; close.type = "button"; close.title = "Gantt確認を終了します（変更案は残ります）";
     close.addEventListener("click", () => this.close());
-    if (!projection) { h(dock, "p", "vg-pv-note", source.kind === "actual" ? "保存された内容はGanttの表示に影響しません。" : "この変更案はGanttの表示に影響しません。"); renderNonGanttPanel(dock, preview, null); return dock; }
+    if (!projection) { h(dock, "p", "vg-pv-note", source.kind === "actual" ? "保存された内容はGanttの表示に影響しません。" : "この変更案はGanttの表示に影響しません。"); renderPanels(); return dock; }
     const overlay = this.derived ?? deriveOverlay(projection);
     const hidden = projection.visibility.filter((item) => item.state !== "visible");
     const summary = h(dock, "div", "vg-pv-muted", `対象 ${projection.coverage.targetCount}件 · 表示 ${projection.visibility.length - hidden.length}件 · 表示されない ${hidden.length}件`);
@@ -208,12 +225,12 @@ export class PreviewGanttLayer {
       h(list, "div", "vg-pv-subtitle", `未配置（作成予定 ${overlay.unplaced.length}件）`);
       for (const item of overlay.unplaced) h(list, "div", "vg-pv-muted", `${item.name}: ${item.reason}`);
     }
-    for (const entry of preview.entries) for (const effect of entry.effects) if (effect.kind === "order") {
-      const section = h(dock, "div", "vg-pv-ordered"); h(section, "p", "vg-pv-note", "仮の並び順です。元の行順とスクロール位置は承認するまで変わりません。");
+    for (const entry of savedEntries) for (const effect of entry.effects) if (effect.kind === "order") {
+      const section = h(dock, "div", "vg-pv-ordered"); h(section, "p", "vg-pv-note", outcome ? "保存された並び順です。" : "仮の並び順です。元の行順とスクロール位置は承認するまで変わりません。");
       renderEffect(section, effect, { entity: entry.entity, projection, names: buildNameMap(projection) });
     }
     renderStateDiffs(dock, projection);
-    renderNonGanttPanel(dock, preview, projection);
+    renderPanels();
     return dock;
   }
 }

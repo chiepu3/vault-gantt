@@ -6,6 +6,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
@@ -32,7 +33,8 @@ fs.mkdirSync(path.join(vault, "tasks")); fs.writeFileSync(path.join(vault, taskP
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "vg-p3-runtime-")), profile = path.join(root, "independent-profile"), temp = path.join(root, "runtime-temp");
 for (const dir of [profile, temp]) fs.mkdirSync(dir);
 fs.writeFileSync(path.join(profile, "obsidian.json"), JSON.stringify({ vaults: { a1b2c3d4e5f60718: { path: vault, ts: Date.now(), open: true } } }));
-const outDir = "/mnt/d/vault-gantt-ai-design/v5-integration";
+const reviewFixes = process.env.VG_REVIEW_FIXES === "1";
+const outDir = reviewFixes ? "/mnt/d/vault-gantt-ai-design/v7-fix" : "/mnt/d/vault-gantt-ai-design/v5-integration";
 function assertIsolation() {
   for (const dir of [vault, root, profile, temp]) assert.ok(fs.realpathSync(dir) === dir && dir.startsWith("/tmp/"));
   for (let dir = outDir; ; dir = path.dirname(dir)) {
@@ -41,7 +43,8 @@ function assertIsolation() {
   }
 }
 assertIsolation(); fs.mkdirSync(outDir, { recursive: true }); assertIsolation();
-let runtime, client, xvfb, obsidian;
+let runtime, client, stdioClient, xvfb, obsidian;
+const measurements = [], monthChecks = [];
 async function stopOwnProcess(child) {
   if (!child?.pid) return;
   try { process.kill(-child.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
@@ -71,6 +74,11 @@ async function shot(cdp, name) {
   await cdp.evaluate("document.activeElement?.blur()"); await new Promise(resolve => setTimeout(resolve, 400)); assertIsolation();
   const file = path.join(outDir, `${runId}-${name}.png`), image = await cdp.send("Page.captureScreenshot", { format: "png" });
   fs.writeFileSync(file, Buffer.from(image.data, "base64"), { flag: "wx" }); screenshots.push(file);
+}
+async function setTheme(cdp, theme) {
+  await cdp.evaluate(`(() => { app.setTheme(${JSON.stringify(theme)}); app.vault.setConfig('theme', ${JSON.stringify(theme)}); app.workspace.trigger('css-change'); })()`);
+  const bodyClass = theme === "obsidian" ? "theme-dark" : "theme-light";
+  await cdp.waitForExpression(`document.body.classList.contains(${JSON.stringify(bodyClass)})`, { timeoutMs: 10000, label: bodyClass });
 }
 
 try {
@@ -110,11 +118,72 @@ try {
   await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(initial.previewId)})?.status === "success"`, { timeoutMs: 10000, label: "chat approval save" });
   assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("チャット保存"));
   await shot(cdp, "02-chat-saved");
+  if (reviewFixes) {
+    await cdp.evaluate(`(async () => {
+      const plugin = app.plugins.plugins["vault-gantt"];
+      await plugin.uiPort.request("V02", { position: "tab" });
+      const view = app.workspace.getLeavesOfType("task-gantt-view")[0].view;
+      view.scrollToDate(${JSON.stringify(today)}, 140);
+    })()`);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const created = await cdp.evaluate(`(async () => {
+      const plugin = app.plugins.plugins["vault-gantt"];
+      plugin.chatSession.provider = { connected: () => true, async *stream(request) {
+        const input = { parentId: ${JSON.stringify(taskPath)}, name: "作成案の確認", date: ${JSON.stringify(today)} };
+        const preview = await plugin.operationService.propose("T06", input, {
+          vaultInstanceId: plugin.operationService.vaultInstanceId, principalId: "obsidian-chat", origin: { kind: "chat", conversationId: request.conversationId },
+          capabilities: ["read", "propose"], requestId: "v7-create", signal: request.signal
+        });
+        yield { type: "plan", preview, operationId: "T06", plan: plugin.operationService.legacyPlan(preview), operation: "update", input };
+      } };
+      await plugin.openAIChat("tab");
+      const input = document.querySelector(".vg-ai-composer textarea"); input.value = "今日の子タスクを作成して"; input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector(".vg-ai-send").click();
+      await new Promise(resolve => { const unsubscribe = plugin.chatSession.subscribe(() => { if (plugin.chatSession.active.status !== "running") { unsubscribe(); resolve(); } }); });
+      return plugin.previewPort.list().find(p => p.operationId === "T06").previewId;
+    })()`);
+    const createCard = `[data-preview-id="${created}"]`;
+    await cdp.waitForExpression(`!!document.querySelector(${JSON.stringify(createCard + ' button[data-action="focus"]')})`, { timeoutMs: 10000, label: "creation card" });
+    await cdp.evaluate(`document.querySelector(${JSON.stringify(createCard + ' button[data-action="focus"]')}).click()`);
+    await cdp.waitForExpression(`!!document.querySelector(".vg-pv-dockhost:not([hidden])")`, { timeoutMs: 10000, label: "creation Gantt preview" });
+    await cdp.waitForExpression(`app.workspace.getActiveViewOfType ? app.workspace.activeLeaf?.view?.getViewType() === 'task-gantt-view' : false`, { timeoutMs: 10000, label: "visible Gantt tab" });
+    for (const theme of ["moonstone", "obsidian"]) {
+      await setTheme(cdp, theme);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const month = await cdp.evaluate(`(() => {
+        const view = app.workspace.getLeavesOfType("task-gantt-view")[0].view;
+        const date = view.getVisibleStartDate(), parts = date.split('-');
+        return { date, text: view.floatingMonthEl.textContent, expected: parts[0] + '年' + Number(parts[1]) + '月', rangeStart: view.rangeStart, scrollLeft: view.wrapEl.scrollLeft, extending: view.isExtendingRange, cached: view.lastFloatingMonth, connected: view.floatingMonthEl.isConnected, domText: document.querySelector('.task-gantt-floating-month')?.textContent, bodyTheme: document.body.classList.contains('theme-dark') ? 'dark' : 'light' };
+      })()`);
+      console.log(JSON.stringify({ monthDiagnostic: month }));
+      await shot(cdp, `05-create-gantt-${theme}`);
+      assert.equal(month.text, month.expected); monthChecks.push({ theme, ...month });
+      assert.equal(month.date.slice(0, 7), today.slice(0, 7));
+      assert.equal(month.bodyTheme, theme === "obsidian" ? "dark" : "light");
+    }
+    await setTheme(cdp, "moonstone"); await cdp.evaluate(`app.plugins.plugins["vault-gantt"].openAIChat("tab")`);
+    await cdp.evaluate(`document.querySelector(${JSON.stringify(createCard + ' button[data-action="approve"]')}).click()`);
+    await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(created)})?.status === "success"`, { timeoutMs: 10000, label: "creation saved" });
+    assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("作成案の確認"));
+  }
   // Keep credentials in memory; never include them in logs/artifacts.
-  const connection = await cdp.evaluate(`({ endpoint: app.plugins.plugins["vault-gantt"].mcpServer?.endpoint, token: app.plugins.plugins["vault-gantt"].mcpServer?.sessionToken })`);
+  const connection = await cdp.evaluate(`({ endpoint: app.plugins.plugins["vault-gantt"].mcpServer?.endpoint, token: app.plugins.plugins["vault-gantt"].mcpServer?.sessionToken, vaultInstanceId: app.plugins.plugins["vault-gantt"].operationService.vaultInstanceId })`);
   assert.ok(connection.endpoint?.startsWith("http://127.0.0.1:"));
   client = new Client({ name: "p3-real-obsidian", version: "1" });
+  const httpStart = performance.now();
   await client.connect(new StreamableHTTPClientTransport(new URL(connection.endpoint), { requestInit: { headers: { Authorization: `Bearer ${connection.token}` } } }));
+  if (reviewFixes) {
+    const connected = performance.now(); const tools = await client.listTools(); const listed = performance.now();
+    const read = await client.callTool({ name: "context.overview", arguments: {} }); assert.ok(!read.isError); const end = performance.now();
+    measurements.push({ transport: "HTTP", connectMs: connected - httpStart, schemaListMs: listed - connected, firstReadMs: end - listed, totalMs: end - httpStart, tools: tools.tools.length });
+    stdioClient = new Client({ name: "v7-real-stdio", version: "1" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(repo, "tools/mcp-bridge/dist/bridge.cjs")], env: { VAULT_GANTT_MCP_URL: connection.endpoint, VAULT_GANTT_MCP_TOKEN: connection.token, VAULT_GANTT_MCP_VAULT_INSTANCE_ID: connection.vaultInstanceId }, stderr: "pipe" });
+    const start = performance.now(); await stdioClient.connect(transport, { timeout: 15000 }); const stdioConnected = performance.now();
+    const stdioTools = await stdioClient.listTools(); const stdioListed = performance.now();
+    const result = await stdioClient.callTool({ name: "context.overview", arguments: {} }); assert.ok(!result.isError); const stdioEnd = performance.now();
+    measurements.push({ transport: "stdio", connectMs: stdioConnected - start, schemaListMs: stdioListed - stdioConnected, firstReadMs: stdioEnd - stdioListed, totalMs: stdioEnd - start, tools: stdioTools.tools.length });
+    await stdioClient.close(); stdioClient = undefined;
+  }
   const proposal = await client.callTool({ name: "operations.T07.propose", arguments: { callerIntentId: "p3-mcp-rename", input: { taskId: childId, name: "MCP保存" } } });
   assert.ok(!proposal.isError, JSON.stringify(proposal));
   const data = proposal.structuredContent.data;
@@ -133,9 +202,10 @@ try {
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].generateMcpToken(true)`);
   const revoked = await cdp.evaluate(`app.plugins.plugins["vault-gantt"].previewPort.inspect(${JSON.stringify(pending.structuredContent.data.previewId)}).status`);
   assert.equal(revoked, "revoked"); assert.ok(!fs.readFileSync(path.join(vault, taskPath), "utf8").includes("未保存"));
-  console.log(JSON.stringify({ vault, root, screenshots, chatProvider: "deterministic (no LLM)", chatCardApproveSave: "passed", ganttPreviewDock: "passed", approvalList: "passed", mcpLoopbackApproveSave: "passed", tokenRotationRevokesPending: "passed" }));
+  console.log(JSON.stringify({ vault, root, screenshots, measurements, monthChecks, chatProvider: "deterministic (no LLM)", chatCardApproveSave: "passed", ganttPreviewDock: "passed", approvalList: "passed", mcpLoopbackApproveSave: "passed", tokenRotationRevokesPending: "passed" }));
 } finally {
   if (client) await client.close().catch(() => {});
+  if (stdioClient) await stdioClient.close().catch(() => {});
   runtime?.cdp.close();
   await Promise.all([stopOwnProcess(obsidian), stopOwnProcess(xvfb)]);
   console.log(`P3 test Vault: ${vault}`);

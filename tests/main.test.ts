@@ -199,9 +199,11 @@ function createHarness(storedData: unknown = undefined): Harness {
       processors.set(lang, handler);
     }
   );
-  (plugin as any).loadData = vi.fn(async () => storedData);
+  let persistedData = storedData;
+  (plugin as any).loadData = vi.fn(async () => persistedData);
   (plugin as any).saveData = vi.fn(async (data: any) => {
     savedData.push(data);
+    persistedData = structuredClone(data);
   });
 
   return {
@@ -351,8 +353,33 @@ describe("TaskWorkbenchPlugin", () => {
       await h.plugin.saveSettings();
 
       expect(h.savedData).toHaveLength(1);
-      expect(h.savedData[0]).toBe(h.plugin.settings);
+      expect(h.savedData[0]).toEqual(h.plugin.settings);
       expect(h.savedData[0].taskFolder).toBe("changed");
+    });
+    it("UI persistence shares the approval queue and keeps unrelated settings edited during the AI save", async () => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      const service = h.plugin.operationService;
+      const preview = await service.propose("S01", { taskFolder: "AI-folder" }, service.legacyContext());
+      let started!: () => void, release!: () => void;
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const ai = service.humanApprovalPort.approve(preview.previewId); await writing;
+      h.plugin.settings.ganttZoom = 60; const ui = h.plugin.saveSettings();
+      expect(h.plugin.saveData).toHaveBeenCalledTimes(1);
+      release(); expect((await ai).status).toBe("success"); await ui;
+      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "AI-folder", ganttZoom: 60 });
+      expect(h.plugin.settings).toMatchObject({ taskFolder: "AI-folder", ganttZoom: 60 });
+    });
+    it.each(["modify", "create", "delete", "rename"])("Vault %s clears the new saved projection without deleting the receipt", async (event) => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      (h.plugin as any).registerEvent = vi.fn(); h.vaultApi.on = vi.fn(); await h.plugin.onload();
+      const preview = await h.plugin.operationService.propose("S02", { filenameUsesDatePrefix: false }, h.plugin.operationService.legacyContext());
+      await h.plugin.humanApprovalPort.approve(preview.previewId); h.plugin.previewPort.focus(preview.previewId);
+      const callback = h.vaultApi.on.mock.calls.find(([name]: [string]) => name === event)[1];
+      callback({ path: "external.md" }); await flush();
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull(); expect(h.plugin.previewPort.inspectOutcome(preview.previewId)).toBeDefined();
     });
   });
 
@@ -593,6 +620,8 @@ describe("TaskWorkbenchPlugin", () => {
     it("undo/redo actions report history outcomes and refresh both open views after success", async () => {
       const h = createHarness({});
       await h.plugin.onload();
+      const preview = await h.plugin.operationService.propose("S02", { filenameUsesDatePrefix: false }, h.plugin.operationService.legacyContext());
+      await h.plugin.humanApprovalPort.approve(preview.previewId); h.plugin.previewPort.focus(preview.previewId);
       const workbenchView = Object.create(
         TaskWorkbenchView.prototype
       ) as TaskWorkbenchView;
@@ -620,11 +649,13 @@ describe("TaskWorkbenchPlugin", () => {
 
       await h.plugin.undoLastAction();
       expect(undo).toHaveBeenCalledWith(h.fakeApp.vault);
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(workbenchRender).toHaveBeenCalledTimes(1);
       expect(ganttRender).toHaveBeenCalledTimes(1);
       expect(NoticeMock).toHaveBeenLastCalledWith("元に戻しました: タスク更新");
 
-      await h.plugin.redoLastAction();
+      h.plugin.previewPort.focus(preview.previewId); await h.plugin.redoLastAction();
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(redo).toHaveBeenCalledWith(h.fakeApp.vault);
       expect(workbenchRender).toHaveBeenCalledTimes(2);
       expect(ganttRender).toHaveBeenCalledTimes(2);

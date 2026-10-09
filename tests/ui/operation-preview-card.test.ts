@@ -28,11 +28,11 @@ describe("pending card", () => {
     const card = render(CREATE_PREVIEW, { handlers: { onFocus: vi.fn(), onApprove: vi.fn(), onReject: vi.fn() } });
     expect(card.dataset.state).toBe("pending");
     expect(text(byClass(card, "vg-pv-status")[0])).toBe("未承認");
-    expect(text(byClass(card, "vg-pv-title")[0])).toBe("タスク · T06");
+    expect(text(byClass(card, "vg-pv-title")[0])).toBe("指定日に子タスクを作成");
     expect(text(card)).toContain("要求元: チャット"); expect(text(card)).toContain("対象 1件 · 操作 1件");
     expect(text(card)).toContain("新しい子"); expect(text(card)).toContain("作成");
     expect(buttons(card).map(text)).toEqual(["Ganttで確認", "承認して保存", "却下"]);
-    expect(card.getAttribute("aria-label")).toBe("タスク · T06（未承認）");
+    expect(card.getAttribute("aria-label")).toBe("指定日に子タスクを作成（未承認）");
     expect(text(byClass(card, "vg-pv-undo")[0])).toContain("保存後、全体を元に戻せます");
   });
   it("wires focus, approve and reject to the handlers", () => {

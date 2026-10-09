@@ -37,13 +37,15 @@ export const FIELD_LABELS: Record<string, string> = {
   dayWidth: "1日の幅", offset: "ずらし幅", mode: "モード", targetId: "対象", selection: "選択", provider: "プロバイダー",
   endpoint: "接続先URL", model: "モデル", auth: "認証方式", secretId: "秘密ID", status: "状態", activeConversationId: "表示中の会話",
   messageCount: "メッセージ数", destination: "送信先", enabled: "有効", intervalMinutes: "間隔（分）", recording: "記録", outputPath: "保存先", entryCount: "ログ件数",
-  taskFolder: "タスクフォルダ", filenameUsesDatePrefix: "ファイル名に日付", hideCompletedByDefault: "完了を既定で隠す", currentStatusRows: "現在の状況の行数",
-  lastAutoPriorityUpdate: "優先度の最終計算日", ganttNationalHolidaysUpdatedAt: "祝日の最終取得時刻", ganttNationalHolidays: "公式の祝日", ganttHolidays: "統合した休日",
-  autoPriorityEnabled: "優先度の自動計算", ganttManualHolidays: "手動の休日", ganttSpecialHolidays: "特別休日",
-  ganttFeatureDailyTodoEnabled: "Daily ToDo機能", ganttFeatureWorkloadEnabled: "作業時間機能", ganttFeatureEventsEnabled: "イベント機能",
-  ganttFeatureSyncEnabled: "同期機能", ganttFeatureTagsEnabled: "タグ機能", incrementalGanttRender: "差分描画", ganttShowTagsOnBars: "バーにタグ表示",
-  ganttShowParentTagsOnChildBars: "子バーに親タグ表示", ganttShowTagsOnParents: "親にタグ表示", ganttSyncEnabled: "同期", ganttSyncUrl: "同期先URL",
-  ganttSyncIntervalMinutes: "同期間隔（分）", ganttTags: "タグ定義", dailyTodoSources: "Dailyソース", ganttZoom: "Ganttの拡大率",
+  taskFolder: "管理タスクのフォルダー", filenameUsesDatePrefix: "ファイル名に日付を付ける", hideCompletedByDefault: "完了済みを初期表示で隠す", currentStatusRows: "現在の状況の行数",
+  autoPriorityEnabled: "期限にもとづく優先度の自動設定", ganttManualHolidays: "手動の休日", ganttSpecialHolidays: "特別休暇",
+  ganttFeatureDailyTodoEnabled: "Daily ToDoを表示", ganttFeatureWorkloadEnabled: "作業時間を表示", ganttFeatureEventsEnabled: "その他行を表示",
+  ganttFeatureSyncEnabled: "同期機能", ganttFeatureTagsEnabled: "タグ機能", incrementalGanttRender: "Gantt差分描画", ganttShowTagsOnBars: "子バーにタグ名を表示",
+  ganttShowParentTagsOnChildBars: "子バーに親のタグ名を表示", ganttShowTagsOnParents: "親タスク列にタグ名を表示", ganttSyncEnabled: "定期的な外部同期", ganttSyncUrl: "同期先のURL",
+  ganttSyncIntervalMinutes: "同期の間隔（分）", ganttTags: "タグ定義", dailyTodoSources: "Daily ToDoのソース", ganttZoom: "Ganttの拡大率",
+  lastAutoPriorityUpdate: "優先度を自動計算した日", ganttNationalHolidaysUpdatedAt: "祝日を更新した日", ganttNationalHolidays: "祝日", ganttHolidays: "休日",
+  previewId: "対象の変更案", conversationId: "対象の会話",
+  period: "日程", due: "期限", hours: "作業時間", id: "場所", kind: "種類", parentId: "親タスク",
 };
 const DATE_FIELDS = new Set(["dueDate", "plannedStartDate", "plannedEndDate", "createdAt", "updatedAt", "date"]);
 const SECRET_KEY = /secret|token|password|authorization|api[-_]?key/i;
@@ -62,25 +64,55 @@ export function fmtBytes(bytes: number): string {
 }
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
-export function fieldLabel(field: string): string { return FIELD_LABELS[field] ?? field; }
+/** Internal names never reach the screen: unknown keys read "その他の項目" (the raw key goes in a title attribute). */
+export function fieldLabel(field: string): string { return FIELD_LABELS[field] ?? "その他の項目"; }
+export const isKnownField = (field: string): boolean => field in FIELD_LABELS;
+const VALUE_LABELS: Record<string, Record<string, string>> = {
+  provider: { disconnected: "未接続", "openai-compatible": "OpenAI互換" },
+  auth: { secret: "秘密ストレージ", none: "認証なし" },
+  position: { tab: "タブ", left: "左サイドバー", right: "右サイドバー" },
+  sortKey: { dueDate: "期限", name: "名前", status: "状態", priority: "優先度", createdAt: "作成日", updatedAt: "更新日", plannedStartDate: "開始日", plannedEndDate: "終了日" },
+  sortDir: { asc: "昇順", desc: "降順" },
+  mode: { plan: "予定", actual: "実績" },
+  status: { idle: "待機中", running: "実行中", preview: "確認待ち", failed: "失敗", cancelled: "停止済み" },
+};
+const ENTITY_KIND_LABELS: Record<string, string> = {
+  task: "タスク", marker: "マーカー", event: "イベント", weekly: "定例作業", "daily-todo": "Daily ToDo", "daily-file": "デイリーノート",
+  "tag-definition": "タグ定義", source: "Daily ToDoのソース", setting: "設定", view: "表示", conversation: "チャット", integration: "外部連携",
+};
+export function entityKindLabel(kind: string): string { return ENTITY_KIND_LABELS[kind] ?? "その他"; }
+const INTERNAL_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+/** Entry heading without internal names: settings use their label, identifier-like display names are replaced. */
+export function entryTitle(entry: PreviewEntry): string {
+  if (entry.entity.kind === "setting") return fieldLabel(entry.entity.key);
+  const name = entry.displayName?.trim();
+  if (!name) return entityKindLabel(entry.entity.kind);
+  if (entry.entity.kind !== "task" && entry.entity.kind !== "marker" && entry.entity.kind !== "event" && INTERNAL_NAME.test(name)) return FIELD_LABELS[name] ?? entityKindLabel(entry.entity.kind);
+  return name;
+}
 
 /** One-line text for a value; arrays/objects fall back to JSON so nothing is dropped. */
 export function formatScalar(field: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "未設定";
   if (SECRET_KEY.test(field)) return "（表示しません）";
+  if (field === "previewId" || field === "conversationId") return "指定済み";
   if (typeof value === "boolean") {
     if (field === "completed") return value ? "完了" : "未完了";
     if (field === "ganttEnabled") return value ? "表示する" : "表示しない";
     return value ? "オン" : "オフ";
   }
-  if (typeof value === "number") return field.endsWith("Width") || field === "ganttZoom" ? `${value}px` : String(value);
+  if (typeof value === "number") return field === "ganttOrder" && value >= 100000 ? "末尾（自動）" : field.endsWith("Width") || field === "ganttZoom" ? `${value}px` : String(value);
   if (typeof value === "string") {
     if (field === "statusLabel" || field === "statusFilter") return (DEFAULT_STATUSES as Record<string, string>)[value] ?? (value === "all" ? "すべて" : value);
     if (field === "priorityMode") return value === "auto" ? "自動" : value === "manual" ? "手動" : value;
     if (DATE_FIELDS.has(field)) return fmtDate(value);
-    return value;
+    return VALUE_LABELS[field]?.[value] ?? value;
   }
   if (Array.isArray(value) && !value.length) return "なし";
+  if (Array.isArray(value)) {
+    const items = value.map((item) => typeof item === "string" || typeof item === "number" ? String(item) : isRecord(item) ? String(item.name ?? item.label ?? item.title ?? "") : "");
+    if (items.every(Boolean)) return items.join("、");
+  }
   return JSON.stringify(value);
 }
 
@@ -119,7 +151,8 @@ export function beforeAfterRow(parent: HTMLElement, label: string, renderBefore:
   return row;
 }
 function fieldRow(parent: HTMLElement, label: string, field: string, before: unknown, after: unknown): void {
-  beforeAfterRow(parent, label, (el) => renderValue(el, field, before), (el) => renderValue(el, field, after));
+  const row = beforeAfterRow(parent, label, (el) => renderValue(el, field, before), (el) => renderValue(el, field, after));
+  if (field && !isKnownField(field)) (row.children[0] as HTMLElement).title = field;
 }
 function note(parent: HTMLElement, text: string, className = "vg-pv-note"): HTMLElement { return h(parent, "p", className, text); }
 function badge(parent: HTMLElement, text: string, kind: string): HTMLElement { const element = h(parent, "span", "vg-pv-badge", text); element.dataset.kind = kind; return element; }
@@ -138,7 +171,8 @@ export function buildNameMap(projection: GanttProjectionV1 | null | undefined): 
   return names;
 }
 function nameOf(id: string, ctx: RenderContext): string {
-  return ctx.names?.get(id) ?? id.split("::").pop()?.split("/").pop()?.replace(/\.md$/, "") ?? id;
+  // The id is an internal path; without a projected name it stays out of sight.
+  return ctx.names?.get(id) ?? "名前を取得できない項目";
 }
 
 /** Date points on one axis (markers/deadlines). Glyph + text, never a zero-day bar. */
@@ -222,9 +256,12 @@ function renderDeletedContents(parent: HTMLElement, ctx: RenderContext): void {
 function describeObject(parent: HTMLElement, value: unknown, removed = false): void {
   const box = h(parent, "div", "vg-pv-object" + (removed ? " is-removed" : ""));
   if (!isRecord(value)) { h(box, "span", "vg-pv-text", formatScalar("", value)); return; }
+  // The internal id is not shown; it stays reachable as a tooltip.
+  if (typeof value.id === "string") box.title = value.id;
   for (const [key, item] of Object.entries(value)) {
+    if (key === "id") continue;
     const line = h(box, "div", "vg-pv-kv");
-    h(line, "span", "vg-pv-key", key === "id" ? "ID" : fieldLabel(key));
+    h(line, "span", "vg-pv-key", fieldLabel(key));
     renderValue(h(line, "span", "vg-pv-kvvalue"), key, item);
   }
 }
@@ -268,7 +305,7 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
   schedule: (parent, effect) => {
     if (same(effect.before, effect.after)) { note(parent, "日程の変更はありません。"); return; }
     renderScheduleTimeline(parent, effect);
-    note(parent, effect.unit === "business-day" ? "移動の単位: 営業日（休日を除いて数えます）" : "移動の単位: 暦日");
+    note(parent, effect.unit === "business-day" ? "日数の数え方: 営業日（休日を除く）" : "日数の数え方: 暦日（休日も数える）");
     if (!effect.after.start !== !effect.after.end) note(parent, "片方の日付だけが設定されます。両方そろうまでバーは表示されません。", "vg-pv-note is-warn");
   },
   deadline: (parent, effect) => {
@@ -350,7 +387,7 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
     const line = (state: typeof before) => state ? `- [${state.completed ? "x" : " "}] ${state.text}` : "なし";
     beforeAfterRow(parent, "ToDo行", (el) => { el.classList.add("is-code"); el.textContent = line(before); }, (el) => { el.classList.add("is-code"); el.textContent = line(after); }, !after ? "is-removed" : "");
     const target = after ?? before;
-    if (target) note(parent, `ファイル: ${target.path}（ソース: ${target.sourceKey}）`);
+    if (target) { const where = note(parent, `ファイル: ${target.path}`); where.title = `ソース: ${target.sourceKey}`; }
   },
   calendar: (parent, effect) => {
     if (!effect.added.length && !effect.removed.length) { note(parent, "休日の変更はありません。"); return; }
@@ -382,8 +419,8 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
   },
   "external-send": (parent, effect) => {
     note(parent, "承認すると下の内容が外部に送信されます。送信が成功するまで「適用済み」にはなりません。", "vg-pv-note is-warn");
-    const rows: [string, string][] = [["送信先", effect.destination], ["対象タスク", `${effect.taskCount}件`], ["送信量", fmtBytes(effect.bytes)], ["内容の識別値", effect.payloadDigest]];
-    for (const [key, value] of rows) { const line = h(parent, "div", "vg-pv-kv"); h(line, "span", "vg-pv-key", key); const text = h(line, "span", "vg-pv-kvvalue vg-pv-text", value); text.title = value; }
+    const rows: [string, string][] = [["送信先", effect.destination], ["対象タスク", `${effect.taskCount}件`], ["送信量", fmtBytes(effect.bytes)]];
+    for (const [key, value] of rows) { const line = h(parent, "div", "vg-pv-kv"); h(line, "span", "vg-pv-key", key); const text = h(line, "span", "vg-pv-kvvalue vg-pv-text", value); text.title = key === "送信先" ? `${value}（内容の識別値: ${effect.payloadDigest}）` : value; }
     const sent = h(parent, "div", "vg-pv-kv"); h(sent, "span", "vg-pv-key", "送る項目");
     const chips = h(sent, "span", "vg-pv-chips"); for (const field of effect.fieldsSent) h(chips, "span", "vg-pv-chip", fieldLabel(field));
     if (!effect.fieldsSent.length) h(chips, "span", "vg-pv-muted", "なし");
@@ -444,3 +481,31 @@ export function renderEntryEffects(parent: HTMLElement, entry: PreviewEntry, ctx
   if (onlyUpdatedAt(entry)) note(parent, "更新日だけが変わります。依頼した内容に差はありません。", "vg-pv-note is-warn");
   for (const effect of real) renderEffect(parent, effect, context);
 }
+
+/** Plain Japanese names for all 123 operations. The catalog's own purpose text mixes in UI jargon and is not shown. */
+export const OPERATION_LABELS: Record<string, string> = {
+  T01: "タスクを検索", T02: "タスクを取得", T03: "親タスクを作成", T04: "子タスクを作成", T05: "Gantt用の親タスクを作成", T06: "指定日に子タスクを作成",
+  T07: "名前を変更", T08: "状態を変更", T09: "完了・未完了を切り替え", T10: "現在の状況を更新", T11: "メモを更新", T12: "作成日を変更", T13: "期限を変更",
+  T14: "優先度を手動で設定", T15: "優先度を自動に戻す", T16: "タグを変更", T17: "Ganttへの表示を切り替え", T18: "親タスクの並び順を変更",
+  T19: "予定の開始日・終了日を設定", T20: "予定をまとめて移動", T21: "予定の開始日を変更", T22: "予定の終了日を変更", T23: "未配置の子タスクを日付に配置",
+  T24: "子タスクをGanttから外す", T25: "親の子タスクをまとめて移動", T26: "子タスクを削除", T27: "複数タスクをまとめて更新", T28: "複数タスクの日程をまとめて設定",
+  T29: "タスクの項目をまとめて更新", T30: "全タスクの優先度を再計算",
+  M01: "マーカーを追加", M02: "マーカーの名前・日付を変更", M03: "マーカーの日付を移動", M04: "マーカーを削除", M05: "マーカーのタグを変更", M06: "マーカーをまとめて置き換え",
+  M07: "予定時間を設定", M08: "実績時間を設定",
+  E01: "イベントを追加", E02: "イベント名を変更", E03: "イベントを別の日へ移動", E04: "イベントを複製", E05: "イベントを削除", E06: "イベントの予定時間を設定", E07: "イベントの実績時間を設定",
+  W01: "定例作業を追加", W02: "定例作業を変更", W03: "定例作業を削除",
+  D01: "日別ToDoを取得", D02: "デイリーノートを作成", D03: "ToDoを追加", D04: "ToDoの文面を変更", D05: "ToDoの完了・未完了を切り替え", D06: "ToDoを削除",
+  D07: "日別ToDoをまとめて保存", D08: "ToDoの元ノートを開く", D09: "ToDoをすばやく追加",
+  S01: "管理タスクのフォルダーを変更", S02: "ファイル名の日付を切り替え", S03: "完了済みを初期表示で隠す設定を変更", S04: "現在の状況の行数を変更", S05: "優先度の自動設定を切り替え",
+  S06: "休日を追加・解除", S07: "特別休暇を置き換え", S08: "祝日を更新", S09: "Daily ToDo行の表示を切り替え", S10: "作業時間の表示を切り替え", S11: "その他行の表示を切り替え",
+  S12: "同期機能を切り替え", S13: "タグ機能を切り替え", S14: "Gantt差分描画を切り替え", S15: "子バーのタグ名表示を切り替え", S16: "親のタグ名表示を切り替え", S17: "親タスク列のタグ名表示を切り替え",
+  S18: "定期的な外部同期を切り替え", S19: "同期先のURLを変更", S20: "同期の間隔を変更", S21: "今すぐ外部同期", S22: "タグ定義を追加", S23: "タグ名を変更", S24: "タグの色を変更",
+  S25: "タグの並び順を変更", S26: "タグ定義を削除", S27: "新しいタグを作って付ける", S28: "Daily ToDoのソースを追加", S29: "ソース名を変更", S30: "ソースの書式を変更",
+  S31: "ソースのテンプレートを設定", S32: "ソースからのGantt作成を切り替え", S33: "ソースの並び順を変更", S34: "ソースを削除", S35: "Daily Notes設定からソースを取り込む",
+  V01: "タスク一覧を開く", V02: "Ganttを開く", V03: "タスク検索を開く", V04: "タスクのノートを開く", V05: "指定日のDaily ToDo編集を開く", V06: "AIチャットを開く",
+  V07: "一覧の検索文字を変更", V08: "状態の絞り込みを変更", V09: "並び替えを変更", V10: "期限順の表示を切り替え", V11: "完了タスクの表示を切り替え", V12: "親タスクの展開・折りたたみ",
+  V13: "Ganttのタグ絞り込みを変更", V14: "Ganttの拡大率を変更", V15: "日付へ移動", V16: "一覧とGanttを再読み込み", V17: "詳細を表示", V18: "作業時間入力の対象を切り替え",
+  V19: "まとめ移動の選択を切り替え", V20: "直前の操作を元に戻す", V21: "元に戻した操作をやり直す", V22: "診断記録を開始", V23: "診断記録を停止して保存",
+  Q01: "接続設定を変更", Q02: "会話を作成", Q03: "会話を切り替え", Q04: "メッセージを送信", Q05: "応答を停止", Q06: "失敗した応答を再試行", Q07: "変更案の承認を要求", Q08: "変更案を再プレビュー",
+};
+export function operationLabel(operationId: string): string { return OPERATION_LABELS[operationId] ?? "操作"; }

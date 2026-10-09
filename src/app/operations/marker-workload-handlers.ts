@@ -1,5 +1,7 @@
 import type { OperationId, OperationInputMap } from "../../contracts/operations";
 import { makeUniqueMarkerKey } from "../../core/utils";
+import { holidaySet } from "../gantt-actions";
+import { snapMarkerDate } from "../gantt-drag";
 import { checkRevision, findTask, fail, type TaskChange, type TaskSnapshot } from "./runtime";
 export const MARKER_WORKLOAD_OPERATION_IDS = ["M01", "M02", "M03", "M04", "M05", "M06", "M07", "M08"] as const;
 export function markerWorkloadChanges<K extends OperationId>(id: K, input: OperationInputMap[K], snapshot: TaskSnapshot): TaskChange[] {
@@ -16,7 +18,10 @@ export function markerWorkloadChanges<K extends OperationId>(id: K, input: Opera
     if (index < 0) fail("NOT_FOUND", "markers groupを再取得し、実在するmarkerKeyを指定してください。");
     if (id === "M04") markers.splice(index, 1);
     else if (id === "M05") markers[index].tags = [...args.tags];
-    else Object.assign(markers[index], id === "M03" ? { date: args.date } : args.patch);
+    else if (id === "M03") {
+      if (!row.plannedStartDate || !row.plannedEndDate) fail("INVALID_INPUT", "マーカー移動には子タスクの開始日と終了日が必要です。");
+      markers[index].date = snapMarkerDate(args.date, row.plannedStartDate, row.plannedEndDate, holidaySet(snapshot.settings));
+    } else Object.assign(markers[index], args.patch);
   }
   return [{ taskId: row.id, patch: { ganttMarkers: markers } }];
 }

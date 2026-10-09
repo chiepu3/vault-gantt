@@ -901,6 +901,8 @@ describe("TaskGanttView", () => {
       // The scroll position shifted right by the prepended width.
       expect(wrap.scrollLeft).toBe(100 + 60 * 28);
       expect((view as any).isExtendingRange).toBe(false);
+      const visible = (view as any).getVisibleStartDate();
+      expect((view as any).floatingMonthEl.textContent).toBe(moment(visible, "YYYY-MM-DD").format("YYYY年M月"));
     });
 
     it("the render and the scroll shift are two SEPARATE animation frames, in that order (not one combined frame)", async () => {
@@ -990,7 +992,33 @@ describe("TaskGanttView", () => {
   });
 
   describe("updateFloatingMonth", () => {
-    it("writes the month once and dedupes while it is unchanged", async () => {
+    it("defers a hidden tab's rebuild until it has real viewport geometry", async () => {
+      const { view, container } = await openView([makeParent({ ganttEnabled: true })]);
+      const wrap = wrapOf(container); wrap.scrollLeft = 45 * 28;
+      const empty = vi.spyOn(wrap, "empty");
+      Object.defineProperty(wrap, "offsetParent", { configurable: true, value: null });
+      (view as any).rangeDays += 60; view.renderChart(); expect(empty).not.toHaveBeenCalled();
+      Object.defineProperty(wrap, "offsetParent", { configurable: true, value: container });
+      view.onResize(); expect(empty).toHaveBeenCalledOnce(); expect(wrap.scrollLeft).toBe(45 * 28);
+      expect((view as any).floatingMonthEl.textContent).toBe(moment((view as any).getVisibleStartDate(), "YYYY-MM-DD").format("YYYY年M月"));
+    });
+    it("keeps offsets and the month when a real full rebuild clamps emptied scroll content", async () => {
+      const { view, container } = await openView([makeParent({ ganttEnabled: true })]);
+      const wrap = wrapOf(container), empty = wrap.empty.bind(wrap);
+      wrap.scrollLeft = 40 * 28; wrap.scrollTop = 180;
+      vi.spyOn(wrap, "empty").mockImplementation(() => { empty(); wrap.scrollLeft = 0; wrap.scrollTop = 0; });
+      (view as any).rangeDays += 60; view.renderChart();
+      expect(wrap.scrollLeft).toBe(40 * 28); expect(wrap.scrollTop).toBe(180);
+      const visible = (view as any).getVisibleStartDate();
+      expect((view as any).floatingMonthEl.textContent).toBe(moment(visible, "YYYY-MM-DD").format("YYYY年M月"));
+    });
+    it("refreshes the month when a hidden tab is revealed and its offset is restored", async () => {
+      const { view, container } = await openView([makeParent({ ganttEnabled: true })]);
+      wrapOf(container).scrollLeft = 45 * 28;
+      view.onResize();
+      expect((view as any).floatingMonthEl.textContent).toBe(moment((view as any).getVisibleStartDate(), "YYYY-MM-DD").format("YYYY年M月"));
+    });
+    it("updates a stale or replaced month element even when the cached month is unchanged", async () => {
       const { view } = await openView([]);
       const floatingMonthEl = (view as any).floatingMonthEl as FakeEl;
       const visibleStart = (view as any).getVisibleStartDate() as string;
@@ -999,11 +1027,11 @@ describe("TaskGanttView", () => {
       // onOpen's render already populated it.
       expect(floatingMonthEl.textContent).toBe(expected);
 
-      // Same month: overwrite with a sentinel, then re-run — dedupe means no
-      // rewrite, so the sentinel survives.
+      // A rebuilt toolbar may have stale text even though the month cache
+      // still matches. Refresh the element as well as the cache.
       floatingMonthEl.textContent = "SENTINEL";
       (view as any).updateFloatingMonth();
-      expect(floatingMonthEl.textContent).toBe("SENTINEL");
+      expect(floatingMonthEl.textContent).toBe(expected);
 
       // Month changed: it rewrites.
       (view as any).lastFloatingMonth = "1999年1月";

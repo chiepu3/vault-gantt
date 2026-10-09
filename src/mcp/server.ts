@@ -111,7 +111,14 @@ function jsonObject(value: unknown): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 function toJsonSchema(schema: z.ZodType): Tool["inputSchema"] {
-  return z.toJSONSchema(schema, { unrepresentable: "any", reused: "ref" }) as Tool["inputSchema"];
+  const result = z.toJSONSchema(schema, { unrepresentable: "any", reused: "ref" });
+  // Named shared definitions remain separate validators in SDK AJV, instead
+  // of being expanded into every enclosing union. Anchors add no constraints
+  // and no dynamic references: the validation rules stay identical.
+  for (const [name, definition] of Object.entries(result.$defs ?? {})) {
+    if (typeof definition === "object" && definition !== null) definition.$dynamicAnchor = `vg_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+  }
+  return result as Tool["inputSchema"];
 }
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -133,6 +140,8 @@ export class McpAdapter {
   private readonly capabilities: readonly Capability[];
   private readonly abort = new AbortController();
   private readonly tools = new Map<string, AdapterTool>();
+  private readonly outputSchemas = new Map<z.ZodType, NonNullable<Tool["outputSchema"]>>();
+  private readonly schemaNamespace = crypto.randomUUID();
   private reads = 0;
   private queuedProposals = 0;
   private proposalTail: Promise<unknown> = Promise.resolve();
@@ -149,9 +158,16 @@ export class McpAdapter {
   private permits(capabilities: readonly Capability[]): boolean { return capabilities.every((cap) => this.capabilities.includes(cap)); }
 
   private add(name: string, description: string, input: z.ZodType, output: z.ZodType, read: boolean, run: AdapterTool["run"], operationId?: OperationId) {
-    const envelope = z.object({ data: output.optional(), error: operationErrorSchema.optional() }).strict();
+    let outputSchema = this.outputSchemas.get(output);
+    if (!outputSchema) {
+      const envelope = z.object({ data: output.optional(), error: operationErrorSchema.optional() }).strict();
+      // SDK AJV caches by $id across parsed tool objects. Keep the entire
+      // contract, but compile shared output DTOs once per client/adapter.
+      outputSchema = { ...toJsonSchema(envelope), $id: `urn:vault-gantt:mcp-schema:${this.schemaNamespace}:${this.outputSchemas.size}` };
+      this.outputSchemas.set(output, outputSchema);
+    }
     this.tools.set(name, {
-      tool: { name, description, inputSchema: toJsonSchema(input), outputSchema: toJsonSchema(envelope),
+      tool: { name, description, inputSchema: toJsonSchema(input), outputSchema,
         annotations: { readOnlyHint: read, destructiveHint: false, openWorldHint: false, idempotentHint: read },
       }, input, output, read, run, operationId,
     });

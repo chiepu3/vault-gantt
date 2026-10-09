@@ -6,6 +6,10 @@ import {
   EFFECT_RENDERERS, EFFECT_TITLES, FIELD_LABELS, renderEffect, renderEntryEffects, renderGenericEffect, effectIsNoop, buildNameMap, formatScalar, fmtBytes,
 } from "../../src/ui/preview-renderers";
 import { EDITABLE_SETTING_KEYS, } from "../../src/contracts/context";
+import { OPERATION_IDS } from "../../src/contracts/operations";
+import { cardTitle, renderOperationPreviewCard } from "../../src/ui/operation-preview-card";
+import { OPERATION_LABELS, entryTitle, fieldLabel, operationLabel } from "../../src/ui/preview-renderers";
+import { renderNonGanttPanel } from "../../src/ui/preview-panels";
 import { ENTITY_FIELDS } from "../../src/contracts/preview";
 import { createFakeDocument, makeFakeEl, byClass, deepText, findAll, type FakeEl } from "../stubs/fake-dom";
 
@@ -37,8 +41,8 @@ describe("effect renderers cover every contract variant", () => {
     const parent = root();
     renderEffect(parent, { kind: "future-kind", stuff: { a: 1 }, name: "値" } as any, {});
     const shown = text(parent);
-    expect(shown).toContain("future-kind"); expect(shown).toContain("値"); expect(shown).toContain("stuff");
-    const direct = root(); renderGenericEffect(direct, { kind: "x", extra: true } as any); expect(text(direct)).toContain("extra");
+    expect(shown).toContain("値"); expect(shown).toContain("その他の項目"); expect(shown).toContain('{"a":1}');
+    const direct = root(); renderGenericEffect(direct, { kind: "x", extra: true } as any); expect(text(direct)).toContain("その他の項目");
   });
   it("labels every public entity field and editable setting in Japanese", () => {
     const fields = new Set<string>([...Object.values(ENTITY_FIELDS).flat(), ...EDITABLE_SETTING_KEYS]);
@@ -148,7 +152,7 @@ describe("workload, order, membership and the rest", () => {
   });
   it("renders settings, view zoom, external send, diagnostics and chat control", () => {
     const find = (kind: string) => EFFECT_FIXTURES.find((effect) => effect.kind === kind) as PreviewEffect;
-    const settings = root(); renderEffect(settings, find("settings"), {}); expect(text(settings)).toContain("作業時間機能"); expect(text(settings)).toContain("オフ");
+    const settings = root(); renderEffect(settings, find("settings"), {}); expect(text(settings)).toContain("作業時間を表示"); expect(text(settings)).toContain("オフ");
     const view = root(); renderEffect(view, { kind: "view", before: { dayWidth: 28 }, after: { dayWidth: 36 }, affectedIds: [] }, {});
     expect(text(view)).toContain("28px"); expect(text(view)).toContain("36px"); expect(byClass(view as any, "vg-pv-zoomcell")).toHaveLength(14);
     const send = root(); renderEffect(send, find("external-send"), {});
@@ -157,5 +161,65 @@ describe("workload, order, membership and the rest", () => {
     const diagnostic = root(); renderEffect(diagnostic, find("diagnostic"), {}); expect(text(diagnostic)).toContain("記録しない"); expect(text(diagnostic)).toContain("秘密情報はここには表示しません");
     const conversation = root(); renderEffect(conversation, { kind: "conversation", action: "configure", before: { model: "a", secretId: "xyz" }, after: { model: "b", secretId: "xyz2" } }, {});
     expect(text(conversation)).toContain("接続設定の変更"); expect(text(conversation)).not.toContain("xyz");
+  });
+});
+
+// Words that are product names or units, not internal names.
+const ALLOWED_LATIN = /^(AI|Gantt|Daily|ToDo|Notes|MCP|OpenAI|Vault|KB|MB|URL|ID|px|h|B|x)$/;
+const latinWords = (value: string): string[] => (value.replace(/\S*[/:.#]\S*/g, "").match(/[A-Za-z][A-Za-z0-9_]*/g) ?? []).filter((word) => word.length > 1 && !ALLOWED_LATIN.test(word));
+
+describe("no internal names on screen", () => {
+  it("every operation has a plain Japanese label without Latin jargon", () => {
+    expect(Object.keys(OPERATION_LABELS).sort()).toEqual([...OPERATION_IDS].sort());
+    for (const id of OPERATION_IDS) { expect(OPERATION_LABELS[id], id).toMatch(/[\u3040-\u30ff\u4e00-\u9fff]/); expect(latinWords(OPERATION_LABELS[id]), id).toEqual([]); }
+    expect(operationLabel("Z99")).toBe("操作");
+  });
+  it("every public field and setting has a label with no Latin jargon; unknown keys read その他の項目", () => {
+    const keys = new Set<string>([...Object.values(ENTITY_FIELDS).flat(), ...EDITABLE_SETTING_KEYS]);
+    for (const key of keys) { expect(latinWords(fieldLabel(key)), key).toEqual([]); }
+    expect(fieldLabel("someInternalKey")).toBe("その他の項目");
+  });
+  it("a setting card never shows the key, and its heading follows the direction of the change", () => {
+    for (const [before, after, expected] of [[true, false, "完了済みを初期表示で隠す: オン → オフ"], [false, true, "完了済みを初期表示で隠す: オフ → オン"]] as const) {
+      const preview = { ...PREVIEW_FIXTURES.settings, operationId: "S03", operationLabel: "完了を初期非表示にする設定", projection: null,
+        entries: [{ actionId: "a", entity: { kind: "setting", key: "hideCompletedByDefault" }, displayName: "hideCompletedByDefault", effects: [{ kind: "settings", fields: [{ field: "hideCompletedByDefault", before, after, reason: "requested" }] }] }] } as any;
+      expect(cardTitle(preview)).toBe(expected);
+      const card = renderOperationPreviewCard(root(), preview, { now: Date.parse("2026-10-09T03:05:00Z") });
+      expect(text(card)).toContain(expected); expect(text(card)).not.toContain("hideCompletedByDefault"); expect(text(card)).not.toContain("初期非表示にする設定");
+      expect(entryTitle(preview.entries[0])).toBe("完了済みを初期表示で隠す");
+    }
+  });
+  it("falls back to the operation name when more than one value changes, never to the catalog's UI wording", () => {
+    const preview = { ...PREVIEW_FIXTURES.create, operationId: "T20", operationLabel: "子の期間全体を移動／bar drag" } as any;
+    expect(cardTitle(preview)).toBe("予定をまとめて移動");
+    expect(text(renderOperationPreviewCard(root(), preview, {}))).not.toContain("bar drag");
+  });
+  it("unknown keys and enum values show Japanese or neutral text with the raw key only in a title attribute", () => {
+    const parent = root();
+    renderEffect(parent, { kind: "fields", fields: [{ field: "weirdKey" as any, before: "a", after: "b", reason: "requested" }] }, {});
+    expect(text(parent)).toContain("その他の項目"); expect(text(parent)).not.toContain("weirdKey");
+    expect(byClass(parent as any, "vg-pv-label")[0].title).toBe("weirdKey");
+    const conv = root(); renderEffect(conv, { kind: "conversation", action: "configure", before: { provider: "disconnected", auth: "none" }, after: { provider: "openai-compatible", auth: "secret" } }, {});
+    expect(latinWords(text(conv))).toEqual(["OpenAI"].filter(() => false));
+  });
+  it("rendering every effect fixture, every setting key and the entity kinds leaves no Latin jargon", () => {
+    const outputs: string[] = [];
+    for (const effect of EFFECT_FIXTURES) { const parent = root(); renderEffect(parent, effect as PreviewEffect, {}); outputs.push(text(parent)); }
+    for (const key of EDITABLE_SETTING_KEYS) {
+      const preview = { ...PREVIEW_FIXTURES.settings, projection: null, entries: [{ actionId: "a", entity: { kind: "setting", key }, displayName: key, effects: [{ kind: "settings", fields: [{ field: key, before: null, after: null, reason: "requested" }, { field: key, before: true, after: false, reason: "derived" }] }] }] } as any;
+      const card = renderOperationPreviewCard(root(), preview, {}); outputs.push(text(card));
+      const panel = root(); renderNonGanttPanel(panel, preview); outputs.push(text(panel));
+      expect(text(card), key).not.toContain(key);
+    }
+    for (const kind of ["task", "marker", "event", "weekly", "daily-todo", "daily-file", "tag-definition", "source", "setting", "view", "conversation", "integration"]) {
+      const card = renderOperationPreviewCard(root(), { ...PREVIEW_FIXTURES.create, entries: [{ actionId: "a", entity: { kind } as any, displayName: "", effects: [] }] } as any, {}); outputs.push(text(card));
+    }
+    for (const output of outputs) expect(latinWords(output), output.slice(0, 80)).toEqual([]);
+  });
+  it("shows the day-counting basis in plain words", () => {
+    const business = root(); renderEffect(business, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "business-day" }, {});
+    expect(text(business)).toContain("日数の数え方: 営業日（休日を除く）");
+    const calendar = root(); renderEffect(calendar, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "calendar-day" }, {});
+    expect(text(calendar)).toContain("日数の数え方: 暦日（休日も数える）");
   });
 });

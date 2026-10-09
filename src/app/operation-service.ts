@@ -41,7 +41,7 @@ export interface OperationServiceHost {
   readonly historyManager: HistoryManager;
   readonly coordinator: Pick<OperationRegistry, "coordinate">;
   /** Persist the candidate copy. Live settings are published only after success. No timers/network here. */
-  persistSettings?(candidate: TaskWorkbenchSettings): Promise<void>;
+  persistSettings?(candidate: TaskWorkbenchSettings, keys: readonly (keyof TaskWorkbenchSettings)[]): Promise<void>;
   readonly ui?: UiPort;
   readonly chatSession?: ChatSession;
   readonly logger?: Logger;
@@ -64,6 +64,7 @@ export class OperationService implements OperationServicePort {
   private counter = 0;
   private disposed = false;
   private readonly lifecycle = new AbortController();
+  private readonly ownWrites = new Map<string, { content: string; until: number }>();
   constructor(private readonly host: OperationServiceHost, private readonly vaultFactory: () => VaultAdapter, readonly vaultInstanceId: string) {
     this.contextPort = new ContextIndex(vaultFactory, () => host.settings, vaultInstanceId);
     this.previewPort = new PreviewStore({ reject: (id) => this.pending.delete(id), repreview: (id) => this.repreview(id) });
@@ -73,6 +74,20 @@ export class OperationService implements OperationServicePort {
     if (this.disposed || !this.pending.size) return;
     const snapshot = await this.contextPort.snapshot();
     for (const [id, plan] of this.pending) if (plan.snapshot.revision !== snapshot.revision) { this.pending.delete(id); this.previewPort.setStatus(id, "stale"); }
+  }
+  clearSavedProjection(): void {
+    this.ownWrites.clear();
+    const id = this.previewPort.focusedPreviewId();
+    if (id && this.previewPort.inspectOutcome(id)) this.previewPort.focus(null);
+  }
+  async handleVaultChange(path: string, kind: "modify" | "create" | "delete" | "rename"): Promise<void> {
+    const own = this.ownWrites.get(path);
+    const vault = this.vaultFactory(), file = vault.getFileByPath(path);
+    if (own && own.until > Date.now() && file && (kind === "modify" || kind === "create")) {
+      try { if (await vault.read(file) === own.content) return; } catch { /* Treat unreadable bytes as an external change. */ }
+    }
+    this.clearSavedProjection();
+    await this.invalidatePreviews();
   }
   describe(ids?: readonly OperationId[]) { return this.catalog.describe(ids).map((description) => !IMPLEMENTED_OPERATION_IDS.has(description.id) || this.available(description.id) ? description : { ...description, available: false, denial: { code: "POLICY_DENIED" as const, retryable: false, nextAction: "この操作に必要な実行portが未接続です。人間用UIから操作してください。" } }); }
   private available(id: OperationId): boolean {
@@ -219,7 +234,7 @@ export class OperationService implements OperationServicePort {
       }
       entries = changes.map((change, index) => { const before = findTask(snapshot, change.taskId), after = flatten(afterParents).find((row) => row.id === change.taskId)!;
         return { actionId: `${previewId}:${index}`, entity: { kind: "task" as const, taskId: before.id, ...(before.kind === "subtask" ? { parentId: before.file.path } : {}) }, displayName: after.displayName,
-          effects: taskEffects(before, after, change.patch as Record<string, unknown>, ["T20", "T21", "T22", "T23"].includes(id)) };
+          effects: taskEffects(before, after, change.patch as Record<string, unknown>) };
       });
     }
     const writes: WriteUnit[] = [];
@@ -301,6 +316,9 @@ export class OperationService implements OperationServicePort {
         if ((await this.contextPort.snapshot()).revision !== stored.snapshot.revision) throw new Error("REVISION_CONFLICT");
         if (todayStr() !== stored.snapshot.today || (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC") !== stored.snapshot.timezone || await contentRevision(this.host.settings) !== stored.snapshot.settingsRevision) throw new Error("REVISION_CONFLICT");
         for (const write of stored.writes) { const file = vault.getFileByPath(write.path); if (write.before === null ? !!file : !file || await vault.read(file) !== write.before) throw new Error("REVISION_CONFLICT"); }
+        if (stored.history) this.clearSavedProjection();
+        for (const [path, write] of this.ownWrites) if (write.until <= Date.now()) this.ownWrites.delete(path);
+        for (const write of stored.writes) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
         if (stored.daily) {
           await executeDailyPlan(stored.daily, vault, (path) => {
             const write = stored.writes.find((write) => write.path === path)!;
@@ -335,8 +353,9 @@ export class OperationService implements OperationServicePort {
           const candidate = structuredClone(this.host.settings);
           for (const key of stored.settingKeys) Object.assign(candidate, { [key]: structuredClone(stored.afterSettings[key]) });
           const settingsActions = stored.preview.entries.filter((entry) => entry.entity.kind !== "task" && !entry.effects.some((effect) => effect.kind === "external-send"));
-          try { await this.host.persistSettings!(candidate); } catch (error) { settingsActions.forEach((entry) => failed.add(entry.actionId)); throw error; }
-          for (const key of stored.settingKeys) Object.assign(this.host.settings, { [key]: structuredClone(candidate[key]) });
+          const beforeSettings = structuredClone(this.host.settings);
+          try { await this.host.persistSettings!(candidate, stored.settingKeys); } catch (error) { settingsActions.forEach((entry) => failed.add(entry.actionId)); throw error; }
+          for (const key of stored.settingKeys) if (canonical(this.host.settings[key]) === canonical(beforeSettings[key])) Object.assign(this.host.settings, { [key]: structuredClone(candidate[key]) });
           this.host.historyManager.clear(); settingsActions.forEach((entry) => committed.add(entry.actionId));
           if (stored.integration?.restartSync) this.host.restartSync!();
         }
@@ -359,6 +378,10 @@ export class OperationService implements OperationServicePort {
         status = committed.size ? errorCode === "CANCELLED" ? "cancelled" : "partial" : errorCode === "CANCELLED" ? "cancelled" : ["REVISION_CONFLICT", "PLAN_EXPIRED"].includes(errorCode) ? "stale" : "failed";
       }
       if (history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action)))) this.host.historyManager.push({ label: `タスク変更 ${id}`, files: history });
+      for (const write of stored.writes) {
+        if (write.actionIds.some((action) => committed.has(action))) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
+        else this.ownWrites.delete(write.path);
+      }
       // Only apply committed file/settings states to the original before snapshot.
       const parents = structuredClone(stored.snapshot.parents);
       for (const write of stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action)))) {
@@ -415,5 +438,5 @@ export class OperationService implements OperationServicePort {
     const created = createdEntry?.entity.kind === "task" ? flatten(stored.afterParents).find((row) => row.id === (createdEntry.entity as { taskId: string }).taskId) : undefined;
     return { kind: outcome.status, committed: actionIds.size, total: stored.preview.entries.length, diffs: plan.diffs, results: committedEntries.flatMap((entry) => entry.entity.kind === "task" ? [{ taskId: entry.entity.taskId, parentPath: entry.entity.taskId.split("::")[0], revisionBefore: stored.snapshot.statRevisions.get(entry.entity.taskId.split("::")[0]) ?? "new", revisionAfter: buildFileRevision(this.vaultFactory().getFileByPath(entry.entity.taskId.split("::")[0]) as TaskRow["file"]), changedFields: entry.effects.flatMap((effect) => effect.kind === "fields" ? effect.fields.map((field) => field.field) : []) }] : []), message: outcome.status === "success" ? "変更を保存しました" : "保存を完了できませんでした。未保存対象を再取得して再プレビューしてください。", ...(created ? { created } : {}), ...(outcome.undoEntryId ? { undoLabel: outcome.undoEntryId } : {}) };
   }
-  dispose(): void { this.disposed = true; this.lifecycle.abort(); this.pending.clear(); this.stored.clear(); this.intents.clear(); this.planningIntents.clear(); this.previewPort.dispose(); }
+  dispose(): void { this.disposed = true; this.lifecycle.abort(); this.pending.clear(); this.stored.clear(); this.intents.clear(); this.planningIntents.clear(); this.ownWrites.clear(); this.previewPort.dispose(); }
 }

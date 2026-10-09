@@ -882,6 +882,7 @@ export class TaskGanttView extends ItemView {
 
   /** last month shown in the floating label (dedupe key). */
   private lastFloatingMonth = "";
+  private chartNeedsVisibleRender = false;
 
 
 
@@ -1333,6 +1334,22 @@ export class TaskGanttView extends ItemView {
     });
   }
 
+  onResize(): void {
+    const wrap = this.wrapEl;
+    if (!wrap || !this.floatingMonthEl) return;
+    // Obsidian can restore a hidden tab's scroll position as it reveals it,
+    // without a usable scroll event during the range-extension guard.
+    requestAnimationFrame(() => {
+      if (this.wrapEl !== wrap || !wrap.isConnected || wrap.offsetParent === null) return;
+      if (this.chartNeedsVisibleRender) {
+        const initial = !this.dates.length;
+        this.renderChart();
+        if (initial) this.scrollToDate(todayStr(), INITIAL_SCROLL_OFFSET_PX);
+      }
+      this.updateFloatingMonth();
+    });
+  }
+
   /**
  * The three popover kinds (rich popover, workload popup, workload day
  * summary popover) are appended to document.body rather than containerEl
@@ -1464,6 +1481,10 @@ export class TaskGanttView extends ItemView {
  * selects the full-render escape hatch.
  */
   renderChart(): void {
+    // Hidden tabs report zero scroll offsets. Rebuilding them would discard
+    // the visible date and derive a month from the range's far-left edge.
+    if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
+    this.chartNeedsVisibleRender = false;
     this.dateClassesCache.clear();
     if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
       const legend = this.previewLayer?.legend();
@@ -1545,7 +1566,9 @@ export class TaskGanttView extends ItemView {
     dates: string[],
     headerFingerprint: string
   ): void {
-
+    // Removing live scroll content clamps the browser's offsets to zero.
+    // Restore them after rebuilding, before deriving the visible month.
+    const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
 
     // header, then the fixed rows — rendered even when
@@ -1565,6 +1588,7 @@ export class TaskGanttView extends ItemView {
       empty.textContent =
         "ガント表示対象の親タスクがありません。親タスクの frontmatter / ダッシュボードで ganttEnabled を true にしてください。";
       this.wrapEl.appendChild(empty);
+      this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
       this.updateFloatingMonth();
       return;
     }
@@ -1609,6 +1633,8 @@ export class TaskGanttView extends ItemView {
 
     // the add row is (re)built at the very end.
     this.renderParentAddRow();
+
+    this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
 
     // keep the floating month in sync after every chart render.
     this.updateFloatingMonth();
@@ -4507,6 +4533,7 @@ export class TaskGanttView extends ItemView {
           // put.
           this.wrapEl.scrollLeft += RANGE_EXTEND_DAYS * this.dayWidth;
           this.isExtendingRange = false;
+          this.updateFloatingMonth();
         });
       });
     } else if (
@@ -4520,6 +4547,7 @@ export class TaskGanttView extends ItemView {
       requestAnimationFrame(() => {
         this.renderChart();
         this.isExtendingRange = false;
+        this.updateFloatingMonth();
       });
     }
 
@@ -4535,7 +4563,7 @@ export class TaskGanttView extends ItemView {
   private updateFloatingMonth(): void {
     const startDate = this.getVisibleStartDate();
     const month = moment(startDate, "YYYY-MM-DD").format("YYYY年M月");
-    if (month === this.lastFloatingMonth) {
+    if (month === this.lastFloatingMonth && this.floatingMonthEl.textContent === month) {
       return;
     }
     this.lastFloatingMonth = month;

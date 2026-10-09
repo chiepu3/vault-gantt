@@ -49,6 +49,25 @@ describe("deriveOverlay (presentation diff of the projector's snapshots)", () =>
 });
 
 describe("PreviewGanttLayer", () => {
+  it.each([null, SETTINGS_PREVIEW.projection])("separates unsaved settings and renders committed actual values only, with projection %s", (projection) => {
+    const preview = { ...SETTINGS_PREVIEW, entries: [
+      { actionId: "saved", entity: { kind: "setting", key: "currentStatusRows" }, displayName: "表示行数", effects: [{ kind: "settings", fields: [{ field: "currentStatusRows", before: 5, after: 99, reason: "requested" }] }] },
+      { actionId: "failed", entity: { kind: "setting", key: "taskFolder" }, displayName: "保存先", effects: [{ kind: "settings", fields: [{ field: "taskFolder", before: "tasks", after: "UNSAVED-FOLDER", reason: "requested" }] }] },
+    ] } as any;
+    const outcome = { ...PARTIAL_OUTCOME, previewId: preview.previewId, actualProjection: projection, actions: [
+      { actionId: "saved", state: "committed", actual: [{ kind: "settings", fields: [{ field: "currentStatusRows", before: 5, after: 7, reason: "normalized" }] }] },
+      { actionId: "failed", state: "failed", actual: [], errorCode: "SAVE_FAILED" },
+    ] } as any;
+    const port = new FakePreviewPort([preview]); port.outcomes.set(preview.previewId, outcome);
+    const layer = new PreviewGanttLayer(port); port.focus(preview.previewId);
+    const dock = host(); layer.renderDock(dock);
+    expect(byClass(byClass(dock, "vg-pv-panel")[0], "vg-pv-value").map(text)).toEqual(["5", "7"]);
+    expect(text(byClass(dock, "vg-pv-panel")[0])).not.toContain("UNSAVED-FOLDER");
+    expect(text(dock)).not.toContain("99");
+    const unsaved = byClass(dock, "vg-pv-unsaved")[0];
+    expect(unsaved.getAttribute("aria-label")).toBe("未保存の変更案");
+    expect(text(unsaved)).toContain("保存されていません"); expect(text(unsaved)).toContain("UNSAVED-FOLDER"); layer.dispose();
+  });
   it("projects only the focused preview, as a proposal; nothing without focus", () => {
     const port = new FakePreviewPort([OUTSIDE_RANGE_PREVIEW, CREATE_PREVIEW]);
     const layer = new PreviewGanttLayer(port); const onChange = vi.fn(); layer.subscribe(onChange);
@@ -96,7 +115,7 @@ describe("PreviewGanttLayer", () => {
     expect(text(dock)).toContain("上限超過"); expect(text(dock)).toContain("予定 3.5h → 18h"); expect(text(dock)).toContain("絞り込みで非表示");
     port.focus("settings-fixture"); dock = host(); layer.renderDock(dock);
     expect(text(dock)).toContain("Ganttに表示されない変更"); expect(text(dock)).toContain("設定の変更"); expect(text(dock)).toContain("機能オフで非表示");
-    expect(text(dock)).toContain("作業時間機能: オン → オフ");
+    expect(text(dock)).toContain("作業時間を表示: オン → オフ");
     expect(byClass(dock, "vg-pv-grow")).toHaveLength(0);
     port.focus("workload-fixture"); dock = host(); layer.renderDock(dock);
     expect(text(dock)).toContain("予定 1.5h → 2h");

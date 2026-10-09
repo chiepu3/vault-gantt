@@ -197,7 +197,7 @@ const LEDGER = {
   "M03": {
     "purpose": "マーカー日付drag",
     "input": "subtaskId, markerKey, date",
-    "constraints": "UIは営業日へsnap、bar期間内にclamp。直接全配列patchにはその補正なし",
+    "constraints": "開始・終了がある子タスクのbar期間内にclampし、営業日へsnap。期間内の前方営業日、次に後方営業日を使い、期間内に営業日がなければclampした日を保持。M02/M06の直接編集にはこの補正なし",
     "undo": "○"
   },
   "M04": {

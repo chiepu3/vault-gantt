@@ -55,13 +55,15 @@ export function ganttState(parents: readonly TaskRow[], settings: TaskWorkbenchS
     calendar: { weekends: [0, 6], manual: [...settings.ganttManualHolidays], special: [...settings.ganttSpecialHolidays], national: [...settings.ganttNationalHolidays] }, aggregates: aggregates(parents, settings, dates),
   };
 }
-export function taskEffects(before: TaskRow | undefined, after: TaskRow | undefined, requested: Record<string, unknown> = {}, businessDays = false): PreviewEffect[] {
+export function taskEffects(before: TaskRow | undefined, after: TaskRow | undefined, requested: Record<string, unknown> = {}): PreviewEffect[] {
   if (!before || !after) return [{ kind: "presence", action: after ? "create" : "delete", before: before ? taskPublicState(before) : null, after: after ? taskPublicState(after) : null }];
   const oldState = taskPublicState(before), newState = taskPublicState(after);
   const fields: FieldChange[] = Object.keys(taskPatchInputSchema.shape).filter((key) => canonical(oldState[key]) !== canonical(newState[key])).map((key) => ({ field: key as FieldChange["field"], before: taskPublicState(before)[key] ?? "", after: taskPublicState(after)[key] ?? "", reason: !(key in requested) || key === "updatedAt" ? "derived" : canonical(requested[key]) === canonical(newState[key]) ? "requested" : "normalized" }));
   const effects: PreviewEffect[] = fields.length ? [{ kind: "fields", fields }] : [];
   const changed = (key: string) => fields.some((field) => field.field === key);
-  if (changed("plannedStartDate") || changed("plannedEndDate")) effects.push({ kind: "schedule", before: { start: before.plannedStartDate || null, end: before.plannedEndDate || null }, after: { start: after.plannedStartDate || null, end: after.plannedEndDate || null }, unit: businessDays ? "business-day" : "calendar-day" });
+  // Period differences are calendar dates. Business-day snapping/duration
+  // preservation is a planning rule, not the unit of the displayed date delta.
+  if (changed("plannedStartDate") || changed("plannedEndDate")) effects.push({ kind: "schedule", before: { start: before.plannedStartDate || null, end: before.plannedEndDate || null }, after: { start: after.plannedStartDate || null, end: after.plannedEndDate || null }, unit: "calendar-day" });
   if (changed("dueDate")) effects.push({ kind: "deadline", before: before.dueDate || null, after: after.dueDate || null });
   if (changed("ganttEnabled")) effects.push({ kind: "membership", before: before.ganttEnabled, after: after.ganttEnabled, retained: ["schedule", "workload", "markers"] });
   if (changed("ganttMarkers")) for (const key of new Set([...(before.ganttMarkers ?? []), ...(after.ganttMarkers ?? [])].map((marker) => marker.key))) {

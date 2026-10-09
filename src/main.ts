@@ -7,6 +7,7 @@ import { detectConfiguredDailyNoteSettings } from "./app/daily-note-creation";
 import type { PreviewUiHostPorts } from "./contracts/ports";
 import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
+import { SettingsPersistence } from "./app/settings-persistence";
 import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
@@ -272,10 +273,15 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }, () => this.vaultAdapter());
   }
   readonly operations = this.createOperations();
+  private settingsPersistence?: SettingsPersistence;
+  private settingsWriter(): SettingsPersistence {
+    return this.settingsPersistence ??= new SettingsPersistence({ settings: () => this.settings,
+      coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData(settings), read: () => this.loadData() });
+  }
   private createOperationService(): OperationService {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
     return new OperationService({ get settings() { return settings(); }, historyManager: this.historyManager, coordinator: this.operations,
-      persistSettings: (candidate) => this.saveData(candidate),
+      persistSettings: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
       get ui() { return ui(); }, get chatSession() { return session(); }, get logger() { return logger(); },
       integration: { get pluginVersion() { return version(); }, fetchNationalHolidays: (current) => this.holidayFetcher(current), detectDailyNoteSettings: () => detectConfiguredDailyNoteSettings(this.app) },
       sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
@@ -396,7 +402,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       if (this.historyPort.inspectUndo(entryId).state !== "available" || this.historyManager.peekUndoLabel() !== entryId) throw new Error("この履歴は現在元に戻せません。履歴と対象ファイルを確認してください。");
       const result = await this.historyManager.undo(this.app.vault);
       if (result.kind !== "success") throw new Error("保存後の変更を検出したため、元に戻せませんでした。");
-      this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
+      this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
     });
   }
 
@@ -436,6 +442,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
+    this.settingsPersistence = undefined; this.settingsWriter();
   }
 
   /**
@@ -443,7 +450,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
  * Persists the in-memory settings object to disk.
  */
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    await this.settingsWriter().save();
+    this.operationService.clearSavedProjection();
     await this.operationService.invalidatePreviews();
   }
 
@@ -555,11 +563,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
     );
 
     if (typeof this.registerEvent === "function") {
-      const clear = () => { this.scheduleGhosts.clear(); void this.historyManager.refreshEligibility(); void this.operationService.invalidatePreviews(); };
-      this.registerEvent(this.app.vault.on("modify", clear));
-      this.registerEvent(this.app.vault.on("create", clear));
-      this.registerEvent(this.app.vault.on("delete", clear));
-      this.registerEvent(this.app.vault.on("rename", clear));
+      const clear = (file: TFile, kind: "modify" | "create" | "delete" | "rename") => { this.scheduleGhosts.clear(); void this.historyManager.refreshEligibility(); void this.operationService.handleVaultChange(file.path, kind); };
+      this.registerEvent(this.app.vault.on("modify", (file) => clear(file as TFile, "modify")));
+      this.registerEvent(this.app.vault.on("create", (file) => clear(file as TFile, "create")));
+      this.registerEvent(this.app.vault.on("delete", (file) => clear(file as TFile, "delete")));
+      this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
     }
     this.registerCommands();
     for (const [position, label] of [["tab", "タブ"], ["left", "左サイドバー"], ["right", "右サイドバー"]] as const) {
@@ -778,6 +786,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   private async performUndo(): Promise<void> {
+    this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
     const result = await this.historyManager.undo(this.app.vault);
     switch (result.kind) {
@@ -804,6 +813,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   private async performRedo(): Promise<void> {
+    this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
     const result = await this.historyManager.redo(this.app.vault);
     switch (result.kind) {

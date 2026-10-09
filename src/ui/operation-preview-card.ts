@@ -1,14 +1,13 @@
 import type { HistoryEntryUndoStateV1, PreviewUiHostPorts, ProjectionDetailPort } from "../contracts/ports";
 import type { ReadResultV1, RequestOrigin } from "../contracts/context";
-import { mergeProjectionPages, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
-import { buildNameMap, h, renderEntryEffects, type RenderContext } from "./preview-renderers";
+import { mergeProjectionPages, type FieldChange, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
+import { buildNameMap, effectIsNoop, entityKindLabel, entryTitle, fieldLabel, formatScalar, h, operationLabel, renderEntryEffects, type RenderContext } from "./preview-renderers";
 
 export type CardState = "pending" | "applying" | "success" | "partial" | "failed" | "cancelled" | "rejected" | "stale" | "expired" | "revoked" | "undone";
 export const STATE_LABELS: Record<CardState, string> = {
   pending: "未承認", applying: "適用中", success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み",
   rejected: "却下", stale: "失効", expired: "期限切れ", revoked: "接続の失効", undone: "元に戻しました",
 };
-const GROUP_LABELS: Record<string, string> = { T: "タスク", M: "マーカー・時間", E: "イベント", W: "定例作業", D: "Daily ToDo", S: "設定", V: "表示", Q: "チャット" };
 const UNDO_STATE_TEXT: Record<HistoryEntryUndoStateV1["state"], string> = {
   available: "元に戻せます", "not-latest": "履歴の先頭ではないため元に戻せません", conflict: "保存後に別の変更があり、元に戻せません",
   invalidated: "履歴が無効になり、元に戻せません", missing: "履歴が見つからず、元に戻せません", busy: "他の処理が実行中のため、今は元に戻せません", "already-undone": "元に戻しました",
@@ -26,7 +25,23 @@ export function originLabel(origin: RequestOrigin): string {
     case "system": return `自動処理 · ${SYSTEM_CAUSES[origin.cause]}`;
   }
 }
-export function operationTitle(operationId: string): string { return `${GROUP_LABELS[operationId[0]] ?? "操作"} · ${operationId}`; }
+export function operationTitle(operationId: string): string { return operationLabel(operationId); }
+/** Heading that follows the direction of the change: "項目名: 前 → 後" when one value changes, else the operation's name. */
+export function cardTitle(preview: OperationPreviewV1): string {
+  const changes: FieldChange[] = []; let others = 0;
+  for (const entry of preview.entries) for (const effect of entry.effects) {
+    if (effectIsNoop(effect)) continue;
+    if (effect.kind === "fields" || effect.kind === "settings") { for (const change of effect.fields) if (change.reason === "requested" && change.field !== "updatedAt") changes.push(change); }
+    else others++;
+  }
+  if (changes.length === 1 && !others) {
+    const { field, before, after } = changes[0];
+    const plain = (value: unknown) => value === null || ["string", "number", "boolean"].includes(typeof value);
+    const left = formatScalar(field, before); const right = formatScalar(field, after);
+    if (plain(before) && plain(after) && left.length <= 24 && right.length <= 24 && !left.includes("\n") && !right.includes("\n")) return `${fieldLabel(field)}: ${left} → ${right}`;
+  }
+  return operationLabel(preview.operationId);
+}
 export function cardState(preview: OperationPreviewV1, outcome: OperationOutcomeV1 | undefined, undo: HistoryEntryUndoStateV1 | undefined, now: number): CardState {
   if (outcome) return outcome.status === "success" && undo?.state === "already-undone" ? "undone" : outcome.status;
   if (preview.status === "pending" && now >= Date.parse(preview.expiresAt)) return "expired";
@@ -74,7 +89,7 @@ function renderHeader(card: HTMLElement, preview: OperationPreviewV1, state: Car
   const header = h(card, "header", "vg-pv-header");
   const top = h(header, "div", "vg-pv-headtop");
   const status = h(top, "span", "vg-pv-status", STATE_LABELS[state]); status.setAttribute("role", "status");
-  h(top, "strong", "vg-pv-title", (preview.operationLabel ?? operationTitle(preview.operationId)));
+  h(top, "strong", "vg-pv-title", cardTitle(preview));
   const meta = h(header, "div", "vg-pv-meta");
   h(meta, "span", "", `対象 ${preview.summary.targetCount}件 · 操作 ${preview.summary.actionCount}件`);
   const origin = h(meta, "span", "vg-pv-origin", "要求元: " + originLabel(preview.origin)); origin.dataset.origin = preview.origin.kind;
@@ -117,7 +132,7 @@ function renderProjectionNotes(card: HTMLElement, projection: GanttProjectionV1 
     for (const item of items.slice(0, 5)) {
       const entity = item.entity;
       const id = entity.kind === "task" ? entity.taskId : entity.kind === "marker" ? entity.taskId : "";
-      const name = id ? (names.get(id) ?? id) : entity.kind;
+      const name = id ? (names.get(id) ?? entityKindLabel("task")) : entityKindLabel(entity.kind);
       h(group, "div", "vg-pv-muted", `${name}: ${item.reason}`);
     }
     if (items.length > 5) h(group, "div", "vg-pv-muted", `ほか ${items.length - 5}件`);
@@ -142,7 +157,7 @@ function renderEntry(list: HTMLElement, entry: PreviewEntry, ctx: RenderContext,
   const action = entryStateOf(entry, outcome);
   section.dataset.state = action?.state ?? "planned";
   const head = h(section, "div", "vg-pv-entryhead");
-  h(head, "strong", "vg-pv-entryname", entry.displayName || entry.entity.kind);
+  h(head, "strong", "vg-pv-entryname", entryTitle(entry)); 
   if (action) {
     const labels = { committed: "保存済み", failed: "保存できませんでした", "not-attempted": "未実行" } as const;
     h(head, "span", "vg-pv-badge", labels[action.state]).dataset.kind = action.state;
@@ -172,7 +187,7 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
   const card = h(parent, "article", "vg-pv-card");
   card.dataset.state = state; card.dataset.previewId = preview.previewId; card.dataset.origin = preview.origin.kind;
   if (options.focused) card.dataset.focused = "true";
-  card.setAttribute("role", "group"); card.setAttribute("aria-label", `${(preview.operationLabel ?? operationTitle(preview.operationId))}（${STATE_LABELS[state]}）`);
+  card.setAttribute("role", "group"); card.setAttribute("aria-label", `${cardTitle(preview)}（${STATE_LABELS[state]}）`);
   renderHeader(card, preview, state);
 
   for (const warning of preview.warnings) { const line = h(card, "p", "vg-pv-note is-warn", warning.detail || warning.code); line.dataset.code = warning.code; }

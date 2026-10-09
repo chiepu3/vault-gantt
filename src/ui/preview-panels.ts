@@ -1,5 +1,5 @@
 import type { GanttProjectionV1, OperationPreviewV1, PreviewEffect, PreviewEffectKind } from "../contracts/preview";
-import { buildNameMap, h, renderEffect, effectIsNoop } from "./preview-renderers";
+import { buildNameMap, entryTitle, h, renderEffect, effectIsNoop } from "./preview-renderers";
 
 /** Effects with no natural Gantt shape. A bar here would invent a schedule that does not exist. */
 export const PANEL_EFFECT_KINDS = ["service-state", "settings", "view", "external-send", "diagnostic", "conversation"] as const satisfies readonly PreviewEffectKind[];
@@ -36,7 +36,7 @@ export function renderNonGanttPanel(parent: HTMLElement, preview: OperationPrevi
     h(group, "p", "vg-pv-note", PANEL_NOTES[kind]);
     for (const item of items.filter((entry) => entry.effect.kind === kind)) {
       const entry = preview.entries.find((candidate) => candidate.actionId === item.actionId);
-      h(group, "div", "vg-pv-muted", item.displayName);
+      if (entry) h(group, "div", "vg-pv-muted", entryTitle(entry));
       renderEffect(group, item.effect, { ...ctx, entity: entry?.entity });
     }
   }

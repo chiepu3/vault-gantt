@@ -9,6 +9,14 @@ export class PreviewStore implements PreviewPort {
   private eventCounter = 0;
   private focused: string | null = null;
   private expiryTimer?: ReturnType<typeof setTimeout>;
+  private savedFocusTimer?: ReturnType<typeof setTimeout>;
+  private scheduleSavedFocusExpiry(): void {
+    if (this.savedFocusTimer) clearTimeout(this.savedFocusTimer);
+    this.savedFocusTimer = undefined;
+    if (!this.focused || !this.outcomes.has(this.focused)) return;
+    this.savedFocusTimer = setTimeout(() => { this.savedFocusTimer = undefined; this.focus(null); }, 60_000);
+    if (typeof this.savedFocusTimer === "object") this.savedFocusTimer.unref?.();
+  }
   constructor(private readonly callbacks: { reject: (id: string) => void; repreview: (id: string) => Promise<OperationPreviewV1> }) {}
   put(preview: OperationPreviewV1): void {
     this.previews.set(preview.previewId, structuredClone(operationPreviewSchema.parse(preview)));
@@ -43,7 +51,7 @@ export class PreviewStore implements PreviewPort {
   publish(outcome: OperationOutcomeV1): void {
     const preview = this.previews.get(outcome.previewId); if (!preview) fail("NOT_FOUND", "プレビューを取得し直してください。");
     const validated = validatePreviewOutcome(preview, outcome);
-    this.outcomes.set(outcome.previewId, structuredClone(validated)); this.setStatus(outcome.previewId, outcome.status);
+    this.outcomes.set(outcome.previewId, structuredClone(validated)); if (this.focused === outcome.previewId) this.scheduleSavedFocusExpiry(); this.setStatus(outcome.previewId, outcome.status);
   }
   list(): readonly OperationPreviewV1[] { return [...this.previews.keys()].map((id) => this.inspect(id)!); }
   inspect(id: string): OperationPreviewV1 | undefined {
@@ -55,12 +63,12 @@ export class PreviewStore implements PreviewPort {
   inspectOutcome(id: string): OperationOutcomeV1 | undefined { const result = this.outcomes.get(id); return result ? structuredClone(result) : undefined; }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private emit(): void { for (const listener of this.listeners) { try { listener(); } catch { /* A detached view cannot interrupt saving. */ } } }
-  focus(id: string | null): void { if (id) { const preview = this.inspect(id); if (!preview || !["pending", "success", "partial"].includes(preview.status)) fail("PLAN_CONSUMED", "有効な提案または保存結果を選択してください。"); } this.focused = id; this.emit(); }
+  focus(id: string | null): void { if (id) { const preview = this.inspect(id); if (!preview || !["pending", "success", "partial"].includes(preview.status)) fail("PLAN_CONSUMED", "有効な提案または保存結果を選択してください。"); } this.focused = id; this.scheduleSavedFocusExpiry(); this.emit(); }
   async reject(id: string): Promise<void> { const preview = this.inspect(id); if (!preview) fail("NOT_FOUND", "プレビューを取得し直してください。"); if (preview.status !== "pending") fail("PLAN_CONSUMED", "処理中または完了した提案は却下できません。"); this.callbacks.reject(id); this.setStatus(id, "rejected"); }
   requestRepreview(id: string): Promise<OperationPreviewV1> { return this.callbacks.repreview(id); }
   async getProjectionPage(_request: ProjectionPageRequestV1): Promise<ProjectionPageResultV1> {
     // This implementation returns complete snapshots, so it never issues a page cursor.
     return { status: "error", error: { code: "CURSOR_STALE", retryable: true, field: "cursor", nextAction: "このruntimeの投影は全件を含みます。inspect/inspectOutcomeで先頭snapshotを取得してください。" } };
   }
-  dispose(): void { for (const id of this.previews.keys()) this.callbacks.reject(id); if (this.expiryTimer) clearTimeout(this.expiryTimer); this.previews.clear(); this.outcomes.clear(); this.focused = null; this.emit(); this.listeners.clear(); this.eventListeners.clear(); }
+  dispose(): void { for (const id of this.previews.keys()) this.callbacks.reject(id); if (this.expiryTimer) clearTimeout(this.expiryTimer); if (this.savedFocusTimer) clearTimeout(this.savedFocusTimer); this.previews.clear(); this.outcomes.clear(); this.focused = null; this.emit(); this.listeners.clear(); this.eventListeners.clear(); }
 }
