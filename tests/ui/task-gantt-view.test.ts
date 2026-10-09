@@ -4408,8 +4408,9 @@ describe("TaskGanttView", () => {
 
 
 
-    it("a workload-actual bar prompts for confirmation before saving", async () => {
-      const { timeline, h } = await openViewWithBar({
+    it("a bar move shifts planned hours and keeps actual hours after confirmation", async () => {
+      const { timeline, h, sub } = await openViewWithBar({
+        workloadPlan: { [dateOffset(0)]: 4, [dateOffset(2)]: 1 },
         workloadActual: { [dateOffset(0)]: 3 },
       });
       h.confirmWorkloadShift.mockResolvedValue(true);
@@ -4421,9 +4422,16 @@ describe("TaskGanttView", () => {
 
       expect(h.confirmWorkloadShift).toHaveBeenCalledTimes(1);
       expect(h.confirmWorkloadShift.mock.calls[0][0]).toContain(
-        "この移動により作業記録がずれます"
+        "実績時間の日付は変更しません"
       );
       expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+      const [, patch] = h.updateTaskItem.mock.calls[0];
+      expect(patch.workloadPlan).toEqual({
+        [dateOffset(2)]: 4,
+        [dateOffset(6)]: 1,
+      });
+      expect(patch).not.toHaveProperty("workloadActual");
+      expect(sub.workloadActual).toEqual({ [dateOffset(0)]: 3 });
     });
 
     it("cancelling the workload warning saves nothing and does not re-render", async () => {
@@ -4710,7 +4718,15 @@ describe("TaskGanttView", () => {
 
       expect(h.confirmWorkloadShift).toHaveBeenCalledTimes(1);
       expect(h.updateTaskItemsBatch).toHaveBeenCalledTimes(1);
-      expect(h.updateTaskItemsBatch.mock.calls[0][0]).toHaveLength(2);
+      const commands = h.updateTaskItemsBatch.mock.calls[0][0];
+      expect(commands).toHaveLength(2);
+      expect(h.confirmWorkloadShift).toHaveBeenCalledWith(
+        "予定日と計画時間を一括移動します。実績時間の日付は変更しません。実行しますか？"
+      );
+      for (const command of commands) {
+        expect(command.patch).not.toHaveProperty("workloadActual");
+      }
+      expect(commands[0].row.workloadActual).toEqual({ [dateOffset(0)]: 2 });
     });
   });
 });
