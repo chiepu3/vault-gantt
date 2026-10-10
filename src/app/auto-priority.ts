@@ -1,3 +1,4 @@
+import { Notice } from "obsidian";
 import { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { applyAutoPriorityFields, todayStr } from "../core/utils";
 import { buildFullNote } from "../core/note-format";
@@ -57,6 +58,7 @@ export class AutoPriorityController {
     const tasks = await loadTasks(vault, settings, cache, logger);
 
 
+    let skippedNotes = 0;
     for (const cachedTask of tasks) {
       // Do not mutate cached rows when preservation rejects this update.
       const task = {
@@ -109,12 +111,17 @@ export class AutoPriorityController {
         content = mergeTaskNote(original, beforeNote, buildFullNote(task, task.subtasks));
       } catch (error) {
         if (!(error instanceof NotePreservationError)) throw error;
+        skippedNotes++;
         console.warn(`Skipping automatic priority update: ${task.file.path}`, error);
         continue;
       }
       // modify failures (e.g. file locks)
       // propagate uncaptured and stop the iteration
       await vault.modify(file, content);
+    }
+
+    if (skippedNotes > 0) {
+      new Notice(`自動優先度を更新できなかったノートが ${skippedNotes} 件あります（独自の書式を含むため）`);
     }
 
     // record the run date (YYYY-MM-DD)

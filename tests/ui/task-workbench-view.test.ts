@@ -1,3 +1,5 @@
+import { Notice } from "obsidian";
+import { NotePreservationError } from "../../src/core/note-update";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 
@@ -10,6 +12,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import moment from "moment";
+vi.mock("obsidian", async (importOriginal) => ({
+  ...await importOriginal<typeof import("obsidian")>(),
+  Notice: vi.fn(),
+}));
 import { TaskWorkbenchView } from "../../src/ui/task-workbench-view";
 import type { TaskWorkbenchViewHost } from "../../src/ui/task-workbench-view";
 import { TaskFinderModal } from "../../src/ui/task-finder-modal";
@@ -2036,6 +2042,17 @@ describe("TaskWorkbenchView", () => {
     // preserving the unsaved text, unlike Gantt-canvas title editors that close
     // synchronously before awaiting onCommit.
 
+
+    it("shows the note and preservation reason while keeping the editor open", async () => {
+      const parent = makeParent();
+      const { view, container, h } = await startStatusEdit([parent]);
+      const error = new NotePreservationError("保存できません。保持できない記述があります: ## Current Status");
+      h.updateTaskItem.mockRejectedValueOnce(error);
+      vi.mocked(Notice).mockClear();
+      await expect((view as any).savePatch(parent, { currentStatus: "変更" })).rejects.toBe(error);
+      expect(Notice).toHaveBeenCalledWith(`${parent.file.path}: ${error.message}`);
+      expect(byClass(container, "task-workbench-inline-textarea")).toHaveLength(1);
+    });
 
     it("a rejected save is silent (no Notice — this file never imports Notice) and leaves the currentStatus editor open for retry", async () => {
       const parent = makeParent();
