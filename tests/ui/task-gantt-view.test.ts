@@ -2803,6 +2803,105 @@ describe("TaskGanttView", () => {
       const addOf = (pop: FakeEl): FakeEl =>
         byClass(pop, "task-gantt-daily-todo-add")[0];
 
+      it("public method reveals a date outside the range and opens an empty editor", async () => {
+        const h = makeHostHarness([]);
+        const view = new TaskGanttView({} as any, h.host);
+        await view.onOpen();
+        const date = dateOffset(180);
+        await view.openDailyTodoPopoverForDate(date);
+        const pop = popoverEl()!;
+        expect(pop.attributes["data-date"]).toBe(date);
+        expect(rowsOf(pop)).toHaveLength(0);
+        const anchor = (view as any).dailyTodoAnchorEls.get(date) as FakeEl;
+        expect(anchor.scrolledIntoView).toEqual({ block: "nearest", inline: "nearest", behavior: "instant" });
+        expect((view as any).wrapEl.scrollLeft).toBe(
+          (view as any).dates.indexOf(date) * (view as any).dayWidth - 220
+        );
+        dispatch(addOf(pop), "click");
+        expect(rowsOf(pop)).toHaveLength(1);
+      });
+
+      it("public method reloads items and keeps the editor open on repeated calls", async () => {
+        const { h, view, date } = await openWithItems([todo(3, "元の内容")]);
+        await view.openDailyTodoPopoverForDate(date);
+        h.loadDailyTodoSummaries.mockResolvedValue([{
+          date, items: [todo(3, "外部更新")], completedCount: 0, totalCount: 1,
+        }]);
+        await view.openDailyTodoPopoverForDate(date);
+        expect(inputOf(rowsOf(popoverEl()!)[0]).value).toBe("外部更新");
+        expect((view as any).dailyTodoPopoverState.anchorEl).toBe(
+          (view as any).dailyTodoAnchorEls.get(date)
+        );
+      });
+
+      it("opens after scroll events and range extension replace the anchor", async () => {
+        const { view, date } = await openWithItems([todo(3, "確認")], 0);
+        const frames: Array<() => void> = [];
+        vi.stubGlobal("requestAnimationFrame", (cb: () => void) => { frames.push(cb); return 1; });
+        const scroll = view.scrollToDate.bind(view);
+        vi.spyOn(view, "scrollToDate").mockImplementation((d, offset) => {
+          scroll(d, offset);
+          requestAnimationFrame(() => dispatch((view as any).wrapEl, "scroll"));
+        });
+        const opening = view.openDailyTodoPopoverForDate(date);
+        await flush();
+        for (let i = 0; i < 8; i++) {
+          frames.splice(0).forEach((cb) => cb());
+          await flush();
+        }
+        await opening;
+        expect(popoverEl()!.attributes["data-date"]).toBe(date);
+        expect((view as any).dailyTodoPopoverState.anchorEl).toBe(
+          (view as any).dailyTodoAnchorEls.get(date)
+        );
+      });
+
+      it("waits for focused edits to save before reloading and reopening", async () => {
+        const { h, view, chip, date } = await openWithItems([todo(3, "元の内容")]);
+        dispatch(chip, "click");
+        inputOf(rowsOf(popoverEl()!)[0]).value = "編集内容";
+        let release!: () => void;
+        h.updateDailyTodoItem.mockImplementationOnce(async (item: DailyTodoItem) => {
+          await new Promise<void>((resolve) => { release = resolve; });
+          return { ...item, text: "編集内容" };
+        });
+        h.loadDailyTodoSummaries.mockClear();
+        const opening = view.openDailyTodoPopoverForDate(date);
+        await flush();
+        expect(h.updateDailyTodoItem).toHaveBeenCalled();
+        expect(h.loadDailyTodoSummaries).not.toHaveBeenCalled();
+        expect(popoverEl()).toBeUndefined();
+        h.loadDailyTodoSummaries.mockResolvedValue([{
+          date, items: [todo(3, "編集内容")], completedCount: 0, totalCount: 1,
+        }]);
+        release();
+        await opening;
+        expect(inputOf(rowsOf(popoverEl()!)[0]).value).toBe("編集内容");
+      });
+
+      it("does not reopen after the view closes while waiting for layout", async () => {
+        const { view, date } = await openWithItems([]);
+        let frame!: () => void;
+        vi.stubGlobal("requestAnimationFrame", (cb: () => void) => { frame = cb; return 1; });
+        const opening = view.openDailyTodoPopoverForDate(date);
+        await flush();
+        await view.onClose();
+        frame();
+        await opening;
+        expect(popoverEl()).toBeUndefined();
+      });
+
+      it("public method respects disabled Daily ToDo settings", async () => {
+        const h = makeHostHarness([]);
+        h.host.settings.ganttFeatureDailyTodoEnabled = false;
+        const view = new TaskGanttView({} as any, h.host);
+        await view.onOpen();
+        await view.openDailyTodoPopoverForDate(dateOffset(0));
+        expect(popoverEl()).toBeUndefined();
+        expect(h.loadDailyTodoSummaries).not.toHaveBeenCalled();
+        expect(Notice).toHaveBeenCalledWith("設定で「Daily ToDoを表示」を有効にしてください。");
+      });
+
       it("opens a popover on chip click with [check][input][…] rows and a trailing +, without hover or modal", async () => {
         const { chip, date } = await openWithItems([
           todo(3, "資料を確認する"),

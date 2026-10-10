@@ -1114,6 +1114,7 @@ export class TaskGanttView extends ItemView {
   private dailyTodoPopoverState: DailyTodoPopoverState | undefined = undefined;
   private dailyTodoQueue: Promise<void> | undefined = undefined;
   private dailyTodoOpenGeneration = 0;
+  private dailyTodoCommandGeneration = 0;
 
 
 
@@ -1318,6 +1319,7 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    this.dailyTodoCommandGeneration += 1;
     this.unsubscribeGhosts?.(); this.unsubscribeGhosts = undefined;
     this.host.ghosts?.clear();
     this.clearGhostLayer();
@@ -3136,6 +3138,40 @@ export class TaskGanttView extends ItemView {
     }
     oldRow.remove();
     this.dailyTodoRowEl = row;
+  }
+
+  /** Reveals a date and opens its Daily ToDo editor, including empty days. */
+  async openDailyTodoPopoverForDate(date: string): Promise<void> {
+    if (!this.host.settings.ganttFeatureDailyTodoEnabled) {
+      new Notice("設定で「Daily ToDoを表示」を有効にしてください。");
+      return;
+    }
+    const generation = ++this.dailyTodoCommandGeneration;
+    // Closing commits focused edits; wait for those writes before reloading.
+    this.closeDailyTodoPopover();
+    await this.dailyTodoQueue;
+    if (generation !== this.dailyTodoCommandGeneration) return;
+    this.ensureDateInRange(date);
+    await this.refreshDailyTodoSummaries();
+    if (generation !== this.dailyTodoCommandGeneration) return;
+    this.renderChart();
+    const nextFrame = (): Promise<void> => new Promise((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    await nextFrame();
+    const anchor = this.dailyTodoAnchorEls.get(date);
+    if (generation !== this.dailyTodoCommandGeneration || !anchor?.isConnected) return;
+    anchor.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX);
+    // Scroll events close popovers and may extend the range over two frames.
+    // Open only after those events and the range's scroll restoration finish.
+    await nextFrame();
+    await nextFrame();
+    await nextFrame();
+    const currentAnchor = this.dailyTodoAnchorEls.get(date);
+    if (generation === this.dailyTodoCommandGeneration && currentAnchor?.isConnected) {
+      this.openDailyTodoPopover(date, currentAnchor);
+    }
   }
 
   /**

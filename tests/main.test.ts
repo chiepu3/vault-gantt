@@ -91,6 +91,7 @@ function createHarness(storedData: unknown = undefined): Harness {
 
   const workspace = {
     detachLeavesOfType: vi.fn(),
+    revealLeaf: vi.fn(async () => undefined),
     getActiveFile: vi.fn(() => null),
     getLeaf: vi.fn(),
     getLeavesOfType: vi.fn(() => []),
@@ -490,7 +491,7 @@ describe("TaskWorkbenchPlugin", () => {
         "Open task finder",
         "Create new managed task note",
         "Add subtask to current managed task note",
-        "Open daily ToDo",
+        "Daily ToDo を開く",
 
         "Start log recording",
         "Stop log recording",
@@ -595,35 +596,6 @@ describe("TaskWorkbenchPlugin", () => {
       );
     });
 
-    it("saveDailyTodoItems normalizes a null summary and inserts a row for today's date", async () => {
-      // Exercise saveDailyTodoItems when today's daily note has no ToDo items.
-      // Fake system time keeps the daily-note path deterministic.
-      const h = createHarness({});
-      await h.plugin.onload();
-
-      const path = "デイリー/2026/07/260729_デイリー.md";
-      h.files.set(path, {
-        content: "# 2026-07-29\n\n## ToDoリスト\n",
-        mtime: 1,
-        size: 20,
-      });
-
-      await (h.plugin as any).saveDailyTodoItems(null, "2026-07-29", [
-        {
-          sourceKey: "",
-          sourceLabel: "",
-          path: "",
-          line: -1,
-          text: "新しいタスク",
-          completed: false,
-          isNew: true,
-        },
-      ]);
-
-      expect(h.vaultApi.modify).toHaveBeenCalledTimes(1);
-      expect(h.files.get(path)?.content).toContain("- [ ] 新しいタスク");
-    });
-
     it("workbench command routes to navigation.activateView", async () => {
       const h = createHarness({});
       const activateView = vi.fn();
@@ -669,32 +641,28 @@ describe("TaskWorkbenchPlugin", () => {
       expect(openTaskFinder).toHaveBeenCalledTimes(1);
     });
 
-    it("opens a requested DailyTodo date and delegates with today", async () => {
-      // The command is responsible for wiring the action. With no daily note
-      // seeded for today, this also exercises the null-summary path, where the
-      // DailyTodoModal renders zero rows, without erroring.
+    it.each([false, true])("Daily ToDo command opens today's editor (existing view: %s)", async (existing) => {
       const h = createHarness({});
-      const openSpy = vi
-        .spyOn(Modal.prototype, "open")
-        .mockImplementation(() => undefined);
       await h.plugin.onload();
-
-      await (h.plugin as any).openOrCreateDailyTodoForDate("2026-07-28");
-      expect(openSpy).toHaveBeenCalledTimes(1);
-      expect((openSpy.mock.instances[0] as any).title).toBe(
-        "デイリーToDo（2026-07-28）"
+      const view = Object.create(TaskGanttView.prototype) as TaskGanttView;
+      const open = vi.fn(async () => undefined);
+      view.openDailyTodoPopoverForDate = open;
+      const leaf = { view, setViewState: vi.fn(async () => undefined) };
+      h.workspace.getLeavesOfType.mockImplementation((type: string) =>
+        type === VIEW_TYPE_TASK_GANTT && (existing || leaf.setViewState.mock.calls.length > 0) ? [leaf] : []
       );
-
-      h.commands[5].callback();
+      h.getLeaf.mockReturnValue(leaf);
+      const modal = vi.spyOn(Modal.prototype, "open").mockImplementation(() => undefined);
+      const command = h.commands.find((c) => c.id === "open-daily-todo")!;
+      expect(command.name).toBe("Daily ToDo を開く");
+      command.callback();
       await flush();
-
-      expect(h.vaultApi.getMarkdownFiles).toHaveBeenCalled();
-      expect(openSpy).toHaveBeenCalledTimes(2);
-      expect((openSpy.mock.instances[1] as any).title).toBe(
-        "デイリーToDo（2026-07-29）"
-      );
-
-      openSpy.mockRestore();
+      expect(leaf.setViewState).toHaveBeenCalledWith({ type: VIEW_TYPE_TASK_GANTT, active: true });
+      expect(h.workspace.revealLeaf).toHaveBeenCalledWith(leaf);
+      expect(h.getLeaf).toHaveBeenCalledTimes(existing ? 0 : 1);
+      expect(open).toHaveBeenCalledWith("2026-07-29");
+      expect(modal).not.toHaveBeenCalled();
+      modal.mockRestore();
     });
 
     it("create command delegates to TaskFileService.createTaskInteractively", async () => {
