@@ -1,3 +1,4 @@
+import { Notice } from "obsidian";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { AutoPriorityController, TaskCache } from "../../src/app/auto-priority";
@@ -7,6 +8,11 @@ import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { buildFullNote } from "../../src/core/note-format";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { applyAutoPriorityFields, buildFileRevision } from "../../src/core/utils";
+
+vi.mock("obsidian", async (importOriginal) => ({
+  ...await importOriginal<typeof import("obsidian")>(),
+  Notice: vi.fn(),
+}));
 
 /** Vault whose file listing throws (e.g. task folder deleted externally). */
 class ListingFailingVault implements VaultAdapter {
@@ -115,6 +121,7 @@ describe("AutoPriorityController", () => {
   let controller: AutoPriorityController;
 
   beforeEach(() => {
+    vi.mocked(Notice).mockClear();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-29T10:00:00Z"));
     vault = new FakeVault();
@@ -235,6 +242,7 @@ describe("AutoPriorityController", () => {
 
       expect(ran).toBe(true);
       expect(vault.getModifyCallCount()).toBe(0);
+      expect(Notice).not.toHaveBeenCalled();
     });
 
     it("preserves unmanaged YAML, block tags and custom sections for parent and subtask updates", async () => {
@@ -270,6 +278,9 @@ describe("AutoPriorityController", () => {
       });
       const original = buildFullNote(row, row.subtasks) + "\n## Notes\n重複\n";
       await seedStaleCache(path, row, original);
+      const secondPath = "tasks/2026-07/unsafe-second.md";
+      const secondRow = makeStaleParent(secondPath, "2026-07-28");
+      await seedStaleCache(secondPath, secondRow, buildFullNote(secondRow) + "\n## Notes\n重複\n");
       const safePath = "tasks/2026-07/safe.md";
       await seedStaleCache(safePath, makeStaleParent(safePath, "2026-07-28"));
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -281,7 +292,12 @@ describe("AutoPriorityController", () => {
       expect(row.subtasks!.get("sub")!.priority).toBe(0);
       expect(vault.getFileContent(safePath)).toContain("priority: 5");
       expect(vault.getModifyCallCount()).toBe(1);
-      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(Notice).toHaveBeenCalledTimes(1);
+      expect(Notice).toHaveBeenCalledWith("自動優先度を更新できなかったノートが 2 件あります（独自の書式を含むため）");
+      vi.mocked(Notice).mockClear();
+      expect(await controller.updateAutoPriorities(vault, settings, cache)).toBe(false);
+      expect(Notice).not.toHaveBeenCalled();
       expect(settings.lastAutoPriorityUpdate).toBe("2026-07-29");
     });
 
