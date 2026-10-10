@@ -5651,12 +5651,14 @@ describe("rich popover behavior", () => {
     expect(popoverOf(container)).toBeUndefined();
   });
 
-  it("tags render space-separated when present", async () => {
+  it("tags render as chips when present", async () => {
     const { container, bar } = await openBarView({ tags: ["alpha", "beta"] });
     const popover = showPopover(container, bar);
-    expect(deepText(byClass(popover, "task-gantt-popover-tags")[0])).toContain(
-      "alpha beta"
-    );
+    const chips = byClass(popover, "task-gantt-popover-tags")[0];
+    expect(byClass(chips, "vg-chip").map((c) => c.textContent)).toEqual([
+      "alpha",
+      "beta",
+    ]);
   });
 
   it("the tags field is omitted when the task has no tags", async () => {

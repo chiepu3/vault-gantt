@@ -24,7 +24,7 @@ import {
   DEFAULT_STATUSES,
 } from "../core/constants";
 import { readableTextColor } from "../core/color";
-import { findGanttTagDefinition, setStyleVar } from "./tag-chip";
+import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
 import { normalizeWorkloadMap } from "../core/task-patch";
 import {
@@ -2561,7 +2561,11 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadDaySummaryPopover(); // Close any open day-summary popover.
 
     const el = document.createElement("div");
-    el.classList.add("task-gantt-workload-day-summary-popover");
+    el.classList.add(
+      "task-gantt-workload-day-summary-popover",
+      "vg-surface",
+      "vg-popover"
+    );
 
     // title "作業時間 M/D".
     const title = document.createElement("div");
@@ -3107,7 +3111,7 @@ export class TaskGanttView extends ItemView {
     this.closeDailyTodoPopover();
 
     const el = document.createElement("div");
-    el.classList.add("task-gantt-daily-todo-popover");
+    el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
     el.setAttribute("data-date", summary.date);
     this.renderDailyTodoPopover(el, summary);
 
@@ -5889,7 +5893,7 @@ export class TaskGanttView extends ItemView {
     evt: MouseEvent
   ): void {
     const el = document.createElement("div");
-    el.classList.add("task-gantt-rich-popover");
+    el.classList.add("task-gantt-rich-popover", "vg-surface", "vg-popover");
     if (anchor.kind === "subtask") {
       el.classList.add("is-subtask");
       this.buildSubtaskPopoverContent(
@@ -6283,7 +6287,7 @@ export class TaskGanttView extends ItemView {
     persist: () => Promise<void>
   ): void {
     const el = document.createElement("div");
-    el.classList.add("task-gantt-workload-popover");
+    el.classList.add("task-gantt-workload-popover", "vg-surface", "vg-popover");
     el.style.boxSizing = "border-box";
 
     const header = document.createElement("div");
@@ -7066,7 +7070,7 @@ export class TaskGanttView extends ItemView {
  */
   private buildStatusSelect(task: TaskRow): HTMLElement {
     const select = document.createElement("select");
-    select.classList.add("task-gantt-popover-status-select");
+    select.classList.add("task-gantt-popover-status-select", "vg-input-sm");
     this.bindRichPopoverInteraction(select);
     for (const key of Object.keys(DEFAULT_STATUSES) as StatusLabel[]) {
       const option = document.createElement("option");
@@ -7103,7 +7107,7 @@ export class TaskGanttView extends ItemView {
 
   private buildCurrentStatusArea(task: TaskRow): HTMLElement {
     const area = document.createElement("textarea");
-    area.classList.add("task-gantt-popover-current-status");
+    area.classList.add("task-gantt-popover-current-status", "vg-input-sm");
     area.value = task.currentStatus ?? "";
     this.bindRichPopoverInteraction(area);
 
@@ -7233,7 +7237,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(chips);
 
     const statusChip = document.createElement("span");
-    statusChip.classList.add("task-gantt-popover-status-chip");
+    statusChip.classList.add("task-gantt-popover-status-chip", "vg-chip");
     // Single source of truth for both the class and the text: `completed`
     // and `statusLabel` are two separate frontmatter fields that CAN
     // disagree on hand-edited/stale data (only save-time normalization
@@ -7261,7 +7265,7 @@ export class TaskGanttView extends ItemView {
     // exists to mirror (the Workbench renders all five stars always).
     if (task.priority > 0) {
       const priorityChip = document.createElement("span");
-      priorityChip.classList.add("task-gantt-popover-priority-chip");
+      priorityChip.classList.add("task-gantt-popover-priority-chip", "vg-chip");
       priorityChip.textContent = `P${task.priority}`;
       chips.appendChild(priorityChip);
     }
@@ -7314,8 +7318,8 @@ export class TaskGanttView extends ItemView {
         "タグ"
       );
       const value = document.createElement("span");
-      value.classList.add("task-gantt-popover-value");
-      value.textContent = task.tags.join(" ");
+      value.classList.add("task-gantt-popover-value", "task-gantt-popover-tag-chips");
+      appendTagChips(value, task.tags, this.host.settings);
       tagsField.appendChild(value);
     }
 
@@ -7363,7 +7367,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(chips);
 
     const statusChip = document.createElement("span");
-    statusChip.classList.add("task-gantt-popover-status-chip");
+    statusChip.classList.add("task-gantt-popover-status-chip", "vg-chip");
     // See the subtask popover's identical effectiveStatus comment above:
     // completed/statusLabel can disagree on hand-edited data, so both the
     // class and the text derive from the same value.
@@ -7389,7 +7393,7 @@ export class TaskGanttView extends ItemView {
     );
     const dueInput = document.createElement("input");
     dueInput.type = "date";
-    dueInput.classList.add("task-gantt-popover-due-input");
+    dueInput.classList.add("task-gantt-popover-due-input", "vg-input-sm");
     dueInput.value = parent.dueDate ?? "";
     this.bindRichPopoverInteraction(dueInput);
     dueInput.addEventListener("change", () => {

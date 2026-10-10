@@ -1570,17 +1570,18 @@ describe("part 6 — Modal minimum", () => {
     expect(parseFloat(metaSize ?? "10")).toBeLessThan(1);
   });
 
-  it("has()-scoped is-selected background + search input width", () => {
+  it("selected list row background + has()-scoped search input width", () => {
     expectDecl(
-      ".modal:has(.task-workbench-finder-title) .is-selected",
+      ".vg-list-row.is-selected",
       "background",
       "hsla(var(--interactive-accent-hsl), 0.15)"
     );
     expectDecl(
-      '.modal:has(.task-workbench-finder-title) input[type="search"]',
+      '.modal:has(.vg-finder-list) input[type="search"]',
       "width",
       "100%"
     );
+    expectDecl(".vg-modal-list.vg-finder-list", "max-height", "60vh");
   });
 
   it("DailyTodoModal: desc/list/row/text/source/buttons rules", () => {

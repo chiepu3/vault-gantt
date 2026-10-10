@@ -1394,8 +1394,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
   /**
  * Production single-line prompt (modal based). Overridden in tests.
  */
-  protected promptInput(defaultValue?: string): Promise<string | null> {
-    return modalPrompt(this.app)(defaultValue);
+  protected promptInput(
+    defaultValue?: string,
+    title?: string
+  ): Promise<string | null> {
+    return modalPrompt(this.app)(defaultValue, title);
   }
 
   /**

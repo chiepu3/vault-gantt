@@ -79,6 +79,23 @@ body {
 /* Shared compact button (24px) for small surfaces such as menus and popovers. */
 .vg-btn-sm { height: 24px; padding: 0 var(--vg-space-3); font-size: var(--vg-font-s); border-radius: var(--vg-radius-s); cursor: pointer; }
 
+/* Shared compact input / select / textarea for popovers. */
+.vg-input-sm { min-height: 28px; padding: var(--vg-space-1) var(--vg-space-2); font: inherit; font-size: var(--vg-font-m); color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); }
+.vg-input-sm:focus-visible { outline: var(--vg-focus-ring); outline-offset: 1px; }
+
+/* Shared surface and popover (position is set by each popover). */
+.vg-surface { padding: var(--vg-space-4); background: var(--background-primary); border: var(--vg-border); border-radius: var(--vg-radius-l); }
+.vg-popover { z-index: var(--vg-z-overlay); box-shadow: var(--vg-shadow-popover); }
+
+/* Modal inner layout: scrolling list, button row, empty state, selectable row. */
+.vg-modal-list { display: flex; flex-direction: column; gap: var(--vg-space-1); max-height: 400px; overflow-y: auto; }
+.vg-modal-list.vg-finder-list { gap: 0; max-height: 60vh; }
+.vg-modal-actions, .task-workbench-modal-buttons, .task-gantt-weekly-work-schedule-buttons, .task-gantt-modal-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--vg-space-3); margin-top: var(--vg-space-4); }
+.vg-empty { padding: var(--vg-space-6) var(--vg-space-5); text-align: center; color: var(--vg-color-muted); font-size: var(--vg-font-m); }
+.vg-list-row { padding: var(--vg-space-1) var(--vg-space-3); border-radius: var(--vg-radius-s); cursor: pointer; }
+.vg-list-row:hover { background: var(--vg-tint-hover); }
+.vg-list-row.is-selected { background: var(--vg-tint-selected); }
+
 .task-workbench-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 
 /* min-height: 0 lets the flex child shrink below its content height;
@@ -416,9 +433,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
   border: var(--vg-border);
   border-radius: var(--vg-radius-l);
   box-shadow: var(--vg-shadow-popover);
-  padding: var(--vg-space-3);
+  padding: var(--vg-space-4);
 }
-.task-gantt-rich-popover { overflow-y: auto; padding: var(--vg-space-4); }
+.task-gantt-rich-popover { overflow-y: auto; }
 .task-gantt-workload-popover {
   border-radius: var(--vg-radius-l);
   display: none;
@@ -619,8 +636,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-popover-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--vg-space-3); }
 .task-gantt-popover-title { min-width: 0; flex: 1 1 auto; font-weight: var(--vg-weight-strong); line-height: 1.35; overflow-wrap: anywhere; }
 .task-gantt-popover-chips { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: var(--vg-space-1); }
-.task-gantt-popover-status-chip, .task-gantt-popover-priority-chip { color: var(--text-muted); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-pill); padding: 1px 6px; font-size: 0.8em; line-height: 1.4; white-space: nowrap; }
-.task-gantt-popover-status-chip.status-done { color: var(--text-success); }
+.task-gantt-popover-status-chip.status-done { color: var(--vg-color-success); }
+.task-gantt-popover-tag-chips { display: flex; flex-wrap: wrap; gap: var(--vg-space-1); }
+.task-gantt-popover-tag-chips .task-workbench-tag-chip { margin-right: 0; }
 .task-gantt-popover-body { display: flex; flex-direction: column; gap: var(--vg-space-3); margin-top: 8px; }
 .task-gantt-popover-field { display: grid; grid-template-columns: 6em minmax(0, 1fr); align-items: start; gap: var(--vg-space-3); min-width: 0; }
 .task-gantt-popover-label { color: var(--text-muted); font-size: 0.85em; }
@@ -636,18 +654,21 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-popover-toggle-completed:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
 .task-gantt-popover-toggle-completed { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
 
-.task-workbench-finder-title { font-weight: var(--vg-weight-strong); font-size: 1.05em; padding: 6px 8px 0; }
-.task-workbench-finder-meta { font-size: 0.85em; color: var(--text-muted); padding: 0 8px 6px; }
+.task-workbench-finder-title { font-weight: var(--vg-weight-strong); font-size: 1.05em; padding: 0; }
+.task-workbench-finder-meta { font-size: 0.85em; color: var(--text-muted); padding: 0; overflow-wrap: anywhere; }
 
-.modal:has(.task-workbench-finder-title) .is-selected { background: hsla(var(--interactive-accent-hsl), 0.15); border-radius: var(--vg-radius-s); }
-.modal:has(.task-workbench-finder-title) input[type="search"] { width: 100%; margin-bottom: 8px; }
+/* The search input sits outside the scrolling list, so it stays visible while the list scrolls. */
+.modal:has(.vg-finder-list) input[type="search"] { width: 100%; margin-bottom: var(--vg-space-3); }
 
-.task-workbench-modal-desc { color: var(--text-muted); font-size: 0.9em; margin: 0 0 8px; }
+.task-workbench-modal-desc { color: var(--text-muted); font-size: 0.9em; margin: 0 0 var(--vg-space-3); }
 .task-workbench-daily-todo-list { display: flex; flex-direction: column; gap: var(--vg-space-1); max-height: 400px; }
 .task-workbench-daily-todo-row { display: flex; align-items: center; gap: var(--vg-space-3); }
 .task-workbench-daily-todo-text { flex: 1 1 auto; min-width: 0; }
 .task-workbench-daily-todo-source { flex: 0 0 auto; font-size: 0.8em; color: var(--text-faint); }
-.task-workbench-modal-buttons, .task-gantt-weekly-work-schedule-buttons { display: flex; justify-content: flex-end; gap: var(--vg-space-3); margin-top: 12px; }
+/* Marker modal: label above a full-width field. */
+.task-gantt-marker-modal-field { display: flex; flex-direction: column; gap: var(--vg-space-1); margin-bottom: var(--vg-space-4); }
+.task-gantt-marker-modal-field label { color: var(--vg-color-muted); font-size: var(--vg-font-m); }
+.task-gantt-marker-modal-field input { width: 100%; }
 
 .task-gantt-weekly-work-schedule-list { display: flex; flex-direction: column; gap: var(--vg-space-3); max-height: 400px; overflow-y: auto; }
 .task-gantt-weekly-work-schedule-row { display: flex; align-items: flex-end; gap: 6px; }

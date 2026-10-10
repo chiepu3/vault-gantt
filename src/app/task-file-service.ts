@@ -9,7 +9,10 @@ import { VaultAdapter, addSubtask, createTask } from "./task-operations";
  * Returns the entered text, or null when the user cancels.
  * Production wires this to PromptModal below; tests inject scripted values.
  */
-export type PromptFn = (defaultValue?: string) => Promise<string | null>;
+export type PromptFn = (
+  defaultValue?: string,
+  title?: string
+) => Promise<string | null>;
 
 /**
  *
@@ -37,7 +40,7 @@ export class TaskFileService {
     // input — modeled as a re-prompt loop until valid input or cancellation
     let name: string | null;
     for (;;) {
-      name = await promptFn();
+      name = await promptFn(undefined, "新規タスク");
       if (name === null) {
         return null; // user cancelled
       }
@@ -83,7 +86,7 @@ export class TaskFileService {
   ): Promise<TaskRow | null> {
     let name: string | null;
     for (;;) {
-      name = await promptFn();
+      name = await promptFn(undefined, "サブタスクを追加");
       if (name === null) {
         return null; // user cancelled
       }
@@ -139,7 +142,7 @@ export class TaskFileService {
     // Start the subtask wizard with the same prompt validation as above.
     let name: string | null;
     for (;;) {
-      name = await promptFn();
+      name = await promptFn(undefined, "サブタスクを追加");
       if (name === null) {
         return null; // user cancelled
       }
@@ -179,6 +182,7 @@ class PromptModal extends Modal {
   constructor(
     app: App,
     defaultValue: string,
+    private readonly modalTitle: string,
     private readonly onSubmit: (value: string | null) => void
   ) {
     super(app);
@@ -186,6 +190,9 @@ class PromptModal extends Modal {
   }
 
   onOpen(): void {
+    if (this.modalTitle !== "") {
+      this.titleEl.setText(this.modalTitle);
+    }
     this.contentEl.replaceChildren();
     new Setting(this.contentEl)
       .setName("タスク名")
@@ -202,7 +209,10 @@ class PromptModal extends Modal {
         });
       })
       .addButton((button) => {
-        button.setButtonText("OK").setCta().onClick(() => this.submit());
+        button.setButtonText("作成").setCta().onClick(() => this.submit());
+      })
+      .addButton((button) => {
+        button.setButtonText("キャンセル").onClick(() => this.close());
       });
   }
 
@@ -231,8 +241,8 @@ class PromptModal extends Modal {
  * or cancel.
  */
 export function modalPrompt(app: App): PromptFn {
-  return (defaultValue?: string) =>
+  return (defaultValue?: string, title?: string) =>
     new Promise<string | null>((resolve) => {
-      new PromptModal(app, defaultValue ?? "", resolve).open();
+      new PromptModal(app, defaultValue ?? "", title ?? "", resolve).open();
     });
 }
