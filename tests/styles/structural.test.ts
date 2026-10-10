@@ -138,12 +138,85 @@ function rulesFor(selector: string): CssRule[] {
   return getRules().filter((r) => r.selectors.includes(selector));
 }
 
+/**
+ * Design tokens defined on `body` (--vg-*) mapped to the value they resolve to
+ * with Obsidian's default variables. declsFor() substitutes these so value
+ * assertions keep checking the effective value (e.g. 8px) rather than the
+ * token name. The key set must equal the token block (see "design tokens").
+ */
+const VG_TOKEN_REFERENCE: Readonly<Record<string, string>> = {
+  "--vg-space-0": "2px",
+  "--vg-space-1": "4px",
+  "--vg-space-2": "6px",
+  "--vg-space-3": "8px",
+  "--vg-space-4": "12px",
+  "--vg-space-5": "16px",
+  "--vg-space-6": "24px",
+  "--vg-radius-s": "4px",
+  "--vg-radius-m": "8px",
+  "--vg-radius-l": "12px",
+  "--vg-radius-pill": "999px",
+  "--vg-border-width": "1px",
+  "--vg-border-color": "var(--background-modifier-border)",
+  "--vg-border-color-subtle":
+    "color-mix(in srgb, var(--background-modifier-border) 60%, transparent)",
+  "--vg-border-color-strong": "var(--background-modifier-border-hover)",
+  "--vg-border": "1px solid var(--background-modifier-border)",
+  "--vg-border-subtle":
+    "1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent)",
+  "--vg-focus-ring": "2px solid var(--interactive-accent)",
+  "--vg-shadow-flat": "0 1px 2px var(--background-modifier-box-shadow)",
+  "--vg-shadow-raised": "0 2px 6px var(--background-modifier-box-shadow)",
+  "--vg-shadow-popover": "var(--shadow-s)",
+  "--vg-shadow-modal": "var(--shadow-l)",
+  "--vg-font-micro": "10px",
+  "--vg-font-xs": "11px",
+  "--vg-font-s": "12px",
+  "--vg-font-m": "var(--font-ui-small)",
+  "--vg-font-l": "var(--font-ui-medium)",
+  "--vg-weight-normal": "400",
+  "--vg-weight-medium": "500",
+  "--vg-weight-strong": "600",
+  "--vg-leading-tight": "1.3",
+  "--vg-leading-normal": "1.5",
+  "--vg-icon-s": "16px",
+  "--vg-alpha-tint": "0.12",
+  "--vg-alpha-tint-strong": "0.18",
+  "--vg-alpha-border": "0.4",
+  "--vg-tint-hover": "var(--background-modifier-hover)",
+  "--vg-tint-pressed": "var(--background-modifier-active-hover)",
+  "--vg-tint-selected": "hsla(var(--interactive-accent-hsl), 0.15)",
+  "--vg-tint-danger": "rgba(var(--color-red-rgb), 0.12)",
+  "--vg-tint-warning": "rgba(var(--color-yellow-rgb), 0.12)",
+  "--vg-tint-success": "rgba(var(--color-green-rgb), 0.18)",
+  "--vg-tint-info": "rgba(var(--color-blue-rgb), 0.18)",
+  "--vg-tint-weekend": "color-mix(in srgb, var(--text-muted) 6%, transparent)",
+  "--vg-border-danger": "rgba(var(--color-red-rgb), 0.4)",
+  "--vg-color-danger": "var(--text-error)",
+  "--vg-color-warning": "var(--text-warning)",
+  "--vg-color-success": "var(--text-success)",
+  "--vg-color-info": "var(--color-blue)",
+  "--vg-color-muted": "var(--text-muted)",
+  "--vg-color-faint": "var(--text-faint)",
+  "--vg-priority-auto": "var(--color-blue)",
+  "--vg-priority-manual": "var(--color-yellow)",
+  "--vg-z-overlay": "20",
+};
+
+/** Replace var(--vg-*) references with their reference value. */
+function resolveVgTokens(value: string): string {
+  return value.replace(/var\((--vg-[a-z0-9-]+)\)/g, (whole, name: string) => {
+    const resolved = VG_TOKEN_REFERENCE[name];
+    return resolved === undefined ? whole : resolveVgTokens(resolved);
+  });
+}
+
 /** Union of declarations across all rules matching the selector (last wins). */
 function declsFor(selector: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const rule of rulesFor(selector)) {
     for (const decl of rule.decls) {
-      map.set(decl.prop, decl.value);
+      map.set(decl.prop, resolveVgTokens(decl.value));
     }
   }
   return map;
@@ -1609,5 +1682,40 @@ describe("part 7 — z-index registry", () => {
     // excluded from the shared chain.
     expectDecl(".task-workbench-table thead th", "z-index", "1");
     expectDecl(".task-gantt-header-left", "z-index", "1");
+  });
+});
+
+describe("design tokens (--vg-*)", () => {
+  const bodyRules = getRules().filter((r) => r.selectors.includes("body"));
+  const tokenDecls = bodyRules.flatMap((r) => r.decls);
+  const tokenNames = tokenDecls.map((d) => d.prop);
+
+  it("are defined once on body and hold only theme-following values", () => {
+    expect(bodyRules.length, "exactly one body rule").toBe(1);
+    expect(tokenDecls.length).toBeGreaterThan(0);
+    // Allowed literals: pill radius, alpha numbers, the focus ring width, z-index.
+    const allowedLiteral = /^(999px|0?\.\d+|2px solid var\(--interactive-accent\)|\d+)$/;
+    for (const decl of tokenDecls) {
+      expect(decl.prop, `${decl.prop} must be a --vg-* property`).toMatch(/^--vg-/);
+      const value = decl.value;
+      const ok =
+        allowedLiteral.test(value) ||
+        value.includes("var(--") ||
+        /^calc\(var\(--/.test(value);
+      expect(ok, `${decl.prop}: ${value} must reference an Obsidian/--vg variable`).toBe(true);
+      expect(value, `${decl.prop} must not hardcode a color`).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    }
+  });
+
+  it("every var(--vg-*) reference is defined in the token block", () => {
+    const defined = new Set(tokenNames);
+    const used = new Set<string>();
+    for (const m of noComments.matchAll(/var\((--vg-[a-z0-9-]+)/g)) used.add(m[1]);
+    const missing = [...used].filter((name) => !defined.has(name));
+    expect(missing).toEqual([]);
+  });
+
+  it("VG_TOKEN_REFERENCE has exactly the tokens of the block", () => {
+    expect([...Object.keys(VG_TOKEN_REFERENCE)].sort()).toEqual([...tokenNames].sort());
   });
 });
