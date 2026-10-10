@@ -515,6 +515,9 @@ export async function updateDailyTodoItem(
     return false;
   }
   const nextCompleted = patch.completed ?? item.completed;
+  if (nextText.trim() === item.text.trim() && nextCompleted === item.completed) {
+    return true;
+  }
 
   lines[item.line] = formatDailyTodoLine(nextCompleted, nextText);
   const after = lines.join("\n");

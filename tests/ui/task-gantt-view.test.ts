@@ -11,7 +11,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import moment from "moment";
-import { Menu } from "obsidian";
+import { Menu, Notice } from "obsidian";
+
+vi.mock("obsidian", async (importOriginal) => ({
+  ...await importOriginal<typeof import("obsidian")>(),
+  Notice: vi.fn(),
+}));
 import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
 import type { TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import {
@@ -3027,7 +3032,7 @@ describe("TaskGanttView", () => {
       });
 
       it("closes on an outside mousedown or Escape, and saves text that was typed but not yet committed", async () => {
-        const { h, chip } = await openWithItems([todo(3, "旧")]);
+        const { h, chip, container } = await openWithItems([todo(3, "旧")]);
         dispatch(chip, "click");
         let pop = popoverEl()!;
         inputOf(rowsOf(pop)[0]).value = "未確定の入力";
@@ -3039,13 +3044,118 @@ describe("TaskGanttView", () => {
         expect(h.updateDailyTodoItem).toHaveBeenCalledTimes(1);
         expect(h.updateDailyTodoItem.mock.calls[0][1].text).toBe("未確定の入力");
 
-        dispatch(chip, "click");
+        dispatch(byClass(container, "task-gantt-daily-chip")[0], "click");
         pop = popoverEl()!;
         // A mousedown inside the popover does not close it.
         dispatch((window as any), "mousedown", { target: inputOf(rowsOf(pop)[0]) });
         expect(popoverEl()).toBeTruthy();
         dispatch(pop, "keydown", { key: "Escape" });
         expect(popoverEl()).toBeUndefined();
+      });
+
+      it.each([0, 1])("waits for the old save before opening date offset %i with fresh lines", async (offset) => {
+        const { h, chip, view, date } = await openWithItems([
+          todo(3, "消す"), todo(4, "残す"),
+        ]);
+        const nextDate = addDays(date, offset);
+        let release!: () => void;
+        h.deleteDailyTodoItem.mockImplementationOnce(async () => {
+          await new Promise<void>((resolve) => { release = resolve; });
+          h.loadDailyTodoSummaries.mockResolvedValue([{
+            date: nextDate, items: [todo(3, "外部更新済み")], completedCount: 0, totalCount: 1,
+          }]);
+          return true;
+        });
+        dispatch(chip, "click");
+        const oldState = (view as any).dailyTodoPopoverState;
+        dispatch(moreOf(rowsOf(popoverEl()!)[0]), "click");
+        dispatch(menuItemWithText("削除"), "click");
+        await flush();
+        dispatch(popoverEl()!, "keydown", { key: "Escape" });
+        (view as any).openDailyTodoPopover(nextDate, (view as any).dailyTodoAnchorEls.get(nextDate));
+        expect(popoverEl()).toBeUndefined();
+        expect(h.updateDailyTodoItem).not.toHaveBeenCalled();
+        release();
+        await flush();
+        const row = rowsOf(popoverEl()!)[0];
+        expect(inputOf(row).value).toBe("外部更新済み");
+        // A detached model cannot restore its stale cached text or line.
+        await (view as any).applyDailyTodoModel(oldState);
+        expect((view as any).dailyTodoSummaries[0].items[0].text).toBe("外部更新済み");
+        checkOf(row).checked = true;
+        dispatch(checkOf(row), "change");
+        await flush();
+        expect(h.updateDailyTodoItem).toHaveBeenCalledTimes(1);
+        expect(h.updateDailyTodoItem.mock.calls[0][0].line).toBe(3);
+      });
+
+      it.each([false, true])("keeps text typed while a save awaits (new row: %s)", async (newRow) => {
+        const { h, chip } = await openWithItems([todo(3, "旧")]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        if (newRow) dispatch(addOf(pop), "click");
+        const row = rowsOf(pop)[newRow ? 1 : 0];
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        if (newRow) {
+          h.addDailyTodoItem.mockImplementationOnce(async (_date: string, text: string, completed: boolean) => {
+            await pending;
+            return todo(5, text, completed);
+          });
+        } else {
+          h.updateDailyTodoItem.mockImplementationOnce(async (item: DailyTodoItem, patch: { text?: string; completed?: boolean }) => {
+            await pending;
+            Object.assign(item, patch);
+            return true;
+          });
+        }
+        inputOf(row).value = "保存対象";
+        dispatch(inputOf(row), "change");
+        await flush();
+        inputOf(row).value = "保存対象に追記";
+        release();
+        await flush();
+        expect(inputOf(row).value).toBe("保存対象に追記");
+        dispatch(pop, "keydown", { key: "Escape" });
+        await flush();
+        expect(h.updateDailyTodoItem.mock.calls.at(-1)![1].text).toBe("保存対象に追記");
+      });
+
+      it("does not write untouched trailing whitespace on change or close", async () => {
+        const { h, chip } = await openWithItems([todo(3, "文面  ")]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        dispatch(inputOf(rowsOf(pop)[0]), "change");
+        await flush();
+        dispatch(pop, "keydown", { key: "Escape" });
+        await flush();
+        expect(h.updateDailyTodoItem).not.toHaveBeenCalled();
+      });
+
+      it.each(["Escape", "outside"])("silently restores blank text when closing via %s", async (method) => {
+        const { h, chip } = await openWithItems([todo(3, "残す")]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        const input = inputOf(rowsOf(pop)[0]);
+        vi.mocked(Notice).mockClear();
+        input.value = "  ";
+        if (method === "Escape") dispatch(pop, "keydown", { key: "Escape" });
+        else dispatch((window as any), "mousedown", { target: makeFakeEl("div") });
+        await flush();
+        expect(input.value).toBe("残す");
+        expect(Notice).not.toHaveBeenCalled();
+        expect(h.updateDailyTodoItem).not.toHaveBeenCalled();
+      });
+
+      it("still notifies about blank text when confirmed while open", async () => {
+        const { chip } = await openWithItems([todo(3, "残す")]);
+        dispatch(chip, "click");
+        vi.mocked(Notice).mockClear();
+        const input = inputOf(rowsOf(popoverEl()!)[0]);
+        input.value = "";
+        dispatch(input, "change");
+        await flush();
+        expect(Notice).toHaveBeenCalledWith("空欄にはできません。削除は「…」から行えます。");
       });
 
       it("closes on chart scroll", async () => {

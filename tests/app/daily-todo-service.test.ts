@@ -673,6 +673,18 @@ describe("daily-todo-service", () => {
       expect(getContent(PATH)).toBe("- [x] keep me");
     });
 
+    it("leaves whitespace-only text changes untouched without an undo entry", async () => {
+      const { vault, modifySpy, getContent } = makeFakeVault({ [PATH]: "- [ ] text  " });
+      const history = { push: vi.fn(), clear: vi.fn() };
+      const item = todoItem({ path: PATH, line: 0, text: "text  " });
+      expect(await updateDailyTodoItem(item, { text: "text" }, vault,
+        history as unknown as HistoryManager)).toBe(true);
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(history.push).not.toHaveBeenCalled();
+      expect(getContent(PATH)).toBe("- [ ] text  ");
+      expect(item.text).toBe("text  ");
+    });
+
     it("records the edit as an undo entry instead of clearing history", async () => {
       const { vault } = makeFakeVault({ [PATH]: "- [ ] a" });
       const history = { push: vi.fn(), clear: vi.fn() };

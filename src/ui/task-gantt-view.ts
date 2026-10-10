@@ -247,8 +247,6 @@ interface DailyTodoPopoverState {
   date: string;
   listEl: HTMLElement;
   rows: DailyTodoPopoverRow[];
-  /** Serialises saves (see enqueueDailyTodoTask). */
-  queue: Promise<void>;
   outsideHandler: (evt: Event) => void;
 }
 
@@ -257,7 +255,7 @@ function isDailyTodoRowDirty(row: DailyTodoPopoverRow): boolean {
   if (row.item === null) {
     return text !== "";
   }
-  return text !== row.item.text || row.checkEl.checked !== row.item.completed;
+  return text !== row.item.text.trim() || row.checkEl.checked !== row.item.completed;
 }
 
 function isNodeInside(node: Node, root: Node): boolean {
@@ -1114,6 +1112,8 @@ export class TaskGanttView extends ItemView {
 
   /** The currently open Daily ToDo popover (click to open, editable in place). */
   private dailyTodoPopoverState: DailyTodoPopoverState | undefined = undefined;
+  private dailyTodoQueue: Promise<void> | undefined = undefined;
+  private dailyTodoOpenGeneration = 0;
 
 
 
@@ -3154,6 +3154,25 @@ export class TaskGanttView extends ItemView {
       return;
     }
 
+    const generation = this.dailyTodoOpenGeneration;
+    if (this.dailyTodoQueue !== undefined) {
+      void this.enqueueDailyTodoTask(async () => {
+        await this.refreshDailyTodoSummaries();
+        if (generation !== this.dailyTodoOpenGeneration) {
+          return;
+        }
+        this.rebuildDailyTodoRowKeepingPopover();
+        const anchor = this.dailyTodoAnchorEls.get(date);
+        if (anchor?.isConnected) {
+          this.createDailyTodoPopover(date, anchor);
+        }
+      });
+      return;
+    }
+    this.createDailyTodoPopover(date, anchorEl);
+  }
+
+  private createDailyTodoPopover(date: string, anchorEl: HTMLElement): void {
     const el = document.createElement("div");
     el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
     el.setAttribute("data-date", date);
@@ -3180,7 +3199,6 @@ export class TaskGanttView extends ItemView {
       date,
       listEl,
       rows: [],
-      queue: Promise.resolve(),
       outsideHandler: (evt: Event): void => {
         const target = evt.target as Node | null;
         if (
@@ -3265,7 +3283,7 @@ export class TaskGanttView extends ItemView {
 
     // `change` fires on Enter / blur only, so IME composition is never cut off.
     const save = (): void => {
-      void this.enqueueDailyTodoTask(state, () =>
+      void this.enqueueDailyTodoTask(() =>
         this.commitDailyTodoRow(state, row)
       );
     };
@@ -3292,7 +3310,7 @@ export class TaskGanttView extends ItemView {
       menuItem.setTitle("開く").setIcon("file-text");
       menuItem.setDisabled(row.item === null);
       menuItem.onClick(() => {
-        void this.enqueueDailyTodoTask(state, async () => {
+        void this.enqueueDailyTodoTask(async () => {
           // Save pending edits first so the note and the jump target agree.
           await this.commitDailyTodoRow(state, row);
           if (row.item !== null) {
@@ -3306,7 +3324,7 @@ export class TaskGanttView extends ItemView {
       menuItem.setTitle("削除").setIcon("trash").setWarning(true);
       menuItem.onClick(() => {
         // Deleted at once, without confirmation; the write is on the undo history.
-        void this.enqueueDailyTodoTask(state, () =>
+        void this.enqueueDailyTodoTask(() =>
           this.deleteDailyTodoRow(state, row)
         );
       });
@@ -3319,15 +3337,19 @@ export class TaskGanttView extends ItemView {
    * the note and addresses a line number, so overlapping saves could race.
    */
   private enqueueDailyTodoTask(
-    state: DailyTodoPopoverState,
     task: () => Promise<void>
   ): Promise<void> {
-    const next = state.queue.then(task).catch((err: unknown) => {
+    const next = (this.dailyTodoQueue ?? Promise.resolve()).then(task).catch((err: unknown) => {
       this.host.logger.warn("TaskGanttView", "Daily ToDo popover save failed", err);
       new Notice("Daily ToDoを保存できませんでした。");
     });
-    state.queue = next;
-    return next;
+    const queued = next.finally(() => {
+      if (this.dailyTodoQueue === queued) {
+        this.dailyTodoQueue = undefined;
+      }
+    });
+    this.dailyTodoQueue = queued;
+    return queued;
   }
 
   /** Writes a row's checkbox / text if it differs from what is stored. */
@@ -3336,7 +3358,8 @@ export class TaskGanttView extends ItemView {
     row: DailyTodoPopoverRow
   ): Promise<void> {
     const completed = row.checkEl.checked;
-    let text = row.inputEl.value.trim();
+    const inputValue = row.inputEl.value;
+    let text = inputValue.trim();
     const item = row.item;
 
     if (item === null) {
@@ -3359,9 +3382,11 @@ export class TaskGanttView extends ItemView {
         }
       }
       row.item = created;
-      row.inputEl.value = text;
+      if (row.inputEl.value === inputValue) {
+        row.inputEl.value = text;
+      }
       row.rowEl.title = created.sourceLabel;
-      this.applyDailyTodoModel(state);
+      await this.applyDailyTodoModel(state);
       return;
     }
 
@@ -3369,9 +3394,11 @@ export class TaskGanttView extends ItemView {
       // An empty line is never saved; removing a ToDo is 「…」→「削除」.
       text = item.text;
       row.inputEl.value = text;
-      new Notice("空欄にはできません。削除は「…」から行えます。");
+      if (this.dailyTodoPopoverState === state) {
+        new Notice("空欄にはできません。削除は「…」から行えます。");
+      }
     }
-    if (text === item.text && completed === item.completed) {
+    if (text.trim() === item.text.trim() && completed === item.completed) {
       return;
     }
     const ok = await this.host.updateDailyTodoItem(item, { text, completed });
@@ -3379,8 +3406,10 @@ export class TaskGanttView extends ItemView {
       await this.recoverDailyTodoPopover(state);
       return;
     }
-    row.inputEl.value = text;
-    this.applyDailyTodoModel(state);
+    if (row.inputEl.value === inputValue) {
+      row.inputEl.value = text;
+    }
+    await this.applyDailyTodoModel(state);
   }
 
   /** Deletes a row's ToDo line right away (a never-saved row is just dropped). */
@@ -3409,7 +3438,7 @@ export class TaskGanttView extends ItemView {
     }
     state.rows.splice(state.rows.indexOf(row), 1);
     row.rowEl.remove();
-    this.applyDailyTodoModel(state);
+    await this.applyDailyTodoModel(state);
   }
 
   /**
@@ -3421,6 +3450,10 @@ export class TaskGanttView extends ItemView {
   ): Promise<void> {
     new Notice("ToDoのファイルが変更されていたため、最新の内容を読み込み直しました。");
     await this.refreshDailyTodoSummaries();
+    if (this.dailyTodoPopoverState !== state) {
+      this.rebuildDailyTodoRowKeepingPopover();
+      return;
+    }
     const summary = this.dailyTodoSummaries.find((s) => s.date === state.date);
     state.rows.length = 0;
     state.listEl.replaceChildren();
@@ -3431,7 +3464,12 @@ export class TaskGanttView extends ItemView {
   }
 
   /** Mirrors the popover's saved rows into the cached summary and the row chips. */
-  private applyDailyTodoModel(state: DailyTodoPopoverState): void {
+  private async applyDailyTodoModel(state: DailyTodoPopoverState): Promise<void> {
+    if (this.dailyTodoPopoverState !== state) {
+      await this.refreshDailyTodoSummaries();
+      this.rebuildDailyTodoRowKeepingPopover();
+      return;
+    }
     const items = state.rows.flatMap((row) =>
       row.item !== null ? [{ ...row.item }] : []
     );
@@ -3557,6 +3595,7 @@ export class TaskGanttView extends ItemView {
    * committed is saved first (a removed input never fires `change`).
    */
   private closeDailyTodoPopover(): void {
+    this.dailyTodoOpenGeneration += 1;
     const state = this.dailyTodoPopoverState;
     if (state === undefined) {
       return;
@@ -3565,7 +3604,7 @@ export class TaskGanttView extends ItemView {
     window.removeEventListener("mousedown", state.outsideHandler, true);
     for (const row of [...state.rows]) {
       if (isDailyTodoRowDirty(row)) {
-        void this.enqueueDailyTodoTask(state, () =>
+        void this.enqueueDailyTodoTask(() =>
           this.commitDailyTodoRow(state, row)
         );
       }
