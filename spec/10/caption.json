@@ -1,0 +1,1 @@
+{"operation":"ステータスと完了フラグが食い違うノートをWorkbenchで開き、「完了も表示」をオフにした。","setup":"done・completed:falseの案件とactive・completed:trueの案件、通常の未着手案件を用意した。","before":"完了の案件が表示に残り、未着手の案件が非表示になった。","after":"完了の案件が非表示になり、未着手の案件が表示された。"}

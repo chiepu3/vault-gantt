@@ -1,0 +1,6 @@
+{
+  "operation": "YAMLリストでタグを書いたノートの期限をWorkbenchで10月12日から10月20日に変更した。",
+  "setup": "tagsの下にworkとurgentをYAMLリストで記載したノート。",
+  "before": "タグが読み込まれず、保存後はtagsが空になった。",
+  "after": "workとurgentが読み込まれ、保存後も引用済み配列として残った。"
+}
