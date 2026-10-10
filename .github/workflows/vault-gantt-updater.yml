@@ -1,6 +1,6 @@
-name: Faroe Artifact
+name: Vault Gantt Updater Artifact
 
-# Builds the Vault Gantt bundle for tools/faroe/Update-VaultGantt.ps1.
+# Builds the Vault Gantt bundle for tools/updater/Update-VaultGantt.ps1.
 #
 # Actions are pinned to the commit the official v4 tag pointed to when this file was written
 # (resolved via the GitHub API from each official actions/* repository).
@@ -12,19 +12,19 @@ name: Faroe Artifact
 # commit (github.sha).
 on:
   push:
-    branches: [main, codex/faroe-updater]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: faroe-artifact-${{ github.sha }}
+  group: vault-gantt-updater-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   verify-and-package:
-    if: github.ref_type == 'branch' && contains(fromJSON('["main","codex/faroe-updater"]'), github.ref_name)
+    if: github.ref_type == 'branch' && github.ref_name == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -53,13 +53,13 @@ jobs:
 
       # Reached only if every step above succeeded.
       - name: Package bundle
-        run: node tools/faroe/package-bundle.mjs "$RUNNER_TEMP/faroe-bundle"
+        run: node tools/updater/package-bundle.mjs "$RUNNER_TEMP/vault-gantt-updater-bundle"
 
       - name: Upload bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: vault-gantt-faroe-${{ github.sha }}
-          path: ${{ runner.temp }}/faroe-bundle/
+          name: vault-gantt-updater-${{ github.sha }}
+          path: ${{ runner.temp }}/vault-gantt-updater-bundle/
           if-no-files-found: error
           retention-days: 14
           overwrite: true
