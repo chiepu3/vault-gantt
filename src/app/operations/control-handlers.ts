@@ -1,18 +1,13 @@
 import type { RequestContext, Json } from "../../contracts/context";
 import { operationOutputSchemas, type OperationInputMap, type OperationOutputMap } from "../../contracts/operations";
 import type { ChatSession, Conversation } from "../../ai/chat-session";
+import { validEndpoint } from "../../ai/sdk-provider";
 import { handlerInput, fail } from "./runtime";
 
 export const CONTROL_OPERATION_IDS = ["Q01", "Q02", "Q03", "Q04", "Q05", "Q06"] as const;
 export type ControlId = typeof CONTROL_OPERATION_IDS[number];
 function conversationState(conversation: Conversation): Json {
   return { activeConversationId: conversation.id, title: conversation.title, status: conversation.status, messageCount: conversation.messages.length };
-}
-function validConnection(endpoint: string): boolean {
-  try {
-    const url = new URL(endpoint);
-    return !url.username && !url.password && !url.search && !url.hash && (url.protocol === "https:" || url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
-  } catch { return false; }
 }
 export async function controlRequest<K extends ControlId>(id: K, input: OperationInputMap[K], context: RequestContext, session?: ChatSession): Promise<OperationOutputMap[K]> {
   const args = handlerInput(id, input, context);
@@ -22,7 +17,7 @@ export async function controlRequest<K extends ControlId>(id: K, input: Operatio
   let after: Json;
   if (id === "Q01") {
     const config = args as OperationInputMap["Q01"];
-    if (config.provider !== "disconnected" && (!validConnection(config.endpoint) || !config.model.trim() || config.auth === "secret" && !config.secretId.trim())) fail("INVALID_INPUT", "HTTPS/loopback HTTP接続先、モデル、既存secret IDを指定してください。");
+    if (config.provider !== "disconnected" && (!validEndpoint(config.endpoint) || !config.model.trim() || config.auth === "secret" && !config.secretId.trim())) fail("INVALID_INPUT", "HTTP/HTTPS接続先（認証情報・クエリ・ハッシュなし）、モデル、既存secret IDを指定してください。");
     // Configuration is kept in memory; configuring does not call the provider.
     const old = { ...session.config };
     session.configure({ ...config });

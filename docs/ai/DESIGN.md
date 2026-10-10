@@ -234,7 +234,7 @@
 
 | ID | 名前・意味 | 入力 | 現行の制約・検証 | Undo | AI | Preview |
 | --- | --- | --- | --- | --- | --- | --- |
-| Q01 | 接続・モデル・既存secret選択 | provider, endpoint, model, auth, secretId | HTTPS/loopback HTTP、redirect禁止。接続設定はメモリのみ、適用だけでは通信しない。変更時running停止 | × | × | 入力 |
+| Q01 | 接続・モデル・既存secret選択 | provider, endpoint, model, auth, secretId | HTTP/HTTPS（任意のホスト、認証情報・クエリ・ハッシュなし）、redirect禁止。接続設定はメモリのみ、適用だけでは通信しない。変更時running停止 | × | × | 入力 |
 | Q02 | 会話作成 | なし | 最大10会話、古い会話の未承認planはdiscard、running停止 | × | × | ― |
 | Q03 | 会話切替 | conversationId | 未存在無操作、running停止、会話別文脈 | × | × | ― |
 | Q04 | AIへメッセージ送信 | text | 非空、接続済、同会話running不可、最大100message、モデル4step・120秒・output4096token | × | × | ―、応答 |
@@ -242,6 +242,8 @@
 | Q06 | 失敗応答の再試行 | 最後のuser message | 接続・状態検証、既存planの処理規則に従い再送 | × | × | ― |
 | Q07 | 変更案を承認して保存 | proposal/previewId | 人間の確認button、plan1回消費、最新内容・期限を検証、部分保存を区別 | 条件、操作による | ×、ToolAdapter.confirmChangeはAPIあり | C→結果、日程ならG後 |
 | Q08 | 消費済/失敗変更案の再プレビュー | proposal | 未保存対象を再plan、古いplanを自動再commitしない | ― | × | C |
+
+AIチャットは社内LANのHTTP接続先（例: `http://192.168.1.20:1234/v1`、`http://ai-server:8000/v1`）も利用できます。APIキーを使う設定で、localhost・127.0.0.1・[::1]以外のHTTP接続先を指定すると、設定画面に「この接続先は http のため、APIキーが暗号化されずに送られます。」と表示します。送信は止めませんが、保存済みキーは保存時のorigin（スキーム・ホスト・ポート）にだけ送ります。キーを使わない設定やHTTPS接続ではこの注意を表示しません。
 
 ### 3.8 コマンド登録との対応
 
