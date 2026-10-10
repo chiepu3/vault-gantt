@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { HistoryManager } from "../../src/app/history-manager";
 import type { Mock } from "vitest";
 
 import { Notice, TFile, moment } from "obsidian";
 
 import type { App, Vault, Workspace } from "obsidian";
-import type { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import {
   DailyTodoService,
@@ -119,6 +119,17 @@ function makeFakeVault(
       }
       return entry.content;
     }),
+    getFileByPath: (path: string) => {
+      const entry = files.get(path);
+      return entry ? makeFile(path, entry.mtime, entry.size) : null;
+    },
+    process: async (file: TFile, fn: (content: string) => string) => {
+      const entry = files.get(file.path);
+      if (!entry) throw new Error(`fake vault: file not found: ${file.path}`);
+      const content = fn(entry.content);
+      await modifySpy(file, content);
+      return content;
+    },
     modify: modifySpy,
     create: createSpy,
     createFolder: vi.fn(async () => undefined),
@@ -1291,6 +1302,83 @@ describe("daily-todo-service", () => {
         openDailyTodoEditor(summary, onDone)
       ).resolves.toBeUndefined();
       expect(onDone).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Daily ToDo undo history", () => {
+    const path = "デイリー/2026/07/260725_デイリー.md";
+
+    it("undoes a multi-file save and insertion together, then an earlier deadline edit", async () => {
+      const before = "## ToDoリスト\n- [ ] first";
+      const other = "meeting.md";
+      const { vault, app, getContent } = makeFakeVault({ [path]: before, [other]: "- [ ] meeting", "task.md": "due: 2026-08-01" });
+      const history = new HistoryManager();
+      history.push({ label: "期限変更", files: [{ path: "task.md", before: "due: 2026-07-01", after: "due: 2026-08-01" }] });
+      const first = todoItem({ path, line: 1, text: "first" });
+      const meeting = todoItem({ path: other, line: 0, text: "meeting" });
+      const summary = { date: "2026-07-25", items: [first, meeting], completedCount: 0, totalCount: 2 };
+      await updateDailyTodos(summary, [{ ...first, completed: true }, { ...meeting, text: "edited" }, todoItem({ path: "", line: -1, text: "new", isNew: true })], app, DEFAULT_SETTINGS, history);
+      const saved = getContent(path);
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent(path)).toBe(before);
+      expect(getContent(other)).toBe("- [ ] meeting");
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent("task.md")).toBe("due: 2026-07-01");
+      expect((await history.redo(vault)).kind).toBe("success");
+      expect((await history.redo(vault)).kind).toBe("success");
+      expect(getContent(path)).toBe(saved);
+      expect(getContent(other)).toBe("- [ ] edited");
+    });
+
+    it("records single-item updates, deletion and insertion without clearing earlier history", async () => {
+      const before = "- [ ] first";
+      const { vault, app, getContent } = makeFakeVault({ [path]: before });
+      const history = new HistoryManager();
+      history.push({ label: "以前の変更", files: [{ path: "other.md", before: "a", after: "b" }] });
+      const item = todoItem({ path, line: 0, text: "first" });
+      await updateDailyTodoItem(item, { completed: true }, vault, history);
+      await deleteDailyTodoItem(item, vault, history);
+      await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
+      for (const expected of ["", "- [x] first", before]) {
+        expect((await history.undo(vault)).kind).toBe("success");
+        expect(getContent(path)).toBe(expected);
+      }
+      expect(history.peekUndoLabel()).toBe("以前の変更");
+    });
+
+    it("keeps completed writes undoable when a later save fails", async () => {
+      const { vault, app, modifySpy, getContent, setFile } = makeFakeVault({ [path]: "- [ ] first", "meeting.md": "- [ ] second" });
+      const history = new HistoryManager();
+      const items = [todoItem({ path, line: 0, text: "first" }), todoItem({ path: "meeting.md", line: 0, text: "second" })];
+      modifySpy.mockImplementationOnce(async (file: TFile, content: string) => {
+        setFile(file.path, content);
+      }).mockRejectedValueOnce(new Error("save failed"));
+      await expect(updateDailyTodos({ date: "2026-07-25", items, completedCount: 0, totalCount: 2 }, items.map((item) => ({ ...item, completed: true })), app, DEFAULT_SETTINGS, history)).rejects.toThrow("save failed");
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent(path)).toBe("- [ ] first");
+      expect(getContent("meeting.md")).toBe("- [ ] second");
+    });
+
+    it("undoes inserted content in a new daily note while leaving the file", async () => {
+      const { vault, app, getContent } = makeFakeVault();
+      const history = new HistoryManager();
+      history.push({ label: "以前の変更", files: [{ path: "other.md", before: "a", after: "b" }] });
+      await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(vault.getFileByPath(path)).not.toBeNull();
+      expect(getContent(path)).not.toContain("- [ ] new");
+      expect(history.peekUndoLabel()).toBe("以前の変更");
+    });
+
+    it("does not add history or discard redo for an unchanged save", async () => {
+      const { vault, app } = makeFakeVault({ [path]: "- [ ] first", "task.md": "b" });
+      const history = new HistoryManager();
+      history.push({ label: "以前の変更", files: [{ path: "task.md", before: "a", after: "b" }] });
+      await history.undo(vault);
+      const item = todoItem({ path, line: 0, text: "first" });
+      await updateDailyTodos({ date: "2026-07-25", items: [item], completedCount: 0, totalCount: 1 }, [item], app, DEFAULT_SETTINGS, history);
+      expect(history.canUndo()).toBe(false);
+      expect(history.canRedo()).toBe(true);
     });
   });
 

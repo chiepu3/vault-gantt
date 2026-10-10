@@ -9501,7 +9501,7 @@ describe("inline title editing and marker modal", () => {
       await flush();
 
       expect(confirmSpy).toHaveBeenCalledWith(
-        "サブタスク『削除対象』をタスクとして削除します。元に戻せません。"
+        "サブタスク『削除対象』をタスクとして削除します。"
       );
       expect(h.deleteSubtaskTaskItem).not.toHaveBeenCalled();
     });
@@ -9519,7 +9519,7 @@ describe("inline title editing and marker modal", () => {
 
       // both displayName and title empty falls back to「サブタスク」
       expect((globalThis as any).window.confirm).toHaveBeenCalledWith(
-        "サブタスク『サブタスク』をタスクとして削除します。元に戻せません。"
+        "サブタスク『サブタスク』をタスクとして削除します。"
       );
       expect(h.deleteSubtaskTaskItem).toHaveBeenCalledWith(sub);
       expect(h.loadTasks).toHaveBeenCalledTimes(1); // re-render after delete
