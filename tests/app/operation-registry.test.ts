@@ -50,6 +50,20 @@ describe("OperationRegistry contract", () => {
     expect(undo.kind).toBe("success");
     expect((await a.registry.get(row.id)).notes).toBe("UI");
   });
+  it("reports the section that prevents a safe save through the UI", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "親タスク");
+    const child = await addSubtask(a.vault, a.settings, parent, "作業");
+    const file = a.vault.getFileByPath(parent.id)!;
+    const original = await a.vault.read(file) + "\n#### 参考資料\n資料\n";
+    await a.vault.modify(file, original);
+    a.vault.resetCounters();
+    await expect(a.registry.updateFromUI([{ row: child, patch: { displayName: "変更" } }]))
+      .rejects.toThrow("保持できない記述があります: ## Subtasks");
+    expect(await a.vault.read(file)).toBe(original);
+    expect(a.vault.getModifyCallCount()).toBe(0);
+    expect(a.historyManager.canUndo()).toBe(false);
+  });
   it("content revisions reject same-stat external changes without writing", async () => {
     const a = setup();
     const row = await createTask(a.vault, a.settings, "Example");
