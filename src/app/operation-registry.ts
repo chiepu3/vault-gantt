@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { TaskPatch, TaskRow, TaskUpdateCommand, TaskUpdateResult, TaskWorkbenchSettings } from "../core/types";
 import { applyPatchToParent } from "../core/task-patch";
 import { buildFullNote, parseTaskFile } from "../core/note-format";
+import { mergeTaskNote, NotePreservationError } from "../core/note-update";
 import { buildFileRevision, todayStr } from "../core/utils";
 import { addSubtask, createTask, getAvailableTaskPath, loadTasks, updateTaskItemsBatch } from "./task-operations";
 import type { VaultAdapter } from "./task-operations";
@@ -64,8 +65,9 @@ function persisted(row: TaskRow): string {
   const data = taskData(row);
   return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).map((key) => [key, canonical(data[key])])));
 }
-function assertRoundTrip(parent: TaskRow, settings: TaskWorkbenchSettings): TaskRow {
-  const parsed = parseTaskFile({ path: parent.file.path }, buildFullNote(parent, parent.subtasks), settings);
+function assertRoundTrip(parent: TaskRow, settings: TaskWorkbenchSettings, original: string, before: string): TaskRow {
+  const content = mergeTaskNote(original, before, buildFullNote(parent, parent.subtasks));
+  const parsed = parseTaskFile({ path: parent.file.path }, content, settings);
   if (!parsed || persisted(parent) !== persisted(parsed) || parent.subtasks!.size !== parsed.subtasks!.size) throw new Error("変更を安全に保存できません");
   for (const [key, child] of parent.subtasks!) {
     const other = parsed.subtasks!.get(key);
@@ -134,8 +136,9 @@ export class OperationRegistry {
         if (!row) throw new Error("Task not found");
         const rowBefore = structuredClone(row);
         const previous = structuredClone(taskData(row));
+        const beforeNote = buildFullNote(parent, parent.subtasks);
         applyPatchToParent(parent, arg.patch as TaskPatch, row.id, this.host.settings);
-        const serialized = assertRoundTrip(parent, this.host.settings);
+        const serialized = assertRoundTrip(parent, this.host.settings, content, beforeNote);
         const after = row.kind === "parent" ? serialized : [...serialized.subtasks!.values()].find((item) => item.id === row.id)!;
         if (after.plannedStartDate && after.plannedEndDate && after.plannedStartDate > after.plannedEndDate) throw new Error("開始日は終了日以前にしてください");
         const fields = Object.keys(patchSchema.shape).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: previous[key] ?? "", after: taskData(after)[key] ?? "" }));
@@ -174,7 +177,7 @@ export class OperationRegistry {
         if (signal?.aborted) throw new Error("CANCELLED");
         const file = await vault.create(path, content);
         result.committed = 1; result.diffs = plan.public.diffs;
-        this.host.historyManager.clear();
+        this.host.historyManager.discardRedo();
         return file;
       },
       read: (file) => vault.read(file),
@@ -222,6 +225,7 @@ export class OperationRegistry {
     } catch (error) {
       result.kind = error instanceof Error && error.message === "CANCELLED" ? "cancelled" : result.committed ? "partial" : (error instanceof Error && error.message === "REVISION_CONFLICT" ? "stale" : "failed");
       result.message = result.kind === "stale" ? "元データが変わりました。再試行で再プレビューしてください。" : "保存に失敗しました。保存済みの変更は残ります。再試行は再プレビューが必要です。";
+      if (error instanceof NotePreservationError) result.message = `${error.message} 保存済みの変更は残ります。`;
     } finally {
       if (history.length) {
         result.undoLabel = "タスク変更 " + plan.public.previewId;

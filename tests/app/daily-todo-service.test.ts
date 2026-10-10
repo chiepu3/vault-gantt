@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { HistoryManager } from "../../src/app/history-manager";
 import type { Mock } from "vitest";
 
 import { Notice, TFile, moment } from "obsidian";
 
 import type { App, Vault, Workspace } from "obsidian";
-import type { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import {
   DailyTodoService,
@@ -119,6 +119,17 @@ function makeFakeVault(
       }
       return entry.content;
     }),
+    getFileByPath: (path: string) => {
+      const entry = files.get(path);
+      return entry ? makeFile(path, entry.mtime, entry.size) : null;
+    },
+    process: async (file: TFile, fn: (content: string) => string) => {
+      const entry = files.get(file.path);
+      if (!entry) throw new Error(`fake vault: file not found: ${file.path}`);
+      const content = fn(entry.content);
+      await modifySpy(file, content);
+      return content;
+    },
     modify: modifySpy,
     create: createSpy,
     createFolder: vi.fn(async () => undefined),
@@ -847,9 +858,19 @@ describe("daily-todo-service", () => {
       expect(getDailyTodoInsertIndex(lines)).toBe(lines.length);
     });
 
-    it("only a level-2 heading counts, not level-1 or level-3", () => {
-      expect(getDailyTodoInsertIndex(["# ToDoリスト", "body"])).toBe(2);
-      expect(getDailyTodoInsertIndex(["### ToDoリスト", "body"])).toBe(2);
+    it("recognizes ToDo headings at different levels", () => {
+      expect(getDailyTodoInsertIndex(["# ToDoリスト", "body", "# 次"])).toBe(2);
+      expect(getDailyTodoInsertIndex(["### ToDoリスト", "body", "### 次"])).toBe(2);
+    });
+
+    it("appends at EOF when the configured heading is absent", () => {
+      const lines = ["## ToDoリスト", "- [ ] existing", "## メモ"];
+      expect(getDailyTodoInsertIndex(lines, "今日のToDo")).toBe(lines.length);
+    });
+
+    it("recognizes a CRLF template heading and keeps nested sections inside it", () => {
+      const lines = ["## 今日のToDo\r", "### 午後\r", "- [ ] existing\r", "## メモ\r"];
+      expect(getDailyTodoInsertIndex(lines)).toBe(3);
     });
 
     it("returns the position right before the next heading", () => {
@@ -936,20 +957,77 @@ describe("daily-todo-service", () => {
       );
     });
 
-    it("refuses gracefully when no main source is configured", async () => {
+    it("asks to select a target when the configured target was removed", async () => {
       const { vault, createSpy } = makeFakeVault({});
-      const settings = { ...DEFAULT_SETTINGS, dailyTodoSources: [] };
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "removed",
+      };
 
       const file = await requireMainDailyTodoFile("2026-07-25", appFor(vault), settings);
 
       expect(file).toBeNull();
       expect(createSpy).not.toHaveBeenCalled();
-      expect(NoticeMock).toHaveBeenCalled();
+      expect(NoticeMock).toHaveBeenCalledWith("設定で「新規ToDoの追加先」を選んでください。");
+    });
+
+    it("keeps main as the target for legacy settings without a target key", async () => {
+      const settings = { ...DEFAULT_SETTINGS };
+      delete (settings as Partial<TaskWorkbenchSettings>).dailyTodoTargetSourceKey;
+      const { vault } = makeFakeVault({});
+      const file = await requireMainDailyTodoFile("2026-07-25", appFor(vault), settings);
+      expect(file?.path).toBe(PATH);
+    });
+
+    it("appends to an existing selected note even when creation is disabled", async () => {
+      const path = "Journal/2026-07-25.md";
+      const { vault, getContent, createSpy } = makeFakeVault({ [path]: "- [ ] existing" });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "source-imported",
+        dailyTodoSources: [{
+          key: "source-imported", label: "日記", format: "[Journal]/YYYY-MM-DD",
+          creatableFromGantt: false,
+        }],
+      };
+      expect(await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], appFor(vault), settings)).toBe(true);
+      expect(getContent(path)).toBe("- [ ] existing\n- [ ] new");
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it("refuses to create a missing selected note when creation is disabled", async () => {
+      const { vault, createSpy } = makeFakeVault({});
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "meeting",
+      };
+      expect(await requireMainDailyTodoFile("2026-07-25", appFor(vault), settings)).toBeNull();
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(NoticeMock).toHaveBeenCalledWith(expect.stringContaining("デイリーミーティング/2026/07/0725_デイリーミーティング.md"));
     });
   });
 
   describe("insertDailyTodoItems", () => {
     const PATH = "デイリー/2026/07/260725_デイリー.md";
+
+    it.each([true, false])("adds to the selected imported source with main present: %s", async (keepMain) => {
+      const path = "Journal/2026-07-25.md";
+      const { vault, getContent } = makeFakeVault({ [PATH]: "main unchanged", "Templates/daily.md": "## ToDoリスト" });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "source-imported",
+        dailyTodoSources: [
+          ...(keepMain ? DEFAULT_SETTINGS.dailyTodoSources : []),
+          { key: "source-imported", label: "日記", format: "[Journal]/YYYY-MM-DD", templatePath: "Templates/daily.md", creatableFromGantt: true },
+        ],
+      };
+      const onDone = vi.fn();
+      await openOrCreateMainDailyTodoForDate("2026-07-25", appFor(vault), settings, onDone);
+      expect(getContent(path)).toBe("## ToDoリスト\n- [ ] 新しいタスク");
+      expect(getContent(PATH)).toBe("main unchanged");
+      expect(getMainDailyTodoFile("2026-07-25", appFor(vault), settings)?.path).toBe(path);
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
 
     it("inserts converted lines at the ToDo-section insert point", async () => {
       const { vault, getContent } = makeFakeVault({
@@ -1055,6 +1133,65 @@ describe("daily-todo-service", () => {
       });
       expect(history.push).toHaveBeenCalledTimes(1);
       expect(history.push.mock.calls[0][0].label).toBe("Daily ToDo追加");
+    });
+
+    it.each([true, false])("uses the selected source and template heading with main present: %s", async (keepMain) => {
+      const path = "Journal/2026-07-25.md";
+      const template = ["# 日記", "## 今日のToDo", "- [ ] existing", "### 午後", "- [ ] later", "## メモ", "body"].join("\n");
+      const { vault, getContent } = makeFakeVault({
+        [PATH]: "main unchanged",
+        "Templates/daily.md": template,
+      });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "journal",
+        dailyTodoSources: [
+          ...(keepMain ? DEFAULT_SETTINGS.dailyTodoSources : []),
+          { key: "journal", label: "日記", format: "[Journal]/YYYY-MM-DD", templatePath: "Templates/daily.md", creatableFromGantt: true },
+        ],
+      };
+      const history = { push: vi.fn(), clear: vi.fn() };
+      const item = await addDailyTodoItem("2026-07-25", "new", false, appFor(vault), settings, history as unknown as HistoryManager);
+      expect(getContent(path)).toBe(template.replace("## メモ", "- [ ] new\n## メモ"));
+      expect(getContent(PATH)).toBe("main unchanged");
+      expect(item).toMatchObject({ sourceKey: "journal", sourceLabel: "日記", path, line: 5 });
+      expect(history.push).toHaveBeenCalledWith({
+        label: "Daily ToDo追加",
+        files: [{ path, before: template, after: getContent(path) }],
+      });
+      expect(history.clear).not.toHaveBeenCalled();
+    });
+
+    it.each(["add", "insert"])("places %s below a configured heading in an existing non-creatable target", async (method) => {
+      const path = "Journal/2026-07-25.md";
+      const { vault, getContent, createSpy } = makeFakeVault({
+        [path]: "## ToDoリスト\nother\n## やること\n- [ ] existing\n## メモ",
+      });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "journal",
+        dailyTodoSources: [{
+          key: "journal", label: "日記", format: "[Journal]/YYYY-MM-DD",
+          todoHeading: "## やること", creatableFromGantt: false,
+        }],
+      };
+      if (method === "add") {
+        const item = await addDailyTodoItem("2026-07-25", "new", false, appFor(vault), settings);
+        expect(item).toMatchObject({ sourceKey: "journal", path, line: 4 });
+      } else {
+        expect(await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], appFor(vault), settings)).toBe(true);
+      }
+      expect(getContent(path)).toBe("## ToDoリスト\nother\n## やること\n- [ ] existing\n- [ ] new\n## メモ");
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it("does not write when the selected source is unavailable", async () => {
+      const { vault, modifySpy, createSpy } = makeFakeVault({ [PATH]: "## ToDoリスト" });
+      expect(await addDailyTodoItem("2026-07-25", "new", false, appFor(vault), {
+        ...DEFAULT_SETTINGS, dailyTodoTargetSourceKey: "removed",
+      })).toBeNull();
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(createSpy).not.toHaveBeenCalled();
     });
 
     it("returns null and writes nothing for blank text", async () => {
@@ -1165,6 +1302,83 @@ describe("daily-todo-service", () => {
         openDailyTodoEditor(summary, onDone)
       ).resolves.toBeUndefined();
       expect(onDone).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Daily ToDo undo history", () => {
+    const path = "デイリー/2026/07/260725_デイリー.md";
+
+    it("undoes a multi-file save and insertion together, then an earlier deadline edit", async () => {
+      const before = "## ToDoリスト\n- [ ] first";
+      const other = "meeting.md";
+      const { vault, app, getContent } = makeFakeVault({ [path]: before, [other]: "- [ ] meeting", "task.md": "due: 2026-08-01" });
+      const history = new HistoryManager();
+      history.push({ label: "期限変更", files: [{ path: "task.md", before: "due: 2026-07-01", after: "due: 2026-08-01" }] });
+      const first = todoItem({ path, line: 1, text: "first" });
+      const meeting = todoItem({ path: other, line: 0, text: "meeting" });
+      const summary = { date: "2026-07-25", items: [first, meeting], completedCount: 0, totalCount: 2 };
+      await updateDailyTodos(summary, [{ ...first, completed: true }, { ...meeting, text: "edited" }, todoItem({ path: "", line: -1, text: "new", isNew: true })], app, DEFAULT_SETTINGS, history);
+      const saved = getContent(path);
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent(path)).toBe(before);
+      expect(getContent(other)).toBe("- [ ] meeting");
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent("task.md")).toBe("due: 2026-07-01");
+      expect((await history.redo(vault)).kind).toBe("success");
+      expect((await history.redo(vault)).kind).toBe("success");
+      expect(getContent(path)).toBe(saved);
+      expect(getContent(other)).toBe("- [ ] edited");
+    });
+
+    it("records single-item updates, deletion and insertion without clearing earlier history", async () => {
+      const before = "- [ ] first";
+      const { vault, app, getContent } = makeFakeVault({ [path]: before });
+      const history = new HistoryManager();
+      history.push({ label: "以前の変更", files: [{ path: "other.md", before: "a", after: "b" }] });
+      const item = todoItem({ path, line: 0, text: "first" });
+      await updateDailyTodoItem(item, { completed: true }, vault, history);
+      await deleteDailyTodoItem(item, vault, history);
+      await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
+      for (const expected of ["", "- [x] first", before]) {
+        expect((await history.undo(vault)).kind).toBe("success");
+        expect(getContent(path)).toBe(expected);
+      }
+      expect(history.peekUndoLabel()).toBe("以前の変更");
+    });
+
+    it("keeps completed writes undoable when a later save fails", async () => {
+      const { vault, app, modifySpy, getContent, setFile } = makeFakeVault({ [path]: "- [ ] first", "meeting.md": "- [ ] second" });
+      const history = new HistoryManager();
+      const items = [todoItem({ path, line: 0, text: "first" }), todoItem({ path: "meeting.md", line: 0, text: "second" })];
+      modifySpy.mockImplementationOnce(async (file: TFile, content: string) => {
+        setFile(file.path, content);
+      }).mockRejectedValueOnce(new Error("save failed"));
+      await expect(updateDailyTodos({ date: "2026-07-25", items, completedCount: 0, totalCount: 2 }, items.map((item) => ({ ...item, completed: true })), app, DEFAULT_SETTINGS, history)).rejects.toThrow("save failed");
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(getContent(path)).toBe("- [ ] first");
+      expect(getContent("meeting.md")).toBe("- [ ] second");
+    });
+
+    it("undoes inserted content in a new daily note while leaving the file", async () => {
+      const { vault, app, getContent } = makeFakeVault();
+      const history = new HistoryManager();
+      history.push({ label: "以前の変更", files: [{ path: "other.md", before: "a", after: "b" }] });
+      await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
+      expect((await history.undo(vault)).kind).toBe("success");
+      expect(vault.getFileByPath(path)).not.toBeNull();
+      expect(getContent(path)).not.toContain("- [ ] new");
+      expect(history.peekUndoLabel()).toBe("以前の変更");
+    });
+
+    it("does not add history or discard redo for an unchanged save", async () => {
+      const { vault, app } = makeFakeVault({ [path]: "- [ ] first", "task.md": "b" });
+      const history = new HistoryManager();
+      history.push({ label: "以前の変更", files: [{ path: "task.md", before: "a", after: "b" }] });
+      await history.undo(vault);
+      const item = todoItem({ path, line: 0, text: "first" });
+      await updateDailyTodos({ date: "2026-07-25", items: [item], completedCount: 0, totalCount: 1 }, [item], app, DEFAULT_SETTINGS, history);
+      expect(history.canUndo()).toBe(false);
+      expect(history.canRedo()).toBe(true);
     });
   });
 

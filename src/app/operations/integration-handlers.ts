@@ -83,7 +83,6 @@ export async function integrationPlan<K extends IntegrationId>(id: K, input: Ope
     const target = findTask(snapshot, args.target.taskId, args.target.kind === "marker" ? "subtask" : undefined);
     checkRevision(snapshot, target, args.expectedRevision);
     const parent = findTask(snapshot, target.file.path, "parent");
-    if (snapshot.contents.get(parent.id) !== buildFullNote(parent, parent.subtasks)) fail("INVALID_INPUT", "未モデル化Markdownを保全できないため保存を拒否します。");
     let definition = settings.ganttTags.find((tag) => tag.name.toLocaleLowerCase() === args.name.toLocaleLowerCase() || tag.key === args.name);
     if (!definition) {
       let index = 1; while (settings.ganttTags.some((tag) => tag.key === `tag-${index}`)) index++;

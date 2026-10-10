@@ -51,7 +51,7 @@ describe("view, history and diagnostics operation handlers", () => {
     expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow();
     const before = snapshot.contents.get(f.parent.id)!;
     f.historyManager.push({ label: "bad", files: [{ path: f.parent.id, before: before + "\ntext", after: before }] });
-    expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(/未モデル化/);
+    expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(/未モデル化|保持できない/);
     f.historyManager.push({ label: "conflict", files: [{ path: f.parent.id, before, after: before + "changed" }] });
     expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(/一致/);
   });

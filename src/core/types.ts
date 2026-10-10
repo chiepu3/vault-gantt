@@ -149,6 +149,7 @@ export interface DailyTodoSourceConfig {
   format: string;
   creatableFromGantt: boolean;
   templatePath?: string;
+  todoHeading?: string; // Heading text (optionally with Markdown # prefix).
 }
 
 
@@ -205,6 +206,7 @@ export interface TaskWorkbenchSettings {
   ganttFeatureDailyTodoEnabled: boolean;
 
   dailyTodoSources: DailyTodoSourceConfig[];
+  dailyTodoTargetSourceKey: string;
 
 
   // Rendering/Integration
@@ -231,7 +233,7 @@ export interface TaskUpdateResult {
 
 
 
-// Matches the row shape used by DailyTodoModal's new-row literal.
+// One ToDo item with its source location, or an unsaved new item.
 export interface DailyTodoItem {
   sourceKey: string;
   sourceLabel: string;

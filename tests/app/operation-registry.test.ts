@@ -50,6 +50,33 @@ describe("OperationRegistry contract", () => {
     expect(undo.kind).toBe("success");
     expect((await a.registry.get(row.id)).notes).toBe("UI");
   });
+  it("reports the section that prevents a safe save through the UI", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "親タスク");
+    const child = await addSubtask(a.vault, a.settings, parent, "作業");
+    const file = a.vault.getFileByPath(parent.id)!;
+    const original = await a.vault.read(file) + "\n#### 参考資料\n資料\n";
+    await a.vault.modify(file, original);
+    a.vault.resetCounters();
+    await expect(a.registry.updateFromUI([{ row: child, patch: { displayName: "変更" } }]))
+      .rejects.toThrow("保持できない記述があります: ## Subtasks");
+    expect(await a.vault.read(file)).toBe(original);
+    expect(a.vault.getModifyCallCount()).toBe(0);
+    expect(a.historyManager.canUndo()).toBe(false);
+  });
+  it("legacy previews and writes preserve custom note content", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "Parent");
+    const child = await addSubtask(a.vault, a.settings, parent, "Child");
+    const file = a.vault.getFileByPath(parent.id)!;
+    await a.vault.modify(file, (await a.vault.read(file)).replace("type: task", "type: task\ncustom: keep") + "\n## 参考資料\n保持する本文\n");
+    const plan = await a.registry.plan("update", { taskId: child.id, patch: { displayName: "変更" } });
+    expect(plan.diffs[0].fields).toContainEqual({ field: "displayName", before: "Child", after: "変更" });
+    expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
+    expect((await a.registry.get(child.id)).displayName).toBe("変更");
+    expect(await a.vault.read(file)).toContain("custom: keep");
+    expect(await a.vault.read(file)).toContain("## 参考資料\n保持する本文\n");
+  });
   it("content revisions reject same-stat external changes without writing", async () => {
     const a = setup();
     const row = await createTask(a.vault, a.settings, "Example");

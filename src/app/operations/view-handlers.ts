@@ -5,6 +5,7 @@ import type { PreviewEntry } from "../../contracts/preview";
 import type { Logger } from "../../core/logger";
 import type { TaskRow } from "../../core/types";
 import { parseTaskFile, buildFullNote } from "../../core/note-format";
+import { mergeTaskNote } from "../../core/note-update";
 import { taskEffects } from "../preview-projector";
 import type { HistoryManager } from "../history-manager";
 import type { VaultAdapter } from "../task-operations";
@@ -46,7 +47,10 @@ export function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], 
     if (snapshot.contents.get(file.path) !== before) fail("REVISION_CONFLICT", "履歴と現在のファイル内容が一致しません。");
     const old = parseTaskFile({ path: file.path }, before, { ...snapshot.settings, autoPriorityEnabled: false });
     const next = parseTaskFile({ path: file.path }, after, { ...snapshot.settings, autoPriorityEnabled: false });
-    if (!old || !next || buildFullNote(old, old.subtasks) !== before || buildFullNote(next, next.subtasks) !== after) fail("INVALID_INPUT", "未モデル化Markdownの履歴は安全にプレビューできません。");
+    if (!old || !next) fail("INVALID_INPUT", "履歴のタスクを安全にプレビューできません。");
+    const oldNote = buildFullNote(old, old.subtasks), nextNote = buildFullNote(next, next.subtasks);
+    // Either direction may be the original preserving write (Undo restores its exact bytes).
+    if (mergeTaskNote(before, oldNote, nextNote) !== after && mergeTaskNote(after, nextNote, oldNote) !== before) fail("INVALID_INPUT", "未モデル化Markdownの変更を含む履歴は安全にプレビューできません。");
     const oldRows = flatten([old]), newRows = flatten([next]);
     for (const taskId of new Set([...oldRows, ...newRows].map((row) => row.id))) {
       const prior = oldRows.find((row) => row.id === taskId), current = newRows.find((row) => row.id === taskId);

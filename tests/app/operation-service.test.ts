@@ -98,8 +98,9 @@ describe("frozen catalog operation runtime", () => {
   it("rejects unsafe Markdown and merged inverted ranges before any writes", async () => {
     const { service, context, vault } = await runtimeFixture();
     await expect(service.propose("T19", { subtaskId: CHILD_ID, start: "2026-10-16" }, context)).rejects.toThrow("plannedStartDate");
-    const file = vault.getFileByPath(PARENT_ID)!; await vault.modify(file, vault.getFileContent(PARENT_ID)!.replace("type: task", "type: task\ncustom: keep")); vault.resetCounters();
-    await expect(service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context)).rejects.toThrow("保全"); expect(vault.getModifyCallCount()).toBe(0);
+    const file = vault.getFileByPath(PARENT_ID)!;
+    await vault.modify(file, vault.getFileContent(PARENT_ID)! + "\n#### 参考資料\n保持する本文\n"); vault.resetCounters();
+    await expect(service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context)).rejects.toThrow("保持できない記述"); expect(vault.getModifyCallCount()).toBe(0);
   });
   it("ownership/capability/request-approval cannot forge an approval", async () => {
     const { service, context, vault } = await runtimeFixture();
@@ -203,4 +204,45 @@ it("HistoryPort publishes live conflict/barrier eligibility for each outcome ent
   await vault.modify(vault.getFileByPath(PARENT_ID)!, vault.getFileContent(PARENT_ID)! + "外部編集\n"); await historyManager.refreshEligibility();
   expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("conflict"); expect(listener).toHaveBeenCalled();
   historyManager.clear(); expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("missing");
+});
+
+
+describe("preserving AI writers", () => {
+  const ids = [...IMPLEMENTED_OPERATION_IDS].filter((id) => OPERATION_CONTRACTS[id][0] === "write" && (id.startsWith("T") || id.startsWith("M") || id === "S05" || id === "S27") && !["T03", "T05"].includes(id)) as WriteOperationId[];
+  for (const id of ids) it(`${id} preserves custom YAML and Markdown; preview matches saved tasks`, async () => {
+    const { service, context, vault, parent, settings } = await runtimeFixture();
+    if (id === "T23") { const child = parent.subtasks!.get("review")!; child.plannedStartDate = undefined; child.plannedEndDate = undefined; }
+    const original = buildFullNote(parent, parent.subtasks).replace("type: task", "type: task\ncustom: keep") + "\n## 参考資料\n保持する本文\n";
+    await vault.modify(vault.getFileByPath(PARENT_ID)!, original);
+    const preview = await service.propose(id, operationInputSchemas[id].parse(INPUT_FIXTURES[id]) as OperationInputMap[typeof id], context);
+    const outcome = await service.humanApprovalPort.approve(preview.previewId);
+    expect(outcome.status).toBe("success");
+    const saved = vault.getFileContent(PARENT_ID)!;
+    expect(saved).toContain("custom: keep"); expect(saved).toContain("## 参考資料\n保持する本文\n");
+    const parsed = parseTaskFile({ path: PARENT_ID }, saved, { ...settings, autoPriorityEnabled: false })!;
+    const projected = preview.projection!.after.parents.find((row) => row.id === PARENT_ID)!;
+    expect(parsed.displayName).toBe(projected.name);
+    expect([...parsed.subtasks!.values()].map((row) => row.id)).toEqual(projected.children.map((row) => row.id));
+    expect(outcome.actualProjection!.after).toEqual(preview.projection!.after);
+  });
+  it("Undo/Redo restores exact preserved bytes and supports its preview", async () => {
+    const { service, context, vault } = await runtimeFixture();
+    const original = vault.getFileContent(PARENT_ID)!.replace("type: task", "type: task\ncustom: keep") + "\n## 参考資料\n保持する本文\n";
+    await vault.modify(vault.getFileByPath(PARENT_ID)!, original);
+    const change = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context); await service.humanApprovalPort.approve(change.previewId);
+    const saved = vault.getFileContent(PARENT_ID)!;
+    Object.assign(vault, { process: async (file: { path: string }, transform: (current: string) => string) => { const content = transform(await vault.read(file)); await vault.modify(file, content); return content; } });
+    const undo = await service.propose("V20", {}, context); expect((await service.humanApprovalPort.approve(undo.previewId)).status).toBe("success"); expect(vault.getFileContent(PARENT_ID)).toBe(original);
+    const redo = await service.propose("V21", {}, context); expect((await service.humanApprovalPort.approve(redo.previewId)).status).toBe("success"); expect(vault.getFileContent(PARENT_ID)).toBe(saved);
+  });
+  for (const id of ["T03", "D03", "S01", "V23"] as const) it(`${id} keeps preceding Undo entries`, async () => {
+    const { service, context: base, historyManager, logger } = await runtimeFixture();
+    const context = { ...base, capabilities: [...base.capabilities, "diagnostic" as const] };
+    const change = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context); await service.humanApprovalPort.approve(change.previewId);
+    const prior = historyManager.inspectTransition("undo").entry;
+    if (id === "V23") logger.startRecording("preservation");
+    const preview = await service.propose(id, operationInputSchemas[id].parse(INPUT_FIXTURES[id]), context);
+    expect((await service.humanApprovalPort.approve(preview.previewId)).status).toBe("success");
+    expect(historyManager.inspectTransition("undo").entry).toEqual(prior);
+  });
 });

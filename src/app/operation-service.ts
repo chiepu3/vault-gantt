@@ -6,6 +6,7 @@ import { operationPreviewSchema, validatePreviewOutcome, type OperationPreviewV1
 import { adaptLegacyOperationInput } from "../contracts/legacy-operation-plan";
 import { applyPatchToParent } from "../core/task-patch";
 import { buildFullNote, parseTaskFile } from "../core/note-format";
+import { mergeTaskNote, NotePreservationError } from "../core/note-update";
 import { todayStr, buildFileRevision } from "../core/utils";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { createTask, addSubtask, type VaultAdapter } from "./task-operations";
@@ -173,7 +174,6 @@ export class OperationService implements OperationServicePort {
     let entries: PreviewEntry[] = [], changes: TaskChange[] = [], settingKeys: (keyof TaskWorkbenchSettings)[] = [];
     const warnings: OperationPreviewV1["warnings"][number][] = [];
     const vault = this.vaultFactory();
-    const checkSafe = (parent: TaskRow) => { const original = snapshot.contents.get(parent.file.path); if (original !== undefined && original !== buildFullNote(parent, parent.subtasks)) fail("INVALID_INPUT", "未モデル化領域または非標準Markdownがあります。内容を保全するwriterが未実装のため、このノートへの保存を拒否します。"); };
     const createdContents = new Map<string, string>();
     let daily: DailyPlan | undefined, historyPlanData: HistoryPlan | undefined, diagnostic: DiagnosticPlan | undefined, integration: IntegrationPlan | undefined;
     const assignEntries = (rows: Omit<PreviewEntry, "actionId">[]) => rows.map((entry, index) => ({ ...entry, actionId: `${previewId}:${index}` }));
@@ -193,7 +193,7 @@ export class OperationService implements OperationServicePort {
       afterSettings = integration.settings; settingKeys = integration.keys; changes = integration.changes; warnings.push(...integration.warnings);
       for (const change of changes) {
         const before = findTask(snapshot, change.taskId), parent = afterParents.find((row) => row.id === before.file.path)!;
-        checkSafe(findTask(snapshot, parent.id, "parent")); applyPatchToParent(parent, change.patch, change.taskId, afterSettings);
+        applyPatchToParent(parent, change.patch, change.taskId, afterSettings);
       }
       if (id === "S08" && integration.entries.length) integration.entries[0] = { ...integration.entries[0], effects: [...integration.entries[0].effects, { kind: "service-state", fields: (["ganttNationalHolidays", "ganttNationalHolidaysUpdatedAt", "ganttHolidays"] as const).map((key) => ({ field: key, before: snapshot.settings[key] as import("../contracts/context").Json, after: afterSettings[key] as import("../contracts/context").Json, reason: "normalized" })) }] };
       entries = assignEntries(integration.entries);
@@ -206,7 +206,7 @@ export class OperationService implements OperationServicePort {
       const args = parsed as OperationInputMap["T03"] & OperationInputMap["T04"] & OperationInputMap["T06"];
       const parentId = id === "T04" ? args.parentTaskId : id === "T06" ? args.parentId : undefined;
       const parent = parentId ? findTask(snapshot, parentId, "parent") : undefined;
-      if (parent) { checkRevision(snapshot, parent, args.expectedRevision); checkSafe(parent); }
+      if (parent) { checkRevision(snapshot, parent, args.expectedRevision); }
       // Existing creation helpers execute only against this isolated in-memory vault.
       const virtual: VaultAdapter = { getFiles: () => vault.getFiles(), getFileByPath: (path) => createdContents.has(path) ? { path } : vault.getFileByPath(path),
         read: async (file) => createdContents.get(file.path) ?? snapshot.contents.get(file.path) ?? "",
@@ -221,7 +221,8 @@ export class OperationService implements OperationServicePort {
           if (source.file.path !== parent.id) fail("KIND_MISMATCH", "同じ親の子タスクだけを複製できます。");
           created = { ...structuredClone(source), id: created.id, key: created.key, file: created.file, title: created.title, displayName: created.displayName, createdAt: snapshot.today, updatedAt: snapshot.today };
           copy.subtasks!.set(created.key!, created);
-          createdContents.set(parent.file.path, buildFullNote(copy, copy.subtasks));
+          const original = snapshot.contents.get(parent.file.path)!;
+          createdContents.set(parent.file.path, mergeTaskNote(original, buildFullNote(parent, parent.subtasks), buildFullNote(copy, copy.subtasks)));
         }
         const reparsed = parseTaskFile({ path: parent.file.path }, createdContents.get(parent.file.path)!, parseSettings)!;
         if (copyFrom && canonical(taskPublicState(reparsed.subtasks!.get(created.key!)!)) !== canonical(taskPublicState(created))) fail("INVALID_INPUT", "複製内容を安全に保存できません。元タスクの内容を確認してください。");
@@ -236,7 +237,7 @@ export class OperationService implements OperationServicePort {
     } else if (id === "T26") {
       const args = parsed as OperationInputMap["T26"], child = findTask(snapshot, args.subtaskId, "subtask");
       checkRevision(snapshot, child, args.expectedRevision);
-      const parent = findTask(snapshot, child.file.path, "parent"); checkSafe(parent);
+      const parent = findTask(snapshot, child.file.path, "parent");
       const copy = afterParents.find((row) => row.id === parent.id)!; copy.subtasks!.delete(child.key!); copy.updatedAt = snapshot.today;
       entries = [{ actionId: `${previewId}:0`, entity: { kind: "task", taskId: child.id, parentId: parent.id }, displayName: child.displayName, effects: taskEffects(child, undefined) }];
     } else {
@@ -245,7 +246,7 @@ export class OperationService implements OperationServicePort {
       for (const change of changes) {
         const before = findTask(snapshot, change.taskId); checkRevision(snapshot, before, change.expectedRevision);
         const parent = afterParents.find((row) => row.file.path === before.file.path)!;
-        if (!changedPaths.has(parent.id)) { checkSafe(findTask(snapshot, parent.id, "parent")); changedPaths.add(parent.id); }
+        changedPaths.add(parent.id);
         applyPatchToParent(parent, change.patch, change.taskId, snapshot.settings);
         if (["T20", "T21", "T22", "T25"].includes(id) && hasWorkloadActual(before)) warnings.push({ code: "HAS_ACTUAL_WORKLOAD", detail: `${before.id}: 実績があります。${id === "T25" ? "実績mapも移動します。" : "実績mapは移動しません。"}` });
       }
@@ -263,9 +264,25 @@ export class OperationService implements OperationServicePort {
     }
     const writes: WriteUnit[] = [];
     for (const parent of afterParents) {
-      const before = snapshot.contents.get(parent.file.path) ?? null, after = createdContents.get(parent.file.path) ?? buildFullNote(parent, parent.subtasks);
       const actions = entries.filter((entry) => entry.entity.kind === "task" && entry.entity.taskId.split("::")[0] === parent.id).map((entry) => entry.actionId);
-      if (actions.length) writes.push({ path: parent.file.path, before, after, actionIds: actions });
+      if (!actions.length) continue;
+      const before = snapshot.contents.get(parent.file.path) ?? null;
+      let after = historyPlanData?.writes.find((write) => write.path === parent.file.path)?.after ?? createdContents.get(parent.file.path);
+      try {
+        if (after === undefined) {
+          const generated = buildFullNote(parent, parent.subtasks);
+          const prior = snapshot.parents.find((row) => row.id === parent.id);
+          after = before === null ? generated : mergeTaskNote(before, buildFullNote(prior!, prior!.subtasks), generated);
+        }
+      } catch (error) {
+        if (error instanceof NotePreservationError) fail("INVALID_INPUT", error.message);
+        throw error;
+      }
+      // Validate the exact frozen bytes used by the executor against the preview model.
+      const reparsed = parseTaskFile({ path: parent.file.path }, after, parseSettings);
+      if (!reparsed || canonical(flatten([parent]).map(taskPublicState)) !== canonical(flatten([reparsed]).map(taskPublicState))) fail("INVALID_INPUT", "保存する本文とプレビューが一致しません。入力の記号・見出しを確認してください。");
+      afterParents[afterParents.findIndex((row) => row.id === parent.id)] = reparsed;
+      writes.push({ path: parent.file.path, before, after, actionIds: actions });
     }
     for (const write of daily?.writes ?? diagnostic?.writes ?? []) writes.push({ ...write, actionIds: entries.filter((entry) => (entry.entity.kind === "daily-file" || entry.entity.kind === "daily-todo") ? entry.entity.path === write.path : entry.effects.some((effect) => effect.kind === "diagnostic" && effect.outputPath === write.path)).map((entry) => entry.actionId) });
     const now = Date.now();
@@ -348,7 +365,7 @@ export class OperationService implements OperationServicePort {
           await executeDailyPlan(stored.daily, vault, (path) => {
             const write = stored.writes.find((write) => write.path === path)!;
             write.actionIds.forEach((action) => committed.add(action));
-            if (write.before === null) this.host.historyManager.clear();
+            if (write.before === null) this.host.historyManager.discardRedo();
             else history.push({ path, before: write.before, after: write.after });
           }, signal);
         } else if (stored.history) {
@@ -357,12 +374,12 @@ export class OperationService implements OperationServicePort {
         } else if (stored.diagnostic) {
           const result = await executeDiagnosticPlan(stored.diagnostic, this.host.logger!, vault, signal);
           for (const entry of stored.preview.entries) actualEffects.set(entry.actionId, entry.effects.map((effect) => effect.kind === "diagnostic" ? { ...effect, recording: result.recording } : effect));
-          stored.preview.entries.forEach((entry) => committed.add(entry.actionId)); this.host.historyManager.clear();
+          stored.preview.entries.forEach((entry) => committed.add(entry.actionId)); this.host.historyManager.discardRedo();
         }
         for (const write of stored.daily || stored.history || stored.diagnostic ? [] : stored.writes) {
           if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
           try {
-            if (write.before === null) { if (vault.getFileByPath(write.path)) throw new Error("REVISION_CONFLICT"); await vault.create(write.path, write.after); this.host.historyManager.clear(); }
+            if (write.before === null) { if (vault.getFileByPath(write.path)) throw new Error("REVISION_CONFLICT"); await vault.create(write.path, write.after); this.host.historyManager.discardRedo(); }
             else if (write.before !== write.after) {
               const file = vault.getFileByPath(write.path); if (!file) throw new Error("REVISION_CONFLICT");
               const transform = (current: string) => { if (current !== write.before) throw new Error("REVISION_CONFLICT"); if (this.disposed || signal?.aborted) throw new Error("CANCELLED"); return write.after; };
@@ -381,7 +398,7 @@ export class OperationService implements OperationServicePort {
           const beforeSettings = structuredClone(this.host.settings);
           try { await this.host.persistSettings!(candidate, stored.settingKeys); } catch (error) { settingsActions.forEach((entry) => failed.add(entry.actionId)); throw error; }
           if (!this.host.publishesSettings) for (const key of stored.settingKeys) if (canonical(this.host.settings[key]) === canonical(beforeSettings[key])) Object.assign(this.host.settings, { [key]: structuredClone(candidate[key]) });
-          this.host.historyManager.clear(); settingsActions.forEach((entry) => committed.add(entry.actionId));
+          this.host.historyManager.discardRedo(); settingsActions.forEach((entry) => committed.add(entry.actionId));
           if (stored.integration?.restartSync) this.host.restartSync!();
         }
         if (stored.integration?.externalSend) {

@@ -2,7 +2,6 @@ import type { OperationInputMap } from "../../contracts/operations";
 import type { PreviewEntry } from "../../contracts/preview";
 import type { TaskWorkbenchSettings } from "../../core/types";
 import { applyAutoPriorityFields } from "../../core/utils";
-import { buildFullNote } from "../../core/note-format";
 import { taskEffects } from "../preview-projector";
 import { canonical, fail, flatten, type TaskSnapshot } from "./runtime";
 
@@ -24,7 +23,6 @@ export function priorityPlan(id: "T30" | "S05", input: OperationInputMap["T30"] 
         applyAutoPriorityFields(row, true);
         const effects = taskEffects(before, row);
         if (effects.length) {
-          if (snapshot.contents.get(parent.id) !== buildFullNote(snapshot.parents.find((prior) => prior.id === parent.id)!, snapshot.parents.find((prior) => prior.id === parent.id)!.subtasks)) fail("INVALID_INPUT", "未モデル化Markdownの優先度更新を拒否しました。");
           entries.push({ entity: { kind: "task", taskId: row.id, ...(row.kind === "subtask" ? { parentId: parent.id } : {}) }, displayName: row.displayName, effects });
         }
       }

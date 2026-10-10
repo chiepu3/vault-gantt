@@ -77,8 +77,12 @@ describe("Daily operation handlers", () => {
     await expect(dailyPlan("D04", { ...f.target, itemFingerprint: "sha256:wrong", text: "x" }, f.snapshot, f.vault)).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
     await f.vault.modify(f.vault.getFileByPath(path)!, "```md\n- [ ] code\n```");
     await expect(dailyPlan("D03", { date, text: "x" }, f.snapshot, f.vault)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
-    await f.vault.modify(f.vault.getFileByPath(path)!, "## ToDoリスト\n```md\n### Code heading\n```");
-    await expect(dailyPlan("D03", { date, text: "x" }, f.snapshot, f.vault)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
+    const fencedHeading = "## ToDoリスト\n```md\n### Code heading\n```";
+    await f.vault.modify(f.vault.getFileByPath(path)!, fencedHeading);
+    const plan = await dailyPlan("D03", { date, text: "x" }, f.snapshot, f.vault);
+    expect(plan.writes[0].after).toContain("```md\n### Code heading\n```");
+    expect(plan.writes[0].after).toContain("- [ ] x");
+    expect(plan.entries.filter((entry) => entry.entity.kind === "daily-todo")).toHaveLength(1);
   });
   it("Templater preview is explicitly undetermined and cannot be saved", async () => {
     const f = await fixture(); f.snapshot.settings.dailyTodoSources[0].templatePath = "templates/daily.md";

@@ -30,6 +30,7 @@ interface PreparedFileChange {
 
 type PendingMutation =
   | { kind: "clear" }
+  | { kind: "discardRedo" }
   | { kind: "push"; entry: HistoryEntry };
 
 /**
@@ -120,12 +121,7 @@ export class HistoryManager implements HistoryPort {
     void this.refreshEligibility();
   }
 
-  /**
- * Clears all history as a history barrier. Callers must use this whenever a
- * mutation occurs through a path outside the batch flow covered by this
- * history (for example, task creation or subtask deletion), because those
- * unrecorded disk changes would otherwise make later undo/redo unsafe.
- */
+  /** Clears history when untracked changes make it unsafe to apply. */
   clear(): void {
     if (this.operationDepth > 0) {
       this.pendingMutations.push({ kind: "clear" });
@@ -133,6 +129,15 @@ export class HistoryManager implements HistoryPort {
     }
 
     this.clearNow();
+  }
+
+  /** New file creation is not undoable, but must invalidate the old redo timeline. */
+  discardRedo(): void {
+    if (this.operationDepth > 0) {
+      this.pendingMutations.push({ kind: "discardRedo" });
+      return;
+    }
+    this.redoStack.length = 0;
   }
 
   private clearNow(): void {
@@ -245,6 +250,8 @@ export class HistoryManager implements HistoryPort {
     for (const mutation of pendingMutations) {
       if (mutation.kind === "clear") {
         this.clearNow();
+      } else if (mutation.kind === "discardRedo") {
+        this.redoStack.length = 0;
       } else {
         this.pushEntry(mutation.entry);
       }

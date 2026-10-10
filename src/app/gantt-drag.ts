@@ -153,8 +153,8 @@ export function snapResizeStart(
   holidaySet: Set<string>
 ): string {
   const snapped = snapForward(rawNewStart, holidaySet);
-  if (snapped >= end) {
-    return previousBusinessDay(end, holidaySet);
+  if (snapped > end) {
+    return end;
   }
   return snapped;
 }
@@ -172,8 +172,8 @@ export function snapResizeEnd(
   holidaySet: Set<string>
 ): string {
   const snapped = snapBackward(rawNewEnd, holidaySet);
-  if (snapped <= start) {
-    return nextBusinessDay(start, holidaySet);
+  if (snapped < start) {
+    return start;
   }
   return snapped;
 }

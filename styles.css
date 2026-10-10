@@ -643,10 +643,6 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .modal:has(.vg-finder-list) input[type="search"] { width: 100%; margin-bottom: var(--vg-space-3); }
 
 .task-workbench-modal-desc { color: var(--text-muted); font-size: 0.9em; margin: 0 0 var(--vg-space-3); }
-.task-workbench-daily-todo-list { display: flex; flex-direction: column; gap: var(--vg-space-1); max-height: 400px; }
-.task-workbench-daily-todo-row { display: flex; align-items: center; gap: var(--vg-space-3); }
-.task-workbench-daily-todo-text { flex: 1 1 auto; min-width: 0; }
-.task-workbench-daily-todo-source { flex: 0 0 auto; font-size: 0.8em; color: var(--text-faint); }
 /* Marker modal: label above a full-width field. */
 .task-gantt-marker-modal-field { display: flex; flex-direction: column; gap: var(--vg-space-1); margin-bottom: var(--vg-space-4); }
 .task-gantt-marker-modal-field label { color: var(--vg-color-muted); font-size: var(--vg-font-m); }

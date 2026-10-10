@@ -59,7 +59,7 @@ describe("settings and integration operation handlers", () => {
     expect(reused.keys).toEqual([]); expect(reused.changes[0].patch.tags).toEqual(["リリース"]); validEntries(reused);
     expect(f.settings.ganttTags).toHaveLength(1); expect(f.vault.getModifyCallCount()).toBe(0);
   });
-  it("S27 supports marker assignment and refuses unknown keys, conflicts and unmodeled notes", async () => {
+  it("S27 supports marker assignment and leaves preservation validation to the writer", async () => {
     const f = await fixture();
     const target = { kind: "marker" as const, taskId: f.child.id, markerKey: "review-point" };
     const plan = await integrationPlan("S27", { name: "リリース", target }, f.snapshot, f.host);
@@ -67,7 +67,7 @@ describe("settings and integration operation handlers", () => {
     await expect(integrationPlan("S27", { name: "a", target: { ...target, markerKey: "missing" } }, f.snapshot, f.host)).rejects.toMatchObject({ error: { code: "NOT_FOUND" } });
     await expect(integrationPlan("S27", { name: "a", target, expectedRevision: "stale" }, f.snapshot, f.host)).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
     f.snapshot.contents.set(f.parent.id, f.snapshot.contents.get(f.parent.id)! + "\nUnmodeled");
-    await expect(integrationPlan("S27", { name: "a", target }, f.snapshot, f.host)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
+    expect((await integrationPlan("S27", { name: "a", target }, f.snapshot, f.host)).changes).toHaveLength(1);
   });
   it("S35 imports detected configuration without mutating settings; no configuration fails", async () => {
     const f = await fixture();
