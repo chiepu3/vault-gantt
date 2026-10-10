@@ -569,40 +569,51 @@ export async function deleteDailyTodoItem(
   return true;
 }
 
-// level-2 "## ToDoリスト" heading only — "#"/"###" etc. don't count.
-const TODO_HEADING_PATTERN = /^##\s+ToDoリスト\s*$/;
-// any heading (level 1-6) that would close the ToDo section.
-const ANY_HEADING_PATTERN = /^#{1,6}\s+/;
+// Recognize the built-in heading and common daily-note template headings.
+const TODO_HEADING_PATTERN = /^(?:今日の\s*)?to\s*do(?:リスト)?$/i;
+const ANY_HEADING_PATTERN = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
 
-/**
- *
- * Finds where newly-inserted ToDo lines should land: right before the next
- * heading after "## ToDoリスト" (or EOF if that section runs to the end of
- * the file), or EOF outright when no such heading exists at all.
- */
-export function getDailyTodoInsertIndex(lines: string[]): number {
-  const headingIndex = lines.findIndex((line) =>
-    TODO_HEADING_PATTERN.test(line)
-  );
-  if (headingIndex === -1) {
-    return lines.length;
-  }
+/** Finds the end of the ToDo section, or EOF when its heading is absent. */
+export function getDailyTodoInsertIndex(
+  lines: string[],
+  todoHeading?: string
+): number {
+  const configuredHeading = todoHeading?.trim().replace(/^#{1,6}\s+/, "")
+    .replace(/\s+#+$/, "").trim();
+  let headingLevel = 0;
+  const headingIndex = lines.findIndex((line) => {
+    const match = line.match(ANY_HEADING_PATTERN);
+    if (!match) return false;
+    const matches = configuredHeading
+      ? match[2] === configuredHeading
+      : TODO_HEADING_PATTERN.test(match[2]);
+    if (matches) headingLevel = match[1].length;
+    return matches;
+  });
+  if (headingIndex === -1) return lines.length;
 
   for (let i = headingIndex + 1; i < lines.length; i += 1) {
-    if (ANY_HEADING_PATTERN.test(lines[i])) {
-      return i;
-    }
+    const match = lines[i].match(ANY_HEADING_PATTERN);
+    if (match && match[1].length <= headingLevel) return i;
   }
   return lines.length;
 }
 
+function getDailyTodoTargetSource(
+  settings: TaskWorkbenchSettings
+): DailyTodoSourceConfig | undefined {
+  return getDailyTodoSources(settings).find(
+    (candidate) => candidate.key === (settings.dailyTodoTargetSourceKey ?? "main")
+  );
+}
+
 /**
  *
- * Appends `items` into the given date's main daily note, inside its
- * "## ToDoリスト" section (or at EOF if that section/heading is absent).
+ * Appends `items` into the given date's selected daily note, inside its
+ * ToDo section (or at EOF if that section/heading is absent).
  * Items whose text is empty/whitespace-only are dropped; if that
  * leaves nothing to insert, this returns false without touching the file.
- * A missing creatable main file is created by requireMainDailyTodoFile.
+ * A missing creatable target file is created by requireMainDailyTodoFile.
  */
 
 export async function insertDailyTodoItems(
@@ -627,7 +638,9 @@ export async function insertDailyTodoItems(
 
   const content = await vault.read(file);
   const lines = content === "" ? [] : content.split("\n");
-  const insertIndex = getDailyTodoInsertIndex(lines);
+  const insertIndex = getDailyTodoInsertIndex(
+    lines, getDailyTodoTargetSource(settings)?.todoHeading
+  );
   lines.splice(insertIndex, 0, ...newLines);
   await vault.modify(file, lines.join("\n"));
   historyManager?.clear();
@@ -637,10 +650,10 @@ export async function insertDailyTodoItems(
 
 
 /**
- * Appends one ToDo to the date's main daily note (same placement as
+ * Appends one ToDo to the date's selected daily note (same placement as
  * insertDailyTodoItems) and returns it with its real path and line, so the
  * caller can keep editing that exact line. Returns null when the text is
- * empty or the main note is unavailable. The write is recorded as an undo
+ * empty or the selected note is unavailable. The write is recorded as an undo
  * entry.
  */
 export async function addDailyTodoItem(
@@ -660,7 +673,9 @@ export async function addDailyTodoItem(
   }
   const content = await app.vault.read(file);
   const lines = content === "" ? [] : content.split("\n");
-  const insertIndex = getDailyTodoInsertIndex(lines);
+  const insertIndex = getDailyTodoInsertIndex(
+    lines, getDailyTodoTargetSource(settings)?.todoHeading
+  );
   lines.splice(insertIndex, 0, formatDailyTodoLine(completed, text));
   const after = lines.join("\n");
   await app.vault.modify(file, after);
@@ -668,11 +683,9 @@ export async function addDailyTodoItem(
     label: "Daily ToDo追加",
     files: [{ path: file.path, before: content, after }],
   });
-  const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
-  );
+  const source = getDailyTodoTargetSource(settings);
   return {
-    sourceKey: "main",
+    sourceKey: source?.key ?? "",
     sourceLabel: source?.label ?? "",
     path: file.path,
     line: insertIndex,
@@ -683,19 +696,15 @@ export async function addDailyTodoItem(
 }
 
 /**
- * the main daily note file for `dateStr`, or null when it
- * doesn't exist yet. Meeting notes are never a target here — only "main"
- * daily notes are ever created/appended from the Gantt/DailyToDo UI
- * The meeting-note source is not creatable from the Gantt view.
+ * Resolves the selected target's file for `dateStr`, or null if absent.
+ * The historical function name is retained for existing callers.
  */
 export function getMainDailyTodoFile(
   dateStr: string,
   app: App,
   settings: TaskWorkbenchSettings
 ): TFile | null {
-  const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
-  );
+  const source = getDailyTodoTargetSource(settings);
   if (!source) {
     return null;
   }
@@ -706,30 +715,26 @@ export function getMainDailyTodoFile(
 
 /**
  *
- * Resolves or auto-creates the configured main source; non-creatable sources
- * retain the Notice-and-null behavior.
- * A missing creatable file is created through createDailyTodoFile; a missing
- * or non-creatable main source receives the Notice-and-null response so
- * every write path has an explicit user-visible outcome.
+ * Resolves or auto-creates the selected target. Existing notes can be
+ * appended to regardless of creation permission. Missing targets require
+ * an explicit selection; missing files require creation permission.
  */
 export async function requireMainDailyTodoFile(
   dateStr: string,
   app: App,
   settings: TaskWorkbenchSettings
 ): Promise<TFile | null> {
-  const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
-  );
-  const path = source
-    ? getDailyTodoPathForDate(dateStr, source.key, settings)
-    : "";
-  const file = source
-    ? getMainDailyTodoFile(dateStr, app, settings)
-    : null;
+  const source = getDailyTodoTargetSource(settings);
+  if (!source) {
+    new Notice("設定で「新規ToDoの追加先」を選んでください。");
+    return null;
+  }
+  const path = getDailyTodoPathForDate(dateStr, source.key, settings);
+  const file = getMainDailyTodoFile(dateStr, app, settings);
   if (file) {
     return file;
   }
-  if (!source || !source.creatableFromGantt) {
+  if (!source.creatableFromGantt) {
     new Notice(
       `デイリーノートがまだありません: ${path}。Templater等で先に作成してから追加してください。`
     );
@@ -741,8 +746,8 @@ export async function requireMainDailyTodoFile(
 /**
  *
  * "新しいタスク" quick-add: inserts one placeholder item into the given
- * date's main daily note and, only on success, invokes onDone (e.g. to
- * refresh a caller's view). A missing or non-creatable main source causes
+ * date's selected daily note and, only on success, invokes onDone (e.g. to
+ * refresh a caller's view). A missing target or non-creatable missing file causes
  * insertDailyTodoItems to return false after its Notice, so this simply
  * stops without calling onDone in that case.
  */

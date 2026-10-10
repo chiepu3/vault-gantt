@@ -148,6 +148,7 @@ export interface DailyTodoSourceConfig {
   format: string;
   creatableFromGantt: boolean;
   templatePath?: string;
+  todoHeading?: string; // Heading text (optionally with Markdown # prefix).
 }
 
 
@@ -202,6 +203,7 @@ export interface TaskWorkbenchSettings {
   ganttFeatureDailyTodoEnabled: boolean;
 
   dailyTodoSources: DailyTodoSourceConfig[];
+  dailyTodoTargetSourceKey: string;
 
 
   // Rendering/Integration

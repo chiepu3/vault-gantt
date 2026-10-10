@@ -847,9 +847,19 @@ describe("daily-todo-service", () => {
       expect(getDailyTodoInsertIndex(lines)).toBe(lines.length);
     });
 
-    it("only a level-2 heading counts, not level-1 or level-3", () => {
-      expect(getDailyTodoInsertIndex(["# ToDoリスト", "body"])).toBe(2);
-      expect(getDailyTodoInsertIndex(["### ToDoリスト", "body"])).toBe(2);
+    it("recognizes ToDo headings at different levels", () => {
+      expect(getDailyTodoInsertIndex(["# ToDoリスト", "body", "# 次"])).toBe(2);
+      expect(getDailyTodoInsertIndex(["### ToDoリスト", "body", "### 次"])).toBe(2);
+    });
+
+    it("appends at EOF when the configured heading is absent", () => {
+      const lines = ["## ToDoリスト", "- [ ] existing", "## メモ"];
+      expect(getDailyTodoInsertIndex(lines, "今日のToDo")).toBe(lines.length);
+    });
+
+    it("recognizes a CRLF template heading and keeps nested sections inside it", () => {
+      const lines = ["## 今日のToDo\r", "### 午後\r", "- [ ] existing\r", "## メモ\r"];
+      expect(getDailyTodoInsertIndex(lines)).toBe(3);
     });
 
     it("returns the position right before the next heading", () => {
@@ -936,20 +946,77 @@ describe("daily-todo-service", () => {
       );
     });
 
-    it("refuses gracefully when no main source is configured", async () => {
+    it("asks to select a target when the configured target was removed", async () => {
       const { vault, createSpy } = makeFakeVault({});
-      const settings = { ...DEFAULT_SETTINGS, dailyTodoSources: [] };
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "removed",
+      };
 
       const file = await requireMainDailyTodoFile("2026-07-25", appFor(vault), settings);
 
       expect(file).toBeNull();
       expect(createSpy).not.toHaveBeenCalled();
-      expect(NoticeMock).toHaveBeenCalled();
+      expect(NoticeMock).toHaveBeenCalledWith("設定で「新規ToDoの追加先」を選んでください。");
+    });
+
+    it("keeps main as the target for legacy settings without a target key", async () => {
+      const settings = { ...DEFAULT_SETTINGS };
+      delete (settings as Partial<TaskWorkbenchSettings>).dailyTodoTargetSourceKey;
+      const { vault } = makeFakeVault({});
+      const file = await requireMainDailyTodoFile("2026-07-25", appFor(vault), settings);
+      expect(file?.path).toBe(PATH);
+    });
+
+    it("appends to an existing selected note even when creation is disabled", async () => {
+      const path = "Journal/2026-07-25.md";
+      const { vault, getContent, createSpy } = makeFakeVault({ [path]: "- [ ] existing" });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "source-imported",
+        dailyTodoSources: [{
+          key: "source-imported", label: "日記", format: "[Journal]/YYYY-MM-DD",
+          creatableFromGantt: false,
+        }],
+      };
+      expect(await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], appFor(vault), settings)).toBe(true);
+      expect(getContent(path)).toBe("- [ ] existing\n- [ ] new");
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it("refuses to create a missing selected note when creation is disabled", async () => {
+      const { vault, createSpy } = makeFakeVault({});
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "meeting",
+      };
+      expect(await requireMainDailyTodoFile("2026-07-25", appFor(vault), settings)).toBeNull();
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(NoticeMock).toHaveBeenCalledWith(expect.stringContaining("デイリーミーティング/2026/07/0725_デイリーミーティング.md"));
     });
   });
 
   describe("insertDailyTodoItems", () => {
     const PATH = "デイリー/2026/07/260725_デイリー.md";
+
+    it.each([true, false])("adds to the selected imported source with main present: %s", async (keepMain) => {
+      const path = "Journal/2026-07-25.md";
+      const { vault, getContent } = makeFakeVault({ [PATH]: "main unchanged", "Templates/daily.md": "## ToDoリスト" });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "source-imported",
+        dailyTodoSources: [
+          ...(keepMain ? DEFAULT_SETTINGS.dailyTodoSources : []),
+          { key: "source-imported", label: "日記", format: "[Journal]/YYYY-MM-DD", templatePath: "Templates/daily.md", creatableFromGantt: true },
+        ],
+      };
+      const onDone = vi.fn();
+      await openOrCreateMainDailyTodoForDate("2026-07-25", appFor(vault), settings, onDone);
+      expect(getContent(path)).toBe("## ToDoリスト\n- [ ] 新しいタスク");
+      expect(getContent(PATH)).toBe("main unchanged");
+      expect(getMainDailyTodoFile("2026-07-25", appFor(vault), settings)?.path).toBe(path);
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
 
     it("inserts converted lines at the ToDo-section insert point", async () => {
       const { vault, getContent } = makeFakeVault({
@@ -1055,6 +1122,65 @@ describe("daily-todo-service", () => {
       });
       expect(history.push).toHaveBeenCalledTimes(1);
       expect(history.push.mock.calls[0][0].label).toBe("Daily ToDo追加");
+    });
+
+    it.each([true, false])("uses the selected source and template heading with main present: %s", async (keepMain) => {
+      const path = "Journal/2026-07-25.md";
+      const template = ["# 日記", "## 今日のToDo", "- [ ] existing", "### 午後", "- [ ] later", "## メモ", "body"].join("\n");
+      const { vault, getContent } = makeFakeVault({
+        [PATH]: "main unchanged",
+        "Templates/daily.md": template,
+      });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "journal",
+        dailyTodoSources: [
+          ...(keepMain ? DEFAULT_SETTINGS.dailyTodoSources : []),
+          { key: "journal", label: "日記", format: "[Journal]/YYYY-MM-DD", templatePath: "Templates/daily.md", creatableFromGantt: true },
+        ],
+      };
+      const history = { push: vi.fn(), clear: vi.fn() };
+      const item = await addDailyTodoItem("2026-07-25", "new", false, appFor(vault), settings, history as unknown as HistoryManager);
+      expect(getContent(path)).toBe(template.replace("## メモ", "- [ ] new\n## メモ"));
+      expect(getContent(PATH)).toBe("main unchanged");
+      expect(item).toMatchObject({ sourceKey: "journal", sourceLabel: "日記", path, line: 5 });
+      expect(history.push).toHaveBeenCalledWith({
+        label: "Daily ToDo追加",
+        files: [{ path, before: template, after: getContent(path) }],
+      });
+      expect(history.clear).not.toHaveBeenCalled();
+    });
+
+    it.each(["add", "insert"])("places %s below a configured heading in an existing non-creatable target", async (method) => {
+      const path = "Journal/2026-07-25.md";
+      const { vault, getContent, createSpy } = makeFakeVault({
+        [path]: "## ToDoリスト\nother\n## やること\n- [ ] existing\n## メモ",
+      });
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        dailyTodoTargetSourceKey: "journal",
+        dailyTodoSources: [{
+          key: "journal", label: "日記", format: "[Journal]/YYYY-MM-DD",
+          todoHeading: "## やること", creatableFromGantt: false,
+        }],
+      };
+      if (method === "add") {
+        const item = await addDailyTodoItem("2026-07-25", "new", false, appFor(vault), settings);
+        expect(item).toMatchObject({ sourceKey: "journal", path, line: 4 });
+      } else {
+        expect(await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], appFor(vault), settings)).toBe(true);
+      }
+      expect(getContent(path)).toBe("## ToDoリスト\nother\n## やること\n- [ ] existing\n- [ ] new\n## メモ");
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it("does not write when the selected source is unavailable", async () => {
+      const { vault, modifySpy, createSpy } = makeFakeVault({ [PATH]: "## ToDoリスト" });
+      expect(await addDailyTodoItem("2026-07-25", "new", false, appFor(vault), {
+        ...DEFAULT_SETTINGS, dailyTodoTargetSourceKey: "removed",
+      })).toBeNull();
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(createSpy).not.toHaveBeenCalled();
     });
 
     it("returns null and writes nothing for blank text", async () => {
