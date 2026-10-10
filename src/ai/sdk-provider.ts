@@ -13,7 +13,7 @@ import type { ChatEvent, ChatProvider, ChatRequest, ConnectionConfig } from "./c
 export function validEndpoint(endpoint: string): boolean {
   try {
     const url = new URL(endpoint);
-    return !url.username && !url.password && !url.search && !url.hash && (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)));
+    return !url.username && !url.password && !url.search && !url.hash && (url.protocol === "https:" || url.protocol === "http:");
   } catch { return false; }
 }
 export function registryTools(registry: OperationRegistry, signal: AbortSignal, proposed: (event: Extract<ChatEvent, { type: "plan" }>) => void): ToolSet {

@@ -16,8 +16,12 @@ describe("chat control operation handlers", () => {
     const config = { provider: "openai-compatible" as const, endpoint: "https://model.example.test/v1", model: "configured-model", auth: "secret" as const, secretId: "existing-secret" };
     expect(await controlRequest("Q01", config, f.context, f.session)).toMatchObject({ status: "applied", effects: [{ kind: "conversation", action: "configure" }] });
     expect(f.session.config).toEqual(config); expect(f.provider.stream).not.toHaveBeenCalled(); expect(f.persistSettings).not.toHaveBeenCalled();
-    for (const endpoint of ["http://public.example.test", "https://secret:password@example.test", "https://example.test?q=secret", "file:///tmp/x"]) await expect(controlRequest("Q01", { ...config, endpoint }, f.context, f.session)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
-    await controlRequest("Q01", { ...config, endpoint: "http://127.0.0.1:8080/v1" }, f.context, f.session);
+    for (const endpoint of ["http://secret:password@ai-server:8000/v1", "https://secret:password@example.test", "https://example.test?q=secret", "http://ai-server:8000/v1#fragment", "file:///tmp/x"]) await expect(controlRequest("Q01", { ...config, endpoint }, f.context, f.session)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
+    for (const endpoint of ["http://127.0.0.1:8080/v1", "http://192.168.1.20:1234/v1", "http://ai-server:8000/v1", "http://public.example.test"]) {
+      await controlRequest("Q01", { ...config, endpoint }, f.context, f.session);
+      expect(f.session.config.endpoint).toBe(endpoint);
+    }
+    expect(f.provider.stream).not.toHaveBeenCalled();
   });
   it("Q02 bounds conversations to 10 and discards old proposals; Q03 selects only existing conversations", async () => {
     const f = await fixture(), first = f.session.active.id;
