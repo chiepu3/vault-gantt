@@ -460,6 +460,22 @@ function formatDailyTodoLine(completed: boolean, text: string): string {
 }
 
 /**
+ * True when `rawLine` is still the checkbox line `item` was read from. The
+ * popover edits one line at a time from a cached model, so a line shifted by
+ * an outside edit must not be overwritten or deleted by mistake.
+ */
+function lineStillMatchesItem(rawLine: string, item: DailyTodoItem): boolean {
+  const match = rawLine.replace(/\r$/, "").match(CHECKBOX_PATTERN);
+  if (!match) {
+    return false;
+  }
+  const [, marker, text] = match;
+  return (
+    text === item.text && (marker === "x" || marker === "X") === item.completed
+  );
+}
+
+/**
  *
  * Rewrites one checkbox line in place. `patch.text`/`patch.completed` are
  * optional — an omitted field falls back to `item`'s current value (a
@@ -490,7 +506,7 @@ export async function updateDailyTodoItem(
 
   const content = await vault.read(file);
   const lines = content.split("\n");
-  if (item.line >= lines.length) {
+  if (item.line >= lines.length || !lineStillMatchesItem(lines[item.line], item)) {
     return false;
   }
 
@@ -501,8 +517,12 @@ export async function updateDailyTodoItem(
   const nextCompleted = patch.completed ?? item.completed;
 
   lines[item.line] = formatDailyTodoLine(nextCompleted, nextText);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo更新",
+    files: [{ path: file.path, before: content, after }],
+  });
 
   // sync the caller's in-memory item on success.
   item.text = nextText;
@@ -532,13 +552,17 @@ export async function deleteDailyTodoItem(
 
   const content = await vault.read(file);
   const lines = content.split("\n");
-  if (item.line >= lines.length) {
+  if (item.line >= lines.length || !lineStillMatchesItem(lines[item.line], item)) {
     return false;
   }
 
   lines.splice(item.line, 1);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo削除",
+    files: [{ path: file.path, before: content, after }],
+  });
   return true;
 }
 
@@ -608,6 +632,52 @@ export async function insertDailyTodoItems(
 }
 
 
+
+/**
+ * Appends one ToDo to the date's main daily note (same placement as
+ * insertDailyTodoItems) and returns it with its real path and line, so the
+ * caller can keep editing that exact line. Returns null when the text is
+ * empty or the main note is unavailable. The write is recorded as an undo
+ * entry.
+ */
+export async function addDailyTodoItem(
+  dateStr: string,
+  text: string,
+  completed: boolean,
+  app: App,
+  settings: TaskWorkbenchSettings,
+  historyManager?: HistoryManager
+): Promise<DailyTodoItem | null> {
+  if (text.trim() === "") {
+    return null;
+  }
+  const file = await requireMainDailyTodoFile(dateStr, app, settings);
+  if (!file) {
+    return null;
+  }
+  const content = await app.vault.read(file);
+  const lines = content === "" ? [] : content.split("\n");
+  const insertIndex = getDailyTodoInsertIndex(lines);
+  lines.splice(insertIndex, 0, formatDailyTodoLine(completed, text));
+  const after = lines.join("\n");
+  await app.vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo追加",
+    files: [{ path: file.path, before: content, after }],
+  });
+  const source = getDailyTodoSources(settings).find(
+    (candidate) => candidate.key === "main"
+  );
+  return {
+    sourceKey: "main",
+    sourceLabel: source?.label ?? "",
+    path: file.path,
+    line: insertIndex,
+    text,
+    completed,
+    isNew: false,
+  };
+}
 
 /**
  * the main daily note file for `dateStr`, or null when it
@@ -718,7 +788,10 @@ export async function openDailyTodoFile(
   if (!(file instanceof TFile)) {
     return;
   }
-  await workspace.getLeaf().openFile(file);
+  // eState.line scrolls the opened note to the ToDo's line.
+  await workspace
+    .getLeaf()
+    .openFile(file, item.line >= 0 ? { eState: { line: item.line } } : undefined);
 }
 
 

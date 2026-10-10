@@ -377,13 +377,12 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-bar.is-bulk-move-follower:hover { box-shadow: 0 0 0 1px var(--text-muted), var(--vg-shadow-raised); }
 .task-gantt-bar.is-completed { background: var(--text-muted); opacity: .7; }
 .task-gantt-bar.is-tag-colored-completed { opacity: .48; filter: saturate(.35) brightness(.96); }
-.task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vg-font-m); line-height: 24px; color: var(--vg-bar-text, var(--text-on-accent)); }
+.task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vg-font-m); line-height: 24px; color: var(--text-on-accent); }
 .task-gantt-bar.has-tag-badge { display: flex; align-items: center; }
 .task-gantt-bar.has-tag-badge .task-gantt-bar-title { flex: 0 1 calc(100% - 62px); min-width: 0; }
 
+/* In-bar tag badge: white pill (vg-chip) with tag-coloured text/border, as before the redesign. */
 .task-gantt-bar-tag-badge { display: inline-flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 46%; margin: 0 7px 0 auto; padding: 0 var(--vg-space-1); height: 16px; overflow: hidden; text-overflow: ellipsis; font-size: var(--vg-font-micro); line-height: 1; pointer-events: none; }
-/* In-bar tag badge: text and border follow the bar text colour for contrast; the tag colour is kept as a left stripe. */
-.task-gantt-bar-tag-badge.vg-chip.is-tag { color: var(--vg-bar-text, var(--text-on-accent)); background: color-mix(in srgb, var(--vg-bar-text, var(--text-on-accent)) 18%, transparent); border-color: color-mix(in srgb, var(--vg-bar-text, var(--text-on-accent)) 55%, transparent); box-shadow: inset 3px 0 0 var(--vg-chip-color, transparent); padding-left: calc(var(--vg-space-1) + 3px); }
 
 .task-gantt-bar.is-completed .task-gantt-bar-tag-badge { opacity: .86; }
 .task-gantt-resize-start, .task-gantt-resize-end { position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; }
@@ -451,40 +450,24 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-workload-popover.is-visible { display: block; }
 .task-gantt-daily-todo-popover {
-  min-width: 180px;
+  width: 320px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   overflow-y: auto;
 }
 .task-gantt-daily-todo-popover-title {
-  margin-bottom: 6px;
+  margin-bottom: var(--vg-space-2);
   color: var(--text-muted);
-  font-size: 0.85em;
+  font-size: var(--vg-font-s);
   font-weight: var(--vg-weight-strong);
 }
-.task-gantt-daily-todo-popover-item,
-.task-gantt-daily-todo-popover-empty {
-  padding: 3px 0;
-  overflow-wrap: anywhere;
-}
-.task-gantt-daily-todo-popover-item.is-completed {
-  color: var(--text-muted);
-  text-decoration: line-through;
-}
-.task-gantt-daily-todo-popover-empty { color: var(--text-muted); }
-.task-gantt-daily-todo-popover-heading {
-  margin-top: 6px;
-  font-size: 0.85em;
-  font-weight: var(--vg-weight-strong);
-}
-.task-gantt-daily-todo-popover-title + .task-gantt-daily-todo-popover-heading { margin-top: 0; }
-.task-gantt-daily-todo-popover-hint {
-  margin-top: 6px;
-  padding-top: 4px;
-  border-top: var(--vg-border);
-  color: var(--text-faint);
-  font-size: 0.8em;
-}
+.task-gantt-daily-todo-list { display: flex; flex-direction: column; gap: var(--vg-space-1); }
+.task-gantt-daily-todo-row { display: flex; align-items: center; gap: var(--vg-space-2); }
+.task-gantt-daily-todo-check { flex: none; margin: 0; }
+.task-gantt-daily-todo-input { flex: 1 1 auto; min-width: 0; }
+.task-gantt-daily-todo-more { flex: none; }
+.task-gantt-daily-todo-add { margin-top: var(--vg-space-1); }
+.task-gantt-daily-row .task-gantt-fixed-bg { cursor: pointer; }
 
 .task-gantt-workload-popover-header {
   display: flex;

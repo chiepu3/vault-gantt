@@ -27,7 +27,14 @@ import {
   openMarkerModal,
   TextInputModal,
 } from "./ui/modals";
-import { DailyTodoService, updateDailyTodos } from "./app/daily-todo-service";
+import {
+  addDailyTodoItem,
+  DailyTodoService,
+  deleteDailyTodoItem,
+  openDailyTodoFile,
+  updateDailyTodoItem,
+  updateDailyTodos,
+} from "./app/daily-todo-service";
 import { getGanttParentRows } from "./app/gantt-layout";
 import {
   getGanttSyncEndpoint,
@@ -1517,10 +1524,29 @@ export default class TaskWorkbenchPlugin extends Plugin {
         ),
 
 
-      openOrCreateDailyTodoForDate: (
+      // Daily ToDo popover: each edit is saved on its own line, with an undo entry.
+      updateDailyTodoItem: (
+        item: DailyTodoItem,
+        patch: { text?: string; completed?: boolean }
+      ): Promise<boolean> =>
+        updateDailyTodoItem(item, patch, this.app.vault, this.historyManager),
+      deleteDailyTodoItem: (item: DailyTodoItem): Promise<boolean> =>
+        deleteDailyTodoItem(item, this.app.vault, this.historyManager),
+      addDailyTodoItem: (
         dateStr: string,
-        onSaved?: () => void
-      ): Promise<void> => this.openOrCreateDailyTodoForDate(dateStr, onSaved),
+        text: string,
+        completed: boolean
+      ): Promise<DailyTodoItem | null> =>
+        addDailyTodoItem(
+          dateStr,
+          text,
+          completed,
+          this.app,
+          this.settings,
+          this.historyManager
+        ),
+      openDailyTodoItem: (item: DailyTodoItem): Promise<void> =>
+        openDailyTodoFile(item, this.app.vault, this.app.workspace),
       saveSettings: (): Promise<void> => this.saveSettings(),
       // single drag/edit save, same path as the Workbench's
       // own updateTaskItem wrapper above.

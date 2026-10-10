@@ -22,6 +22,7 @@ import {
 import type { Logger } from "../../src/core/logger";
 
 import type {
+  DailyTodoItem,
   DailyTodoSummary,
   GanttTagDefinition,
   TaskRow,
@@ -176,7 +177,10 @@ interface HostHarness {
   host: TaskGanttViewHost;
   loadTasks: any;
   loadDailyTodoSummaries: any;
-  openOrCreateDailyTodoForDate: any;
+  updateDailyTodoItem: any;
+  deleteDailyTodoItem: any;
+  addDailyTodoItem: any;
+  openDailyTodoItem: any;
   saveSettings: any;
   settings: TaskWorkbenchSettings;
 
@@ -229,12 +233,34 @@ function makeHostHarness(
 
   const loadTasks = vi.fn(async () => tasks);
   const loadDailyTodoSummaries = vi.fn(async (): Promise<DailyTodoSummary[]> => []);
-  // Mirrors the real host: resolves as soon as the modal "opens" (this mock
-  // never calls onSaved on its own) — a test that needs to simulate the
-  // user actually saving must invoke the captured onSaved callback itself.
-  const openOrCreateDailyTodoForDate = vi.fn(
-    async (_dateStr: string, _onSaved?: () => void) => undefined
+  // Daily ToDo popover persistence: every write succeeds by default.
+  const updateDailyTodoItem = vi.fn(
+    async (
+      item: DailyTodoItem,
+      patch: { text?: string; completed?: boolean }
+    ) => {
+      item.text = patch.text ?? item.text;
+      item.completed = patch.completed ?? item.completed;
+      return true;
+    }
   );
+  const deleteDailyTodoItem = vi.fn(async (_item: DailyTodoItem) => true);
+  const addDailyTodoItem = vi.fn(
+    async (
+      _dateStr: string,
+      text: string,
+      completed: boolean
+    ): Promise<DailyTodoItem | null> => ({
+      sourceKey: "main",
+      sourceLabel: "デイリー",
+      path: "daily/main.md",
+      line: 99,
+      text,
+      completed,
+      isNew: false,
+    })
+  );
+  const openDailyTodoItem = vi.fn(async (_item: DailyTodoItem) => undefined);
   const saveSettings = vi.fn(async () => undefined);
   const updateTaskItem = vi.fn(async () => ({}));
   const updateTaskItemsBatch = vi.fn(async () => []);
@@ -312,7 +338,10 @@ function makeHostHarness(
     settings,
     loadTasks,
     loadDailyTodoSummaries,
-    openOrCreateDailyTodoForDate,
+    updateDailyTodoItem,
+    deleteDailyTodoItem,
+    addDailyTodoItem,
+    openDailyTodoItem,
     saveSettings,
     updateTaskItem,
     updateTaskItemsBatch,
@@ -340,7 +369,10 @@ function makeHostHarness(
     host,
     loadTasks,
     loadDailyTodoSummaries,
-    openOrCreateDailyTodoForDate,
+    updateDailyTodoItem,
+    deleteDailyTodoItem,
+    addDailyTodoItem,
+    openDailyTodoItem,
     saveSettings,
     settings,
     updateTaskItem,
@@ -1511,8 +1543,8 @@ describe("TaskGanttView", () => {
       expect(styleVar(badge, "--vg-chip-color")).toBe("#111111");
       expect(badge.classList.contains("vg-chip")).toBe(true);
       expect(bar.style.backgroundColor).toBe("#111111");
-      // #111111 is dark, so the bar title switches to white text.
-      expect(styleVar(bar, "--vg-bar-text")).toBe("#ffffff");
+      // The bar title colour is fixed (white) regardless of the tag colour.
+      expect(styleVar(bar, "--vg-bar-text")).toBeUndefined();
       expect(bar.style.borderColor).toBe("#111111");
     });
 
@@ -2709,324 +2741,366 @@ describe("TaskGanttView", () => {
       );
     });
 
-    it("opens the date-specific Daily ToDo modal through the host on click, but does NOT re-render merely because the modal opened", async () => {
-      const date = dateOffset(2);
-      const h = makeHostHarness([]);
-      h.loadDailyTodoSummaries.mockResolvedValue([
-        { date, items: [], completedCount: 0, totalCount: 1 },
-      ]);
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-
-      const chip = byClass(container, "task-gantt-daily-chip")[0];
-      dispatch(chip, "click");
-      await flush();
-
-      // openOrCreateDailyTodoForDate resolving (the modal merely opening,
-      // per the real host's fire-and-forget Modal.open semantics) must
-      // NOT by itself trigger a re-render — only the modal's onSaved
-      // callback (invoked once the user actually saves) should.
-      expect(h.openOrCreateDailyTodoForDate).toHaveBeenCalledWith(
-        date,
-        expect.any(Function)
-      );
-      expect(h.loadDailyTodoSummaries).toHaveBeenCalledTimes(1);
-    });
-
-    it("re-renders to show updated counts only once the modal's onSaved callback actually fires", async () => {
-      const date = dateOffset(2);
-      const h = makeHostHarness([]);
-      h.loadDailyTodoSummaries
-        .mockResolvedValueOnce([
-          { date, items: [], completedCount: 0, totalCount: 1 },
-        ])
-        .mockResolvedValue([
-          { date, items: [], completedCount: 1, totalCount: 1 },
-        ]);
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-
-      const chip = byClass(container, "task-gantt-daily-chip")[0];
-      dispatch(chip, "click");
-      await flush();
-
-      // Simulate the user saving inside the modal: the host's second
-      // argument (onSaved) is invoked, exactly as the real
-      // openOrCreateDailyTodoForDate does once the modal's onSubmit fires.
-      const [, onSaved] = h.openOrCreateDailyTodoForDate.mock.calls[0];
-      onSaved();
-      await flush();
-
-      expect(h.loadDailyTodoSummaries).toHaveBeenCalledTimes(2);
-      const refreshedChip = byClass(container, "task-gantt-daily-chip")[0];
-      expect(refreshedChip.textContent).toBe("1/1");
-      expect(refreshedChip.classList.contains("is-completed")).toBe(true);
-    });
-
-    it("shows Daily ToDo item names in a body-anchored hover popover and keeps click-to-edit", async () => {
-      const date = dateOffset(2);
-      const h = makeHostHarness([]);
-      h.loadDailyTodoSummaries.mockResolvedValue([
-        {
-          date,
-          items: [
-            {
-              sourceKey: "main",
-              sourceLabel: "メイン",
-              path: "daily/2026-08-06.md",
-              line: 3,
-              text: "資料を確認する",
-              completed: false,
-              isNew: false,
-            },
-            {
-              sourceKey: "main",
-              sourceLabel: "メイン",
-              path: "daily/2026-08-06.md",
-              line: 4,
-              text: "議事録を送る",
-              completed: true,
-              isNew: false,
-            },
-          ],
-          completedCount: 1,
-          totalCount: 2,
-        },
-      ]);
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-
-      const chip = byClass(container, "task-gantt-daily-chip")[0];
-      chip.getBoundingClientRect = () => ({
-        left: 120,
-        top: 0,
-        right: 148,
-        bottom: 20,
-        width: 28,
-        height: 20,
+    describe("Daily ToDo popover", () => {
+      const PATH = "daily/2026-08-06.md";
+      const todo = (
+        line: number,
+        text: string,
+        completed = false,
+        path = PATH
+      ): DailyTodoItem => ({
+        sourceKey: "main",
+        sourceLabel: "デイリー",
+        path,
+        line,
+        text,
+        completed,
+        isNew: false,
       });
-      const winEl = (globalThis as any).window as FakeEl;
-      winEl.innerWidth = 1000;
-      dispatch(chip, "mouseenter");
 
-      const popover = byClass(
-        popoverBody(),
-        "task-gantt-daily-todo-popover"
-      )[0];
-      expect(popover).toBeTruthy();
-      expect(popover.parentNode).toBe(popoverBody());
-      expect(popover.attributes["data-date"]).toBe(date);
-      expect(popover.attributes["data-side"]).toBe("below");
-      expect(popover.style.top).toBe("32px");
-      expect(popover.style.left).toBe("120px");
-      expect(deepText(popover)).toContain("資料を確認する");
-      expect(deepText(popover)).toContain("議事録を送る");
-      expect(
-        byClass(popover, "task-gantt-daily-todo-popover-item")
-      ).toHaveLength(2);
-      expect(
-        byClass(popover, "task-gantt-daily-todo-popover-item")[1].classList.contains(
-          "is-completed"
-        )
-      ).toBe(true);
-
-      // The existing click path remains the date-specific edit modal, and
-      // clicking it also removes the transient hover preview.
-      dispatch(chip, "click");
-      expect(h.openOrCreateDailyTodoForDate).toHaveBeenCalledWith(
-        date,
-        expect.any(Function)
-      );
-      expect(
-        byClass(popoverBody(), "task-gantt-daily-todo-popover")
-      ).toHaveLength(0);
-    });
-
-    it("hides the hover popover after leaving and immediately on chart scroll", async () => {
-      vi.useFakeTimers();
-      try {
-        const date = dateOffset(2);
+      async function openWithItems(
+        items: DailyTodoItem[],
+        dateOffsetDays = 2
+      ): Promise<{
+        h: ReturnType<typeof makeHostHarness>;
+        view: TaskGanttView;
+        container: FakeEl;
+        date: string;
+        chip: FakeEl;
+      }> {
+        const date = dateOffset(dateOffsetDays);
         const h = makeHostHarness([]);
         h.loadDailyTodoSummaries.mockResolvedValue([
           {
             date,
-            items: [
-              {
-                sourceKey: "main",
-                sourceLabel: "メイン",
-                path: "daily/2026-08-06.md",
-                line: 3,
-                text: "項目",
-                completed: false,
-                isNew: false,
-              },
-            ],
-            completedCount: 0,
-            totalCount: 1,
+            items,
+            completedCount: items.filter((i) => i.completed).length,
+            totalCount: items.length,
           },
         ]);
         const view = new TaskGanttView({} as any, h.host);
         const container = (view as any).containerEl as FakeEl;
         await view.onOpen();
         const chip = byClass(container, "task-gantt-daily-chip")[0];
-        dispatch(chip, "mouseenter");
-        const popover = byClass(
-          popoverBody(),
-          "task-gantt-daily-todo-popover"
-        )[0];
-        dispatch(chip, "mouseleave");
-        vi.advanceTimersByTime(139);
-        expect(popover.isConnected).toBe(true);
-        vi.advanceTimersByTime(1);
-        expect(
-          byClass(popoverBody(), "task-gantt-daily-todo-popover")
-        ).toHaveLength(0);
+        return { h, view, container, date, chip };
+      }
+
+      const popoverEl = (): FakeEl | undefined =>
+        byClass(popoverBody(), "task-gantt-daily-todo-popover")[0];
+      const rowsOf = (pop: FakeEl): FakeEl[] =>
+        byClass(pop, "task-gantt-daily-todo-row");
+      const inputOf = (row: FakeEl): FakeEl =>
+        byClass(row, "task-gantt-daily-todo-input")[0];
+      const checkOf = (row: FakeEl): FakeEl =>
+        byClass(row, "task-gantt-daily-todo-check")[0];
+      const moreOf = (row: FakeEl): FakeEl =>
+        byClass(row, "task-gantt-daily-todo-more")[0];
+      const addOf = (pop: FakeEl): FakeEl =>
+        byClass(pop, "task-gantt-daily-todo-add")[0];
+
+      it("opens a popover on chip click with [check][input][…] rows and a trailing +, without hover or modal", async () => {
+        const { chip, date } = await openWithItems([
+          todo(3, "資料を確認する"),
+          todo(4, "議事録を送る", true),
+        ]);
 
         dispatch(chip, "mouseenter");
-        const reopened = byClass(
-          popoverBody(),
-          "task-gantt-daily-todo-popover"
-        )[0];
+        expect(popoverEl()).toBeUndefined();
+
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        expect(pop).toBeTruthy();
+        expect(pop.parentNode).toBe(popoverBody());
+        expect(pop.attributes["data-date"]).toBe(date);
+        expect(pop.classList.contains("vg-popover")).toBe(true);
+        const rows = rowsOf(pop);
+        expect(rows).toHaveLength(2);
+        expect(rows[0].children.map((c) => c.classList.contains("task-gantt-daily-todo-check"))).toEqual([true, false, false]);
+        expect(rows[0].children[1].classList.contains("task-gantt-daily-todo-input")).toBe(true);
+        expect(rows[0].children[2].classList.contains("task-gantt-daily-todo-more")).toBe(true);
+        expect(rows[0].children[2].textContent).toBe("…");
+        expect(inputOf(rows[0]).value).toBe("資料を確認する");
+        expect(inputOf(rows[1]).value).toBe("議事録を送る");
+        expect(checkOf(rows[0]).checked).toBe(false);
+        expect(checkOf(rows[1]).checked).toBe(true);
+        expect(addOf(pop).textContent).toBe("+");
+        // The add button is the last element of the popover.
+        expect(pop.children[pop.children.length - 1]).toBe(addOf(pop));
+      });
+
+      it("clicking the same chip again closes the popover", async () => {
+        const { chip } = await openWithItems([todo(3, "項目")]);
+        dispatch(chip, "click");
+        expect(popoverEl()).toBeTruthy();
+        dispatch(chip, "click");
+        expect(popoverEl()).toBeUndefined();
+      });
+
+      it("opens an empty popover from a date cell with no ToDo, so a first item can be added", async () => {
+        const { container } = await openWithItems([todo(3, "項目")]);
+        const timeline = byClass(container, "task-gantt-daily-row")[0];
+        const cells = byClass(timeline, "task-gantt-fixed-bg");
+        // The first cell is far from the chip's date, so it has no ToDo.
+        dispatch(cells[0], "click");
+        const pop = popoverEl()!;
+        expect(pop).toBeTruthy();
+        expect(rowsOf(pop)).toHaveLength(0);
+        expect(addOf(pop)).toBeTruthy();
+      });
+
+      it("saves a checkbox toggle immediately, keeps the popover open and updates the chip count without reloading", async () => {
+        const { h, chip, container } = await openWithItems([
+          todo(3, "資料を確認する"),
+          todo(4, "議事録を送る"),
+        ]);
+        dispatch(chip, "click");
+        const row = rowsOf(popoverEl()!)[0];
+        h.loadDailyTodoSummaries.mockClear();
+
+        checkOf(row).checked = true;
+        dispatch(checkOf(row), "change");
+        await flush();
+
+        expect(h.updateDailyTodoItem).toHaveBeenCalledTimes(1);
+        const [item, patch] = h.updateDailyTodoItem.mock.calls[0];
+        expect(item.line).toBe(3);
+        expect(patch).toEqual({ text: "資料を確認する", completed: true });
+        expect(popoverEl()).toBeTruthy();
+        expect(h.loadDailyTodoSummaries).not.toHaveBeenCalled();
+        expect(byClass(container, "task-gantt-daily-chip")[0].textContent).toBe("1/2");
+      });
+
+      it("saves edited text on change, trimming it", async () => {
+        const { h, chip } = await openWithItems([todo(3, "旧")]);
+        dispatch(chip, "click");
+        const row = rowsOf(popoverEl()!)[0];
+
+        inputOf(row).value = "  新しい文言  ";
+        dispatch(inputOf(row), "change");
+        await flush();
+
+        expect(h.updateDailyTodoItem.mock.calls[0][1]).toEqual({
+          text: "新しい文言",
+          completed: false,
+        });
+        expect(inputOf(row).value).toBe("新しい文言");
+      });
+
+      it("never saves a blank text: it reverts the input and leaves the note alone", async () => {
+        const { h, chip } = await openWithItems([todo(3, "残す")]);
+        dispatch(chip, "click");
+        const row = rowsOf(popoverEl()!)[0];
+
+        inputOf(row).value = "   ";
+        dispatch(inputOf(row), "change");
+        await flush();
+
+        expect(h.updateDailyTodoItem).not.toHaveBeenCalled();
+        expect(inputOf(row).value).toBe("残す");
+      });
+
+      it("+ appends a blank row and focuses its input; typing text then adds it to the note and shifts later lines", async () => {
+        const { h, chip, container, view } = await openWithItems([
+          todo(3, "既存A"),
+          todo(120, "既存B"),
+        ]);
+        h.addDailyTodoItem.mockResolvedValueOnce(todo(50, "追加", false));
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+
+        dispatch(addOf(pop), "click");
+        expect(rowsOf(pop)).toHaveLength(3);
+        const draft = rowsOf(pop)[2];
+        expect(inputOf(draft).focused).toBe(true);
+        // A second + while the blank row is empty reuses it.
+        dispatch(addOf(pop), "click");
+        expect(rowsOf(pop)).toHaveLength(3);
+
+        // Nothing is written for a blank draft.
+        dispatch(inputOf(draft), "change");
+        await flush();
+        expect(h.addDailyTodoItem).not.toHaveBeenCalled();
+
+        inputOf(draft).value = "追加";
+        dispatch(inputOf(draft), "change");
+        await flush();
+        expect(h.addDailyTodoItem).toHaveBeenCalledWith(
+          (view as any).dailyTodoPopoverState.date,
+          "追加",
+          false
+        );
+        expect(byClass(container, "task-gantt-daily-chip")[0].textContent).toBe("0/3");
+
+        // The note now has one more line above 既存B, so its stored line moved.
+        const rowB = rowsOf(pop)[1];
+        checkOf(rowB).checked = true;
+        dispatch(checkOf(rowB), "change");
+        await flush();
+        expect(h.updateDailyTodoItem.mock.calls[0][0].line).toBe(121);
+      });
+
+      it("「…」 opens a menu with 開く and 削除; 開く opens the note at that ToDo and closes the popover", async () => {
+        const { h, chip } = await openWithItems([todo(3, "資料を確認する")]);
+        dispatch(chip, "click");
+        const row = rowsOf(popoverEl()!)[0];
+
+        dispatch(moreOf(row), "click");
+        expect(menuItems().map((el) => deepText(el))).toEqual(["開く", "削除"]);
+        // The popover survives the menu opening and clicks inside the menu.
+        dispatch((window as any), "mousedown", { target: menuItemWithText("開く") });
+        expect(popoverEl()).toBeTruthy();
+
+        dispatch(menuItemWithText("開く"), "click");
+        await flush();
+        expect(h.openDailyTodoItem).toHaveBeenCalledTimes(1);
+        expect(h.openDailyTodoItem.mock.calls[0][0].line).toBe(3);
+        expect(popoverEl()).toBeUndefined();
+      });
+
+      it("削除 removes the line at once without a confirmation, updates the chip and shifts the lines below", async () => {
+        const { h, chip, container } = await openWithItems([
+          todo(3, "消す"),
+          todo(4, "残す"),
+        ]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+
+        dispatch(moreOf(rowsOf(pop)[0]), "click");
+        dispatch(menuItemWithText("削除"), "click");
+        await flush();
+
+        expect(h.deleteDailyTodoItem).toHaveBeenCalledTimes(1);
+        expect(h.deleteDailyTodoItem.mock.calls[0][0].text).toBe("消す");
+        expect(rowsOf(pop)).toHaveLength(1);
+        expect(inputOf(rowsOf(pop)[0]).value).toBe("残す");
+        expect(byClass(container, "task-gantt-daily-chip")[0].textContent).toBe("0/1");
+
+        const keep = rowsOf(pop)[0];
+        checkOf(keep).checked = true;
+        dispatch(checkOf(keep), "change");
+        await flush();
+        expect(h.updateDailyTodoItem.mock.calls[0][0].line).toBe(3);
+      });
+
+      it("deleting the last ToDo removes the chip; deleting a never-saved row only drops the row", async () => {
+        const { h, chip, container } = await openWithItems([todo(3, "唯一")]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+
+        dispatch(addOf(pop), "click");
+        dispatch(moreOf(rowsOf(pop)[1]), "click");
+        dispatch(menuItemWithText("削除"), "click");
+        await flush();
+        expect(h.deleteDailyTodoItem).not.toHaveBeenCalled();
+        expect(rowsOf(pop)).toHaveLength(1);
+
+        dispatch(moreOf(rowsOf(pop)[0]), "click");
+        dispatch(menuItemWithText("削除"), "click");
+        await flush();
+        expect(h.deleteDailyTodoItem).toHaveBeenCalledTimes(1);
+        expect(byClass(container, "task-gantt-daily-chip")).toHaveLength(0);
+        expect(popoverEl()).toBeTruthy();
+      });
+
+      it("when a save is rejected (the note changed) it reloads the ToDos from disk", async () => {
+        const { h, chip } = await openWithItems([todo(3, "旧")]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        h.updateDailyTodoItem.mockResolvedValueOnce(false);
+        h.loadDailyTodoSummaries.mockClear();
+        h.loadDailyTodoSummaries.mockResolvedValue([
+          {
+            date: (pop.attributes as any)["data-date"],
+            items: [todo(5, "最新")],
+            completedCount: 0,
+            totalCount: 1,
+          },
+        ]);
+
+        inputOf(rowsOf(pop)[0]).value = "上書き";
+        dispatch(inputOf(rowsOf(pop)[0]), "change");
+        await flush();
+
+        expect(h.loadDailyTodoSummaries).toHaveBeenCalledTimes(1);
+        expect(rowsOf(pop)).toHaveLength(1);
+        expect(inputOf(rowsOf(pop)[0]).value).toBe("最新");
+      });
+
+      it("closes on an outside mousedown or Escape, and saves text that was typed but not yet committed", async () => {
+        const { h, chip } = await openWithItems([todo(3, "旧")]);
+        dispatch(chip, "click");
+        let pop = popoverEl()!;
+        inputOf(rowsOf(pop)[0]).value = "未確定の入力";
+
+        const outside = makeFakeEl("div");
+        dispatch((window as any), "mousedown", { target: outside });
+        await flush();
+        expect(popoverEl()).toBeUndefined();
+        expect(h.updateDailyTodoItem).toHaveBeenCalledTimes(1);
+        expect(h.updateDailyTodoItem.mock.calls[0][1].text).toBe("未確定の入力");
+
+        dispatch(chip, "click");
+        pop = popoverEl()!;
+        // A mousedown inside the popover does not close it.
+        dispatch((window as any), "mousedown", { target: inputOf(rowsOf(pop)[0]) });
+        expect(popoverEl()).toBeTruthy();
+        dispatch(pop, "keydown", { key: "Escape" });
+        expect(popoverEl()).toBeUndefined();
+      });
+
+      it("closes on chart scroll", async () => {
+        const { chip, container } = await openWithItems([todo(3, "項目")]);
+        dispatch(chip, "click");
         const wrap = wrapOf(container);
         wrap.scrollLeft = 500;
         wrap.clientWidth = 100;
         wrap.scrollWidth = 10000;
         dispatch(wrap, "scroll");
-        expect(reopened.isConnected).toBe(false);
-        expect(
-          byClass(popoverBody(), "task-gantt-daily-todo-popover")
-        ).toHaveLength(0);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("keeps a tall Daily ToDo popover inside the viewport", async () => {
-      const date = dateOffset(2);
-      const h = makeHostHarness([]);
-      h.loadDailyTodoSummaries.mockResolvedValue([
-        {
-          date,
-          items: [],
-          completedCount: 0,
-          totalCount: 0,
-        },
-      ]);
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-      const chip = byClass(container, "task-gantt-daily-chip")[0];
-      chip.getBoundingClientRect = () => ({
-        left: 120,
-        top: 40,
-        right: 148,
-        bottom: 60,
-        width: 28,
-        height: 20,
+        expect(popoverEl()).toBeUndefined();
       });
-      const winEl = (globalThis as any).window as FakeEl;
-      winEl.innerHeight = 180;
-      dispatch(chip, "mouseenter");
-      const popover = byClass(
-        popoverBody(),
-        "task-gantt-daily-todo-popover"
-      )[0];
-      Object.defineProperty(popover, "offsetHeight", { value: 140 });
-      (view as any).positionDailyTodoPopover(chip);
 
-      expect(popover.style.top).toBe("32px");
-      expect(32 + 140).toBeLessThanOrEqual(180 - 8);
-    });
+      it("keeps a tall popover inside the viewport", async () => {
+        const { chip, view } = await openWithItems([todo(3, "項目")]);
+        chip.getBoundingClientRect = () => ({
+          left: 120,
+          top: 40,
+          right: 148,
+          bottom: 60,
+          width: 28,
+          height: 20,
+        });
+        const winEl = (globalThis as any).window as FakeEl;
+        winEl.innerHeight = 180;
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        Object.defineProperty(pop, "offsetHeight", { value: 140 });
+        (view as any).positionDailyTodoPopover(chip);
 
-    it("removes the body popover before incremental Daily ToDo row replacement", async () => {
-      const date = dateOffset(2);
-      const h = makeHostHarness([]);
-      h.loadDailyTodoSummaries.mockResolvedValue([
-        {
-          date,
-          items: [
-            {
-              sourceKey: "main",
-              sourceLabel: "メイン",
-              path: "daily/2026-08-06.md",
-              line: 3,
-              text: "項目",
-              completed: false,
-              isNew: false,
-            },
-          ],
-          completedCount: 0,
-          totalCount: 1,
-        },
-      ]);
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-      const chip = byClass(container, "task-gantt-daily-chip")[0];
-      dispatch(chip, "mouseenter");
-      expect(
-        byClass(popoverBody(), "task-gantt-daily-todo-popover")
-      ).toHaveLength(1);
+        expect(pop.style.top).toBe("32px");
+        expect(32 + 140).toBeLessThanOrEqual(180 - 8);
+      });
 
-      (view as any).refreshDailyTodoRowIncremental();
+      it("removes the body popover before incremental Daily ToDo row replacement", async () => {
+        const { chip, view } = await openWithItems([todo(3, "項目")]);
+        dispatch(chip, "click");
+        expect(popoverEl()).toBeTruthy();
 
-      expect(
-        byClass(popoverBody(), "task-gantt-daily-todo-popover")
-      ).toHaveLength(0);
-      expect((view as any).dailyTodoPopoverState).toBeUndefined();
-    });
+        (view as any).refreshDailyTodoRowIncremental();
 
-    it("onClose removes the popover and pending hide timer", async () => {
-      vi.useFakeTimers();
-      try {
-        const date = dateOffset(2);
-        const h = makeHostHarness([]);
-        h.loadDailyTodoSummaries.mockResolvedValue([
-          {
-            date,
-            items: [
-              {
-                sourceKey: "main",
-                sourceLabel: "メイン",
-                path: "daily/2026-08-06.md",
-                line: 3,
-                text: "項目",
-                completed: false,
-                isNew: false,
-              },
-            ],
-            completedCount: 0,
-            totalCount: 1,
-          },
-        ]);
-        const view = new TaskGanttView({} as any, h.host);
-        const container = (view as any).containerEl as FakeEl;
-        await view.onOpen();
-        const chip = byClass(container, "task-gantt-daily-chip")[0];
-        dispatch(chip, "mouseenter");
-        dispatch(chip, "mouseleave");
-        expect((view as any).dailyTodoPopoverHideTimer).toBeDefined();
-        expect(
-          byClass(popoverBody(), "task-gantt-daily-todo-popover")
-        ).toHaveLength(1);
+        expect(popoverEl()).toBeUndefined();
+        expect((view as any).dailyTodoPopoverState).toBeUndefined();
+      });
+
+      it("onClose removes the popover", async () => {
+        const { chip, view } = await openWithItems([todo(3, "項目")]);
+        dispatch(chip, "click");
+        expect(popoverEl()).toBeTruthy();
 
         await view.onClose();
 
-        expect((view as any).dailyTodoPopoverHideTimer).toBeUndefined();
         expect((view as any).dailyTodoPopoverState).toBeUndefined();
-        expect(
-          byClass(popoverBody(), "task-gantt-daily-todo-popover")
-        ).toHaveLength(0);
-        vi.advanceTimersByTime(140);
-        expect(
-          byClass(popoverBody(), "task-gantt-daily-todo-popover")
-        ).toHaveLength(0);
-      } finally {
-        vi.useRealTimers();
-      }
+        expect(popoverEl()).toBeUndefined();
+      });
     });
 
     it("keeps the daily-todo row fixed at 44px", async () => {

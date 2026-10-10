@@ -1,13 +1,18 @@
 import { StatusLabel, TaskWorkbenchSettings } from "./types";
 
-/** fixed eight-color palette for interactively-created tags. */
+/**
+ * fixed eight-color palette for interactively-created tags. Every color keeps
+ * at least 4.5:1 contrast against the white bar text; green, amber and cyan
+ * are darkened (same hue) to reach it. Colors already saved in
+ * `ganttTags` are user data and are never rewritten.
+ */
 export const DEFAULT_GANTT_TAG_COLORS = [
   "#2563eb",
-  "#16a34a",
+  "#12883e",
   "#dc2626",
-  "#d97706",
+  "#b16105",
   "#7c3aed",
-  "#0891b2",
+  "#07819e",
   "#db2777",
   "#4b5563",
 ] as const;
