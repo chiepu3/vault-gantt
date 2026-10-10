@@ -548,12 +548,12 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
             .setDisabled(index === definitions.length - 1)
             .onClick(() => this.moveGanttTag(containerEl, index, 1))
         )
-        .addButton((button) =>
+        .addButton((button) => {
           button
             .setButtonText("削除")
-            .setWarning()
-            .onClick(() => this.deleteGanttTag(containerEl, index))
-        );
+            .onClick(() => this.deleteGanttTag(containerEl, index));
+          button.buttonEl.addClass("vg-btn-danger-text");
+        });
     });
 
     new Setting(containerEl)
@@ -741,12 +741,12 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
             .setDisabled(index === sources.length - 1)
             .onClick(() => this.moveDailyTodoSource(containerEl, index, 1))
         )
-        .addButton((button) =>
+        .addButton((button) => {
           button
             .setButtonText("削除")
-            .setWarning()
-            .onClick(() => this.deleteDailyTodoSource(containerEl, index))
-        );
+            .onClick(() => this.deleteDailyTodoSource(containerEl, index));
+          button.buttonEl.addClass("vg-btn-danger-text");
+        });
     });
 
     new Setting(containerEl)

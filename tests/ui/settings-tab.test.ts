@@ -94,6 +94,12 @@ const {
     tooltip = "";
     disabled = false;
     handler: (() => unknown) | null = null;
+    classes: string[] = [];
+    buttonEl = {
+      addClass: (cls: string): void => {
+        this.classes.push(cls);
+      },
+    };
 
     setIcon(icon: string): this {
       this.icon = icon;
@@ -498,7 +504,8 @@ describe("TaskWorkbenchSettingTab", () => {
       "下へ移動",
       "",
     ]);
-    expect(rows[0].buttons[2].warning).toBe(true);
+    expect(rows[0].buttons[2].warning).toBe(false);
+    expect(rows[0].buttons[2].classes).toContain("vg-btn-danger-text");
     expect(rows[0].buttons[0].disabled).toBe(true);
     expect(rows[1].texts.map((text) => text.value)).toEqual([
       "会議",
