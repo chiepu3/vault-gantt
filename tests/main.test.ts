@@ -1368,8 +1368,10 @@ describe("TaskWorkbenchPlugin", () => {
       expect(cells[4].textContent).toBe("");
       expect(row.classList.contains("twb-overdue-row")).toBe(false);
       expect(row.classList.contains("twb-due-soon-row")).toBe(false);
-      // col6 タグ: tags are joined with commas and no added spaces.
-      expect(cells[5].textContent).toBe("urgent,backend");
+      // col6 タグ: one chip per tag.
+      expect(
+        byClass(cells[5], "vg-chip").map((c: { textContent: string }) => c.textContent)
+      ).toEqual(["urgent", "backend"]);
       // col7 開く: button.
       expect(byTag(cells[6], "button")[0].textContent).toBe("開く");
     });

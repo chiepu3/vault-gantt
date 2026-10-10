@@ -138,12 +138,85 @@ function rulesFor(selector: string): CssRule[] {
   return getRules().filter((r) => r.selectors.includes(selector));
 }
 
+/**
+ * Design tokens defined on `body` (--vg-*) mapped to the value they resolve to
+ * with Obsidian's default variables. declsFor() substitutes these so value
+ * assertions keep checking the effective value (e.g. 8px) rather than the
+ * token name. The key set must equal the token block (see "design tokens").
+ */
+const VG_TOKEN_REFERENCE: Readonly<Record<string, string>> = {
+  "--vg-space-0": "2px",
+  "--vg-space-1": "4px",
+  "--vg-space-2": "6px",
+  "--vg-space-3": "8px",
+  "--vg-space-4": "12px",
+  "--vg-space-5": "16px",
+  "--vg-space-6": "24px",
+  "--vg-radius-s": "4px",
+  "--vg-radius-m": "8px",
+  "--vg-radius-l": "12px",
+  "--vg-radius-pill": "999px",
+  "--vg-border-width": "1px",
+  "--vg-border-color": "var(--background-modifier-border)",
+  "--vg-border-color-subtle":
+    "color-mix(in srgb, var(--background-modifier-border) 60%, transparent)",
+  "--vg-border-color-strong": "var(--background-modifier-border-hover)",
+  "--vg-border": "1px solid var(--background-modifier-border)",
+  "--vg-border-subtle":
+    "1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent)",
+  "--vg-focus-ring": "2px solid var(--interactive-accent)",
+  "--vg-shadow-flat": "0 1px 2px var(--background-modifier-box-shadow)",
+  "--vg-shadow-raised": "0 2px 6px var(--background-modifier-box-shadow)",
+  "--vg-shadow-popover": "var(--shadow-s)",
+  "--vg-shadow-modal": "var(--shadow-l)",
+  "--vg-font-micro": "10px",
+  "--vg-font-xs": "11px",
+  "--vg-font-s": "12px",
+  "--vg-font-m": "var(--font-ui-small)",
+  "--vg-font-l": "var(--font-ui-medium)",
+  "--vg-weight-normal": "400",
+  "--vg-weight-medium": "500",
+  "--vg-weight-strong": "600",
+  "--vg-leading-tight": "1.3",
+  "--vg-leading-normal": "1.5",
+  "--vg-icon-s": "16px",
+  "--vg-alpha-tint": "0.12",
+  "--vg-alpha-tint-strong": "0.18",
+  "--vg-alpha-border": "0.4",
+  "--vg-tint-hover": "var(--background-modifier-hover)",
+  "--vg-tint-pressed": "var(--background-modifier-active-hover)",
+  "--vg-tint-selected": "hsla(var(--interactive-accent-hsl), 0.15)",
+  "--vg-tint-danger": "rgba(var(--color-red-rgb), 0.12)",
+  "--vg-tint-warning": "rgba(var(--color-yellow-rgb), 0.12)",
+  "--vg-tint-success": "rgba(var(--color-green-rgb), 0.18)",
+  "--vg-tint-info": "rgba(var(--color-blue-rgb), 0.18)",
+  "--vg-tint-weekend": "color-mix(in srgb, var(--text-muted) 6%, transparent)",
+  "--vg-border-danger": "rgba(var(--color-red-rgb), 0.4)",
+  "--vg-color-danger": "var(--text-error)",
+  "--vg-color-warning": "var(--text-warning)",
+  "--vg-color-success": "var(--text-success)",
+  "--vg-color-info": "var(--color-blue)",
+  "--vg-color-muted": "var(--text-muted)",
+  "--vg-color-faint": "var(--text-faint)",
+  "--vg-priority-auto": "var(--color-blue)",
+  "--vg-priority-manual": "var(--color-yellow)",
+  "--vg-z-overlay": "20",
+};
+
+/** Replace var(--vg-*) references with their reference value. */
+function resolveVgTokens(value: string): string {
+  return value.replace(/var\((--vg-[a-z0-9-]+)\)/g, (whole, name: string) => {
+    const resolved = VG_TOKEN_REFERENCE[name];
+    return resolved === undefined ? whole : resolveVgTokens(resolved);
+  });
+}
+
 /** Union of declarations across all rules matching the selector (last wins). */
 function declsFor(selector: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const rule of rulesFor(selector)) {
     for (const decl of rule.decls) {
-      map.set(decl.prop, decl.value);
+      map.set(decl.prop, resolveVgTokens(decl.value));
     }
   }
   return map;
@@ -275,8 +348,7 @@ describe("part 1 — file rules and prohibitions", () => {
   });
 
   it("uses no unapproved hardcoded colors in declaration values", () => {
-    // Scan CSS named colors while allowing the one intentional hardcoded
-    // color (#4da3ff). Mask variable interiors before scanning to avoid false positives
+    // Scan CSS named colors; no hardcoded color is approved. Mask variable interiors before scanning to avoid false positives
     // from names such as --color-red-rgb.
     const COLOR_KEYWORDS = new Set(
       (
@@ -340,33 +412,11 @@ describe("part 1 — file rules and prohibitions", () => {
     for (const rule of getRules()) {
       for (const decl of rule.decls) {
         const where = `${rule.selectors.join(", ")} { ${decl.prop}: ${decl.value} }`;
-        const isAllowedPriorityColor =
-          decl.prop === "color" &&
-          ((rule.selectors.includes(".task-workbench-priority-star.priority-auto") &&
-            decl.value === "#4da3ff") ||
-            (rule.selectors.includes(".task-workbench-priority-readonly.priority-auto") &&
-              decl.value === "#4da3ff") ||
-            (rule.selectors.includes(".task-workbench-priority-star.priority-manual") &&
-              decl.value === "var(--color-yellow)") ||
-            (rule.selectors.includes(".task-workbench-priority-readonly.priority-manual") &&
-              decl.value === "var(--color-yellow)"));
+        // Shadows use --vg-shadow-* (theme-following); no rgba(0,0,0,..) literal is allowed.
+        const isAllowedShadowLiteral = false;
 
-        // Allow the known black-with-alpha shadows used for semantic depth,
-        // regardless of light or dark theme.
-        const isAllowedShadowLiteral =
-          decl.prop === "box-shadow" &&
-          ((rule.selectors.includes(".task-gantt-bar") &&
-            decl.value === "0 1px 4px rgba(0, 0, 0, 0.18)") ||
-            (rule.selectors.includes(".task-gantt-rich-popover") &&
-              decl.value === "0 14px 38px rgba(0, 0, 0, 0.28)") ||
-            (rule.selectors.includes(".task-gantt-workload-popover") &&
-              decl.value === "0 10px 26px rgba(0, 0, 0, 0.28)") ||
-
-            (rule.selectors.includes(".task-gantt-external-label") &&
-              decl.value === "0 1px 4px rgba(0, 0, 0, 0.18)"));
-
-        // (a) #hex literals, except the two deliberate priority colors.
-        if (hexRe.test(decl.value) && !isAllowedPriorityColor) {
+        // (a) #hex literals.
+        if (hexRe.test(decl.value)) {
           violations.push(`hex color: ${where}`);
         }
         // (b) color functions whose first argument is not var(--...).
@@ -735,12 +785,12 @@ describe("part 3 — Workbench readability", () => {
     expectDecl(
       ".task-workbench-priority-star.priority-auto",
       "color",
-      "#4da3ff"
+      "var(--color-blue)"
     );
     expectDecl(
       ".task-workbench-priority-readonly.priority-auto",
       "color",
-      "#4da3ff"
+      "var(--color-blue)"
     );
   });
 
@@ -847,7 +897,7 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(
       ".task-gantt-day-cell",
       "border-right",
-      "1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent)"
+      "1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent)"
     );
   });
 
@@ -975,13 +1025,13 @@ describe("part 4 — Gantt structure", () => {
     ]) {
       expectDecl(selector, "position", "absolute");
       expectDecl(selector, "white-space", "nowrap");
-      expectDecl(selector, "font-weight", "700");
+      expectDecl(selector, "font-weight", "600");
       expectDecl(selector, "pointer-events", "none");
     }
     expectDecl(".task-gantt-workload-day-label", "position", "absolute");
     expectDecl(".task-gantt-workload-day-label", "text-align", "center");
-    expectDecl(".task-gantt-workload-day-label", "font-size", "9px");
-    expectDecl(".task-gantt-workload-day-label", "font-weight", "700");
+    expectDecl(".task-gantt-workload-day-label", "font-size", "10px");
+    expectDecl(".task-gantt-workload-day-label", "font-weight", "600");
     expectDecl(".task-gantt-workload-day-label", "pointer-events", "none");
     expectDecl(".task-gantt-workload-day-label", "z-index", "2");
     expectDecl(".task-gantt-workload-day-label.is-dual", "display", "flex");
@@ -1110,13 +1160,16 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(".task-gantt-bar.is-bulk-move-follower", "opacity", "0.72");
   });
 
-  it("bar tag badge uses a colored border chip and muted completion opacity", () => {
-    expectDecl(".task-gantt-bar-tag-badge", "border", "1px solid currentColor");
+  it("bar tag badge is a shared tag chip and muted completion opacity", () => {
+    // The shared .vg-chip.is-tag supplies the pill, currentColor border and an
+    // opaque neutral backdrop (not the bar's own accent background), keeping
+    // the tag colour legible regardless of the tag's colour.
+    expectDecl(".vg-chip", "border", "1px solid var(--background-modifier-border)");
+    expectDecl(".vg-chip", "border-radius", "999px");
+    expectDecl(".vg-chip", "background", "var(--background-primary)");
+    expectDecl(".vg-chip.is-tag", "border-color", "currentColor");
+    expectDecl(".vg-chip.is-tag", "color", "var(--vg-chip-color, var(--text-muted))");
     expectDecl(".task-gantt-bar-tag-badge", "pointer-events", "none");
-    // An opaque neutral backdrop (not the bar's own accent background) keeps
-    // the tag's currentColor text/border legible regardless of the tag's
-
-    expectDecl(".task-gantt-bar-tag-badge", "background", "var(--background-primary)");
     expectDecl(".task-gantt-bar.has-tag-badge", "display", "flex");
     expectDecl(".task-gantt-bar.is-completed .task-gantt-bar-tag-badge", "opacity", ".86");
     expectDecl(".task-gantt-bar.is-tag-colored-completed", "opacity", ".48");
@@ -1133,17 +1186,17 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(".task-gantt-deadline-marker", "z-index", "2");
     expectDecl(".task-gantt-deadline-marker", "display", "inline-flex");
     expectDecl(".task-gantt-deadline-marker", "align-items", "center");
-    expectDecl(".task-gantt-deadline-marker", "padding", "1px 5px");
+    expectDecl(".task-gantt-deadline-marker", "padding", "1px 6px");
     expectDecl(
       ".task-gantt-deadline-marker",
       "border",
-      "1px solid rgba(var(--color-red-rgb), 0.42)"
+      "1px solid rgba(var(--color-red-rgb), 0.4)"
     );
     expectDecl(".task-gantt-deadline-marker", "border-radius", "999px");
     expectDecl(
       ".task-gantt-deadline-marker",
       "background",
-      "rgba(var(--color-red-rgb), 0.14)"
+      "rgba(var(--color-red-rgb), 0.12)"
     );
     expectDecl(".task-gantt-deadline-marker", "color", "var(--text-error)");
     expectDecl(".task-gantt-deadline-marker", "pointer-events", "auto");
@@ -1357,33 +1410,39 @@ describe("part 5 — Gantt readability", () => {
     expectDecl(".task-gantt-parent-title", "font-weight", "600");
   });
 
-  it("tag chips: flex-wrap container + chip border/padding (no color)", () => {
+  it("tag chips: flex-wrap container; the chip colour comes only from --vg-chip-color", () => {
     expectDecl(".task-gantt-parent-tags", "display", "flex");
     expectDecl(".task-gantt-parent-tags", "flex-wrap");
-    expectDecl(".task-gantt-parent-tag", "border-width");
-    expectDecl(".task-gantt-parent-tag", "border-style");
-    expectDecl(".task-gantt-parent-tag", "border-radius");
-    expectDecl(".task-gantt-parent-tag", "padding");
+    // Shape/border come from the shared .vg-chip; the tag colour is a variable
+    // set by the renderer, never a literal colour on the parent-tag rule.
+    expectDecl(".vg-chip", "border");
+    expectDecl(".vg-chip", "border-radius", "999px");
+    expectDecl(".vg-chip", "padding", "0 6px");
+    expectDecl(".vg-chip", "height", "18px");
 
     const chip = declsFor(".task-gantt-parent-tag");
     expect(chip.has("color")).toBe(false);
     expect(chip.has("border-color")).toBe(false);
   });
 
+  it("parent-left colour band follows --vg-tag-accent", () => {
+    expectDecl(".task-gantt-parent-left.has-tag-accent", "border-left", "4px solid var(--vg-tag-accent)");
+  });
+
   it("external-label: display:flex + height:22px + nowrap + overflow:hidden", () => {
     expectDecl(".task-gantt-external-label", "display", "flex");
     expectDecl(".task-gantt-external-label", "height", "22px");
-    expectDecl(".task-gantt-external-label", "padding", "0 0 0 7px");
+    expectDecl(".task-gantt-external-label", "padding", "0 4px 0 7px");
     expectDecl(".task-gantt-external-label", "border", "1px solid transparent");
-    expectDecl(".task-gantt-external-label", "border-radius", "5px");
+    expectDecl(".task-gantt-external-label", "border-radius", "8px");
     expectDecl(".task-gantt-external-label", "background", "var(--background-primary)");
 
     expectDecl(
       ".task-gantt-external-label",
       "box-shadow",
-      "0 1px 4px rgba(0, 0, 0, 0.18)"
+      "0 1px 2px var(--background-modifier-box-shadow)"
     );
-    expectDecl(".task-gantt-external-label", "font-weight", "700");
+    expectDecl(".task-gantt-external-label", "font-weight", "600");
 
     expectDecl(".task-gantt-external-label", "white-space", "nowrap");
     expectDecl(".task-gantt-external-label", "overflow", "hidden");
@@ -1395,10 +1454,11 @@ describe("part 5 — Gantt readability", () => {
     );
   });
 
-  it("label-text ellipsis + label-badge currentColor border", () => {
+  it("label-text ellipsis + label-badge is a tag chip", () => {
     expectDecl(".task-gantt-label-text", "overflow", "hidden");
     expectDecl(".task-gantt-label-text", "text-overflow", "ellipsis");
-    expectDecl(".task-gantt-label-badge", "border", "1px solid currentColor");
+    expectDecl(".vg-chip.is-tag", "border-color", "currentColor");
+    expectDecl(".task-gantt-label-badge", "flex", "0 0 auto");
   });
 
   it("event-label has padding and muted color", () => {
@@ -1412,19 +1472,20 @@ describe("part 5 — Gantt readability", () => {
     expectDecl(".task-gantt-empty", "color", "var(--text-muted)");
   });
 
-  it("floating-month bold; zoom-label min-width+centered; zoom buttons pointer", () => {
+  it("floating-month bold; zoom-label min-width+centered", () => {
     expectDecl(".task-gantt-floating-month", "font-weight", "600");
     expectDecl(".task-gantt-floating-month", "white-space", "nowrap");
     expectDecl(".task-gantt-floating-month", "flex-shrink", "0");
     expectDecl(".task-gantt-zoom-label", "min-width");
     expectDecl(".task-gantt-zoom-label", "text-align", "center");
-    expectDecl(".task-gantt-zoom-out", "cursor", "pointer");
-    expectDecl(".task-gantt-zoom-in", "cursor", "pointer");
   });
 
-  it("tag-filter-menu: fixed, z-index:6, secondary bg, overflow:auto", () => {
+  it("tag-filter-menu: fixed, overlay z-index:20, secondary bg, overflow:auto", () => {
     expectDecl(".task-gantt-tag-filter-menu", "position", "fixed");
-    expectDecl(".task-gantt-tag-filter-menu", "z-index", "6");
+    expectDecl(".task-gantt-tag-filter-menu", "z-index", "20");
+    expectDecl(".task-gantt-tag-filter-menu", "box-shadow", "var(--shadow-s)");
+    expectDecl(".task-gantt-tag-filter-footer", "display", "flex");
+    expectDecl(".task-gantt-tag-filter-footer", "justify-content", "flex-end");
     expectDecl(".task-gantt-tag-filter-menu", "background", "var(--background-secondary)");
     expectDecl(".task-gantt-tag-filter-menu", "overflow", "auto");
   });
@@ -1509,17 +1570,18 @@ describe("part 6 — Modal minimum", () => {
     expect(parseFloat(metaSize ?? "10")).toBeLessThan(1);
   });
 
-  it("has()-scoped is-selected background + search input width", () => {
+  it("selected list row background + has()-scoped search input width", () => {
     expectDecl(
-      ".modal:has(.task-workbench-finder-title) .is-selected",
+      ".vg-list-row.is-selected",
       "background",
       "hsla(var(--interactive-accent-hsl), 0.15)"
     );
     expectDecl(
-      '.modal:has(.task-workbench-finder-title) input[type="search"]',
+      '.modal:has(.vg-finder-list) input[type="search"]',
       "width",
       "100%"
     );
+    expectDecl(".vg-modal-list.vg-finder-list", "max-height", "60vh");
   });
 
   it("DailyTodoModal: desc/list/row/text/source/buttons rules", () => {
@@ -1558,15 +1620,17 @@ describe("part 7 — z-index registry", () => {
       [".task-gantt-daily-row", 4],
       [".task-gantt-fixed-left", 5],
       [".task-gantt-header", 5],
-      [".task-gantt-tag-filter-menu", 6],
+      [".task-gantt-bar.is-bulk-move-follower", 7],
+      [".task-gantt-bar.is-bulk-move-anchor", 8],
       [".task-gantt-drag-tooltip", 10],
+      [".task-gantt-tag-filter-menu", 20],
     ];
     const actual = new Map<string, number>();
     for (const [selector, expected] of REGISTRY) {
       const values: string[] = [];
       for (const rule of rulesFor(selector)) {
         for (const decl of rule.decls) {
-          if (decl.prop === "z-index") values.push(decl.value);
+          if (decl.prop === "z-index") values.push(resolveVgTokens(decl.value));
         }
       }
       expect(values.length, `${selector} must declare z-index`).toBeGreaterThan(0);
@@ -1576,15 +1640,18 @@ describe("part 7 — z-index registry", () => {
       actual.set(selector, Number(values[0]));
     }
     // Strict chain: bg < label < bar/marker/deadline < parent-left/add-cell
-    // < fixed rows < fixed-left/header < menu < tooltip.
+    // < fixed rows < fixed-left/header < bulk-move follower < anchor
+    // < tooltip < overlay menu.
     const chain: ReadonlyArray<readonly [string, string]> = [
       [".task-gantt-bg", ".task-gantt-external-label"],
       [".task-gantt-external-label", ".task-gantt-bar"],
       [".task-gantt-bar", ".task-gantt-parent-left"],
       [".task-gantt-parent-left", ".task-gantt-workload-row"],
       [".task-gantt-workload-row", ".task-gantt-fixed-left"],
-      [".task-gantt-header", ".task-gantt-tag-filter-menu"],
-      [".task-gantt-tag-filter-menu", ".task-gantt-drag-tooltip"],
+      [".task-gantt-header", ".task-gantt-bar.is-bulk-move-follower"],
+      [".task-gantt-bar.is-bulk-move-follower", ".task-gantt-bar.is-bulk-move-anchor"],
+      [".task-gantt-bar.is-bulk-move-anchor", ".task-gantt-drag-tooltip"],
+      [".task-gantt-drag-tooltip", ".task-gantt-tag-filter-menu"],
     ];
     for (const [lower, higher] of chain) {
       const low = actual.get(lower);
@@ -1609,5 +1676,42 @@ describe("part 7 — z-index registry", () => {
     // excluded from the shared chain.
     expectDecl(".task-workbench-table thead th", "z-index", "1");
     expectDecl(".task-gantt-header-left", "z-index", "1");
+  });
+});
+
+describe("design tokens (--vg-*)", () => {
+  const bodyRules = getRules().filter((r) => r.selectors.includes("body"));
+  const tokenDecls = bodyRules.flatMap((r) => r.decls);
+  const tokenNames = tokenDecls.map((d) => d.prop);
+
+  it("are defined once on body and hold only theme-following values", () => {
+    expect(bodyRules.length, "exactly one body rule").toBe(1);
+    expect(tokenDecls.length).toBeGreaterThan(0);
+    // Allowed literals: pill radius, alpha numbers, the focus ring width, z-index.
+    const allowedLiteral = /^(999px|0?\.\d+|2px solid var\(--interactive-accent\)|\d+)$/;
+    for (const decl of tokenDecls) {
+      expect(decl.prop, `${decl.prop} must be a --vg-* property`).toMatch(/^--vg-/);
+      const value = decl.value;
+      const ok =
+        allowedLiteral.test(value) ||
+        value.includes("var(--") ||
+        /^calc\(var\(--/.test(value);
+      expect(ok, `${decl.prop}: ${value} must reference an Obsidian/--vg variable`).toBe(true);
+      expect(value, `${decl.prop} must not hardcode a color`).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    }
+  });
+
+  it("every var(--vg-*) reference is defined in the token block", () => {
+    // Properties the renderer sets inline per element (not theme tokens).
+    const RUNTIME_VARS = ["--vg-chip-color", "--vg-tag-accent", "--vg-bar-text"];
+    const defined = new Set([...tokenNames, ...RUNTIME_VARS]);
+    const used = new Set<string>();
+    for (const m of noComments.matchAll(/var\((--vg-[a-z0-9-]+)/g)) used.add(m[1]);
+    const missing = [...used].filter((name) => !defined.has(name));
+    expect(missing).toEqual([]);
+  });
+
+  it("VG_TOKEN_REFERENCE has exactly the tokens of the block", () => {
+    expect([...Object.keys(VG_TOKEN_REFERENCE)].sort()).toEqual([...tokenNames].sort());
   });
 });

@@ -277,7 +277,7 @@ describe("GanttParentPickerModal", () => {
     expect(row.children[1].className).toBe("task-workbench-finder-meta");
     expect(row.children[1].textContent).toBe("進行中 • projects/alpha.md");
     // first row is selected initially
-    expect(list.children[0].className).toBe("is-selected");
+    expect(list.children[0].className).toBe("vg-list-row is-selected");
   });
 
   it("matches an item when its name, current status, or file path contains the query", () => {
@@ -362,7 +362,12 @@ describe("GanttParentPickerModal", () => {
 
     expect(contentEl.children).toHaveLength(2);
     expect(contentEl.children[0].type).toBe("search");
-    expect(contentEl.children[1].children).toHaveLength(0);
+    // no rows, only the empty-state message
+    expect(contentEl.children[1].children).toHaveLength(1);
+    expect(contentEl.children[1].children[0].className).toBe("vg-empty");
+    expect(contentEl.children[1].children[0].textContent).toBe(
+      "該当するタスクがありません"
+    );
 
     dispatch(contentEl.children[0], "keydown", { key: "Enter" });
     await flush();
@@ -442,7 +447,7 @@ describe("DailyTodoModal", () => {
     );
 
     const list = byClass(contentEl, "task-workbench-daily-todo-list")[0];
-    expect(list.style.overflowY).toBe("auto");
+    expect(list.classList.contains("vg-modal-list")).toBe(true);
     expect(list.children).toHaveLength(2);
 
     expect(buttons(contentEl).map((b) => b.textContent)).toEqual([

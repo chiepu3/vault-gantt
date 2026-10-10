@@ -1,4 +1,4 @@
-import { ItemView, moment } from "obsidian";
+import { ItemView, moment, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
 import type { Logger } from "../core/logger";
@@ -22,6 +22,7 @@ import type {
   WorkbenchDisplayRow,
 } from "../app/workbench-display";
 import { TaskFinderModal } from "./task-finder-modal";
+import { appendTagChips } from "./tag-chip";
 
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
@@ -479,15 +480,25 @@ export class TaskWorkbenchView extends ItemView {
     );
 
     right.appendChild(
-      this.buildButton("⟲ 元に戻す", "task-workbench-undo", () => {
-        void this.host.undoLastAction();
-      })
+      this.buildIconButton(
+        "undo-2",
+        "元に戻す",
+        ["task-workbench-undo"],
+        () => {
+          void this.host.undoLastAction();
+        }
+      )
     );
 
     right.appendChild(
-      this.buildButton("⟳ やり直す", "task-workbench-redo", () => {
-        void this.host.redoLastAction();
-      })
+      this.buildIconButton(
+        "redo-2",
+        "やり直す",
+        ["task-workbench-redo"],
+        () => {
+          void this.host.redoLastAction();
+        }
+      )
     );
 
 
@@ -1066,9 +1077,9 @@ export class TaskWorkbenchView extends ItemView {
       td.appendChild(this.buildTagsEditor(row));
       return td;
     }
-    // comma-separated display.
+    // one chip per tag.
     // (row.tags || []) guards undefined/null at runtime.
-    td.textContent = (row.tags || []).join(", ");
+    appendTagChips(td, row.tags || [], this.host.settings);
     // dblclick on the cell starts inline editing.
     td.addEventListener("dblclick", () => {
       this.startEditing(row, "tags");
@@ -1143,6 +1154,7 @@ export class TaskWorkbenchView extends ItemView {
     td.classList.add("tiny-col");
     const button = document.createElement("button");
     button.textContent = "開";
+    button.classList.add("vg-btn-sm");
     button.addEventListener("click", (evt) => {
       // open the task file, click propagation stopped.
       evt.stopPropagation();
@@ -1166,6 +1178,7 @@ export class TaskWorkbenchView extends ItemView {
     td.classList.add("tiny-col");
     const button = document.createElement("button");
     button.textContent = "+";
+    button.classList.add("vg-btn-sm");
     button.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.addSubtaskForRow(row);
@@ -1598,6 +1611,22 @@ export class TaskWorkbenchView extends ItemView {
     label.appendChild(checkbox);
     label.appendChild(document.createTextNode(labelText));
     return label;
+  }
+
+  /** Icon-only toolbar button: Lucide icon with a Japanese label for assistive tech and tooltip. */
+  private buildIconButton(
+    icon: string,
+    label: string,
+    cssClasses: string[],
+    onClick: () => void
+  ): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.classList.add(...cssClasses, "clickable-icon");
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    setIcon(button, icon);
+    button.addEventListener("click", onClick);
+    return button;
   }
 
   private buildButton(
