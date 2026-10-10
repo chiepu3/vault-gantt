@@ -1,5 +1,7 @@
 # Vault Gantt Windows installer / updater
 
+利用者向けの導入手順は [docs/INSTALL.md](../../docs/INSTALL.md) を参照してください。このREADMEは開発者向けです。
+
 このフォルダーには、更新元が異なる2つのWindows用ツールがあります。
 
 - `Install-VaultGantt.ps1`: 公開branchを一覧から選び、そのcommitを取得してビルドした後、指定フォルダーへ配置します。
