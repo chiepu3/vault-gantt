@@ -587,52 +587,44 @@ Content`;
       expect(result?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
-    it("parseTaskFile loads inconsistent statusLabel/completed without error", () => {
-      const content = `---
-type: task
-displayName: "Test"
-statusLabel: done
-completed: false
----
-Content`;
-      const result = parseTaskFile(
-        { path: "test/file.md" },
-        content,
-        settings
-      );
-      expect(result?.statusLabel).toBe("done");
-      expect(result?.completed).toBe(false);
-    });
-
-    it("parseTaskFile loads file with inconsistent status/completed during load", () => {
-      const content = `---
-type: task
-displayName: "Test"
-statusLabel: active
-completed: true
----
-Content`;
-      // Load should NOT throw - inconsistency is only checked during patch update
-      const result = parseTaskFile(
-        { path: "test/file.md" },
-        content,
-        settings
-      );
-      expect(result).not.toBeNull();
-      expect(result?.statusLabel).toBe("active");
-      expect(result?.completed).toBe(true);
-    });
-
-    it("parseTaskFile completed field is a boolean, not a string", () => {
-      const content = `---
-type: task
-displayName: "Test"
-completed: true
----
-Content`;
+    it.each([
+      ["done", "false", "done", true],
+      ["done", undefined, "done", true],
+      ["active", "true", "active", false],
+      ["in_progress", "true", "in_progress", false],
+      ["waiting", "true", "waiting", false],
+      ["hold", "true", "hold", false],
+      [undefined, "true", "done", true],
+      [undefined, "false", "active", false],
+      [undefined, undefined, "active", false],
+      ["", "true", "done", true],
+    ])("uses status %s and legacy completion %s for parent and subtask", (
+      status, completed, expectedStatus, expectedCompleted
+    ) => {
+      const fields = (prefix: string): string[] => [
+        ...(status === undefined ? [] : [`${prefix}statusLabel: ${status}`]),
+        ...(completed === undefined ? [] : [`${prefix}completed: ${completed}`]),
+      ];
+      const content = [
+        "---", "type: task", "subtaskOrder: [s1]",
+        ...fields(""), ...fields("subtask__s1__"),
+        "---", "# Test", "## Subtasks", "### Sub",
+      ].join("\n");
       const result = parseTaskFile({ path: "test/file.md" }, content, settings);
-      expect(typeof result?.completed).toBe("boolean");
-      expect(result?.completed).toBe(true);
+      expect(result).not.toBeNull();
+      const subtask = result?.subtasks?.get("s1");
+      expect(subtask).toBeDefined();
+      for (const row of [result, subtask]) {
+        expect(row?.statusLabel).toBe(expectedStatus);
+        expect(row?.completed).toBe(expectedCompleted);
+      }
+      // The normal explicit save writes the effective values back to the note.
+      const saved = buildFullNote(result!, result!.subtasks, settings);
+      const frontmatter = parseFrontmatter(saved);
+      for (const prefix of ["", "subtask__s1__"]) {
+        expect(frontmatter[`${prefix}statusLabel`]).toBe(expectedStatus);
+        expect(frontmatter[`${prefix}completed`]).toBe(String(expectedCompleted));
+      }
     });
 
     it("parseTaskFile generates a new key when subtaskOrder[i] is missing", () => {

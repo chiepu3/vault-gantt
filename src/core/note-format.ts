@@ -325,6 +325,14 @@ export function splitSubtasksSection(body: string): SubtaskSectionPart[] {
 // PARSING: Main Task File Parser
 
 
+// Explicit status wins; legacy notes without a status inherit their completion flag.
+function parseTaskStatus(status: unknown, completed: unknown): StatusLabel {
+  const normalized = normalizeStatusValue(status);
+  return (normalized || (parseSimpleValue(String(completed || "false")) === true
+    ? "done"
+    : "active")) as StatusLabel;
+}
+
 /**
  *
  * Parse a task file into a TaskRow (or null if type !== "task").
@@ -377,7 +385,7 @@ export function parseTaskFile(
   const title = displayName; // Derived from displayName
 
   // Extract basic fields
-  const statusLabel = normalizeStatusValue(fm["statusLabel"] || "active") as StatusLabel;
+  const statusLabel = parseTaskStatus(fm["statusLabel"], fm["completed"]);
   const createdAt = String(fm["createdAt"] || todayStr()).trim();
   const updatedAt = String(fm["updatedAt"] || todayStr()).trim();
   const dueDate = String(fm["dueDate"] || "").trim() || undefined;
@@ -386,7 +394,7 @@ export function parseTaskFile(
   const priorityMode = String(fm["priorityMode"] || "auto").trim() === "manual"
     ? "manual"
     : "auto";
-  const completed = parseSimpleValue(String(fm["completed"] || "false")) === true;
+  const completed = statusLabel === "done";
   const currentStatus = extractSection(content, "Current Status", 2);
   const notes = extractSection(content, "Notes", 2);
 
@@ -464,9 +472,10 @@ export function parseTaskFile(
 
         // Build subtask row
         const subtaskId = `${file.path}::${subtaskKey}`;
-        const subtaskStatusLabel = normalizeStatusValue(
-          fm[`subtask__${subtaskKey}__statusLabel`] || "active"
-        ) as StatusLabel;
+        const subtaskStatusLabel = parseTaskStatus(
+          fm[`subtask__${subtaskKey}__statusLabel`],
+          fm[`subtask__${subtaskKey}__completed`]
+        );
         const subtaskCreatedAt = String(
           fm[`subtask__${subtaskKey}__createdAt`] || todayStr()
         ).trim();
@@ -483,9 +492,7 @@ export function parseTaskFile(
           "manual"
             ? "manual"
             : "auto";
-        const subtaskCompleted =
-          parseSimpleValue(String(fm[`subtask__${subtaskKey}__completed`] || "false")) ===
-          true;
+        const subtaskCompleted = subtaskStatusLabel === "done";
         const subtaskCurrentStatus = extractSection(part.body, "Current Status", 4);
         const subtaskNotes = extractSection(part.body, "Notes", 4);
 
