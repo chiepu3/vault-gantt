@@ -162,14 +162,14 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.replaceChildren();
 
-    new Setting(containerEl).setName("Task Workbench 設定").setHeading();
+    new Setting(containerEl).setName("Task Workbench").setHeading();
 
     // section 1, 基本設定
     new Setting(containerEl).setName("基本設定").setHeading();
 
 
     new Setting(containerEl)
-      .setName("Task folder")
+      .setName("タスクフォルダ")
       .setDesc("例: tasks")
       .addText((text) =>
         text
@@ -183,7 +183,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
 
     new Setting(containerEl)
-      .setName("Filename uses date prefix")
+      .setName("ファイル名に日付を付ける")
       .setDesc("tasks/yyyy/mm/yyyy-mm-dd タイトル.md のように作成")
       .addToggle((toggle) =>
         toggle
@@ -196,7 +196,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
 
     new Setting(containerEl)
-      .setName("Hide completed by default")
+      .setName("完了を既定で隠す")
       .addToggle((toggle) =>
         toggle
           .setValue(this.hostPlugin.settings.hideCompletedByDefault !== false)
@@ -208,7 +208,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
 
     new Setting(containerEl)
-      .setName("Current Status rows")
+      .setName("現在の進捗の行数")
       .addText((text) => {
         text.inputEl.type = "number";
         return text
@@ -244,7 +244,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
     // section 2, Task Gantt 休日
-    new Setting(containerEl).setName("Task Gantt 休日").setHeading();
+    new Setting(containerEl).setName("休日").setHeading();
 
 
     new Setting(containerEl)
@@ -283,7 +283,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     // section 3, Task Gantt 機能の有効化
     new Setting(containerEl)
-      .setName("Task Gantt 機能の有効化")
+      .setName("機能の有効化")
       .setHeading();
 
     this.addImmediateToggle(
@@ -324,7 +324,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     );
 
     // section 4, Task Gantt タグ (display toggles only).
-    new Setting(containerEl).setName("Task Gantt タグ").setHeading();
+    new Setting(containerEl).setName("タグ").setHeading();
     this.addImmediateToggle(
       containerEl,
       "サブタスク上にタグ名を表示",
@@ -356,7 +356,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     // Configure the Daily ToDo sources. Visibility is controlled by the
     // feature toggle above; this list determines which sources are included.
-    new Setting(containerEl).setName("Task Gantt Daily ToDo").setHeading();
+    new Setting(containerEl).setName("Daily ToDo").setHeading();
     const dailyTodoSourceListContainer = containerEl.createDiv({
       cls: "task-workbench-daily-todo-source-list",
     });
@@ -364,11 +364,11 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
 
     // section 6, Task Gantt 外部同期
-    new Setting(containerEl).setName("Task Gantt 外部同期").setHeading();
+    new Setting(containerEl).setName("外部同期").setHeading();
 
 
     new Setting(containerEl)
-      .setName("Gantt server sync")
+      .setName("Gantt サーバー同期")
       .setDesc("オンにすると、設定したサーバーURLへ読み取り専用Gantt snapshotを定期同期します。")
       .addToggle((toggle) =>
         toggle
@@ -382,7 +382,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
 
     new Setting(containerEl)
-      .setName("Gantt server URL")
+      .setName("Gantt サーバー URL")
       .setDesc("例: http://localhost:8787 。/api/snapshot は自動で補います。")
       .addText((text) =>
         text
@@ -397,7 +397,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
 
     new Setting(containerEl)
-      .setName("Gantt sync interval minutes")
+      .setName("Gantt 同期間隔（分）")
       .setDesc("変更がない場合は送信を省略します。最小値は1です。")
       .addText((text) => {
         text.inputEl.type = "number";
@@ -420,12 +420,11 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     // intentionally fire-and-forget, so timer/manual sync can
     // overlap exactly as the existing Gantt sync path permits.
     new Setting(containerEl)
-      .setName("Gantt sync now")
+      .setName("今すぐ同期")
       .setDesc("現在のGantt snapshotをすぐにサーバーへ送信します。")
       .addButton((button) =>
         button
           .setButtonText("今すぐ同期")
-          .setCta()
           .onClick(() => {
             void this.hostPlugin.syncReadonlyGanttNow();
           })
@@ -487,11 +486,6 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       const swatch = row.controlEl.createSpan({
         cls: "task-workbench-gantt-tag-color-swatch",
       });
-      swatch.style.display = "inline-block";
-      swatch.style.width = "1em";
-      swatch.style.height = "1em";
-      swatch.style.border = "1px solid var(--background-modifier-border)";
-      swatch.style.marginRight = "0.5em";
 
 
       // Color edits must not rebuild the tag-list DOM subtree. The text
@@ -542,19 +536,22 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
         .addButton((button) =>
           button
-            .setButtonText("↑")
+            .setIcon("arrow-up")
+            .setTooltip("上へ移動")
             .setDisabled(index === 0)
             .onClick(() => this.moveGanttTag(containerEl, index, -1))
         )
         .addButton((button) =>
           button
-            .setButtonText("↓")
+            .setIcon("arrow-down")
+            .setTooltip("下へ移動")
             .setDisabled(index === definitions.length - 1)
             .onClick(() => this.moveGanttTag(containerEl, index, 1))
         )
         .addButton((button) =>
           button
             .setButtonText("削除")
+            .setWarning()
             .onClick(() => this.deleteGanttTag(containerEl, index))
         );
     });
@@ -732,19 +729,22 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
         )
         .addButton((button) =>
           button
-            .setButtonText("↑")
+            .setIcon("arrow-up")
+            .setTooltip("上へ移動")
             .setDisabled(index === 0)
             .onClick(() => this.moveDailyTodoSource(containerEl, index, -1))
         )
         .addButton((button) =>
           button
-            .setButtonText("↓")
+            .setIcon("arrow-down")
+            .setTooltip("下へ移動")
             .setDisabled(index === sources.length - 1)
             .onClick(() => this.moveDailyTodoSource(containerEl, index, 1))
         )
         .addButton((button) =>
           button
             .setButtonText("削除")
+            .setWarning()
             .onClick(() => this.deleteDailyTodoSource(containerEl, index))
         );
     });

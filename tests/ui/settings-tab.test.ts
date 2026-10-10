@@ -89,8 +89,26 @@ const {
   class FakeButton {
     text = "";
     cta = false;
+    warning = false;
+    icon = "";
+    tooltip = "";
     disabled = false;
     handler: (() => unknown) | null = null;
+
+    setIcon(icon: string): this {
+      this.icon = icon;
+      return this;
+    }
+
+    setTooltip(tooltip: string): this {
+      this.tooltip = tooltip;
+      return this;
+    }
+
+    setWarning(): this {
+      this.warning = true;
+      return this;
+    }
 
     setButtonText(text: string): this {
       this.text = text;
@@ -289,38 +307,38 @@ describe("TaskWorkbenchSettingTab", () => {
     tab.display();
 
     expect(RecordingSetting.all.map((setting) => setting.name)).toEqual([
-      "Task Workbench 設定",
+      "Task Workbench",
       "基本設定",
-      "Task folder",
-      "Filename uses date prefix",
-      "Hide completed by default",
-      "Current Status rows",
+      "タスクフォルダ",
+      "ファイル名に日付を付ける",
+      "完了を既定で隠す",
+      "現在の進捗の行数",
       "期限にもとづく優先度の自動設定",
-      "Task Gantt 休日",
+      "休日",
       "内閣府の祝日",
       "今年度の特別休暇",
-      "Task Gantt 機能の有効化",
+      "機能の有効化",
       "Daily ToDoを表示",
       "作業時間を表示",
       "その他 行を表示",
       "同期機能",
       "タグ機能",
       "Gantt差分描画を有効化",
-      "Task Gantt タグ",
+      "タグ",
       "サブタスク上にタグ名を表示",
       "親タスクのタグ名を子タスクにも表示",
       "親タスク列にタグ名を表示",
       "",
       "タグを追加",
-      "Task Gantt Daily ToDo",
+      "Daily ToDo",
       "デイリー",
       "デイリーミーティング",
       "ソース操作",
-      "Task Gantt 外部同期",
-      "Gantt server sync",
-      "Gantt server URL",
-      "Gantt sync interval minutes",
-      "Gantt sync now",
+      "外部同期",
+      "Gantt サーバー同期",
+      "Gantt サーバー URL",
+      "Gantt 同期間隔（分）",
+      "今すぐ同期",
     ]);
 
     const names = RecordingSetting.all.map((setting) => setting.name);
@@ -343,8 +361,8 @@ describe("TaskWorkbenchSettingTab", () => {
   it("changes representative controls on the live object and saves immediately", async () => {
     tab.display();
 
-    const folder = settingByName("Task folder").texts[0];
-    const filename = settingByName("Filename uses date prefix").toggles[0];
+    const folder = settingByName("タスクフォルダ").texts[0];
+    const filename = settingByName("ファイル名に日付を付ける").toggles[0];
     const feature = settingByName("Daily ToDoを表示").toggles[0];
 
     const folderSave = folder.handler!("project/tasks");
@@ -361,7 +379,7 @@ describe("TaskWorkbenchSettingTab", () => {
 
   it("trims folders, defaults empty input, and rejects exact .. segments", async () => {
     tab.display();
-    const folder = settingByName("Task folder").texts[0];
+    const folder = settingByName("タスクフォルダ").texts[0];
 
     await folder.handler!("  ../outside  ");
     expect(settings.taskFolder).toBe("tasks");
@@ -373,8 +391,8 @@ describe("TaskWorkbenchSettingTab", () => {
 
   it("preserves float values and applies the exact numeric fallbacks", async () => {
     tab.display();
-    const rows = settingByName("Current Status rows").texts[0];
-    const interval = settingByName("Gantt sync interval minutes").texts[0];
+    const rows = settingByName("現在の進捗の行数").texts[0];
+    const interval = settingByName("Gantt 同期間隔（分）").texts[0];
 
     await rows.handler!("");
     expect(settings.currentStatusRows).toBe(5);
@@ -470,11 +488,17 @@ describe("TaskWorkbenchSettingTab", () => {
       "Templates/daily.md",
     ]);
     expect(rows[0].toggles[0].value).toBe(true);
-    expect(rows[0].buttons.map((button) => button.text)).toEqual([
-      "↑",
-      "↓",
+    expect(rows[0].buttons.map((button) => button.icon || button.text)).toEqual([
+      "arrow-up",
+      "arrow-down",
       "削除",
     ]);
+    expect(rows[0].buttons.map((button) => button.tooltip)).toEqual([
+      "上へ移動",
+      "下へ移動",
+      "",
+    ]);
+    expect(rows[0].buttons[2].warning).toBe(true);
     expect(rows[0].buttons[0].disabled).toBe(true);
     expect(rows[1].texts.map((text) => text.value)).toEqual([
       "会議",
@@ -667,9 +691,9 @@ describe("TaskWorkbenchSettingTab", () => {
 
   it("saves sync fields, rearms the timer, and fires manual sync without awaiting", async () => {
     tab.display();
-    const enabled = settingByName("Gantt server sync").toggles[0];
-    const url = settingByName("Gantt server URL").texts[0];
-    const now = settingByName("Gantt sync now").buttons[0];
+    const enabled = settingByName("Gantt サーバー同期").toggles[0];
+    const url = settingByName("Gantt サーバー URL").texts[0];
+    const now = settingByName("今すぐ同期").buttons[0];
 
     enabled.handler!(true);
     url.handler!("  http://localhost:8787/anything?x=1#fragment  ");
@@ -710,8 +734,16 @@ describe("TaskWorkbenchSettingTab", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].texts.map((text) => text.value)).toEqual(["First", "#111111"]);
     expect(rows[1].texts.map((text) => text.value)).toEqual(["Second", ""]);
-    expect(rows[0].buttons.map((button) => button.text)).toEqual(["↑", "↓", "削除"]);
-    expect(rows[1].buttons.map((button) => button.text)).toEqual(["↑", "↓", "削除"]);
+    expect(rows[0].buttons.map((button) => button.icon || button.text)).toEqual([
+      "arrow-up",
+      "arrow-down",
+      "削除",
+    ]);
+    expect(rows[1].buttons.map((button) => button.icon || button.text)).toEqual([
+      "arrow-up",
+      "arrow-down",
+      "削除",
+    ]);
     expect(rows[0].buttons[0].disabled).toBe(true);
     expect(rows[1].buttons[1].disabled).toBe(true);
   });
