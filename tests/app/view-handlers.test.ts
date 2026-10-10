@@ -17,7 +17,7 @@ const ui: UiPort = {
   requestApproval: async () => { throw new Error("unused"); },
 };
 const ids: ViewRequestId[] = ["D08", "V01", "V02", "V03", "V04", "V05", "V06", "V07", "V08", "V09", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19"];
-function entriesValid(entries: ReturnType<typeof historyPlan>["entries"]) {
+function entriesValid(entries: Awaited<ReturnType<typeof historyPlan>>["entries"]) {
   for (const [index, entry] of entries.entries()) expect(() => previewEntrySchema.parse({ ...entry, actionId: `view-${index}` })).not.toThrow();
 }
 describe("view, history and diagnostics operation handlers", () => {
@@ -40,10 +40,10 @@ describe("view, history and diagnostics operation handlers", () => {
     const copy = structuredClone(f.parent); copy.subtasks!.get("review")!.displayName = "変更"; copy.subtasks!.get("review")!.title = "変更";
     const historyVault = { getFileByPath: (path: string) => f.vault.getFileByPath(path), read: f.vault.read.bind(f.vault), process: async (file: { path: string }, transform: (current: string) => string) => { await f.vault.modify(file, transform(await f.vault.read(file))); } } as unknown as Vault;
     const after = buildFullNote(copy, copy.subtasks); await f.vault.modify(file, after); f.historyManager.push({ label: "rename", files: [{ path: f.parent.id, before, after }] });
-    const undo = historyPlan("V20", {}, await f.service.contextPort.snapshot(), f.historyManager);
+    const undo = await historyPlan("V20", {}, await f.service.contextPort.snapshot(), f.historyManager);
     entriesValid(undo.entries); expect(undo.writes).toEqual([{ path: f.parent.id, before: after, after: before }]); expect(await f.vault.read(file)).toBe(after);
     await executeHistoryPlan(undo, f.historyManager, historyVault); expect(await f.vault.read(file)).toBe(before);
-    const redo = historyPlan("V21", {}, await f.service.contextPort.snapshot(), f.historyManager); entriesValid(redo.entries);
+    const redo = await historyPlan("V21", {}, await f.service.contextPort.snapshot(), f.historyManager); entriesValid(redo.entries);
     await executeHistoryPlan(redo, f.historyManager, historyVault); expect(await f.vault.read(file)).toBe(after);
     await expect(executeHistoryPlan(undo, f.historyManager, historyVault)).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
   });
@@ -55,7 +55,7 @@ describe("view, history and diagnostics operation handlers", () => {
       .mockImplementationOnce(() => { throw new noteUpdate.NotePreservationError("保持できない記述"); })
       .mockReturnValueOnce(content);
     try {
-      expect(historyPlan("V20", {}, snapshot, f.historyManager).writes).toHaveLength(1);
+      expect((await historyPlan("V20", {}, snapshot, f.historyManager)).writes).toHaveLength(1);
       expect(merge).toHaveBeenCalledTimes(2);
     } finally { merge.mockRestore(); }
   });
@@ -68,18 +68,18 @@ describe("view, history and diagnostics operation handlers", () => {
       return "different bytes";
     });
     try {
-      expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(expect.objectContaining({ error: expect.objectContaining({ code: "INVALID_INPUT" }) }));
+      await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(expect.objectContaining({ error: expect.objectContaining({ code: "INVALID_INPUT" }) }));
       expect(merge).toHaveBeenCalledTimes(2);
     } finally { merge.mockRestore(); }
   });
   it("history plans reject empty, changed files and unmodeled Markdown", async () => {
     const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
-    expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow();
+    await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow();
     const before = snapshot.contents.get(f.parent.id)!;
     f.historyManager.push({ label: "bad", files: [{ path: f.parent.id, before: before + "\ntext", after: before }] });
-    expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(/未モデル化|保持できない/);
+    await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(/未モデル化|保持できない/);
     f.historyManager.push({ label: "conflict", files: [{ path: f.parent.id, before, after: before + "changed" }] });
-    expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(/一致/);
+    await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(/一致/);
   });
   it("V22 is diagnostic-gated; V23 previews without stopping and saves only frozen logs", async () => {
     const f = await runtimeFixture(), logger = new Logger({} as App), context = { ...f.context, capabilities: ["diagnostic" as const] };

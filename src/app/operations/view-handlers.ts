@@ -10,7 +10,8 @@ import { taskEffects } from "../preview-projector";
 import type { HistoryManager } from "../history-manager";
 import type { VaultAdapter } from "../task-operations";
 import { canonical, fail, flatten, handlerInput, type TaskSnapshot } from "./runtime";
-import { safeDailyPath } from "./daily-handlers";
+import { getDailyTodoSourceForPath, extractDateFromDailyPath, parseDailyTodos } from "../daily-todo-service";
+import { dailyItems, checkModeled, type DailyPlan, safeDailyPath } from "./daily-handlers";
 
 export const VIEW_OPERATION_IDS = ["V01", "V02", "V03", "V04", "V05", "V06", "V07", "V08", "V09", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19", "V20", "V21", "V22", "V23"] as const;
 export type ViewRequestId = Extract<typeof VIEW_OPERATION_IDS[number], ViewOperationId> | "D08";
@@ -29,6 +30,7 @@ export async function diagnosticRequest(input: OperationInputMap["V22"], context
   return operationOutputSchemas.V22.parse({ schemaVersion: 1, resultKind: "request", operationId: "V22", status: "applied", effects: [{ kind: "diagnostic", recording: true, entryCount: 0 }] });
 }
 export interface HistoryPlan {
+  daily?: DailyPlan;
   direction: "undo" | "redo";
   historyRevision: string;
   label: string;
@@ -36,7 +38,7 @@ export interface HistoryPlan {
   afterParents: TaskRow[];
   writes: { path: string; before: string; after: string }[];
 }
-export function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], snapshot: TaskSnapshot, history: HistoryManager): HistoryPlan {
+export async function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], snapshot: TaskSnapshot, history: HistoryManager): Promise<HistoryPlan> {
   operationInputSchemas[id].parse(input);
   const direction = id === "V20" ? "undo" : "redo", transition = history.inspectTransition(direction);
   if (transition.busy) fail("POLICY_DENIED", "履歴操作の完了後に再プレビューしてください。");
@@ -45,6 +47,34 @@ export function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], 
   for (const file of transition.entry.files) {
     const before = direction === "undo" ? file.after : file.before, after = direction === "undo" ? file.before : file.after;
     if (snapshot.contents.get(file.path) !== before) fail("REVISION_CONFLICT", "履歴と現在のファイル内容が一致しません。");
+    const source = getDailyTodoSourceForPath(file.path, snapshot.settings);
+    if (source && !snapshot.parents.some((parent) => parent.id === file.path)) {
+      safeDailyPath(file.path); checkModeled(before); checkModeled(after);
+      const unmodeled = (content: string) => {
+        const todos = new Set(parseDailyTodos(content).map((item) => item.line));
+        return content.split("\n").filter((_, line) => !todos.has(line)).join("\n");
+      };
+      if (unmodeled(before) !== unmodeled(after)) fail("INVALID_INPUT", "未モデル化Markdownの変更を含むDaily履歴は安全にプレビューできません。");
+      const daily = plan.daily ??= { entries: [], writes: [], warnings: [], unresolvedTemplates: [], files: [] };
+      const prior = await dailyItems(file.path, before, snapshot), next = await dailyItems(file.path, after, snapshot);
+      // Match unchanged rows first, including duplicates and rows shifted by insertions.
+      const remaining = [...next];
+      const removed = prior.filter((item) => {
+        const index = remaining.findIndex((other) => other.text === item.text && other.completed === item.completed);
+        if (index < 0) return true;
+        remaining.splice(index, 1); return false;
+      });
+      if (!removed.length && !remaining.length) fail("INVALID_INPUT", "ToDoの変更として表現できないDaily履歴です。");
+      for (let index = 0; index < Math.max(removed.length, remaining.length); index++) {
+        const old = removed[index], current = remaining[index], item = old ?? current;
+        const state = (value: typeof item | undefined) => value ? { path: value.path, sourceKey: value.sourceKey, text: value.text, completed: value.completed } : null;
+        daily.entries.push({ entity: { kind: "daily-todo", path: file.path, line: item.line, itemFingerprint: item.itemFingerprint }, displayName: (current ?? old).text, effects: [{ kind: "daily-todo", before: state(old), after: state(current) }] });
+      }
+      daily.writes.push({ path: file.path, before, after });
+      daily.files.push({ path: file.path, sourceKey: source.key, date: extractDateFromDailyPath(file.path, snapshot.settings), before, after });
+      plan.writes.push({ path: file.path, before, after });
+      continue;
+    }
     const old = parseTaskFile({ path: file.path }, before, { ...snapshot.settings, autoPriorityEnabled: false });
     const next = parseTaskFile({ path: file.path }, after, { ...snapshot.settings, autoPriorityEnabled: false });
     if (!old || !next) fail("INVALID_INPUT", "履歴のタスクを安全にプレビューできません。");
@@ -73,6 +103,14 @@ export function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], 
     const index = plan.afterParents.findIndex((parent) => parent.id === file.path);
     if (index < 0) fail("NOT_FOUND", "履歴の親タスクを再取得してください。");
     plan.afterParents[index] = next; plan.writes.push({ path: file.path, before, after });
+  }
+  if (plan.daily) {
+    const dates = new Set(plan.daily.files.map((file) => file.date));
+    for (const [path, content] of snapshot.contents) {
+      const source = getDailyTodoSourceForPath(path, snapshot.settings), date = extractDateFromDailyPath(path, snapshot.settings);
+      if (source && dates.has(date) && !plan.daily.files.some((file) => file.path === path)) plan.daily.files.push({ path, sourceKey: source.key, date, before: content, after: content });
+    }
+    plan.entries.push(...plan.daily.entries);
   }
   return plan;
 }

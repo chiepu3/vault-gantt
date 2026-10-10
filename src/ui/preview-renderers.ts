@@ -5,6 +5,7 @@ import { renderScheduleTimeline } from "./schedule-timeline";
 
 /** Everything the effect renderers may use besides the effect itself (all supplied by ports). */
 export interface RenderContext {
+  readonly operationId?: string;
   readonly entity?: EntityRef;
   readonly projection?: GanttProjectionV1 | null;
   /** id -> display name taken from the projected before/after snapshots. */
@@ -314,10 +315,11 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
     else if (effect.action === "duplicate") { h(parent, "div", "vg-pv-subtitle", "複製元"); describeObject(parent, effect.before); h(parent, "div", "vg-pv-subtitle", "複製先"); describeObject(parent, effect.after); }
     else { h(parent, "div", "vg-pv-subtitle", "作成されるもの"); describeObject(parent, effect.after); }
   },
-  schedule: (parent, effect) => {
+  schedule: (parent, effect, ctx) => {
     if (same(effect.before, effect.after)) { note(parent, "日程の変更はありません。"); return; }
     renderScheduleTimeline(parent, effect);
     note(parent, effect.unit === "business-day" ? "日数の数え方: 営業日（休日を除く）" : "日数の数え方: 暦日（休日も数える）");
+    if (ctx.operationId === "T20") note(parent, "休日を除いた日数を保って移動します。終了日・マーカーは休日の分だけ後ろにずれることがあります。");
     if (!effect.after.start !== !effect.after.end) note(parent, "片方の日付だけが設定されます。両方そろうまでバーは表示されません。", "vg-pv-note is-warn");
   },
   deadline: (parent, effect) => {

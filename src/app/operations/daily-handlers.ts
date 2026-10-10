@@ -5,7 +5,7 @@ import { ganttProjectionSchema, entityRefKey, type PreviewEntry, type OperationP
 import type { VaultAdapter } from "../task-operations";
 import { getDailyTodoPathForDate, getDailyTodoSourceForPath, extractDateFromDailyPath, parseDailyTodos, getDailyTodoInsertIndex } from "../daily-todo-service";
 import { canonical, contentRevision, fail, handlerInput, type TaskSnapshot } from "./runtime";
-import { ganttState } from "../preview-projector";
+import { ganttState, project } from "../preview-projector";
 
 export const DAILY_OPERATION_IDS = ["D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09"] as const;
 export type DailyWriteId = Exclude<typeof DAILY_OPERATION_IDS[number], "D01" | "D08">;
@@ -69,7 +69,7 @@ export class DailyReadHandler {
 }
 
 /** Refuse ambiguous checkbox syntax in YAML/code blocks instead of treating it as a ToDo. */
-function checkModeled(content: string): void {
+export function checkModeled(content: string): void {
   let fence = "", yaml = false;
   const lines = content.split("\n");
   for (const [index, raw] of lines.entries()) {
@@ -177,12 +177,13 @@ export async function dailyPlan<K extends DailyWriteId>(id: K, input: OperationI
   return plan;
 }
 
-export async function dailyProjection(plan: DailyPlan, snapshot: TaskSnapshot, entries: readonly PreviewEntry[]): Promise<GanttProjectionV1 | null> {
+export async function dailyProjection(plan: DailyPlan, snapshot: TaskSnapshot, entries: readonly PreviewEntry[], afterParents = snapshot.parents): Promise<GanttProjectionV1 | null> {
   // Unknown template output has no trustworthy after snapshot; its warning remains on the card.
   if (plan.unresolvedTemplates.length) return null;
   if (!entries.length) return null;
   const targets = [...new Map(entries.map((entry) => [entityRefKey(entry.entity), entry.entity])).values()];
-  const affectedDates = [...new Set(plan.files.map((file) => file.date))].sort();
+  const taskProjection = project(snapshot, afterParents, snapshot.settings, entries.filter((entry) => entry.entity.kind === "task"));
+  const affectedDates = [...new Set([...plan.files.map((file) => file.date), ...(taskProjection?.affectedDates ?? [])])].sort();
   const base = ganttState(snapshot.parents, snapshot.settings, affectedDates);
   const summary = async (side: "before" | "after") => {
     const days = new Map<string, DailyItem[]>();
@@ -195,9 +196,9 @@ export async function dailyProjection(plan: DailyPlan, snapshot: TaskSnapshot, e
   };
   return ganttProjectionSchema.parse({ schemaVersion: 1, baseRevision: snapshot.revision, settingsRevision: snapshot.settingsRevision, calendarRevision: snapshot.calendarRevision, evaluatedDate: snapshot.today, timezone: snapshot.timezone,
     before: { ...base, daily: await summary("before"), dailyFiles: plan.files.map((file) => ({ path: file.path, sourceKey: file.sourceKey, exists: file.before !== null })) },
-    after: { ...base, daily: await summary("after"), dailyFiles: plan.files.map((file) => ({ path: file.path, sourceKey: file.sourceKey, exists: file.after !== null })) },
-    targets, affectedDates, affectedParentIds: [], coverage: { targetCount: targets.length, offset: 0, includedCount: targets.length, truncated: false, nextCursor: null },
-    visibility: targets.map((entity) => ({ entity, state: snapshot.settings.ganttFeatureDailyTodoEnabled ? "visible" : "feature-disabled", reason: snapshot.settings.ganttFeatureDailyTodoEnabled ? "Dailyの確定内容を投影します。" : "Daily表示が無効です。" })),
+    after: { ...ganttState(afterParents, snapshot.settings, affectedDates), daily: await summary("after"), dailyFiles: plan.files.map((file) => ({ path: file.path, sourceKey: file.sourceKey, exists: file.after !== null })) },
+    targets, affectedDates, affectedParentIds: taskProjection?.affectedParentIds ?? [], coverage: { targetCount: targets.length, offset: 0, includedCount: targets.length, truncated: false, nextCursor: null },
+    visibility: targets.map((entity) => taskProjection?.visibility.find((item) => entityRefKey(item.entity) === entityRefKey(entity)) ?? ({ entity, state: snapshot.settings.ganttFeatureDailyTodoEnabled ? "visible" : "feature-disabled", reason: snapshot.settings.ganttFeatureDailyTodoEnabled ? "Dailyの確定内容を投影します。" : "Daily表示が無効です。" })),
   });
 }
 
