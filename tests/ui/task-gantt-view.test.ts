@@ -12,11 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import moment from "moment";
 import { Menu, Notice } from "obsidian";
-
-vi.mock("obsidian", async (importOriginal) => ({
-  ...await importOriginal<typeof import("obsidian")>(),
-  Notice: vi.fn(),
-}));
+import { SubtaskAddConflictError } from "../../src/app/task-operations";
 import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
 import type { TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import {
@@ -57,6 +53,11 @@ import {
   makeFakeEl,
 } from "../stubs/fake-dom";
 import type { FakeEl } from "../stubs/fake-dom";
+
+vi.mock("obsidian", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("obsidian")>();
+  return { ...actual, Notice: vi.fn() };
+});
 
 
 // Helpers
@@ -9729,6 +9730,23 @@ describe("empty-cell menu and Bulk-Move", () => {
       parent,
       "新しいやつ",
       dateOffset(0)
+    );
+    expect(h.loadTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the user to retry a conflicting subtask addition and refreshes the chart", async () => {
+    const { h, timeline } = await openViewWithParent([]);
+    h.loadTasks.mockClear();
+    vi.mocked(Notice).mockClear();
+    const conflict = new SubtaskAddConflictError();
+    h.addSubtaskWithPlan.mockRejectedValue(conflict);
+    dispatch(bgAt(timeline, 14), "contextmenu", { clientX: 100, clientY: 50 });
+    dispatch(menuItemWithText(`新規サブタスクを ${dateOffset(0)} に作成`), "click");
+    h.openTextPrompt.mock.calls[0][3]("新しいサブタスク");
+    await flush();
+
+    expect(Notice).toHaveBeenCalledWith(
+      "ノートが変更されたため、サブタスクを追加できませんでした。もう一度追加してください。"
     );
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
   });

@@ -1,3 +1,5 @@
+import { parseYaml } from "obsidian";
+
 export class NotePreservationError extends Error {}
 
 /** Merge generated task fields into the original note without dropping user content. */
@@ -18,19 +20,43 @@ export function mergeTaskNote(original: string, before: string, after: string): 
     )
   );
   const extra: string[] = [];
-  let managed = false;
-  for (const line of source.frontmatter.split(/\r?\n/)) {
-    const key = line.match(/^([^\s#][^:]*):/);
-    if (key) {
-      managed = managedKeys.has(key[1].trim());
+  const lines = source.frontmatter.split(/\r?\n/);
+  const keyOf = (line: string) => line.match(/^([^\s#-][^:]*):/)?.[1].trim();
+  for (let index = 0; index < lines.length; index++) {
+    const key = keyOf(lines[index]);
+    if (!key || !managedKeys.has(key)) {
+      extra.push(lines[index]);
+      continue;
     }
-    if (!managed || /^\s*(?:#.*)?$/.test(line)) {
-      extra.push(line);
-    } else if (!key) {
-      // A continuation of a managed value cannot safely be interpreted by the
-      // existing flat frontmatter parser. Refuse to discard it.
-      throw new NotePreservationError(`保存できません。frontmatterに保持できない記述があります: ${line.trim()}`);
+    const block = [lines[index]];
+    while (index + 1 < lines.length && !keyOf(lines[index + 1])) {
+      block.push(lines[++index]);
     }
+    const comments = block.slice(1).filter((line) => /^\s*(?:#.*)?$/.test(line));
+    if (block.slice(1).some((line) => !/^\s*(?:#.*)?$/.test(line))) {
+      // Replace a multiline value only when its YAML meaning matches the
+      // generated before-value. Unsupported values must not silently disappear.
+      let safe = false;
+      try {
+        const parsed = parseYaml(block.join("\n")) as Record<string, unknown>;
+        const oldLine = previous.frontmatter.split("\n").find((line) => keyOf(line) === key);
+        const oldValue = oldLine ? (parseYaml(oldLine) as Record<string, unknown>)[key] : undefined;
+        const value = parsed[key];
+        if (key === "tags" && Array.isArray(value) && Array.isArray(oldValue)) {
+          safe = value.every((tag) => tag === null || ["string", "number", "boolean"].includes(typeof tag)) &&
+            JSON.stringify(value.map((tag) => String(tag).trim())) === JSON.stringify(oldValue);
+        } else {
+          safe = (typeof value === "string" || typeof value === "number" || typeof value === "boolean") &&
+            value === oldValue;
+        }
+      } catch {
+        // Malformed or unsupported YAML remains a preservation error.
+      }
+      if (!safe) {
+        throw new NotePreservationError(`保存できません。frontmatterに保持できない記述があります: ${key}`);
+      }
+    }
+    extra.push(...comments);
   }
 
   // Keep the original preamble and unknown level-1/2 sections in place. Only

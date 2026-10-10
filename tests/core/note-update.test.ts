@@ -25,6 +25,34 @@ describe("mergeTaskNote", () => {
     expect(result).not.toContain("dueDate :");
   });
 
+  it.each(["  - a\n  - 'b:c'", "- a\n- 'b:c'"])("replaces block tags safely (%s)", (list) => {
+    const generated = before.replace("type: task", 'type: task\ntags: ["a","b:c"]');
+    const original = generated.replace('tags: ["a","b:c"]', `tags:\n${list}\n# タグ説明\nproject: 顧客A`);
+    const updated = generated.replace('["a","b:c"]', '["new"]');
+    const result = mergeTaskNote(original, generated, updated);
+    expect(result).toContain('tags: ["new"]');
+    expect(result).not.toContain("- a");
+    expect(result).not.toContain("- 'b:c'");
+    expect(result).toContain("# タグ説明\nproject: 顧客A");
+    expect(result.match(/^tags:/gm)).toHaveLength(1);
+  });
+
+  it("replaces an equivalent multiline scalar managed value", () => {
+    const generated = before.replace("type: task", 'type: task\ndisplayName: "タスク名"');
+    const original = generated.replace('displayName: "タスク名"', 'displayName: >-\n  タスク名');
+    const result = mergeTaskNote(original, generated, generated.replace('"タスク名"', '"変更後"'));
+    expect(result).toContain('displayName: "変更後"');
+    expect(result).not.toContain("  タスク名");
+  });
+
+  it("refuses malformed or unrepresented managed blocks", () => {
+    const generated = before.replace("type: task", 'type: task\ntags: ["a"]');
+    for (const block of ['tags:\n  - [', 'tags:\n  nested: value', 'tags:\n  - a\n  - extra']) {
+      expect(() => mergeTaskNote(generated.replace('tags: ["a"]', block), generated, generated))
+        .toThrow('frontmatterに保持できない記述があります');
+    }
+  });
+
   it("keeps custom preamble when the title changes", () => {
     const original = before.replace('# タスク\n', '# タスク\n独自の説明\n');
     const result = mergeTaskNote(original, before, before.replace('# タスク', '# 新しい名前'));

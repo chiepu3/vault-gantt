@@ -1,4 +1,5 @@
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
+import { SubtaskAddConflictError } from "../app/task-operations";
 import { renderGhost } from "./ghost-layer";
 import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
@@ -5973,7 +5974,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof SubtaskAddConflictError
+          ? err.message
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();

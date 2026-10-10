@@ -5,6 +5,7 @@ import {
   updateTaskItemsBatch,
   addSubtask,
   addSubtaskWithPlan,
+  SubtaskAddConflictError,
   deleteSubtaskTaskItem,
   getTaskFolderForDate,
   getAvailableTaskPath,
@@ -14,6 +15,17 @@ import { FakeVault } from "./fake-vault";
 import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { HistoryManager } from "../../src/app/history-manager";
+import { buildFullNote, parseTaskFile } from "../../src/core/note-format";
+
+class ProcessingVault extends FakeVault {
+  async process(file: { path: string }, transform: (content: string) => string): Promise<string> {
+    const current = this.getFileContent(file.path);
+    if (current === null) throw new Error("File not found");
+    const content = transform(current);
+    await this.modify(file, content);
+    return content;
+  }
+}
 
 class FailingBatchVault extends FakeVault {
   private modifyAttempts = 0;
@@ -52,12 +64,15 @@ describe("Task Operations - Integration Tests", () => {
 
 
   it("keeps earlier edits undoable through Gantt subtask addition and deletion", async () => {
+    vault = new ProcessingVault();
     const history = new HistoryManager();
     const parent = await createTask(vault, settings, "Parent");
     const file = vault.getFileByPath(parent.file.path)!;
     const extra = "project: 顧客A\nreferences:\n  - 資料A\n";
     const section = "\n## 参考資料\n消してはいけない資料\n";
-    await vault.modify(file, (await vault.read(file)).replace("type: task\n", `type: task\n${extra}`) + section);
+    await vault.modify(file, (await vault.read(file))
+      .replace("type: task\n", `type: task\n${extra}`)
+      .replace("tags: []", "tags:\n  - a\n  - b") + section);
     const original = vault.getFileContent(parent.file.path);
     await updateTaskItemsBatch(vault, settings, cache, [{ row: parent, patch: { dueDate: "2026-08-01" } }], undefined, history);
     const edited = vault.getFileContent(parent.file.path);
@@ -69,6 +84,7 @@ describe("Task Operations - Integration Tests", () => {
     for (const content of [edited, added, deleted]) {
       expect(content).toContain(extra);
       expect(content).toContain(section.trim());
+      expect(content).toContain('tags: ["a","b"]');
     }
     const undoVault = {
       getFileByPath: vault.getFileByPath.bind(vault),
@@ -432,7 +448,9 @@ describe("Task Operations - Integration Tests", () => {
       const file = vault.getFileByPath(parent.file.path)!;
       const extra = "project: 顧客A\nreferences:\n  - 資料A\n";
       const section = "\n## 参考資料\n[資料](https://example.com)\n";
-      await vault.modify(file, (await vault.read(file)).replace("type: task\n", `type: task\n${extra}`) + section);
+      await vault.modify(file, (await vault.read(file))
+      .replace("type: task\n", `type: task\n${extra}`)
+      .replace("tags: []", "tags:\n  - a\n  - b") + section);
       const history = new HistoryManager();
       await updateTaskItemsBatch(vault, settings, cache, [{ row: parent, patch: { dueDate: "2026-10-20" } }], {}, history);
       expect(await vault.read(file)).toContain("dueDate: 2026-10-20");
@@ -818,6 +836,13 @@ describe("Task Operations - Integration Tests", () => {
   });
 
   describe("addSubtaskWithPlan", () => {
+    let processingVault: ProcessingVault;
+
+    beforeEach(() => {
+      processingVault = new ProcessingVault();
+      vault = processingVault;
+    });
+
     it("sets both plannedStartDate and plannedEndDate to dateStr", async () => {
       vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
 
@@ -832,6 +857,89 @@ describe("Task Operations - Integration Tests", () => {
 
       expect(subtask.plannedStartDate).toBe("2026-08-15");
       expect(subtask.plannedEndDate).toBe("2026-08-15");
+    });
+
+    it("keeps latest notes, due date and subtasks, generating keys from the latest parent", async () => {
+      const staleParent = await createTask(vault, settings, "Parent");
+      const file = vault.getFileByPath(staleParent.file.path)!;
+      const latestParent = parseTaskFile(file, await vault.read(file), settings)!;
+      latestParent.notes = "表示後に更新したメモ";
+      latestParent.dueDate = "2026-09-01";
+      await vault.modify(file, buildFullNote(latestParent, latestParent.subtasks));
+      const existing = await addSubtask(vault, settings, latestParent, "Duplicate", {
+        notes: "既存サブタスクのメモ",
+      });
+
+      const added = await addSubtaskWithPlan(vault, settings, staleParent, "Duplicate", "2026-08-15");
+      const addedAgain = await addSubtaskWithPlan(vault, settings, staleParent, "Duplicate", "2026-08-16");
+      const saved = parseTaskFile(file, await vault.read(file), settings)!;
+
+      expect(saved.notes).toBe(latestParent.notes);
+      expect(saved.dueDate).toBe(latestParent.dueDate);
+      expect(saved.subtasks?.size).toBe(3);
+      expect(saved.subtasks?.get(existing.key!)?.notes).toBe("既存サブタスクのメモ");
+      expect(added.key).toBe(`${existing.key}-1`);
+      expect(addedAgain.key).toBe(`${existing.key}-2`);
+      expect(staleParent.subtasks?.size).toBe(0);
+      expect(staleParent.notes).toBe("");
+    });
+
+    it("rejects an edit after reading without writing or clearing history, and allows retry", async () => {
+      const parent = await createTask(vault, settings, "Parent");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const latestParent = parseTaskFile(file, await vault.read(file), settings)!;
+      latestParent.notes = "読込後に更新したメモ";
+      latestParent.dueDate = "2026-09-02";
+      const editedContent = buildFullNote(latestParent, latestParent.subtasks);
+      const historyManager = new HistoryManager();
+      historyManager.push({ label: "先行編集", files: [{ path: file.path, before: "before", after: "after" }] });
+      const process = processingVault.process.bind(processingVault);
+      vi.spyOn(processingVault, "process").mockImplementationOnce(async (target, transform) => {
+        await vault.modify(target, editedContent);
+        vault.resetCounters();
+        return process(target, transform);
+      });
+
+      await expect(addSubtaskWithPlan(vault, settings, parent, "New", "2026-08-15", historyManager))
+        .rejects.toBeInstanceOf(SubtaskAddConflictError);
+      expect(await vault.read(file)).toBe(editedContent);
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(parent.subtasks?.size).toBe(0);
+      expect(historyManager.canUndo()).toBe(true);
+
+      const added = await addSubtaskWithPlan(vault, settings, parent, "New", "2026-08-15", historyManager);
+      const saved = parseTaskFile(file, await vault.read(file), settings)!;
+      expect(saved.notes).toBe(latestParent.notes);
+      expect(saved.dueDate).toBe(latestParent.dueDate);
+      expect(saved.subtasks?.get(added.key!)?.plannedStartDate).toBe("2026-08-15");
+      expect(historyManager.canUndo()).toBe(true);
+      const addedContent = await vault.read(file);
+      expect((await historyManager.undo(processingVault as unknown as Vault)).kind).toBe("success");
+      expect(await vault.read(file)).toBe(editedContent);
+      expect((await historyManager.redo(processingVault as unknown as Vault)).kind).toBe("success");
+      expect(await vault.read(file)).toBe(addedContent);
+    });
+
+    it("does not overwrite a note that is no longer a managed task", async () => {
+      const parent = await createTask(vault, settings, "Parent");
+      const file = vault.getFileByPath(parent.file.path)!;
+      await vault.modify(file, "タスクではないノート");
+      vault.resetCounters();
+
+      await expect(addSubtaskWithPlan(vault, settings, parent, "New", "2026-08-15"))
+        .rejects.toThrow("親タスクのノートを読み込めませんでした。");
+      expect(await vault.read(file)).toBe("タスクではないノート");
+      expect(vault.getModifyCallCount()).toBe(0);
+    });
+
+    it("refuses to save without atomic process support", async () => {
+      const plainVault = new FakeVault();
+      const parent = await createTask(plainVault, settings, "Parent");
+      plainVault.resetCounters();
+
+      await expect(addSubtaskWithPlan(plainVault, settings, parent, "New", "2026-08-15"))
+        .rejects.toThrow("サブタスクを安全に保存できませんでした。");
+      expect(plainVault.getModifyCallCount()).toBe(0);
     });
   });
 

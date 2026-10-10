@@ -613,7 +613,18 @@ export async function addSubtask(
 
 /**
  *
- * Convenience wrapper: set both plannedStartDate and plannedEndDate to dateStr.
+ * A concurrent edit must be kept instead of overwritten by subtask creation.
+ */
+export class SubtaskAddConflictError extends Error {
+  constructor() {
+    super("ノートが変更されたため、サブタスクを追加できませんでした。もう一度追加してください。");
+    this.name = "SubtaskAddConflictError";
+  }
+}
+
+/**
+ * Add to the latest parent, with both planned dates set to dateStr.
+ * Guard the read content atomically so edits during creation are preserved.
  */
 export async function addSubtaskWithPlan(
   vault: VaultAdapter,
@@ -623,12 +634,40 @@ export async function addSubtaskWithPlan(
   dateStr: string,
   historyManager?: HistoryManager
 ): Promise<TaskRow> {
+  const parentFile = vault.getFileByPath(parentRow.file.path);
+  if (!parentFile) {
+    throw new Error("親タスクのノートが見つかりません。");
+  }
+  const parentContent = await vault.read(parentFile);
+  const parent = parseTaskFile({ path: parentFile.path }, parentContent, settings);
+  if (!parent) {
+    throw new Error("親タスクのノートを読み込めませんでした。");
+  }
+  if (!vault.process) {
+    throw new Error("サブタスクを安全に保存できませんでした。");
+  }
+
+  // Reuse subtask defaults and serialization, replacing only the write path.
+  const guardedVault: VaultAdapter = {
+    create: (path, content) => vault.create(path, content),
+    read: (file) => vault.read(file),
+    getFiles: () => vault.getFiles(),
+    getFileByPath: (path) => vault.getFileByPath(path),
+    modify: async (file, content) => {
+      await vault.process!(file, (current) => {
+        if (current !== parentContent) {
+          throw new SubtaskAddConflictError();
+        }
+        return content;
+      });
+    },
+  };
   const patch: TaskPatch = {
     plannedStartDate: dateStr,
     plannedEndDate: dateStr,
   };
 
-  return addSubtask(vault, settings, parentRow, name, patch, historyManager);
+  return addSubtask(guardedVault, settings, parent, name, patch, historyManager);
 }
 
 /**
