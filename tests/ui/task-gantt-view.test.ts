@@ -398,6 +398,11 @@ async function openView(
   return { view, container, h };
 }
 
+/** Reads an inline CSS custom property from the fake DOM's plain-record style. */
+function styleVar(el: FakeEl, name: string): string | undefined {
+  return (el.style as Record<string, string | undefined>)[name];
+}
+
 function wrapOf(container: FakeEl): FakeEl {
   return byClass(container, "task-gantt-wrap")[0];
 }
@@ -1169,6 +1174,23 @@ describe("TaskGanttView", () => {
       expect(h.syncReadonlyGanttNow).toHaveBeenCalledTimes(1);
     });
 
+    it("Undo/Redo and zoom buttons are icon buttons with Japanese labels", async () => {
+      const { container } = await openView([]);
+      const expected: Array<[string, string, string]> = [
+        ["task-gantt-undo", "undo-2", "元に戻す"],
+        ["task-gantt-redo", "redo-2", "やり直す"],
+        ["task-gantt-zoom-out", "minus", "縮小"],
+        ["task-gantt-zoom-in", "plus", "拡大"],
+      ];
+      for (const [cls, icon, label] of expected) {
+        const button = byClass(container, cls)[0];
+        expect(button.classList.contains("clickable-icon")).toBe(true);
+        expect(button.getAttribute("aria-label")).toBe(label);
+        expect(button.title).toBe(label);
+        expect(button.children[0].getAttribute("data-icon")).toBe(icon);
+      }
+    });
+
     it("Undo/Redo buttons delegate to their host actions", async () => {
       const { container, h } = await openView([]);
 
@@ -1291,13 +1313,12 @@ describe("TaskGanttView", () => {
       const rows = parentRows(container);
 
       const left1 = leftOf(rows[0]);
-      expect(left1.style.borderLeftWidth).toBe("4px");
-      expect(left1.style.borderLeftStyle).toBe("solid");
-      expect(left1.style.borderLeftColor).toBe("#123456");
+      expect(left1.classList.contains("has-tag-accent")).toBe(true);
+      expect(styleVar(left1, "--vg-tag-accent")).toBe("#123456");
 
       const left2 = leftOf(rows[1]);
-      expect(left2.style.borderLeftColor).toBeUndefined();
-      expect(left2.style.borderLeftWidth).toBeUndefined();
+      expect(left2.classList.contains("has-tag-accent")).toBe(false);
+      expect(styleVar(left2, "--vg-tag-accent")).toBeUndefined();
     });
 
     it("registry colors drive the left-border and tag chip colors", async () => {
@@ -1313,17 +1334,17 @@ describe("TaskGanttView", () => {
       });
       const row = parentRows(container)[0];
       const left = leftOf(row);
-      expect(left.style.borderLeftColor).toBe("#123456");
+      expect(styleVar(left, "--vg-tag-accent")).toBe("#123456");
 
       const chips = byClass(
         byClass(row, "task-gantt-parent-tags")[0],
         "task-gantt-parent-tag"
       );
-      expect(chips[0].style.color).toBe("#123456");
-      expect(chips[0].style.borderColor).toBe("#123456");
+      expect(chips[0].classList.contains("vg-chip")).toBe(true);
+      expect(chips[0].classList.contains("is-tag")).toBe(true);
+      expect(styleVar(chips[0], "--vg-chip-color")).toBe("#123456");
       // An explicitly colorless definition has no hash-color fallback.
-      expect(chips[1].style.color).toBeUndefined();
-      expect(chips[1].style.borderColor).toBeUndefined();
+      expect(styleVar(chips[1], "--vg-chip-color")).toBeUndefined();
     });
 
     it("shows at most 4 tag chips, each tinted by its own tag color", async () => {
@@ -1344,8 +1365,7 @@ describe("TaskGanttView", () => {
       ]);
       chips.forEach((chip, i) => {
         const color = tagRegistry(tags)[i].color;
-        expect(chip.style.color).toBe(color);
-        expect(chip.style.borderColor).toBe(color);
+        expect(styleVar(chip, "--vg-chip-color")).toBe(color);
       });
     });
 
@@ -1360,7 +1380,7 @@ describe("TaskGanttView", () => {
       const row = parentRows(container)[0];
       expect(byClass(row, "task-gantt-parent-tags")).toHaveLength(0);
       // The left border (a separate concern) still renders.
-      expect(leftOf(row).style.borderLeftColor).toBe("#abcdef");
+      expect(styleVar(leftOf(row), "--vg-tag-accent")).toBe("#abcdef");
     });
 
     it("marks the LEFT column draggable", async () => {
@@ -1488,8 +1508,11 @@ describe("TaskGanttView", () => {
       const badge = byClass(bar, "task-gantt-bar-tag-badge")[0];
 
       expect(badge.textContent).toBe("child-tag");
-      expect(badge.style.color).toBe("#111111");
+      expect(styleVar(badge, "--vg-chip-color")).toBe("#111111");
+      expect(badge.classList.contains("vg-chip")).toBe(true);
       expect(bar.style.backgroundColor).toBe("#111111");
+      // #111111 is dark, so the bar title switches to white text.
+      expect(styleVar(bar, "--vg-bar-text")).toBe("#ffffff");
       expect(bar.style.borderColor).toBe("#111111");
     });
 
@@ -1514,7 +1537,7 @@ describe("TaskGanttView", () => {
       const badge = byClass(bar, "task-gantt-bar-tag-badge")[0];
 
       expect(badge.textContent).toBe("colorless");
-      expect(badge.style.color).toBeUndefined();
+      expect(styleVar(badge, "--vg-chip-color")).toBeUndefined();
     });
 
     it("resolves a task tag by registry key after the tag is renamed", async () => {
@@ -1530,7 +1553,7 @@ describe("TaskGanttView", () => {
       const badge = byClass(bar, "task-gantt-bar-tag-badge")[0];
 
       expect(badge.textContent).toBe("Renamed tag");
-      expect(badge.style.color).toBe("#334455");
+      expect(styleVar(badge, "--vg-chip-color")).toBe("#334455");
     });
 
     it("renders no bar tag badge when neither task nor parent has a tag", async () => {
@@ -2040,7 +2063,7 @@ describe("TaskGanttView", () => {
         "task-gantt-label-badge"
       )[0];
       expect(ownBadge.textContent).toBe("subtag");
-      expect(ownBadge.style.color).toBe("#445566");
+      expect(styleVar(ownBadge, "--vg-chip-color")).toBe("#445566");
 
       // Subtask WITHOUT a tag → parent tags do not create a name badge.
       const fallbackParent = withChildren(
@@ -7208,7 +7231,7 @@ describe("marker tag badges, workload labels, and summary popovers", () => {
       const badges = byClass(markerEl, "task-gantt-marker-tag");
       expect(badges).toHaveLength(1);
       expect(badges[0].textContent).toBe("urgent");
-      expect(badges[0].style.color).toBe("#778899");
+      expect(styleVar(badges[0], "--vg-chip-color")).toBe("#778899");
     });
 
     it("no badge when the marker has no tags", async () => {
