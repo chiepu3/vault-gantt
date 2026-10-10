@@ -50,7 +50,20 @@ export function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], 
     if (!old || !next) fail("INVALID_INPUT", "履歴のタスクを安全にプレビューできません。");
     const oldNote = buildFullNote(old, old.subtasks), nextNote = buildFullNote(next, next.subtasks);
     // Either direction may be the original preserving write (Undo restores its exact bytes).
-    if (mergeTaskNote(before, oldNote, nextNote) !== after && mergeTaskNote(after, nextNote, oldNote) !== before) fail("INVALID_INPUT", "未モデル化Markdownの変更を含む履歴は安全にプレビューできません。");
+    let preserving = false;
+    try {
+      preserving = mergeTaskNote(before, oldNote, nextNote) === after;
+    } catch {
+      // Undo may only be reproducible by the original forward write.
+    }
+    if (!preserving) {
+      try {
+        preserving = mergeTaskNote(after, nextNote, oldNote) === before;
+      } catch {
+        // Report either direction's refusal through the operation error contract.
+      }
+    }
+    if (!preserving) fail("INVALID_INPUT", "未モデル化Markdownの変更を含む履歴は安全にプレビューできません。");
     const oldRows = flatten([old]), newRows = flatten([next]);
     for (const taskId of new Set([...oldRows, ...newRows].map((row) => row.id))) {
       const prior = oldRows.find((row) => row.id === taskId), current = newRows.find((row) => row.id === taskId);

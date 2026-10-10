@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import * as noteUpdate from "../../src/core/note-update";
 import { z } from "zod";
 import { OperationRegistry, OPERATION_MANIFEST, patchSchema } from "../../src/app/operation-registry";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
@@ -99,6 +100,37 @@ describe("OperationRegistry contract", () => {
     await expect(a.registry.commit(plan.previewId)).rejects.toThrow("already confirmed");
     expect((await first).diffs[0].fields[0].after).toBe("new");
     expect((await a.registry.get(row.id)).notes).toBe("new");
+  });
+  it("rejects a combined file merge before publishing a batch preview", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "Parent");
+    const first = await addSubtask(a.vault, a.settings, parent, "First");
+    const second = await addSubtask(a.vault, a.settings, parent, "Second");
+    const file = a.vault.getFileByPath(parent.id)!;
+    const original = await a.vault.read(file);
+    const realMerge = noteUpdate.mergeTaskNote;
+    const merge = vi.spyOn(noteUpdate, "mergeTaskNote").mockImplementation((source, before, after) => {
+      if (after.includes("Renamed first") && after.includes("Renamed second")) {
+        throw new noteUpdate.NotePreservationError("まとめた変更を保持できません");
+      }
+      return realMerge(source, before, after);
+    });
+    a.vault.resetCounters();
+    try {
+      const changes = [
+        { taskId: first.id, patch: { displayName: "Renamed first" } },
+        { taskId: second.id, patch: { displayName: "Renamed second" } },
+      ];
+      for (const change of changes) {
+        const single = await a.registry.plan("update", change);
+        a.registry.discard(single.previewId);
+      }
+      await expect(a.registry.plan("update-batch", { changes })).rejects.toThrow("まとめた変更を保持できません");
+      expect(merge).toHaveBeenLastCalledWith(original, expect.any(String), expect.stringContaining("Renamed second"));
+      expect(await a.vault.read(file)).toBe(original);
+      expect(a.vault.getModifyCallCount()).toBe(0);
+      expect(a.invalidate).not.toHaveBeenCalled();
+    } finally { merge.mockRestore(); }
   });
   it("batch is atomic within a file and records subtask-specific diffs", async () => {
     const a = setup();

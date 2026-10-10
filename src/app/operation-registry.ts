@@ -120,6 +120,7 @@ export class OperationRegistry {
     } else {
       const args = name === "update" ? [parsed as z.infer<typeof update>] : (parsed as { changes: z.infer<typeof update>[] }).changes;
       if (!args) throw new Error("Mutation operation required");
+      const grouped = new Map<string, { parent: TaskRow; beforeNote: string }>();
       const seen = new Set<string>();
       const rows = new Map((await this.rows()).map((row) => [row.id, row]));
       for (const arg of args) {
@@ -144,6 +145,18 @@ export class OperationRegistry {
         const fields = Object.keys(patchSchema.shape).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: previous[key] ?? "", after: taskData(after)[key] ?? "" }));
         diffs.push({ taskId: row.id, name: row.displayName, fields, schedule: { before: { start: String(previous.plannedStartDate ?? ""), end: String(previous.plannedEndDate ?? "") }, after: { start: after.plannedStartDate ?? "", end: after.plannedEndDate ?? "" } } });
         changes.push({ row: rowBefore, patch: arg.patch as TaskPatch });
+        // Match updateTaskItemsBatch: apply all commands to one original parent,
+        // then merge once per file, without intermediate serialization.
+        let group = grouped.get(file.path);
+        if (!group) {
+          const originalParent = parseTaskFile({ path: file.path }, content, this.host.settings)!;
+          group = { parent: originalParent, beforeNote: buildFullNote(originalParent, originalParent.subtasks) };
+          grouped.set(file.path, group);
+        }
+        applyPatchToParent(group.parent, arg.patch as TaskPatch, rowBefore.id, this.host.settings);
+      }
+      for (const [path, group] of grouped) {
+        assertRoundTrip(group.parent, this.host.settings, contents.get(path)!, group.beforeNote);
       }
     }
     this.prune();

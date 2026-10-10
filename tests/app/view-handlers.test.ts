@@ -7,6 +7,7 @@ import { viewRequest, diagnosticRequest, diagnosticPlan, executeDiagnosticPlan, 
 import { previewEntrySchema } from "../../src/contracts/preview";
 import { Logger } from "../../src/core/logger";
 import { runtimeFixture } from "./operation-runtime-fixture";
+import * as noteUpdate from "../../src/core/note-update";
 import { buildFullNote } from "../../src/core/note-format";
 
 const ui: UiPort = {
@@ -45,6 +46,31 @@ describe("view, history and diagnostics operation handlers", () => {
     const redo = historyPlan("V21", {}, await f.service.contextPort.snapshot(), f.historyManager); entriesValid(redo.entries);
     await executeHistoryPlan(redo, f.historyManager, historyVault); expect(await f.vault.read(file)).toBe(after);
     await expect(executeHistoryPlan(undo, f.historyManager, historyVault)).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+  });
+  it("history tries the reverse merge after a preservation error", async () => {
+    const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
+    const content = snapshot.contents.get(f.parent.id)!;
+    f.historyManager.push({ label: "preserving", files: [{ path: f.parent.id, before: content + "\n履歴前の本文\n", after: content }] });
+    const merge = vi.spyOn(noteUpdate, "mergeTaskNote")
+      .mockImplementationOnce(() => { throw new noteUpdate.NotePreservationError("保持できない記述"); })
+      .mockReturnValueOnce(content);
+    try {
+      expect(historyPlan("V20", {}, snapshot, f.historyManager).writes).toHaveLength(1);
+      expect(merge).toHaveBeenCalledTimes(2);
+    } finally { merge.mockRestore(); }
+  });
+  it.each(["exception", "mismatch"])("history returns INVALID_INPUT when both directions fail (%s)", async (failure) => {
+    const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
+    const content = snapshot.contents.get(f.parent.id)!;
+    f.historyManager.push({ label: "unsafe", files: [{ path: f.parent.id, before: content + "\n履歴前の本文\n", after: content }] });
+    const merge = vi.spyOn(noteUpdate, "mergeTaskNote").mockImplementation(() => {
+      if (failure === "exception") throw new noteUpdate.NotePreservationError("保持できない記述");
+      return "different bytes";
+    });
+    try {
+      expect(() => historyPlan("V20", {}, snapshot, f.historyManager)).toThrow(expect.objectContaining({ error: expect.objectContaining({ code: "INVALID_INPUT" }) }));
+      expect(merge).toHaveBeenCalledTimes(2);
+    } finally { merge.mockRestore(); }
   });
   it("history plans reject empty, changed files and unmodeled Markdown", async () => {
     const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
