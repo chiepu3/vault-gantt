@@ -67,8 +67,17 @@ const {
       min: "",
       rows: 0,
       disabled: false,
+      autocomplete: "",
+      listeners: {} as Record<string, () => void>,
+      addEventListener(name: string, listener: () => void): void {
+        this.listeners[name] = listener;
+      },
     };
     handler: ((value: string) => void) | null = null;
+
+    getValue(): string {
+      return this.value;
+    }
 
     setValue(value: string): this {
       this.value = value;
@@ -95,6 +104,11 @@ const {
     addOption(value: string, label: string): this {
       this.options[value] = label;
       this.selectEl.options.push({ value, text: label });
+      return this;
+    }
+
+    addOptions(options: Record<string, string>): this {
+      for (const [value, label] of Object.entries(options)) this.addOption(value, label);
       return this;
     }
 
@@ -159,8 +173,6 @@ const {
       return this;
     }
   }
-
-
   class FakeColorPicker {
     value = "#000000";
     handler: ((value: string) => void) | null = null;
@@ -189,6 +201,7 @@ const {
     buttons: FakeButton[] = [];
     colorPickers: FakeColorPicker[] = [];
     controlEl = new FakeElement();
+    settingEl = { classList: { add: vi.fn() } };
 
     constructor(public containerEl: unknown) {
       RecordingSetting.all.push(this);
@@ -978,5 +991,206 @@ describe("TaskWorkbenchSettingTab", () => {
       order: 2000,
     });
     expect(saveSettings).toHaveBeenCalledTimes(1);
+  });
+
+  describe("AI チャット接続", () => {
+    const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+    let ai: any;
+    let fetchAiModels: Mock;
+    beforeEach(() => {
+      ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
+      let registered = false;
+      fetchAiModels = vi.fn().mockResolvedValue({ ok: true, models: ["a/one", "b/two"] });
+      Object.assign(hostPlugin, {
+        getAiSettings: () => ({ ...ai }),
+        updateAiSettings: vi.fn(async (patch: any) => { ai = { ...ai, ...patch }; }),
+        hasAiApiKey: () => registered,
+        setAiApiKey: vi.fn(async () => { registered = true; }),
+        clearAiApiKey: vi.fn(async () => { registered = false; }),
+        aiKeyStorage: () => "data",
+        fetchAiModels,
+        app: { vault: { configDir: ".obsidian" } },
+        manifest: { id: "vault-gantt" },
+      });
+      (tab as any).app = { vault: { configDir: ".obsidian" } };
+    });
+    const last = (name: string) => [...RecordingSetting.all].reverse().find((setting) => setting.name === name)!;
+
+    it("shows only the plain connection settings and names the key location", async () => {
+      tab.display();
+      await flush();
+      const names = RecordingSetting.all.map((setting) => setting.name);
+      for (const name of ["AI チャット", "接続先", "接続先URL", "APIキーを使う", "APIキー", "モデル", "接続テスト"]) expect(names).toContain(name);
+      expect(names.join()).not.toMatch(/認証|秘密ID|プロバイダー/);
+      expect(last("APIキー").desc).toContain(".obsidian/plugins/vault-gantt/data.json");
+      expect(last("APIキー").desc).toContain("未登録");
+    });
+
+    it("does not fetch models until a key is registered, then offers the fetched list", async () => {
+      tab.display();
+      await flush();
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      expect(last("モデル").desc).toContain("APIキーを登録");
+      await last("APIキー").buttons.find((b) => b.text === "保存")!.handler!();
+      expect(hostPlugin.setAiApiKey).not.toHaveBeenCalled(); // empty input is refused
+      last("APIキー").texts[0].setValue("sk-synthetic-secret");
+      await last("APIキー").buttons.find((b) => b.text === "保存")!.handler!();
+      await flush();
+      expect(hostPlugin.setAiApiKey).toHaveBeenCalledWith("sk-synthetic-secret");
+      expect(fetchAiModels).toHaveBeenCalledTimes(1);
+      const model = last("モデル");
+      expect(Object.keys(model.dropdowns[0].options)).toEqual(["", "a/one", "b/two"]);
+      await model.dropdowns[0].handler!("b/two");
+      expect(ai.model).toBe("b/two");
+      // the key is never rendered back into any label or description
+      expect(JSON.stringify(RecordingSetting.all.map((s) => [s.name, s.desc, s.texts.map((t) => t.placeholder)]))).not.toContain("sk-synthetic-secret");
+    });
+
+    it("falls back to a manual model field when the list cannot be fetched", async () => {
+      ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "my-model", useApiKey: false };
+      fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
+      tab.display();
+      await flush();
+      const model = last("モデル");
+      expect(model.dropdowns).toHaveLength(0);
+      expect(model.texts[0].value).toBe("my-model");
+      expect(model.desc).toContain("一覧を取得できませんでした");
+      expect(model.desc).toContain("直接入力");
+      expect(RecordingSetting.all.map((s) => s.name)).not.toContain("APIキー");
+      await model.texts[0].handler!("typed-model");
+      expect(ai.model).toBe("typed-model");
+    });
+
+    it("keeps a saved model visible when it is not in the fetched list", async () => {
+      ai = { ...ai, model: "gone/model" };
+      tab.display();
+      hostPlugin.hasAiApiKey = () => true;
+      await (tab as any).refreshAiModels();
+      expect(Object.keys(last("モデル").dropdowns[0].options)).toContain("gone/model");
+    });
+
+    it("switching the preset applies its URL and key default", async () => {
+      tab.display();
+      await flush();
+      await last("接続先").dropdowns[0].handler!("local");
+      expect(ai).toMatchObject({ preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false, model: "" });
+      await last("接続先").dropdowns[0].handler!("custom");
+      expect(ai).toMatchObject({ preset: "custom", baseUrl: "http://localhost:1234/v1" });
+    });
+    it("shows the saved origin warning after a custom URL edit and stops model fetching until the key is replaced", async () => {
+      ai = { ...ai, model: "a/one", apiKeyOrigin: "https://openrouter.ai" };
+      hostPlugin.hasAiApiKey = () => true;
+      hostPlugin.setAiApiKey = vi.fn(async () => { ai.apiKeyOrigin = new URL(ai.baseUrl).origin; });
+      tab.display(); await flush();
+      await last("接続先").dropdowns[0].handler!("custom"); await flush();
+      fetchAiModels.mockClear();
+      const field = last("接続先URL").texts[0];
+      await field.handler!("https://other.example/v1");
+      field.inputEl.listeners.change(); await flush();
+      const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+      expect(RecordingSetting.all.some((row) => row.desc === reason)).toBe(true);
+      expect(last("モデル").desc).toBe(reason);
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain(reason);
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      last("APIキー").texts[0].setValue("sk-synthetic-replacement");
+      await last("APIキー").buttons.find((button) => button.text === "保存")!.handler!();
+      expect(ai.apiKeyOrigin).toBe("https://other.example");
+      expect(last("モデル").desc).not.toContain(reason);
+      expect(fetchAiModels).toHaveBeenCalledOnce();
+    });
+
+    describe("取得の開始・完了で入力中の欄を作り直さない", () => {
+      const count = (name: string) => RecordingSetting.all.filter((setting) => setting.name === name).length;
+      function deferredFetch() {
+        let resolve!: (value: any) => void;
+        fetchAiModels.mockImplementation(() => new Promise((done) => { resolve = done; }));
+        return (value: any) => resolve(value);
+      }
+
+      it("keeps the manual model field when the fetch fails", async () => {
+        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const field = row.texts[0];
+        field.value = "typing-in-progress";
+        const settingsBefore = RecordingSetting.all.length;
+        finish({ ok: false, reason: "接続できませんでした。" });
+        await flush();
+        expect(RecordingSetting.all.length).toBe(settingsBefore);
+        expect(last("モデル")).toBe(row);
+        expect(last("モデル").texts[0]).toBe(field);
+        expect(field.value).toBe("typing-in-progress");
+        expect(row.desc).toContain("一覧を取得できませんでした");
+      });
+
+      it("applies a successful list after the focused manual field loses focus", async () => {
+        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const inputEl: any = row.texts[0].inputEl;
+        inputEl.ownerDocument = { activeElement: inputEl };
+        finish({ ok: true, models: ["a/one"] });
+        await flush();
+        expect(count("モデル")).toBe(1);
+        expect(row.dropdowns).toHaveLength(0);
+        expect(row.desc).toContain("1件");
+        inputEl.ownerDocument = { activeElement: null };
+        inputEl.listeners.focusout();
+        expect(last("モデル").dropdowns).toHaveLength(1);
+      });
+
+      it("keeps an unsaved API key typed before the fetch completes", async () => {
+        ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
+        hostPlugin.hasAiApiKey = () => true;
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const keyRow = last("APIキー");
+        keyRow.texts[0].setValue("sk-typed-not-saved");
+        finish({ ok: true, models: ["a/one", "b/two"] });
+        await flush();
+        expect(count("APIキー")).toBe(1);
+        expect(last("APIキー")).toBe(keyRow);
+        expect(keyRow.texts[0].value).toBe("sk-typed-not-saved");
+        expect(last("モデル").dropdowns).toHaveLength(1);
+      });
+
+      it("does not destroy the model field when the URL field blurs into it", async () => {
+        ai = { preset: "custom", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const field = row.texts[0];
+        const urlRow = last("接続先URL");
+        const finish = deferredFetch();
+        (urlRow.texts[0].inputEl as any).listeners.change();
+        expect(row.desc).toContain("取得しています");
+        field.value = "clicked-and-typing";
+        finish({ ok: false, reason: "接続できませんでした。" });
+        await flush();
+        expect(count("モデル")).toBe(1);
+        expect(last("モデル").texts[0]).toBe(field);
+        expect(field.value).toBe("clicked-and-typing");
+      });
+    });
+
+    it("reports the connection test result in the section", async () => {
+      ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "x", useApiKey: false };
+      tab.display();
+      await flush();
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain("接続できました");
+      expect(last("接続テスト").desc).toContain("一覧にありません");
+      fetchAiModels.mockResolvedValue({ ok: false, reason: "APIキーが受け付けられませんでした（HTTP 401）。" });
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain("HTTP 401");
+    });
   });
 });

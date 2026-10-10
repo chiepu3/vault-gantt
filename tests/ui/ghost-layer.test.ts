@@ -5,6 +5,8 @@ import { TaskGanttView, type TaskGanttViewHost } from "../../src/ui/task-gantt-v
 import { ScheduleGhostStore } from "../../src/app/schedule-ghost";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { createFakeDocument, byClass, makeFakeEl } from "../stubs/fake-dom";
+import { FakePreviewPort } from "./preview-fakes";
+import { DELETE_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARENT_ID } from "../contracts/fixtures";
 import type { TaskRow } from "../../src/core/types";
 import type { OperationResult } from "../../src/app/operation-registry";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -80,5 +82,73 @@ describe("before/current Gantt ghost layer", () => {
     vi.stubGlobal("document", createFakeDocument()); const timeline = makeFakeEl("div");
     renderGhost(timeline as any, { ...ghost, after: { start: "", end: "" } }, "2026-10-01", 20, 10);
     expect(byClass(timeline, "vg-ai-ghost")).toHaveLength(1); expect(byClass(timeline, "vg-ai-target-label")[0].textContent).toContain("未設定");
+  });
+});
+
+describe("Gantt preview overlay from the preview port", () => {
+  const PARENT = "tasks/p.md";
+  const mapped = (value: unknown): any => JSON.parse(JSON.stringify(value).split(PARENT_ID).join(PARENT));
+  const base = (): any => {
+    vi.stubGlobal("document", createFakeDocument()); vi.stubGlobal("window", makeFakeEl("window")); vi.stubGlobal("requestAnimationFrame", () => 0);
+    const child = { kind: "subtask", id: PARENT + "::review", key: "review", file: { path: PARENT }, title: "レビュー", displayName: "レビュー", statusLabel: "active", tags: [], plannedStartDate: "2026-10-13", plannedEndDate: "2026-10-15" } as unknown as TaskRow;
+    const parent = { kind: "parent", id: PARENT, file: { path: PARENT }, title: "リリース", displayName: "リリース", tags: [], ganttEnabled: true, ganttOrder: 1, subtasks: new Map([["review", child]]) } as unknown as TaskRow;
+    const moved = mapped({ ...OUTSIDE_RANGE_PREVIEW, previewId: "moved" });
+    // Move by three days inside the range instead of two months away.
+    for (const state of [moved.projection!.after]) { state.parents[0].children[0].period = { start: "2026-10-16", end: "2026-10-18" }; state.parents[0].period = { start: "2026-10-16", end: "2026-10-18" }; }
+    (moved.entries[0].effects[0] as any).after = { start: "2026-10-16", end: "2026-10-18" };
+    const port = new FakePreviewPort([moved as any]);
+    const host = { settings: { ...DEFAULT_SETTINGS, ganttFeatureWorkloadEnabled: false, ganttFeatureDailyTodoEnabled: false, ganttFeatureEventsEnabled: false }, manifest: { version: "test" }, logger: { debug: vi.fn() }, loadTasks: async () => [parent], activateView: vi.fn(), previewPort: port } as unknown as TaskGanttViewHost;
+    return { host, port };
+  };
+  it("projects the focused plan as a dashed proposal band plus a separate preview region, and leaves live rows alone", async () => {
+    const { host, port } = base();
+    const view = new TaskGanttView({} as any, host); await view.onOpen();
+    const container = view.containerEl as any;
+    const dockHost = byClass(container, "vg-pv-dockhost")[0] as any;
+    expect(dockHost.hidden).toBe(true); expect(byClass(container, "vg-ai-ghost")).toHaveLength(0);
+    const timeline = byClass(container, "task-gantt-parent-timeline")[0]; const rowHeight = timeline.style.height;
+    const bar = byClass(container, "task-gantt-bar")[0]; const barStyle = { ...bar.style };
+    port.focus("moved");
+    expect(dockHost.hidden).toBe(false);
+    expect(byClass(dockHost, "vg-pv-dock")).toHaveLength(1);
+    const band = byClass(container, "vg-ai-ghost");
+    expect(band).toHaveLength(1); expect(band[0].classList.contains("is-proposed")).toBe(true);
+    expect(byClass(container, "vg-ai-legend")[0].textContent).toBe("変更案 · チャット · 実線: 現在 / 破線: 変更案（後）");
+    expect(byClass(container, "task-gantt-parent-timeline")[0].style.height).toBe(rowHeight);
+    expect(byClass(container, "task-gantt-bar")[0].style).toEqual(barStyle);
+    port.focus(null);
+    expect(dockHost.hidden).toBe(true); expect(byClass(container, "vg-ai-ghost")).toHaveLength(0); expect(byClass(container, "vg-ai-legend")).toHaveLength(0);
+    expect(byClass(container, "vg-ai-target")).toHaveLength(0);
+    await view.onClose();
+  });
+  it("drops the overlay when the view closes while the plan itself stays in the store", async () => {
+    const { host, port } = base();
+    const view = new TaskGanttView({} as any, host); await view.onOpen();
+    port.focus("moved"); await view.onClose();
+    expect(port.focused).toBeNull(); expect(port.previews.has("moved")).toBe(true); expect(port.rejected).toEqual([]);
+  });
+  it("shows a saved outcome as old dashed band + new bar and keeps the host's own ghost store working beside it", async () => {
+    const { host, port } = base();
+    const outcome = { previewId: "moved", status: "success", actions: [{ actionId: port.previews.get("moved")!.entries[0].actionId, state: "committed", actual: [] }], actualProjection: port.previews.get("moved")!.projection } as any;
+    port.outcomes.set("moved", outcome);
+    const view = new TaskGanttView({} as any, host); await view.onOpen();
+    port.focus("moved");
+    const band = byClass(view.containerEl as any, "vg-ai-ghost");
+    expect(band).toHaveLength(1); expect(band[0].classList.contains("is-proposed")).toBe(false);
+    expect(byClass(view.containerEl as any, "vg-ai-legend")[0].textContent).toContain("保存結果");
+    await view.onClose();
+  });
+  it("marks a task that will be deleted without touching its live bar position", async () => {
+    const { host, port } = base();
+    const doomed = mapped({ ...DELETE_PREVIEW, previewId: "doomed" });
+    port.set(doomed as any);
+    const view = new TaskGanttView({} as any, host); await view.onOpen();
+    const bar = byClass(view.containerEl as any, "task-gantt-bar")[0]; const style = { ...bar.style };
+    port.focus("doomed");
+    expect(byClass(view.containerEl as any, "task-gantt-bar")[0].classList.contains("vg-pv-delete-target")).toBe(true);
+    expect(byClass(view.containerEl as any, "vg-pv-live-delete")).toHaveLength(1);
+    expect(byClass(view.containerEl as any, "task-gantt-bar")[0].style).toEqual(style);
+    port.focus(null); expect(byClass(view.containerEl as any, "vg-pv-delete-target")).toHaveLength(0);
+    await view.onClose();
   });
 });

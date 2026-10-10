@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import * as noteUpdate from "../../src/core/note-update";
 import { z } from "zod";
 import { OperationRegistry, OPERATION_MANIFEST, patchSchema } from "../../src/app/operation-registry";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
@@ -64,6 +65,19 @@ describe("OperationRegistry contract", () => {
     expect(a.vault.getModifyCallCount()).toBe(0);
     expect(a.historyManager.canUndo()).toBe(false);
   });
+  it("legacy previews and writes preserve custom note content", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "Parent");
+    const child = await addSubtask(a.vault, a.settings, parent, "Child");
+    const file = a.vault.getFileByPath(parent.id)!;
+    await a.vault.modify(file, (await a.vault.read(file)).replace("type: task", "type: task\ncustom: keep") + "\n## 参考資料\n保持する本文\n");
+    const plan = await a.registry.plan("update", { taskId: child.id, patch: { displayName: "変更" } });
+    expect(plan.diffs[0].fields).toContainEqual({ field: "displayName", before: "Child", after: "変更" });
+    expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
+    expect((await a.registry.get(child.id)).displayName).toBe("変更");
+    expect(await a.vault.read(file)).toContain("custom: keep");
+    expect(await a.vault.read(file)).toContain("## 参考資料\n保持する本文\n");
+  });
   it("content revisions reject same-stat external changes without writing", async () => {
     const a = setup();
     const row = await createTask(a.vault, a.settings, "Example");
@@ -86,6 +100,37 @@ describe("OperationRegistry contract", () => {
     await expect(a.registry.commit(plan.previewId)).rejects.toThrow("already confirmed");
     expect((await first).diffs[0].fields[0].after).toBe("new");
     expect((await a.registry.get(row.id)).notes).toBe("new");
+  });
+  it("rejects a combined file merge before publishing a batch preview", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "Parent");
+    const first = await addSubtask(a.vault, a.settings, parent, "First");
+    const second = await addSubtask(a.vault, a.settings, parent, "Second");
+    const file = a.vault.getFileByPath(parent.id)!;
+    const original = await a.vault.read(file);
+    const realMerge = noteUpdate.mergeTaskNote;
+    const merge = vi.spyOn(noteUpdate, "mergeTaskNote").mockImplementation((source, before, after) => {
+      if (after.includes("Renamed first") && after.includes("Renamed second")) {
+        throw new noteUpdate.NotePreservationError("まとめた変更を保持できません");
+      }
+      return realMerge(source, before, after);
+    });
+    a.vault.resetCounters();
+    try {
+      const changes = [
+        { taskId: first.id, patch: { displayName: "Renamed first" } },
+        { taskId: second.id, patch: { displayName: "Renamed second" } },
+      ];
+      for (const change of changes) {
+        const single = await a.registry.plan("update", change);
+        a.registry.discard(single.previewId);
+      }
+      await expect(a.registry.plan("update-batch", { changes })).rejects.toThrow("まとめた変更を保持できません");
+      expect(merge).toHaveBeenLastCalledWith(original, expect.any(String), expect.stringContaining("Renamed second"));
+      expect(await a.vault.read(file)).toBe(original);
+      expect(a.vault.getModifyCallCount()).toBe(0);
+      expect(a.invalidate).not.toHaveBeenCalled();
+    } finally { merge.mockRestore(); }
   });
   it("batch is atomic within a file and records subtask-specific diffs", async () => {
     const a = setup();

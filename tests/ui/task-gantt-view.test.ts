@@ -11,6 +11,8 @@ import { NotePreservationError } from "../../src/core/note-update";
 
 
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
+import { ViewStateService } from "../../src/app/view-state-service";
+import { PreviewStore } from "../../src/app/preview-store";
 import moment from "moment";
 import { Menu, Notice } from "obsidian";
 import { SubtaskAddConflictError } from "../../src/app/task-operations";
@@ -547,6 +549,17 @@ describe("TaskGanttView", () => {
 
 
 
+  it("registered view requests extend the date range and persist zoom only through human UiPort", async () => {
+    const previews = new PreviewStore({ reject: () => {}, repreview: async () => { throw new Error("unused"); } }), ui = new ViewStateService(previews);
+    const h = makeHostHarness([]), view = new TaskGanttView({} as any, h.host);
+    Object.assign(h.host, { viewId: "gantt-live", viewStatePort: ui }); await view.onOpen();
+    const target = addDays(todayStr(), 365);
+    expect(await ui.request("V15", { viewId: "gantt-live", date: target, offset: 50 })).toMatchObject({ status: "applied" });
+    const wrap = byClass(view.containerEl as unknown as FakeEl, "task-gantt-wrap")[0]; expect(wrap.scrollLeft).toBeGreaterThan(0); expect(h.saveSettings).not.toHaveBeenCalled();
+    await ui.request("V14", { viewId: "gantt-live", dayWidth: 36 }); expect(ui.inspectView("gantt-live")?.dayWidth).toBe(36); expect(h.saveSettings).toHaveBeenCalledOnce();
+    await view.onClose(); expect(ui.inspectView("gantt-live")).toBeUndefined(); previews.dispose();
+  });
+
   describe("identity and onOpen", () => {
     it("exposes the Gantt view type and title", () => {
       const h = makeHostHarness([]);
@@ -932,6 +945,8 @@ describe("TaskGanttView", () => {
       // The scroll position shifted right by the prepended width.
       expect(wrap.scrollLeft).toBe(100 + 60 * 28);
       expect((view as any).isExtendingRange).toBe(false);
+      const visible = (view as any).getVisibleStartDate();
+      expect((view as any).floatingMonthEl.textContent).toBe(moment(visible, "YYYY-MM-DD").format("YYYY年M月"));
     });
 
     it("the render and the scroll shift are two SEPARATE animation frames, in that order (not one combined frame)", async () => {
@@ -1021,7 +1036,33 @@ describe("TaskGanttView", () => {
   });
 
   describe("updateFloatingMonth", () => {
-    it("writes the month once and dedupes while it is unchanged", async () => {
+    it("defers a hidden tab's rebuild until it has real viewport geometry", async () => {
+      const { view, container } = await openView([makeParent({ ganttEnabled: true })]);
+      const wrap = wrapOf(container); wrap.scrollLeft = 45 * 28;
+      const empty = vi.spyOn(wrap, "empty");
+      Object.defineProperty(wrap, "offsetParent", { configurable: true, value: null });
+      (view as any).rangeDays += 60; view.renderChart(); expect(empty).not.toHaveBeenCalled();
+      Object.defineProperty(wrap, "offsetParent", { configurable: true, value: container });
+      view.onResize(); expect(empty).toHaveBeenCalledOnce(); expect(wrap.scrollLeft).toBe(45 * 28);
+      expect((view as any).floatingMonthEl.textContent).toBe(moment((view as any).getVisibleStartDate(), "YYYY-MM-DD").format("YYYY年M月"));
+    });
+    it("keeps offsets and the month when a real full rebuild clamps emptied scroll content", async () => {
+      const { view, container } = await openView([makeParent({ ganttEnabled: true })]);
+      const wrap = wrapOf(container), empty = wrap.empty.bind(wrap);
+      wrap.scrollLeft = 40 * 28; wrap.scrollTop = 180;
+      vi.spyOn(wrap, "empty").mockImplementation(() => { empty(); wrap.scrollLeft = 0; wrap.scrollTop = 0; });
+      (view as any).rangeDays += 60; view.renderChart();
+      expect(wrap.scrollLeft).toBe(40 * 28); expect(wrap.scrollTop).toBe(180);
+      const visible = (view as any).getVisibleStartDate();
+      expect((view as any).floatingMonthEl.textContent).toBe(moment(visible, "YYYY-MM-DD").format("YYYY年M月"));
+    });
+    it("refreshes the month when a hidden tab is revealed and its offset is restored", async () => {
+      const { view, container } = await openView([makeParent({ ganttEnabled: true })]);
+      wrapOf(container).scrollLeft = 45 * 28;
+      view.onResize();
+      expect((view as any).floatingMonthEl.textContent).toBe(moment((view as any).getVisibleStartDate(), "YYYY-MM-DD").format("YYYY年M月"));
+    });
+    it("updates a stale or replaced month element even when the cached month is unchanged", async () => {
       const { view } = await openView([]);
       const floatingMonthEl = (view as any).floatingMonthEl as FakeEl;
       const visibleStart = (view as any).getVisibleStartDate() as string;
@@ -1030,11 +1071,11 @@ describe("TaskGanttView", () => {
       // onOpen's render already populated it.
       expect(floatingMonthEl.textContent).toBe(expected);
 
-      // Same month: overwrite with a sentinel, then re-run — dedupe means no
-      // rewrite, so the sentinel survives.
+      // A rebuilt toolbar may have stale text even though the month cache
+      // still matches. Refresh the element as well as the cache.
       floatingMonthEl.textContent = "SENTINEL";
       (view as any).updateFloatingMonth();
-      expect(floatingMonthEl.textContent).toBe("SENTINEL");
+      expect(floatingMonthEl.textContent).toBe(expected);
 
       // Month changed: it rewrites.
       (view as any).lastFloatingMonth = "1999年1月";
@@ -1211,6 +1252,28 @@ describe("TaskGanttView", () => {
       const button = byClass(container, "task-gantt-sync")[0];
       dispatch(button, "click");
       expect(h.syncReadonlyGanttNow).toHaveBeenCalledTimes(1);
+    });
+
+    it("routes history keys only while focused in the view and removes listeners on close", async () => {
+      const { view, container, h } = await openView([]);
+      const stopImmediatePropagation = vi.fn();
+      dispatch(container, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "Z", ctrlKey: true, shiftKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "y", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+      expect(h.redoLastAction).toHaveBeenCalledTimes(2);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
+      const input = makeFakeEl("input"); container.appendChild(input);
+      for (const shortcut of [{ key: "z" }, { key: "Z", shiftKey: true }, { key: "y" }]) {
+        const event = dispatch(container, "keydown", { target: input, ctrlKey: true, stopImmediatePropagation, ...shortcut });
+        expect(event.__defaultPrevented).toBeUndefined();
+      }
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+      expect(h.redoLastAction).toHaveBeenCalledTimes(2);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
+      await view.onClose();
+      dispatch(container, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
     });
 
     it("Undo/Redo and zoom buttons are icon buttons with Japanese labels", async () => {
@@ -5227,6 +5290,19 @@ describe("computeRichPopoverPosition", () => {
       expect(rect.bottom).toBeLessThanOrEqual(500);
     });
 
+    it("1188x500: preserves fractional height when clamping beside the workload popup", () => {
+      const bar = { left: 700, top: 330, right: 1800, bottom: 354 };
+      const workload = { left: 670, top: 176, right: 1136, bottom: 318 };
+      const height = 281.3125;
+      const args = [bar, 440, height, 1188, 500, 12, workload] as const;
+      const pos = computeRichPopoverPosition(...args);
+      expect(pos).toEqual({ left: 218, top: 218.6875, side: "left" });
+      const rect = rectOf(pos, 440, height);
+      expect(rect.bottom).toBeLessThanOrEqual(500);
+      expect(overlaps(rect, workload)).toBe(false);
+      expect(computeRichPopoverPosition(...args)).toEqual(pos);
+    });
+
     it("900x500: the left fallback is clamped to the viewport instead of going negative", () => {
       const bar = { left: 340, top: 260, right: 840, bottom: 284 };
       const pos = computeRichPopoverPosition(bar, 440, 274, 900, 500, 12);
@@ -6226,6 +6302,90 @@ describe("rich popover behavior", () => {
     dispatch(popover, "mousemove", { clientX: 500, clientY: 60 });
     expect(queued).toHaveLength(0);
     expect(popover.style.left).toBe("80px");
+  });
+
+  it("uses the fractional rendered height instead of offsetHeight beside the workload popup", async () => {
+    const { view, container, bar } = await openBarView();
+    const popover = showPopover(container, bar);
+    winEl.innerWidth = 1188;
+    winEl.innerHeight = 500;
+    bar.getBoundingClientRect = () => ({
+      left: 700, top: 330, right: 1800, bottom: 354, width: 1100, height: 24,
+    });
+    const workload = { left: 670, top: 176, right: 1136, bottom: 318 };
+    vi.spyOn(view as any, "getWorkloadPopupRect").mockReturnValue(workload);
+    popover.offsetHeight = 281; // offsetHeight rounds the real 281.3125px down.
+    popover.getBoundingClientRect = () => {
+      const left = Number.parseFloat(popover.style.left);
+      const top = Number.parseFloat(popover.style.top);
+      return { left, top, right: left + 440, bottom: top + 281.3125, width: 440, height: 281.3125 };
+    };
+
+    for (let i = 0; i < 3; i++) {
+      (view as any).positionRichPopover();
+      const rect = popover.getBoundingClientRect();
+      expect(rect.left).toBe(218);
+      expect(rect.top).toBe(218.6875);
+      expect(rect.bottom).toBeLessThanOrEqual(500);
+      expect(rect.right).toBeLessThan(workload.left);
+      expect(popover.getAttribute("data-side")).toBe("left");
+    }
+  });
+
+  it("uses the fractional rendered height for parent placement with its viewport margin", async () => {
+    const { view, popover } = await openParentPopoverView();
+    winEl.innerHeight = 500;
+    (view as any).richPopoverAnchorEl.getBoundingClientRect = () => ({
+      left: 0, top: 330, right: 220, bottom: 354, width: 220, height: 24,
+    });
+    popover.offsetHeight = 281;
+    popover.getBoundingClientRect = () => ({
+      left: 0, top: 0, right: 440, bottom: 281.3125, width: 440, height: 281.3125,
+    });
+
+    (view as any).positionRichPopover();
+    expect(popover.getAttribute("data-side")).toBe("right");
+    expect(Number.parseFloat(popover.style.top) + 281.3125).toBe(476);
+  });
+
+  it("measures after applying width, max-height and scrolling on the first placement and resize", async () => {
+    const { view, container, bar } = await openBarView();
+    const popover = showPopover(container, bar);
+    bar.getBoundingClientRect = () => ({
+      left: 100, top: 260, right: 200, bottom: 284, width: 100, height: 24,
+    });
+    popover.offsetHeight = 900;
+    const measurements: Array<Record<string, string>> = [];
+    popover.getBoundingClientRect = () => {
+      measurements.push({
+        width: popover.style.width,
+        maxHeight: popover.style.maxHeight,
+        overflowY: popover.style.overflowY,
+      });
+      const width = Number.parseFloat(popover.style.width) || 900;
+      const height = Math.min(900, Number.parseFloat(popover.style.maxHeight) || 900);
+      return { left: 0, top: 0, right: width, bottom: height, width, height };
+    };
+    // Start without the constraints applied by showPopover.
+    popover.style.width = "";
+    popover.style.maxHeight = "";
+    popover.style.overflowY = "";
+    for (const [viewportWidth, viewportHeight, width, height] of [
+      [1188, 500, 440, 452],
+      [400, 400, 352, 352],
+    ]) {
+      winEl.innerWidth = viewportWidth;
+      winEl.innerHeight = viewportHeight;
+      for (let i = 0; i < 2; i++) {
+        (view as any).positionRichPopover();
+        expect(measurements.at(-1)).toEqual({
+          width: `${width}px`, maxHeight: `${height}px`, overflowY: "auto",
+        });
+        expect(Number.parseFloat(popover.style.top)).toBe(48);
+        expect(Number.parseFloat(popover.style.left) + width).toBeLessThanOrEqual(viewportWidth);
+        expect(Number.parseFloat(popover.style.top) + height).toBeLessThanOrEqual(viewportHeight);
+      }
+    }
   });
 
   it("a detached anchor closes the popover gracefully when positioning is requested", async () => {

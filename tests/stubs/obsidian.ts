@@ -53,6 +53,9 @@ export class Modal {
 
 export class ItemView {
   containerEl: HTMLElement = document.createElement("div");
+  registerDomEvent(el: EventTarget, type: string, callback: (event: Event) => void, options?: boolean): void {
+    el.addEventListener(type, callback, options);
+  }
   getViewType(): string {
     return "";
   }
@@ -366,3 +369,5 @@ export async function requestUrl(
     "tests/stubs/obsidian.ts: requestUrl() was not mocked for this test"
   );
 }
+
+export const Platform = { isDesktopApp: true, isMobileApp: false, isMacOS: false };

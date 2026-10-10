@@ -924,16 +924,8 @@ describe("part 4 — Gantt structure", () => {
     ]) {
       expectDecl(selector, "background", "var(--background-secondary)");
       expectDecl(selector, "z-index", "4");
+      expect(rulesFor(selector).length, `${selector} is defined once`).toBe(1);
     }
-    // a single shared selector-list rule must carry the background
-    const sharedRules = getRules().filter(
-      (r) =>
-        r.selectors.includes(".task-gantt-workload-row") &&
-        r.selectors.includes(".task-gantt-event-row") &&
-        r.selectors.includes(".task-gantt-daily-row") &&
-        r.decls.some((d) => d.prop === "background")
-    );
-    expect(sharedRules.length, "shared fixed-rows background rule").toBeGreaterThan(0);
   });
 
   it("fixed-row date backgrounds: absolute layer at z-index:0 with shared date tints", () => {

@@ -1,3 +1,4 @@
+import type { McpSettings } from "../mcp/server";
 import { TFile } from "obsidian";
 
 
@@ -154,6 +155,8 @@ export interface DailyTodoSourceConfig {
 
 
 export interface TaskWorkbenchSettings {
+  /** MCP credentials are references only; token values stay in secret storage or memory. */
+  mcp?: McpSettings;
   // Task Storage
   taskFolder: string;
   filenameUsesDatePrefix: boolean;

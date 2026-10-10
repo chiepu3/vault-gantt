@@ -25,11 +25,26 @@ describe("AI SDK Core compatible adapter (fake HTTP only)", () => {
     expect(provider.connected({ ...config, auth: "secret", secretId: "missing" })).toBe(false);
     expect(provider.connected({ ...config, auth: "secret", secretId: "synthetic-id" })).toBe(true);
   });
-  it("streams through the actual SDK on Node22 and forwards the selected model without real network", async () => {
+  it("resolves secrets for the request endpoint and blocks mismatched or stale configurations before fetch", async () => {
+    const secret = vi.fn((_id: string, endpoint: string) => new URL(endpoint).origin === "https://openrouter.ai" ? "sk-synthetic" : null);
+    const provider = new SdkChatProvider(registry(), secret);
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const allowed = { ...config, endpoint: "https://openrouter.ai/api/v1", auth: "secret" as const, secretId: "test" };
+    expect(provider.connected(allowed)).toBe(true);
+    expect(secret).toHaveBeenCalledWith("test", allowed.endpoint);
+    for (const blocked of [{ ...allowed, endpoint: "https://other.example/v1" }, { ...allowed, connectionError: "キーを入れ直してください。" }]) {
+      await expect(async () => {
+        for await (const event of provider.stream({ config: blocked, messages: [], signal: new AbortController().signal })) void event;
+      }).rejects.toThrow("DISCONNECTED");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("streams through the actual SDK without real network (uses key: %s)", async (useApiKey) => {
     // eslint-disable-next-line no-undef
     const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
       expect(JSON.parse(init!.body as string).model).toBe("synthetic-model");
       expect(init?.redirect).toBe("error");
+      expect(new Headers(init?.headers).get("authorization")).toBe(useApiKey ? "Bearer sk-synthetic" : null);
       const frames = [
         { id: "fake", object: "chat.completion.chunk", created: 1, model: "synthetic-model", choices: [{ index: 0, delta: { role: "assistant", content: "合成" }, finish_reason: null }] },
         { id: "fake", object: "chat.completion.chunk", created: 1, model: "synthetic-model", choices: [{ index: 0, delta: { content: "応答" }, finish_reason: null }] },
@@ -38,10 +53,11 @@ describe("AI SDK Core compatible adapter (fake HTTP only)", () => {
       return new Response(frames.map((frame) => "data: " + JSON.stringify(frame) + "\n\n").join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const provider = new SdkChatProvider(registry(), () => null);
+    const selected = { ...config, auth: useApiKey ? "secret" as const : "none" as const, secretId: useApiKey ? "test" : "" };
+    const provider = new SdkChatProvider(registry(), (_id, endpoint) => endpoint === selected.endpoint ? "sk-synthetic" : null);
     const events = [];
-    for await (const event of provider.stream({ config, messages: [{ role: "user", content: "synthetic test" }], signal: new AbortController().signal })) events.push(event);
+    for await (const event of provider.stream({ config: selected, messages: [{ role: "user", content: "synthetic test" }], signal: new AbortController().signal })) events.push(event);
     expect(events.filter((event) => event.type === "text").map((event) => event.text).join("")).toBe("合成応答");
-    expect(events.at(-1)?.type).toBe("context"); expect(fetchMock).toHaveBeenCalledOnce();
+    expect(events.at(-1)?.type).toBe("completion"); expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

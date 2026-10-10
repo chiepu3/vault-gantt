@@ -1,4 +1,15 @@
-import { Notice, Plugin, TFile, moment } from "obsidian";
+import { ApprovalView, VIEW_TYPE_AI_APPROVAL } from "./ui/approval-view";
+import { DEFAULT_MCP_SETTINGS, mcpSettingsSchema, startMcpServer, type McpServerHandle } from "./mcp/server";
+import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "./contracts/operations";
+import type { OperationRequestResultV1 } from "./contracts/preview";
+import { TaskFinderModal } from "./ui/task-finder-modal";
+import { detectConfiguredDailyNoteSettings } from "./app/daily-note-creation";
+import type { PreviewUiHostPorts } from "./contracts/ports";
+import { ViewStateService } from "./app/view-state-service";
+import { OperationService } from "./app/operation-service";
+import { SettingsPersistence } from "./app/settings-persistence";
+import { canonical } from "./app/operations/runtime";
+import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
@@ -61,6 +72,7 @@ import { OperationRegistry } from "./app/operation-registry";
 import { ScheduleGhostStore } from "./app/schedule-ghost";
 import { ChatSession } from "./ai/chat-session";
 import { SdkChatProvider } from "./ai/sdk-provider";
+import { AI_SECRET_ID, aiKeyOriginError, connectionOrigin, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig, type AiConnectionSettings, type ModelListResult } from "./ai/connection-settings";
 import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
 import { NavigationService as ObsidianNavigationService } from "./app/navigation-service";
 import { ToolAdapter } from "./agent-tools/tool-adapter";
@@ -269,7 +281,142 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }, () => this.vaultAdapter());
   }
   readonly operations = this.createOperations();
+  private settingsPersistence?: SettingsPersistence;
+  private settingsWriter(): SettingsPersistence {
+    return this.settingsPersistence ??= new SettingsPersistence({ settings: () => this.settings,
+      coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData({ ...settings, ai: this.aiSettings }), read: () => this.loadData() });
+  }
+  private createOperationService(): OperationService {
+    const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
+    return new OperationService({ get settings() { return settings(); }, historyManager: this.historyManager, coordinator: this.operations,
+      persistSettings: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
+      publishesSettings: true,
+      get ui() { return ui(); }, get chatSession() { return session(); }, get logger() { return logger(); },
+      integration: { get pluginVersion() { return version(); }, fetchNationalHolidays: (current) => this.holidayFetcher(current), detectDailyNoteSettings: () => detectConfiguredDailyNoteSettings(this.app) },
+      sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
+      restartSync: () => this.startGanttSyncTimer(false),
+      requestApproval: async (previewId) => { await this.uiPort.requestApproval(previewId); },
+      invalidate: async () => { this.scheduleGhosts.clear(); this.taskCache.clear(); await this.refreshOpenViews(); },
+    }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  }
+  readonly operationService = this.createOperationService();
+  get previewPort() { return this.operationService.previewPort; }
+  get humanApprovalPort() { return this.operationService.humanApprovalPort; }
+  get contextReadPort() { return this.operationService.contextPort; }
+  readonly uiPort = new ViewStateService(this.previewPort, async (previewId) => {
+    const preview = this.previewPort.inspect(previewId);
+    if (preview?.origin.kind === "mcp") await this.activateApprovalView();
+    else await this.openAIChat("tab");
+  }, (id, input) => this.requestGlobalView(id, input));
+  private async activateOperationView(type: string, position: "tab" | "left" | "right" = "tab"): Promise<void> {
+    if (position === "tab") { if (type === VIEW_TYPE_TASK_WORKBENCH) await this.navigation.activateView(); else await this.navigation.activateGanttView(); return; }
+    const workspace = this.app.workspace;
+    const leaf = workspace.getLeavesOfType(type)[0] ?? (position === "left" ? workspace.getLeftLeaf(true) : workspace.getRightLeaf(true));
+    if (!leaf) throw new Error("UI_UNAVAILABLE");
+    await leaf.setViewState({ type, active: true }); await workspace.revealLeaf(leaf);
+  }
+  private async requestGlobalView(id: ViewOperationId, input: unknown): Promise<OperationRequestResultV1> {
+    const args = operationInputSchemas[id].parse(input);
+    if (id === "V01") await this.activateOperationView(VIEW_TYPE_TASK_WORKBENCH, (args as OperationInputMap["V01"]).position);
+    else if (id === "V02") await this.activateOperationView(VIEW_TYPE_TASK_GANTT, (args as OperationInputMap["V02"]).position);
+    else if (id === "V03") {
+      const rows = await this.operationService.rows(), finder = new TaskFinderModal(this.app, { openTaskItem: (row) => this.navigation.openTaskItem?.(row) }, rows);
+      finder.open(); finder.setQuery((args as OperationInputMap["V03"]).query ?? "");
+    } else if (id === "V04") await this.navigation.openTaskItem?.(await this.operationService.get((args as OperationInputMap["V04"]).taskId));
+    else if (id === "V05") await this.runOpenDailyTodoCommand((args as OperationInputMap["V05"]).date);
+    else if (id === "V06") await this.openAIChat((args as OperationInputMap["V06"]).position ?? "tab");
+    else if (id === "D08") {
+      const file = this.app.vault.getFileByPath((args as OperationInputMap["D08"]).path);
+      if (!file) throw new Error("NOT_FOUND");
+      await this.app.workspace.getLeaf(false).openFile(file);
+    } else return { schemaVersion: 1, resultKind: "request", operationId: id, status: "unavailable", effects: [], error: { code: "UI_UNAVAILABLE", retryable: false, nextAction: "対象viewIdを指定してください。" } };
+    return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before: null, after: args as import("./contracts/context").Json, affectedIds: [] }] };
+  }
+  get historyPort() { return this.historyManager; }
   chatSession!: ChatSession;
+  /** AI connection settings live next to, not inside, `settings` so snapshots, previews, AI context and MCP never see them. */
+  aiSettings: AiConnectionSettings = defaultAiSettings();
+  aiModels: string[] = [];
+  private viewCounter = 0;
+  private mcpServer?: McpServerHandle;
+  private mcpTail: Promise<void> = Promise.resolve();
+  private mcpSessionToken?: string;
+  private unloading = false;
+  private previewUiPorts(kind: string): PreviewUiHostPorts {
+    return { operationService: this.operationService, previewPort: this.previewPort, projectionDetailPort: this.previewPort,
+      humanApprovalPort: this.humanApprovalPort, historyPort: this.historyPort, uiPort: this.uiPort,
+      undoPort: { undoEntry: (entryId) => this.undoEntry(entryId) }, viewStatePort: this.uiPort, viewId: `${kind}-${++this.viewCounter}` };
+  }
+  getMcpVaultInstanceId(): string { return this.operationService.vaultInstanceId; }
+  getMcpSettings() { return this.settings.mcp ?? DEFAULT_MCP_SETTINGS; }
+  getMcpStatus(): string {
+    if (!Platform.isDesktopApp) return "デスクトップ版で利用できます。";
+    return this.mcpServer?.endpoint ?? (this.getMcpSettings().enabled ? "停止中" : "無効");
+  }
+  private queueMcp(action: () => Promise<void>): Promise<void> {
+    const result = this.mcpTail.then(action); this.mcpTail = result.catch(() => undefined); return result;
+  }
+  async configureMcp(): Promise<void> {
+    return this.queueMcp(async () => {
+      await this.mcpServer?.stop(); this.mcpServer = undefined;
+      if (this.unloading || !Platform.isDesktopApp || !this.getMcpSettings().enabled) return;
+      const settings = mcpSettingsSchema.parse(this.getMcpSettings());
+      const token = (settings.secretId ? this.app.secretStorage?.getSecret(settings.secretId) : null) ?? this.mcpSessionToken;
+      const handle = await startMcpServer({ operations: this.operationService, previews: this.previewPort, context: this.contextReadPort, history: this.historyPort,
+        vaultInstanceId: this.operationService.vaultInstanceId, principal: { id: "mcp-local", label: "ローカルMCP接続" }, isDesktop: true, token: token ?? undefined }, settings);
+      if (this.unloading) { await handle.stop(); return; }
+      this.mcpServer = handle;
+      if (handle.sessionToken) {
+        this.mcpSessionToken = handle.sessionToken;
+        if (!token && this.app.secretStorage) {
+          try { await this.persistMcpToken(handle.sessionToken); }
+          catch (error) { await handle.stop(); this.mcpServer = undefined; throw error; }
+        }
+      }
+    });
+  }
+  private async persistMcpToken(token: string): Promise<void> {
+    this.mcpSessionToken = token;
+    if (this.app.secretStorage) {
+      const secretId = this.getMcpSettings().secretId ?? `vault-gantt-mcp-${this.operationService.vaultInstanceId}`;
+      this.app.secretStorage.setSecret(secretId, token);
+      this.settings.mcp = { ...this.getMcpSettings(), secretId };
+      await this.saveSettings();
+    }
+  }
+  async generateMcpToken(regenerate = false): Promise<void> {
+    if (!Platform.isDesktopApp || this.unloading) throw new Error("デスクトップ版で利用できます。");
+    return this.queueMcp(async () => {
+      if (this.unloading) return;
+      const settings = this.getMcpSettings();
+      const existing = (settings.secretId ? this.app.secretStorage?.getSecret(settings.secretId) : null) ?? this.mcpSessionToken;
+      if (existing && !regenerate) { new Notice("トークンは生成済みです。変更する場合は再生成してください。"); return; }
+      const token = this.mcpServer?.running ? await this.mcpServer.regenerateToken() : (await import("./mcp/auth")).generateMcpToken();
+      try { await this.persistMcpToken(token); }
+      catch (error) { await this.mcpServer?.stop(); this.mcpServer = undefined; throw error; }
+      new Notice(this.app.secretStorage ? "MCPトークンを保存しました" : "MCPトークンを生成しました。この起動中だけ有効です。");
+    });
+  }
+  async copyMcpToken(): Promise<void> {
+    const settings = this.getMcpSettings();
+    const token = this.mcpServer?.sessionToken ?? (settings.secretId ? this.app.secretStorage?.getSecret(settings.secretId) : null) ?? this.mcpSessionToken;
+    if (!token) throw new Error("先にトークンを生成するかMCPを有効にしてください。");
+    await navigator.clipboard.writeText(token); new Notice("MCPトークンをコピーしました");
+  }
+  async activateApprovalView(): Promise<void> {
+    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_APPROVAL)[0];
+    if (!leaf) { leaf = this.app.workspace.getLeaf("tab"); await leaf.setViewState({ type: VIEW_TYPE_AI_APPROVAL, active: true }); }
+    await this.app.workspace.revealLeaf(leaf);
+  }
+  undoEntry(entryId: string): Promise<void> {
+    return this.operations.coordinate(async () => {
+      await this.historyManager.refreshEligibility();
+      if (this.historyPort.inspectUndo(entryId).state !== "available" || this.historyManager.peekUndoLabel() !== entryId) throw new Error("この履歴は現在元に戻せません。履歴と対象ファイルを確認してください。");
+      const result = await this.historyManager.undo(this.app.vault);
+      if (result.kind !== "success") throw new Error("保存後の変更を検出したため、元に戻せませんでした。");
+      this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
+    });
+  }
 
 
   // aggregate (loadDailyTodoSummaries) plus the write-side functions
@@ -304,15 +451,104 @@ export default class TaskWorkbenchPlugin extends Plugin {
  * remain undefined.
  */
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    this.aiSettings = normalizeAiSettings(ai);
+    const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
+    this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
+    this.settingsPersistence = undefined; this.settingsWriter();
+    const migrateOrigin = this.hasAiApiKey() && this.aiSettings.apiKeyOrigin === undefined;
+    if (migrateOrigin) this.aiSettings.apiKeyOrigin = connectionOrigin(this.aiSettings.baseUrl) ?? "";
+    if (this.aiSettings.apiKey && this.app.secretStorage) {
+      // Move a key saved in data.json into secret storage as soon as it is available.
+      try { this.app.secretStorage.setSecret(AI_SECRET_ID, this.aiSettings.apiKey); }
+      catch { new Notice("APIキーを秘密ストレージへ移せませんでした。"); return; }
+      const { apiKey: _key, ...migrated } = this.aiSettings;
+      void _key;
+      try { await this.writeAiSettings(migrated); delete this.aiSettings.apiKey; }
+      catch { new Notice("data.json の平文のAPIキーを削除できませんでした。"); }
+    } else if (migrateOrigin) {
+      try { await this.writeAiSettings(); }
+      catch { new Notice("APIキーの接続先を保存できませんでした。"); }
+    }
   }
 
   /**
  *
  * Persists the in-memory settings object to disk.
  */
+  private writeAiSettings(ai = this.aiSettings): Promise<void> {
+    const candidate = structuredClone(ai);
+    // AI settings stay outside TaskWorkbenchSettings. Use its persistence path
+    // with no workbench patch, and verify the separate AI payload on readback.
+    const writer = new SettingsPersistence({
+      settings: () => this.settings,
+      coordinate: (run) => this.operations.coordinate(run),
+      write: (settings) => this.saveData({ ...settings, ai: candidate }),
+      read: async () => {
+        const actual = await this.loadData();
+        if (canonical(actual?.ai) !== canonical(candidate)) throw new Error("SETTINGS_SAVE_CONFLICT");
+        return actual;
+      },
+    });
+    return this.operations.coordinate(() => writer.persist(this.settings, [], false));
+  }
+  /** Applies the saved connection to the chat session; the session is only touched when something changed. */
+  applyAiConnection(): void {
+    const next = toConnectionConfig(this.aiSettings), current = this.chatSession.config;
+    if (JSON.stringify(next) !== JSON.stringify(current)) this.chatSession.configure(next);
+  }
+  getAiSettings(): AiConnectionSettings { const { apiKey: _key, ...rest } = this.aiSettings; void _key; return { ...rest }; }
+  async updateAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>): Promise<void> {
+    this.aiSettings = normalizeAiSettings({ ...this.aiSettings, ...patch });
+    await this.writeAiSettings();
+    this.applyAiConnection();
+  }
+  aiKeyStorage(): "secret" | "data" { return this.aiSettings.apiKey || !this.app.secretStorage ? "data" : "secret"; }
+  private storedAiApiKey(): string | null {
+    const stored = this.aiSettings.apiKey ?? this.app.secretStorage?.getSecret(AI_SECRET_ID);
+    return stored ? stored : null;
+  }
+  private readAiApiKey(endpoint = this.aiSettings.baseUrl): string | null {
+    const origin = connectionOrigin(endpoint);
+    return this.aiSettings.useApiKey && origin && origin === connectionOrigin(this.aiSettings.baseUrl) && origin === this.aiSettings.apiKeyOrigin ? this.storedAiApiKey() : null;
+  }
+  hasAiApiKey(): boolean { return !!this.storedAiApiKey(); }
+  async setAiApiKey(key: string): Promise<void> {
+    const value = key.trim();
+    if (!value) throw new Error("EMPTY_KEY");
+    const origin = connectionOrigin(this.aiSettings.baseUrl);
+    if (!origin) throw new Error("接続先URLを確認してからAPIキーを保存してください。");
+    if (this.app.secretStorage) { this.app.secretStorage.setSecret(AI_SECRET_ID, value); delete this.aiSettings.apiKey; }
+    else this.aiSettings = { ...this.aiSettings, apiKey: value };
+    this.aiSettings.apiKeyOrigin = origin;
+    await this.writeAiSettings();
+    this.applyAiConnection();
+  }
+  async clearAiApiKey(): Promise<void> {
+    // Secret storage has no delete; an empty value is treated as not registered.
+    this.app.secretStorage?.setSecret(AI_SECRET_ID, "");
+    delete this.aiSettings.apiKey;
+    delete this.aiSettings.apiKeyOrigin;
+    await this.writeAiSettings();
+    this.applyAiConnection();
+  }
+  async fetchAiModels(): Promise<ModelListResult> {
+    const originError = aiKeyOriginError(this.aiSettings);
+    if (originError) return { ok: false, reason: originError };
+    const result = await listModels({ baseUrl: this.aiSettings.baseUrl, apiKey: this.readAiApiKey(), apiKeyOrigin: this.aiSettings.apiKeyOrigin });
+    if (result.ok) this.aiModels = result.models;
+    return result;
+  }
+  openAiSettings(): void {
+    const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+    if (!setting) { new Notice("設定画面の「Vault Gantt」を開いてください。"); return; }
+    setting.open(); setting.openTabById(this.manifest.id);
+  }
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    await this.settingsWriter().save();
+    this.operationService.clearSavedProjection();
+    await this.operationService.invalidatePreviews();
   }
 
   async onload(): Promise<void> {
@@ -325,12 +561,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     // settings load failures propagate — plugin load fails
     await this.loadSettings();
+    this.unloading = false;
+    this.historyManager.attachVault(() => this.vaultAdapter());
 
-    this.chatSession = new ChatSession(this.app.vault, this.operations, new SdkChatProvider(this.operations, (id) => this.app.secretStorage?.getSecret(id) ?? null), (result) => this.scheduleGhosts.show(result));
+    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === AI_SECRET_ID ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
+    this.applyAiConnection();
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,
+      previewPorts: this.previewUiPorts("chat"),
       closeDiff: () => this.scheduleGhosts.clear(),
-      secretIds: () => this.app.secretStorage?.listSecrets() ?? [],
+      openSettings: () => this.openAiSettings(),
+      modelOptions: () => this.aiModels,
       selectedTask: () => {
         const file = this.app.workspace.getActiveFile();
         const folder = this.settings.taskFolder.replace(/\/+$/, "");
@@ -349,6 +590,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     }));
 
 
+    this.registerView(VIEW_TYPE_AI_APPROVAL, (leaf) => new ApprovalView(leaf, { ...this.previewUiPorts("approval"), openGantt: () => this.navigation.activateGanttView() }));
     this.holidays = this.createHolidayService();
 
     // attempt old-structure holiday migration;
@@ -388,6 +630,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     }
 
+    try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
     // fire-and-forget background holiday refresh.
     // The caller never awaits or catches: an unexpected rejection surfaces as
     // an unhandled rejection (console) without blocking plugin startup.
@@ -418,16 +661,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
     );
 
     if (typeof this.registerEvent === "function") {
-      const clear = () => this.scheduleGhosts.clear();
-      this.registerEvent(this.app.vault.on("modify", clear));
-      this.registerEvent(this.app.vault.on("create", clear));
-      this.registerEvent(this.app.vault.on("delete", clear));
-      this.registerEvent(this.app.vault.on("rename", clear));
+      const clear = (file: TFile, kind: "modify" | "create" | "delete" | "rename") => { this.scheduleGhosts.clear(); void this.historyManager.refreshEligibility(); void this.operationService.handleVaultChange(file.path, kind); };
+      this.registerEvent(this.app.vault.on("modify", (file) => clear(file as TFile, "modify")));
+      this.registerEvent(this.app.vault.on("create", (file) => clear(file as TFile, "create")));
+      this.registerEvent(this.app.vault.on("delete", (file) => clear(file as TFile, "delete")));
+      this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
     }
     this.registerCommands();
     for (const [position, label] of [["tab", "タブ"], ["left", "左サイドバー"], ["right", "右サイドバー"]] as const) {
       this.addCommand({ id: "open-ai-chat-" + position, name: "AI チャットを開く（" + label + "）", callback: () => this.openAIChat(position) });
     }
+    this.addCommand({ id: "open-ai-approval", name: "AIの承認一覧を開く", callback: () => { void this.activateApprovalView(); } });
     this.registerRibbonIcons();
 
 
@@ -479,7 +723,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.unloading = true;
+    void this.queueMcp(async () => { await this.mcpServer?.stop(); this.mcpServer = undefined; }).catch(() => { /* Shutdown still releases the listener. */ });
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_APPROVAL);
     this.chatSession?.dispose();
+    this.operationService.dispose();
     this.scheduleGhosts.clear();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_CHAT);
     // stop the Gantt sync timer; with a null handle
@@ -516,7 +764,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
 
-  startGanttSyncTimer(): void {
+  startGanttSyncTimer(sendImmediately = true): void {
     if (this.ganttSyncIntervalId) {
       clearInterval(this.ganttSyncIntervalId);
       this.ganttSyncIntervalId = null;
@@ -531,7 +779,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       void this.runAutomaticGanttSync();
     }, intervalMs);
 
-    void this.runAutomaticGanttSync();
+    if (sendImmediately) void this.runAutomaticGanttSync();
   }
 
   /**
@@ -636,6 +884,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   private async performUndo(): Promise<void> {
+    this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
     const result = await this.historyManager.undo(this.app.vault);
     switch (result.kind) {
@@ -662,6 +911,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   private async performRedo(): Promise<void> {
+    this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
     const result = await this.historyManager.redo(this.app.vault);
     switch (result.kind) {
@@ -1328,11 +1578,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
 
-  private async runOpenDailyTodoCommand(): Promise<void> {
+  private async runOpenDailyTodoCommand(date = todayStr()): Promise<void> {
     await this.navigation.activateGanttView();
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT)[0];
     if (leaf?.view instanceof TaskGanttView) {
-      await leaf.view.openDailyTodoPopoverForDate(todayStr());
+      await leaf.view.openDailyTodoPopoverForDate(date);
     }
   }
 
@@ -1382,6 +1632,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
  */
   private workbenchViewHost(): TaskWorkbenchViewHost {
     return {
+      ...this.previewUiPorts("workbench"),
 
       logger: this.logger,
 
@@ -1443,6 +1694,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
   private ganttViewHost(): TaskGanttViewHost {
     return {
+      ...this.previewUiPorts("gantt"),
       ghosts: this.scheduleGhosts,
 
       logger: this.logger,

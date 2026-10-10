@@ -1,7 +1,12 @@
+import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
+import type { OperationRequestResultV1 } from "../contracts/preview";
+import type { PreviewUiHostPorts } from "../contracts/ports";
 import { NotePreservationError } from "../core/note-update";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
+import { renderGhost, renderPointGhosts } from "./ghost-layer";
+import type { PreviewPort } from "../contracts/ports";
+import { PreviewGanttLayer } from "./preview-gantt-layer";
 import { SubtaskAddConflictError } from "../app/task-operations";
-import { renderGhost } from "./ghost-layer";
 import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
 
@@ -103,6 +108,7 @@ import {
   updateWeeklyWorkSchedule,
 } from "../app/gantt-task-service";
 import { WeeklyWorkScheduleModal } from "./modals";
+import { registerHistoryHotkeys } from "./history-hotkeys";
 
 
 /**
@@ -278,8 +284,10 @@ function isNodeInsideMenu(node: Node): boolean {
   return false;
 }
 
-export interface TaskGanttViewHost {
+export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
   ghosts?: ScheduleGhostStore;
+  /** Pending/saved operation previews to project onto the chart. Absent = no preview overlay. */
+  previewPort?: PreviewPort;
 
   logger: Logger;
 
@@ -865,6 +873,7 @@ export function computeRichPopoverPosition(
 
 
 export class TaskGanttView extends ItemView {
+  private unregisterHistoryHotkeys?: () => void;
   // --- Data ---
   /** Last loaded task list returned by host.loadTasks. */
   private tasks: TaskRow[] = [];
@@ -877,6 +886,7 @@ export class TaskGanttView extends ItemView {
   /** Number of consecutive days from rangeStart. */
   private rangeDays = 90;
   /** Pixels per day, initialized from settings.ganttZoom. */
+  private unregisterState?: () => void;
   private dayWidth: number;
   /**
  * The date list last built by renderChart (buildDates(rangeStart,
@@ -916,6 +926,7 @@ export class TaskGanttView extends ItemView {
 
   /** last month shown in the floating label (dedupe key). */
   private lastFloatingMonth = "";
+  private chartNeedsVisibleRender = false;
 
 
 
@@ -939,6 +950,12 @@ export class TaskGanttView extends ItemView {
   private unsubscribeGhosts?: () => void;
   private readonly ghostNodes = new Map<string, { nodes: HTMLElement[]; current?: HTMLElement }>();
   private ghostLegend?: HTMLElement;
+  private previewLayer?: PreviewGanttLayer;
+  private unsubscribePreview?: () => void;
+  private previewDockHost?: HTMLElement;
+  /** Overlay-only nodes (deadline/marker ghosts, delete labels) and the bars we marked. Live rows are untouched. */
+  private readonly previewNodes = new Map<string, HTMLElement[]>();
+  private readonly previewMarkedBars = new Set<HTMLElement>();
   /** The scrollable element. */
   private wrapEl!: HTMLElement;
   /** Always-visible current-month label, kept in the toolbar so it survives
@@ -1262,7 +1279,46 @@ export class TaskGanttView extends ItemView {
  * inside requestAnimationFrame — auto-scrolls so today sits 220px from the
  * left edge.
  */
+  async requestViewOperation(id: ViewOperationId, input: unknown): Promise<OperationRequestResultV1> {
+    const args = operationInputSchemas[id].parse(input), before = { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter] };
+    if (id === "V13") { this.activeTagFilter = new Set((args as OperationInputMap["V13"]).tagNames); await this.render(); }
+    else if (id === "V14") await this.setZoom((args as OperationInputMap["V14"]).dayWidth);
+    else if (id === "V15") { const target = args as OperationInputMap["V15"]; if (!this.dates.includes(target.date)) { this.rangeStart = addDays(target.date, -14); this.rangeDays = 90; this.renderChart(); } this.scrollToDate(target.date, target.offset); }
+    else if (id === "V16") await this.render();
+    else if (id === "V18") {
+      const target = args as OperationInputMap["V18"];
+      const task = this.tasks.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]).find((row) => row.id === target.targetId);
+      if (target.targetKind === "task" && (!task || task.kind !== "subtask") || target.targetKind === "event" && !this.host.settings.ganttEvents.some((event) => event.key === target.targetId)) throw new Error("NOT_FOUND");
+      this.workloadModeStore.set(target.targetKind === "task" ? getWorkloadTaskKey(task!) : target.targetId, { mode: target.mode });
+      this.closeWorkloadPopup();
+    } else if (id === "V19") {
+      const target = args as OperationInputMap["V19"];
+      if (!target.enabled) this.bulkMoveState = undefined;
+      else {
+        const parent = this.tasks.find((row) => row.kind === "parent" && row.id === target.parentId);
+        const anchor = [...parent?.subtasks?.values() ?? []].find((row) => row.id === target.anchorId);
+        if (!parent || target.anchorId && !anchor) throw new Error("NOT_FOUND");
+        this.bulkMoveState = { parentKey: parent.id, anchorKey: anchor?.id ?? "", anchorStart: anchor?.plannedStartDate ?? todayStr() };
+      }
+    } else if (id === "V17") {
+      const target = args as OperationInputMap["V17"], anchorEl = this.barElsByTaskId.get(target.target) ?? this.wrapEl;
+      if (target.kind === "weekly") {
+        const button = this.wrapEl.querySelector<HTMLButtonElement>(".task-gantt-workload-settings-button"); if (!button) throw new Error("UI_UNAVAILABLE"); button.click();
+      } else if (target.kind === "workload") { if (!this.host.settings.ganttFeatureWorkloadEnabled || !this.dates.includes(target.target)) throw new Error("UI_UNAVAILABLE"); this.showWorkloadDaySummaryPopup(target.target, anchorEl); }
+      else if (target.kind === "daily") { const summary = this.dailyTodoSummaries.find((day) => day.date === target.target); if (!summary || !this.host.settings.ganttFeatureDailyTodoEnabled) throw new Error("UI_UNAVAILABLE"); this.openDailyTodoPopover(summary.date, anchorEl); }
+      else if (target.kind === "event") { const event = this.host.settings.ganttEvents.find((event) => event.key === target.target); if (!event || !this.host.settings.ganttFeatureEventsEnabled || !this.host.settings.ganttFeatureWorkloadEnabled) throw new Error("UI_UNAVAILABLE"); this.showWorkloadPopupForEvent(event, anchorEl); }
+      else {
+        const task = this.tasks.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]).find((row) => row.id === target.target && (target.kind === "parent" ? row.kind === "parent" : true));
+        if (!task) throw new Error("NOT_FOUND");
+        this.closeRichPopover(); this.openRichPopover(task.kind === "parent" ? { kind: "parent", task, anchorEl } : { kind: "subtask", task, anchorEl, barStart: task.plannedStartDate ?? "", barEnd: task.plannedEndDate ?? "" }, new MouseEvent("mouseover"));
+      }
+    } else return { schemaVersion: 1, resultKind: "request", operationId: id, status: "unavailable", effects: [], error: { code: "UI_UNAVAILABLE", retryable: false, nextAction: "Ganttに対応する表示操作を指定してください。" } };
+    return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before, after: { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter], request: args as import("../contracts/context").Json }, affectedIds: [this.host.viewId!] }] };
+  }
   async onOpen(): Promise<void> {
+    this.unregisterHistoryHotkeys?.();
+    this.unregisterHistoryHotkeys = registerHistoryHotkeys(this, this.containerEl, this.host);
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "gantt", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [...this.activeTagFilter], dayWidth: this.dayWidth }), (id, input) => this.requestViewOperation(id, input));
 
     this.host.logger.info?.("TaskGanttView", "view opened", {});
 
@@ -1277,6 +1333,19 @@ export class TaskGanttView extends ItemView {
     container.appendChild(this.toolbarEl);
     this.renderToolbar();
 
+    if (this.host.previewPort) {
+      this.previewDockHost = document.createElement("div");
+      this.previewDockHost.classList.add("vg-pv-dockhost");
+      this.previewDockHost.hidden = true;
+      container.appendChild(this.previewDockHost);
+      this.previewLayer = new PreviewGanttLayer(this.host.previewPort);
+      this.unsubscribePreview = this.previewLayer.subscribe(() => {
+        this.clearGhostLayer();
+        this.renderPreviewDock();
+        this.renderChart();
+      });
+      this.renderPreviewDock();
+    }
 
     this.wrapEl = document.createElement("div");
     this.wrapEl.classList.add("task-gantt-wrap");
@@ -1307,6 +1376,22 @@ export class TaskGanttView extends ItemView {
     });
   }
 
+  onResize(): void {
+    const wrap = this.wrapEl;
+    if (!wrap || !this.floatingMonthEl) return;
+    // Obsidian can restore a hidden tab's scroll position as it reveals it,
+    // without a usable scroll event during the range-extension guard.
+    requestAnimationFrame(() => {
+      if (this.wrapEl !== wrap || !wrap.isConnected || wrap.offsetParent === null) return;
+      if (this.chartNeedsVisibleRender) {
+        const initial = !this.dates.length;
+        this.renderChart();
+        if (initial) this.scrollToDate(todayStr(), INITIAL_SCROLL_OFFSET_PX);
+      }
+      this.updateFloatingMonth();
+    });
+  }
+
   /**
  * The three popover kinds (rich popover, workload popup, workload day
  * summary popover) are appended to document.body rather than containerEl
@@ -1320,6 +1405,12 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
+    this.unregisterState?.(); this.unregisterState = undefined;
+    // The overlay never outlives the view; a pending plan itself stays in the store.
+    this.unsubscribePreview?.(); this.unsubscribePreview = undefined;
+    if (this.previewLayer?.active) this.previewLayer.close();
+    this.previewLayer?.dispose(); this.previewLayer = undefined;
     this.dailyTodoCommandGeneration += 1;
     this.unsubscribeGhosts?.(); this.unsubscribeGhosts = undefined;
     this.host.ghosts?.clear();
@@ -1349,6 +1440,38 @@ export class TaskGanttView extends ItemView {
       nodes.forEach((node) => node.remove()); current?.classList.remove("vg-ai-target");
     }
     this.ghostNodes.clear(); this.ghostLegend?.remove(); this.ghostLegend = undefined;
+    for (const [taskId, nodes] of this.previewNodes) {
+      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      nodes.forEach((node) => node.remove());
+    }
+    this.previewNodes.clear();
+    for (const bar of this.previewMarkedBars) bar.classList.remove("vg-pv-delete-target");
+    this.previewMarkedBars.clear();
+  }
+
+  /** Re-draws the separate preview region (after-state rows, panels) for the focused preview. */
+  private renderPreviewDock(): void {
+    const host = this.previewDockHost; if (!host || !this.previewLayer) return;
+    host.empty();
+    this.previewLayer.renderDock(host);
+    host.hidden = !this.previewLayer.active;
+  }
+
+  /** Deadline/marker ghosts and delete labels for one task, in the same lane as the schedule ghost. */
+  private paintPreviewExtras(timeline: HTMLElement, taskId: string, baseDate: string, dayWidth: number, top: number, bar?: HTMLElement): void {
+    const layer = this.previewLayer; if (!layer?.active) return;
+    this.previewNodes.get(taskId)?.forEach((node) => node.remove());
+    const nodes: HTMLElement[] = [];
+    const points = layer.pointsFor(taskId);
+    if (points.length) nodes.push(...renderPointGhosts(timeline, points, baseDate, dayWidth, top));
+    if (layer.isDeleted(taskId)) {
+      if (bar) { bar.classList.add("vg-pv-delete-target"); this.previewMarkedBars.add(bar); }
+      const note = document.createElement("span"); note.className = "vg-pv-live-delete";
+      note.textContent = "削除予定"; note.title = "承認すると削除されます（元の行は承認まで変わりません）";
+      note.style.top = Math.max(0, top - 10) + "px"; note.style.left = (bar ? Number.parseFloat(bar.style.left || "0") : 0) + "px";
+      timeline.appendChild(note); nodes.push(note);
+    }
+    if (nodes.length) this.previewNodes.set(taskId, nodes);
   }
 
   /** Opens a context menu after closing any prior menu and its native children. */
@@ -1402,12 +1525,17 @@ export class TaskGanttView extends ItemView {
  * selects the full-render escape hatch.
  */
   renderChart(): void {
+    // Hidden tabs report zero scroll offsets. Rebuilding them would discard
+    // the visible date and derive a month from the range's far-left edge.
+    if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
+    this.chartNeedsVisibleRender = false;
     this.dateClassesCache.clear();
-    if (this.host.ghosts?.entries.size && !this.ghostLegend) {
+    if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
+      const legend = this.previewLayer?.legend();
       this.ghostLegend = document.createElement("span");
       this.ghostLegend.className = "vg-ai-legend";
-      this.ghostLegend.textContent = "AI変更 · 上: 前 ┄ ／ 下: 後 ▰ · 60秒";
-      this.ghostLegend.title = "変更前は上段の破線帯、変更後は下段の通常バー。矢印は期間の端、◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
+      this.ghostLegend.textContent = legend?.text ?? "AI変更 · 上: 前（破線） ／ 下: 後 · 60秒";
+      this.ghostLegend.title = legend?.title ?? "変更前は上段の破線帯、変更後は下段の通常バー。◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
       this.toolbarEl.appendChild(this.ghostLegend);
     }
 
@@ -1482,7 +1610,9 @@ export class TaskGanttView extends ItemView {
     dates: string[],
     headerFingerprint: string
   ): void {
-
+    // Removing live scroll content clamps the browser's offsets to zero.
+    // Restore them after rebuilding, before deriving the visible month.
+    const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
 
     // header, then the fixed rows — rendered even when
@@ -1502,6 +1632,7 @@ export class TaskGanttView extends ItemView {
       empty.textContent =
         "ガント表示対象の親タスクがありません。親タスクの frontmatter / ダッシュボードで ganttEnabled を true にしてください。";
       this.wrapEl.appendChild(empty);
+      this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
       this.updateFloatingMonth();
       return;
     }
@@ -1527,7 +1658,7 @@ export class TaskGanttView extends ItemView {
       const rowEl = this.renderParentRow(parent, dates);
       rowFragment.appendChild(rowEl);
       rowEls.set(parent.file.path, rowEl);
-      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? ""));
+      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? ""));
     }
     this.wrapEl.appendChild(rowFragment);
 
@@ -1546,6 +1677,8 @@ export class TaskGanttView extends ItemView {
 
     // the add row is (re)built at the very end.
     this.renderParentAddRow();
+
+    this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
 
     // keep the floating month in sync after every chart render.
     this.updateFloatingMonth();
@@ -1630,7 +1763,7 @@ export class TaskGanttView extends ItemView {
       }
 
 
-      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "");
+      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? "");
       if (
         oldEl !== undefined &&
         cache.rowFingerprints.get(path) === fingerprint
@@ -4210,11 +4343,13 @@ export class TaskGanttView extends ItemView {
 
     const renderedIds = new Set(renders.map((item) => item.bar.task.id));
     for (const subtask of parent.subtasks?.values() ?? []) {
-      const ghost = this.host.ghosts?.entries.get(subtask.id);
+      const savedGhost = this.host.ghosts?.entries.get(subtask.id);
+      const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(subtask.id);
       if (ghost && !renderedIds.has(subtask.id)) {
         this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
-        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX) });
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX, undefined, savedGhost ? "saved" : this.previewLayer?.ghostMode) });
       }
+      if (!renderedIds.has(subtask.id)) this.paintPreviewExtras(timeline, subtask.id, baseDate, dayWidth, BAR_VERTICAL_INSET_PX);
     }
     // Bars, their markers and their external labels.
     for (const render of renders) {
@@ -4284,11 +4419,13 @@ export class TaskGanttView extends ItemView {
       resizeEnd.classList.add("task-gantt-resize-end");
       barEl.appendChild(resizeEnd);
       timeline.appendChild(barEl);
-      const ghost = this.host.ghosts?.entries.get(bar.task.id);
+      const savedGhost = this.host.ghosts?.entries.get(bar.task.id);
+      const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(bar.task.id);
       if (ghost) {
         this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
-        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl), current: barEl });
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl, savedGhost ? "saved" : this.previewLayer?.ghostMode), current: barEl });
       }
+      this.paintPreviewExtras(timeline, bar.task.id, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl);
       // Keep a keyed lookup for Bulk-Move previews and drag-state styling.
       this.barElsByTaskId.set(bar.task.id, barEl);
 
@@ -4767,6 +4904,7 @@ export class TaskGanttView extends ItemView {
           // put.
           this.wrapEl.scrollLeft += RANGE_EXTEND_DAYS * this.dayWidth;
           this.isExtendingRange = false;
+          this.updateFloatingMonth();
         });
       });
     } else if (
@@ -4780,6 +4918,7 @@ export class TaskGanttView extends ItemView {
       requestAnimationFrame(() => {
         this.renderChart();
         this.isExtendingRange = false;
+        this.updateFloatingMonth();
       });
     }
 
@@ -4795,7 +4934,7 @@ export class TaskGanttView extends ItemView {
   private updateFloatingMonth(): void {
     const startDate = this.getVisibleStartDate();
     const month = moment(startDate, "YYYY-MM-DD").format("YYYY年M月");
-    if (month === this.lastFloatingMonth) {
+    if (month === this.lastFloatingMonth && this.floatingMonthEl.textContent === month) {
       return;
     }
     this.lastFloatingMonth = month;
@@ -6460,14 +6599,22 @@ export class TaskGanttView extends ItemView {
     try {
       const anchorRect = anchor.getBoundingClientRect();
       const width = this.richPopoverWidth();
-      const measured = el.offsetHeight;
+      const viewportWidth = Number(window.innerWidth) || 0;
+      const viewportHeight = Number(window.innerHeight) || 0;
+      // Measure the final layout, including wrapping and the scroll limit.
+      el.style.width = `${width}px`;
+      el.style.maxHeight = `${Math.max(
+        120,
+        viewportHeight - RICH_POPOVER_VIEWPORT_MARGIN_PX * 2
+      )}px`;
+      el.style.overflowY = "auto";
+      // offsetHeight rounds to an integer and can undercount the border box.
+      const measured = el.getBoundingClientRect().height;
       // Use the measured content height with a minimum of 180px.
       const height = Math.max(
         RICH_POPOVER_MIN_HEIGHT_PX,
         typeof measured === "number" ? measured : 0
       );
-      const viewportWidth = Number(window.innerWidth) || 0;
-      const viewportHeight = Number(window.innerHeight) || 0;
       const pos: RichPopoverPosition = el.classList.contains("is-parent")
         ? this.computeParentRichPopoverPosition(
             anchorRect,
@@ -6489,13 +6636,6 @@ export class TaskGanttView extends ItemView {
           );
       el.style.left = `${pos.left}px`;
       el.style.top = `${pos.top}px`;
-      el.style.width = `${width}px`;
-      // Clamp the maximum height to the viewport and allow scrolling.
-      el.style.maxHeight = `${Math.max(
-        120,
-        viewportHeight - RICH_POPOVER_VIEWPORT_MARGIN_PX * 2
-      )}px`;
-      el.style.overflowY = "auto";
       el.setAttribute("data-side", pos.side);
     } catch (err) {
       // positioning is best-effort and must never throw.

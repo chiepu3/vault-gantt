@@ -9,9 +9,10 @@
   "author": "ryory",
   "scripts": {
     "build": "node esbuild.config.mjs production",
+    "build:mcp-bridge": "esbuild tools/mcp-bridge/cli.ts --bundle --platform=node --format=cjs --target=node20 --outfile=tools/mcp-bridge/dist/bridge.cjs",
     "dev": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests",
+    "lint": "eslint src tests && eslint tools/mcp-bridge --config tools/mcp-bridge/eslint.config.mjs",
     "test": "vitest run --passWithNoTests",
     "test:e2e": "node tools/e2e/run-smoke.mjs",
     "check": "npm run typecheck && npm run lint && npm run test",
@@ -32,6 +33,9 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.62",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "ai": "^7.0.127",
     "moment": "^2.29.0",
     "zod": "^4.6.5"
