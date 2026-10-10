@@ -4,6 +4,13 @@ import { AI_SECRET_ID, aiKeyOriginError, connectionOrigin, defaultAiSettings, li
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("AI connection settings", () => {
+  it.each(["http://192.168.1.20:1234", "http://ai-server:8000"])("normalizes and binds keys to a LAN origin (%s)", (origin) => {
+    const settings = normalizeAiSettings({ preset: "custom", baseUrl: origin + "/v1", useApiKey: true, apiKeyOrigin: origin + "/other/v1" });
+    expect(connectionOrigin(settings.baseUrl)).toBe(origin);
+    expect(settings.apiKeyOrigin).toBe(origin);
+    expect(toConnectionConfig(settings)).not.toHaveProperty("connectionError");
+    for (const baseUrl of [origin.replace(/:\d+$/, ":9000") + "/v1", origin.replace("http:", "https:") + "/v1", "http://other-server:8000/v1"]) expect(toConnectionConfig({ ...settings, baseUrl }).connectionError).toBeDefined();
+  });
   it("compares scheme, host and port while ignoring paths and default ports", () => {
     const saved = { ...defaultAiSettings(), apiKeyOrigin: "https://openrouter.ai" };
     expect(connectionOrigin(" https://OPENROUTER.ai:443/other/v1 ")).toBe(saved.apiKeyOrigin);
@@ -41,6 +48,21 @@ describe("AI connection settings", () => {
 });
 
 describe("listModels", () => {
+  it.each([
+    ["http://192.168.1.20:1234/v1", false], ["http://192.168.1.20:1234/v1", true],
+    ["http://ai-server:8000/v1", false], ["http://ai-server:8000/v1", true],
+  ])("fetches LAN models and keeps keys bound to their origin (%s, uses key: %s)", async (baseUrl, useApiKey) => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => json({ data: [{ id: "lan-model" }] }));
+    const options = { baseUrl, apiKey: useApiKey ? "sk-synthetic" : undefined, apiKeyOrigin: connectionOrigin(baseUrl)!, fetchImpl };
+    expect(await listModels(options)).toEqual({ ok: true, models: ["lan-model"] });
+    expect(fetchImpl.mock.calls[0][0]).toBe(baseUrl + "/models");
+    expect(new Headers(fetchImpl.mock.calls[0][1]?.headers).get("authorization")).toBe(useApiKey ? "Bearer sk-synthetic" : null);
+    if (useApiKey) {
+      fetchImpl.mockClear();
+      for (const changedUrl of ["http://other-server:8000/v1", baseUrl.replace("http:", "https:"), baseUrl.replace(/:\d+/, ":9000")]) expect((await listModels({ ...options, baseUrl: changedUrl })).ok).toBe(false);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
   it("blocks a saved key at another origin before any request", async () => {
     const fetchImpl = vi.fn();
     const result = await listModels({ baseUrl: "https://other.example/v1", apiKey: "sk-synthetic", apiKeyOrigin: "https://openrouter.ai", fetchImpl });
@@ -91,7 +113,7 @@ describe("listModels", () => {
   });
   it("rejects empty and unsafe URLs before any request", async () => {
     const fetchImpl = vi.fn();
-    for (const baseUrl of ["", "  ", "http://example.com/v1", "ftp://x/v1", "not a url", "https://user:pw@example.com/v1"]) {
+    for (const baseUrl of ["", "  ", "ftp://x/v1", "not a url", "https://user:pw@example.com/v1", "http://user:pw@ai-server:8000/v1", "http://ai-server:8000/v1?key=secret", "http://192.168.1.20:1234/v1#fragment"]) {
       expect((await listModels({ baseUrl, apiKey: "sk-synthetic", fetchImpl: fetchImpl as unknown as typeof fetch })).ok).toBe(false);
     }
     expect(fetchImpl).not.toHaveBeenCalled();

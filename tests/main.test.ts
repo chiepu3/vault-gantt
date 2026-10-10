@@ -421,6 +421,33 @@ describe("TaskWorkbenchPlugin", () => {
       expect((await h.plugin.loadData()).ai).not.toHaveProperty("apiKeyOrigin");
       h.plugin.onunload();
     });
+    it.each(["secret", "data"] as const)("saves LAN keys and only sends them to the saved HTTP origin (%s)", async (storage) => {
+      const h = createHarness({ autoPriorityEnabled: false, ai: { preset: "custom", baseUrl: "http://192.168.1.20:1234/v1", model: "test-model", useApiKey: true } });
+      const secrets = new Map<string, string>();
+      if (storage === "secret") h.fakeApp.secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, value: string) => secrets.set(id, value) };
+      await h.plugin.onload();
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ data: [{ id: "test-model" }] })));
+      vi.stubGlobal("fetch", fetchMock);
+      for (const baseUrl of ["http://192.168.1.20:1234/v1", "http://ai-server:8000/v1"]) {
+        await h.plugin.updateAiSettings({ baseUrl });
+        await h.plugin.setAiApiKey("sk-synthetic-lan");
+        const origin = new URL(baseUrl).origin;
+        expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe(origin);
+        expect(h.plugin.chatSession.connected).toBe(true);
+        expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+        expect(new Headers(fetchMock.mock.calls.at(-1)![1]?.headers).get("authorization")).toBe("Bearer sk-synthetic-lan");
+        expect((h.plugin as any).readAiApiKey(origin + "/another/v1")).toBe("sk-synthetic-lan");
+        fetchMock.mockClear();
+        for (const changedUrl of ["http://other-server:8000/v1", baseUrl.replace("http:", "https:"), baseUrl.replace(/:\d+/, ":9000")]) {
+          await h.plugin.updateAiSettings({ baseUrl: changedUrl });
+          expect((h.plugin as any).readAiApiKey(changedUrl)).toBeNull();
+          expect(h.plugin.chatSession.connected).toBe(false);
+          expect((await h.plugin.fetchAiModels()).ok).toBe(false);
+        }
+        expect(fetchMock).not.toHaveBeenCalled();
+      }
+      h.plugin.onunload();
+    });
     it.each(["secret", "data"] as const)("persists the current origin for a legacy key once (%s)", async (storage) => {
       const h = createHarness({ ai: { preset: "custom", baseUrl: "https://legacy.example:8443/v1", ...(storage === "data" ? { apiKey: "sk-synthetic-legacy" } : {}) } });
       if (storage === "secret") h.fakeApp.secretStorage = { getSecret: () => "sk-synthetic-legacy", setSecret: vi.fn() };

@@ -79,7 +79,7 @@ export async function listModels(options: { baseUrl: string; apiKey?: string | n
   if (originError) return { ok: false, reason: originError };
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   if (!baseUrl) return { ok: false, reason: "接続先URLを入力してください。" };
-  if (!validEndpoint(baseUrl)) return { ok: false, reason: "接続先URLは https:// で始まるものか、http://localhost のものを指定してください。" };
+  if (!validEndpoint(baseUrl)) return { ok: false, reason: "接続先URLは http:// または https:// で始まり、認証情報・クエリ・ハッシュを含まないものを指定してください。" };
   const fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10000);

@@ -4,7 +4,7 @@ import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
 import type { App, Plugin, ColorComponent, TextComponent, DropdownComponent } from "obsidian";
 
-import { AI_PRESET_LABELS, AI_PRESET_URLS, aiKeyOriginError, type AiConnectionSettings, type AiPreset, type ModelListResult } from "../ai/connection-settings";
+import { AI_PRESET_LABELS, AI_PRESET_URLS, aiKeyOriginError, connectionOrigin, type AiConnectionSettings, type AiPreset, type ModelListResult } from "../ai/connection-settings";
 
 import type {
   DailyTodoSourceConfig,
@@ -634,7 +634,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       await this.hostPlugin.updateAiSettings?.(patch);
       const settings = this.hostPlugin.getAiSettings?.();
       const originError = settings ? aiKeyOriginError(settings) : undefined;
-      this.aiOriginSetting?.setDesc(originError ?? this.aiUrlHelp);
+      if (settings) this.aiOriginSetting?.setDesc(this.aiUrlDescription(settings));
       if (originError) {
         ++this.aiFetchSeq;
         this.aiLoading = false;
@@ -650,6 +650,18 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       this.setAiTestNote("");
       await this.refreshAiModels();
     }
+  }
+
+  private aiUrlDescription(settings: AiConnectionSettings): string {
+    const description = aiKeyOriginError(settings) ?? this.aiUrlHelp;
+    const origin = connectionOrigin(settings.baseUrl);
+    if (settings.useApiKey && origin) {
+      const url = new URL(origin);
+      if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+        return description + "\nこの接続先は http のため、APIキーが暗号化されずに送られます。";
+      }
+    }
+    return description;
   }
 
   private drawAiSettings(): void {
@@ -690,12 +702,12 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     const urlHelp: Record<AiPreset, string> = {
       openrouter: "OpenRouterの接続先です。変更できません。",
       local: "LM Studio の既定は http://localhost:1234/v1 です。Ollama は http://localhost:11434/v1 を指定します。",
-      custom: "末尾が /v1 のURLを指定します。https:// で始まるものか、http://localhost のものが使えます。",
+      custom: "末尾が /v1 のURLを指定します。http:// または https:// が使えます。認証情報・クエリ・ハッシュは含めないでください。",
     };
     this.aiUrlHelp = urlHelp[settings.preset];
     this.aiOriginSetting = new Setting(el)
       .setName("接続先URL")
-      .setDesc(aiKeyOriginError(settings) ?? this.aiUrlHelp)
+      .setDesc(this.aiUrlDescription(settings))
       .addText((text) => {
         text.inputEl.disabled = settings.preset === "openrouter";
         text.inputEl.addEventListener("change", () => {
@@ -709,6 +721,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
             await this.changeAiSettings({ baseUrl: value.trim() }, false);
           });
       });
+    this.aiOriginSetting.descEl.style.whiteSpace = "pre-line";
 
     new Setting(el)
       .setName("APIキーを使う")

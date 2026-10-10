@@ -695,7 +695,7 @@ const LEDGER = {
   "Q01": {
     "purpose": "接続・モデル・既存secret選択",
     "input": "provider, endpoint, model, auth, secretId",
-    "constraints": "HTTPS/loopback HTTP、redirect禁止。接続設定はメモリのみ、適用だけでは通信しない。変更時running停止",
+    "constraints": "HTTP/HTTPS（認証情報・クエリ・ハッシュなし）、redirect禁止。接続設定はメモリのみ、適用だけでは通信しない。変更時running停止",
     "undo": "×"
   },
   "Q02": {

@@ -14,10 +14,12 @@ describe("AI SDK Core compatible adapter (fake HTTP only)", () => {
     expect(Object.keys(tools)).toEqual(Object.keys(OPERATION_MANIFEST));
     for (const [name, definition] of Object.entries(tools)) expect(definition.description).toBe(OPERATION_MANIFEST[name as keyof typeof OPERATION_MANIFEST].description);
   });
-  it("rejects secret-bearing and insecure remote URLs", () => {
-    for (const endpoint of ["http://remote.example/v1", "https://key@remote.example/v1", "https://remote.example?token=secret", "file:///tmp/test"]) expect(validEndpoint(endpoint)).toBe(false);
-    expect(validEndpoint("http://127.0.0.1:1234/v1")).toBe(true);
-    expect(validEndpoint("https://example.test/v1")).toBe(true);
+  it("allows HTTP/HTTPS on any host but rejects credentials, queries, hashes and other protocols", () => {
+    for (const protocol of ["http", "https"]) {
+      for (const suffix of ["user@remote.example/v1", "user:pw@remote.example/v1", "remote.example/v1?token=secret", "remote.example/v1#fragment"]) expect(validEndpoint(`${protocol}://${suffix}`)).toBe(false);
+    }
+    for (const endpoint of ["file:///tmp/test", "ftp://remote.example/v1", "not a URL"]) expect(validEndpoint(endpoint)).toBe(false);
+    for (const endpoint of ["http://localhost:1234/v1", "http://127.0.0.1:1234/v1", "http://[::1]:1234/v1", "http://192.168.1.20:1234/v1", "http://ai-server:8000/v1", "http://remote.example/v1", "https://example.test/v1"]) expect(validEndpoint(endpoint)).toBe(true);
   });
   it("reads only existing secret references and never configures a model implicitly", () => {
     const provider = new SdkChatProvider(registry(), (id) => id === "synthetic-id" ? "synthetic-token" : null);
@@ -39,7 +41,11 @@ describe("AI SDK Core compatible adapter (fake HTTP only)", () => {
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
-  it.each([false, true])("streams through the actual SDK without real network (uses key: %s)", async (useApiKey) => {
+  it.each([
+    ["http://localhost:1234/v1", false], ["http://localhost:1234/v1", true],
+    ["http://192.168.1.20:1234/v1", false], ["http://192.168.1.20:1234/v1", true],
+    ["http://ai-server:8000/v1", false], ["http://ai-server:8000/v1", true],
+  ])("streams through the actual SDK without real network (%s, uses key: %s)", async (endpoint, useApiKey) => {
     // eslint-disable-next-line no-undef
     const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
       expect(JSON.parse(init!.body as string).model).toBe("synthetic-model");
@@ -53,11 +59,12 @@ describe("AI SDK Core compatible adapter (fake HTTP only)", () => {
       return new Response(frames.map((frame) => "data: " + JSON.stringify(frame) + "\n\n").join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const selected = { ...config, auth: useApiKey ? "secret" as const : "none" as const, secretId: useApiKey ? "test" : "" };
+    const selected = { ...config, endpoint, auth: useApiKey ? "secret" as const : "none" as const, secretId: useApiKey ? "test" : "" };
     const provider = new SdkChatProvider(registry(), (_id, endpoint) => endpoint === selected.endpoint ? "sk-synthetic" : null);
     const events = [];
     for await (const event of provider.stream({ config: selected, messages: [{ role: "user", content: "synthetic test" }], signal: new AbortController().signal })) events.push(event);
     expect(events.filter((event) => event.type === "text").map((event) => event.text).join("")).toBe("合成応答");
     expect(events.at(-1)?.type).toBe("completion"); expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0][0])).toBe(endpoint + "/chat/completions");
   });
 });

@@ -201,6 +201,7 @@ const {
     buttons: FakeButton[] = [];
     colorPickers: FakeColorPicker[] = [];
     controlEl = new FakeElement();
+    descEl = { style: { whiteSpace: "" } };
     settingEl = { classList: { add: vi.fn() } };
 
     constructor(public containerEl: unknown) {
@@ -1015,6 +1016,46 @@ describe("TaskWorkbenchSettingTab", () => {
       (tab as any).app = { vault: { configDir: ".obsidian" } };
     });
     const last = (name: string) => [...RecordingSetting.all].reverse().find((setting) => setting.name === name)!;
+
+    it.each([
+      ["http://192.168.1.20:1234/v1", true, true],
+      ["http://ai-server:8000/v1", true, true],
+      ["http://public.example/v1", true, true],
+      ["http://ai-server:8000/v1", false, false],
+      ["https://ai-server:8000/v1", true, false],
+      ["http://localhost:1234/v1", true, false],
+      ["http://127.0.0.1:1234/v1", true, false],
+      ["http://[::1]:1234/v1", true, false],
+      ["http://user:pw@ai-server:8000/v1", true, false],
+    ])("shows the HTTP key warning for %s (uses key: %s)", async (baseUrl, useApiKey, warning) => {
+      ai = { ...ai, preset: "custom", baseUrl, useApiKey };
+      tab.display(); await flush();
+      const text = "この接続先は http のため、APIキーが暗号化されずに送られます。";
+      expect(last("接続先URL").desc.includes(text)).toBe(warning);
+      if (warning) {
+        expect(last("接続先URL").desc.split("\n").filter((line) => line === text)).toHaveLength(1);
+        expect(last("接続先URL").descEl.style.whiteSpace).toBe("pre-line");
+      }
+    });
+
+    it("updates the HTTP key warning on URL edits and key toggles without blocking model fetching", async () => {
+      ai = { ...ai, preset: "custom", baseUrl: "https://ai-server:8000/v1" };
+      hostPlugin.hasAiApiKey = () => true;
+      tab.display(); await flush();
+      const text = "この接続先は http のため、APIキーが暗号化されずに送られます。";
+      const field = last("接続先URL").texts[0];
+      await field.handler!("http://ai-server:8000/v1");
+      expect(last("接続先URL").desc).toContain(text);
+      fetchAiModels.mockClear();
+      field.inputEl.listeners.change(); await flush();
+      expect(fetchAiModels).toHaveBeenCalledOnce();
+      await last("APIキーを使う").toggles[0].handler!(false);
+      expect(last("接続先URL").desc).not.toContain(text);
+      await last("APIキーを使う").toggles[0].handler!(true);
+      expect(last("接続先URL").desc).toContain(text);
+      await last("接続先URL").texts[0].handler!("http://localhost:1234/v1");
+      expect(last("接続先URL").desc).not.toContain(text);
+    });
 
     it("shows only the plain connection settings and names the key location", async () => {
       tab.display();
