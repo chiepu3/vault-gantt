@@ -5264,6 +5264,11 @@ export class TaskGanttView extends ItemView {
         plannedStartDate: nextStart,
         plannedEndDate: nextEnd, //  no inversion check needed for move
         ganttMarkers: shiftedMarkers,
+        workloadPlan: shiftWorkloadMap(task.workloadPlan, dayDelta, {
+          oldStart: originalStart,
+          newStart: nextStart,
+          holidaySet,
+        }),
       };
     } else if (kind === "resize-start") {
 
@@ -6153,7 +6158,7 @@ export class TaskGanttView extends ItemView {
     // ONE combined warning for the whole group, not per task.
     if (targets.some(hasWorkloadActual)) {
       const proceed = await this.host.confirmWorkloadShift(
-        "この一括移動により作業記録がずれます。移動を実行しますか？"
+        "予定日と計画時間を一括移動します。実績時間の日付は変更しません。実行しますか？"
       );
       if (!proceed) {
         return; // analog: nothing saved, screen unchanged
@@ -6186,11 +6191,6 @@ export class TaskGanttView extends ItemView {
           ganttMarkers: shiftedMarkers,
           workloadPlan: shiftWorkloadMap(
             task.workloadPlan,
-            shiftDays,
-            workingDayCalendar
-          ),
-          workloadActual: shiftWorkloadMap(
-            task.workloadActual,
             shiftDays,
             workingDayCalendar
           ),
@@ -7918,7 +7918,7 @@ export class TaskGanttView extends ItemView {
   ): Promise<void> {
     if (options.checkWorkload && hasWorkloadActual(task)) {
       const proceed = await this.host.confirmWorkloadShift(
-        "この移動により作業記録がずれます。実行しますか？"
+        "予定日と計画時間を移動します。実績時間の日付は変更しません。実行しますか？"
       );
       if (!proceed) {
         return; // no save, no re-render
