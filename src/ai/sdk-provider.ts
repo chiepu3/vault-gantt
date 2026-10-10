@@ -44,6 +44,7 @@ export class SdkChatProvider implements ChatProvider {
     const overview = context ? await new ContextBuilder(this.operationService!.contextPort).build(context) : "";
     const lastText = JSON.stringify(request.messages.at(-1)?.content ?? "");
     const proposalIds: string[] = [], unresolvedTools = new Set<string>(); let toolErrors = 0, steps = 0;
+    let abortReason: unknown, lastStepHasToolCalls = false, hasVisibleText = false;
     const proposed = (event: Extract<ChatEvent, { type: "plan" }>) => { pending.push(event); proposalIds.push(event.plan.previewId); };
     const pending: Extract<ChatEvent, { type: "plan" }>[] = [];
     const result = streamText({
@@ -52,14 +53,16 @@ export class SdkChatProvider implements ChatProvider {
       tools: context ? chatTools(this.operationService!, context, lastText, proposed) : registryTools(this.registry, signal, proposed),
       stopWhen: [stepCountIs(6), () => proposalIds.length > 0], abortSignal: signal, maxRetries: 0, maxOutputTokens: 4096,
       timeout: { totalMs: 120000 }, onError: () => undefined,
-      onStepFinish: () => { steps++; },
+      onAbort: ({ reason }) => { abortReason = reason; },
+      onStepFinish: ({ toolCalls }) => { steps++; lastStepHasToolCalls = toolCalls.some((call) => !call.providerExecuted); },
     });
     let finished = false;
     try {
       for await (const part of result.fullStream) {
         while (pending.length) yield pending.shift()!;
         if (signal.aborted) break;
-        if (part.type === "text-delta") yield { type: "text", text: part.text };
+        if (part.type === "abort") throw abortReason ?? new Error("PROVIDER_ABORTED");
+        if (part.type === "text-delta") { hasVisibleText ||= /\S/.test(part.text); yield { type: "text", text: part.text }; }
         if (part.type === "tool-error") { toolErrors++; unresolvedTools.add(part.toolName); continue; }
         if (part.type === "tool-result") {
           if (part.output && typeof part.output === "object" && "status" in part.output && part.output.status === "error") { toolErrors++; unresolvedTools.add(part.toolName); }
@@ -74,7 +77,8 @@ export class SdkChatProvider implements ChatProvider {
       while (pending.length) yield pending.shift()!;
       if (!signal.aborted && !finished) throw new Error("INCOMPLETE_STREAM");
       if (!signal.aborted) {
-        const completion: ChatCompletion = { kind: proposalIds.length ? "proposal-created" : steps >= 6 ? "step-limit" : unresolvedTools.size ? "tool-refused" : "no-proposal", proposalIds, toolErrors };
+        const completion: ChatCompletion = { kind: proposalIds.length ? "proposal-created" : steps >= 6 && lastStepHasToolCalls ? "step-limit" : unresolvedTools.size ? "tool-refused" : "no-proposal", proposalIds, toolErrors };
+        if (completion.kind === "no-proposal" && !hasVisibleText) throw new Error("EMPTY_RESPONSE");
         if (completion.kind !== "no-proposal") yield { type: "text", text: "\n\n" + completionText[completion.kind] };
         const messages = (await result.response).messages as ModelMessage[];
         if (completion.kind !== "no-proposal") messages.push({ role: "assistant", content: completionText[completion.kind] });

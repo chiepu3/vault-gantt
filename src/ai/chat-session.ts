@@ -132,9 +132,11 @@ export class ChatSession {
       if (this.owners.get(conversation) === controller) {
         if (controller.signal.aborted) { conversation.status = "cancelled"; conversation.completion = assistant.completion = { kind: "cancelled", proposalIds: [], toolErrors: 0 }; }
         else {
-          const outcomes = conversation.context.slice(contextLength);
-          conversation.context = [...messages, ...(context ?? [{ role: "assistant" as const, content: assistant.text }]), ...outcomes];
           assistant.completion ??= { kind: assistant.proposals.length ? "proposal-created" : "no-proposal", proposalIds: assistant.proposals.map((proposal) => proposal.plan.previewId), toolErrors: 0 };
+          if (!["timeout", "connection-error"].includes(assistant.completion.kind)) {
+            const outcomes = conversation.context.slice(contextLength);
+            conversation.context = [...messages, ...(context ?? [{ role: "assistant" as const, content: assistant.text }]), ...outcomes];
+          }
           conversation.completion = assistant.completion;
           conversation.status = assistant.proposals.length ? "preview" : ["timeout", "connection-error"].includes(assistant.completion.kind) ? "failed" : "idle";
           if (conversation.status === "failed") conversation.error = completionText[assistant.completion.kind];
