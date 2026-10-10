@@ -1703,7 +1703,7 @@ describe("design tokens (--vg-*)", () => {
 
   it("every var(--vg-*) reference is defined in the token block", () => {
     // Properties the renderer sets inline per element (not theme tokens).
-    const RUNTIME_VARS = ["--vg-chip-color", "--vg-tag-accent", "--vg-bar-text"];
+    const RUNTIME_VARS = ["--vg-chip-color", "--vg-tag-accent"];
     const defined = new Set([...tokenNames, ...RUNTIME_VARS]);
     const used = new Set<string>();
     for (const m of noComments.matchAll(/var\((--vg-[a-z0-9-]+)/g)) used.add(m[1]);

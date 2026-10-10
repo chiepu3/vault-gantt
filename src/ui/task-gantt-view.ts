@@ -8,6 +8,7 @@ import type { Logger } from "../core/logger";
 import type {
   GanttEvent,
   GanttMarker,
+  DailyTodoItem,
   DailyTodoSummary,
   GanttTagDefinition,
   StatusLabel,
@@ -23,7 +24,6 @@ import {
   DEFAULT_GANTT_TAG_COLORS,
   DEFAULT_STATUSES,
 } from "../core/constants";
-import { readableTextColor } from "../core/color";
 import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
 import { normalizeWorkloadMap } from "../core/task-patch";
@@ -233,6 +233,50 @@ function getPrimaryGanttTagDefinition(
 
 
 
+/** One editable row of the Daily ToDo popover; `item` is null until it is written to a note. */
+interface DailyTodoPopoverRow {
+  item: DailyTodoItem | null;
+  rowEl: HTMLElement;
+  checkEl: HTMLInputElement;
+  inputEl: HTMLInputElement;
+}
+
+interface DailyTodoPopoverState {
+  el: HTMLElement;
+  anchorEl: HTMLElement;
+  date: string;
+  listEl: HTMLElement;
+  rows: DailyTodoPopoverRow[];
+  outsideHandler: (evt: Event) => void;
+}
+
+function isDailyTodoRowDirty(row: DailyTodoPopoverRow): boolean {
+  const text = row.inputEl.value.trim();
+  if (row.item === null) {
+    return text !== "";
+  }
+  return text !== row.item.text.trim() || row.checkEl.checked !== row.item.completed;
+}
+
+function isNodeInside(node: Node, root: Node): boolean {
+  for (let current: Node | null = node; current; current = current.parentNode) {
+    if (current === root) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True for clicks inside an Obsidian menu (e.g. the row's 「…」 menu). */
+function isNodeInsideMenu(node: Node): boolean {
+  for (let current: Node | null = node; current; current = current.parentNode) {
+    if ((current as Element).classList?.contains("menu")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface TaskGanttViewHost {
   ghosts?: ScheduleGhostStore;
 
@@ -242,16 +286,23 @@ export interface TaskGanttViewHost {
   loadTasks(): Promise<TaskRow[]>;
   loadDailyTodoSummaries(): Promise<DailyTodoSummary[]>;
   /**
- * `onSaved` fires only once the modal's edit is actually persisted (not
- * merely opened) — the returned Promise itself resolves as soon as the
- * modal opens, since Modal.open is fire-and-forget. Callers that need
- * to react to the save (e.g. re-rendering to show updated counts) MUST
- * use `onSaved`, not await this method's own return.
- */
-  openOrCreateDailyTodoForDate(
+   * Daily ToDo popover persistence. Each call rewrites a single line of the
+   * note (and records an undo entry); `false` means the line could not be
+   * written (missing file, or the line changed since it was loaded).
+   */
+  updateDailyTodoItem(
+    item: DailyTodoItem,
+    patch: { text?: string; completed?: boolean }
+  ): Promise<boolean>;
+  deleteDailyTodoItem(item: DailyTodoItem): Promise<boolean>;
+  /** Appends a ToDo to the date's main note; null when it could not be added. */
+  addDailyTodoItem(
     dateStr: string,
-    onSaved?: () => void
-  ): Promise<void>;
+    text: string,
+    completed: boolean
+  ): Promise<DailyTodoItem | null>;
+  /** Opens the note holding the ToDo, scrolled to its line. */
+  openDailyTodoItem(item: DailyTodoItem): Promise<void>;
   saveSettings(): Promise<void>;
 
 
@@ -538,9 +589,8 @@ const WORKLOAD_DAY_SUMMARY_POPOVER_GAP_PX = 12;
 // Minimum measured height for the day-summary popup.
 const WORKLOAD_DAY_SUMMARY_POPOVER_MIN_HEIGHT_PX = 90;
 
-// Daily ToDo detail popover — independent lifecycle from the
-// workload popovers, with the same body-anchored/fixed positioning pattern.
-const DAILY_TODO_POPOVER_HIDE_DELAY_MS = 140;
+// Daily ToDo popover — independent lifecycle from the workload popovers,
+// with the same body-anchored/fixed positioning pattern.
 const DAILY_TODO_POPOVER_GAP_PX = 12;
 const DAILY_TODO_POPOVER_VIEWPORT_MARGIN_PX = 8;
 const DAILY_TODO_POPOVER_MIN_WIDTH_PX = 180;
@@ -1057,18 +1107,13 @@ export class TaskGanttView extends ItemView {
   /** The fixed Daily ToDo row, retained for incremental summary refreshes. */
   private dailyTodoRowEl: HTMLElement | undefined = undefined;
 
-  /**
- *
- * The currently open Daily ToDo detail popover. It is kept separate from
- * the workload popovers because its trigger and content are independent.
- */
-  private dailyTodoPopoverState:
-    | { el: HTMLElement; anchorEl: HTMLElement; summary: DailyTodoSummary }
-    | undefined = undefined;
+  /** Anchor per date in the Daily ToDo row: the count chip, or the empty cell when the date has no ToDo. */
+  private dailyTodoAnchorEls = new Map<string, HTMLElement>();
 
-  /** pending chip/popover mouse-leave hide debounce. */
-  private dailyTodoPopoverHideTimer: ReturnType<typeof setTimeout> | undefined =
-    undefined;
+  /** The currently open Daily ToDo popover (click to open, editable in place). */
+  private dailyTodoPopoverState: DailyTodoPopoverState | undefined = undefined;
+  private dailyTodoQueue: Promise<void> | undefined = undefined;
+  private dailyTodoOpenGeneration = 0;
 
 
 
@@ -3003,6 +3048,7 @@ export class TaskGanttView extends ItemView {
     timeline.style.width = `${this.dates.length * this.dayWidth}px`;
     timeline.style.height = `${DAILY_TODO_ROW_HEIGHT_PX}px`;
 
+    const anchors = new Map<string, HTMLElement>();
     this.dates.forEach((date, index) => {
       const bg = document.createElement("div");
       bg.classList.add("task-gantt-fixed-bg");
@@ -3018,6 +3064,11 @@ export class TaskGanttView extends ItemView {
       if (isToday) {
         bg.classList.add("is-today");
       }
+      // An empty cell opens the same popover so a ToDo can be added to any date.
+      bg.addEventListener("click", () => {
+        this.openDailyTodoPopover(date, bg);
+      });
+      anchors.set(date, bg);
       timeline.appendChild(bg);
     });
 
@@ -3041,30 +3092,15 @@ export class TaskGanttView extends ItemView {
         diffDays(this.dates[0], summary.date) * this.dayWidth +
         this.dayWidth / 2
       }px`;
-      // A summary chip has no separate edit label or drag surface, so a
-      // single click directly opens the existing date-specific modal.
-      // Re-render only once the modal's edit is actually SAVED (onSaved),
-      // not right after it opens — openOrCreateDailyTodoForDate's own
-      // returned Promise resolves as soon as Modal.open returns, long
-      // before the user has entered or saved anything.
+      // Clicking a chip opens the inline editor popover for that date.
       chip.addEventListener("click", () => {
-        this.closeDailyTodoPopover();
-        void this.host.openOrCreateDailyTodoForDate(summary.date, () => {
-          void this.render();
-        });
+        this.openDailyTodoPopover(summary.date, chip);
       });
-      // hovering a chip shows the item's detailed names in a
-      // lightweight preview; the existing click-to-edit behavior above stays
-      // unchanged.
-      chip.addEventListener("mouseenter", () => {
-        this.showDailyTodoPopover(summary, chip);
-      });
-      chip.addEventListener("mouseleave", () => {
-        this.scheduleHideDailyTodoPopover();
-      });
+      anchors.set(summary.date, chip);
       timeline.appendChild(chip);
     }
 
+    this.dailyTodoAnchorEls = anchors;
     const row = document.createElement("div");
     row.classList.add("task-gantt-fixed-row");
     row.appendChild(left);
@@ -3072,8 +3108,12 @@ export class TaskGanttView extends ItemView {
     return row;
   }
 
-  /** Refreshes the Daily ToDo row without disturbing incremental parent rows. */
-  private refreshDailyTodoRowIncremental(): void {
+  /**
+   * Refreshes the Daily ToDo row without disturbing incremental parent rows.
+   * The popover is closed first (its anchor is replaced) unless the caller
+   * keeps it open and re-anchors it itself.
+   */
+  private refreshDailyTodoRowIncremental(keepPopover = false): void {
     if (!this.host.settings.ganttFeatureDailyTodoEnabled) {
       return;
     }
@@ -3082,9 +3122,11 @@ export class TaskGanttView extends ItemView {
       return;
     }
     // replacing the row detaches the chip used as the popover's
-    // anchor, so close the body-anchored preview before building its
+    // anchor, so close the body-anchored popover before building its
     // replacement even when this incremental helper is called directly.
-    this.closeDailyTodoPopover();
+    if (!keepPopover) {
+      this.closeDailyTodoPopover();
+    }
     const insertBeforeRef = oldRow.nextSibling;
     const row = this.buildDailyTodoRow();
     if (insertBeforeRef !== null) {
@@ -3097,88 +3139,387 @@ export class TaskGanttView extends ItemView {
   }
 
   /**
- * creates and shows the Daily ToDo detail preview for one
- * summary. The popover is body-anchored so Obsidian view containment and
- * the chart's clipped scroll subtree cannot hide it.
- */
-  private showDailyTodoPopover(
-    summary: DailyTodoSummary,
-    anchorEl: HTMLElement
-  ): void {
+   * Opens the Daily ToDo popover for a date, anchored to its chip / empty
+   * cell. Clicking the anchor of the open popover closes it again. The
+   * popover is body-anchored so Obsidian view containment and the chart's
+   * clipped scroll subtree cannot hide it.
+   */
+  private openDailyTodoPopover(date: string, anchorEl: HTMLElement): void {
     if (!anchorEl.isConnected) {
       return;
     }
+    const wasOpenForDate = this.dailyTodoPopoverState?.date === date;
     this.closeDailyTodoPopover();
-
-    const el = document.createElement("div");
-    el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
-    el.setAttribute("data-date", summary.date);
-    this.renderDailyTodoPopover(el, summary);
-
-    el.addEventListener("mouseenter", () => {
-      this.clearDailyTodoPopoverHideTimer();
-    });
-    el.addEventListener("mouseleave", () => {
-      this.scheduleHideDailyTodoPopover();
-    });
-
-    document.body.appendChild(el);
-    this.dailyTodoPopoverState = { el, anchorEl, summary };
-    this.positionDailyTodoPopover(anchorEl);
-  }
-
-  /** renders the date heading and each Daily ToDo item name. */
-  private renderDailyTodoPopover(
-    el: HTMLElement,
-    summary: DailyTodoSummary
-  ): void {
-    const title = document.createElement("div");
-    title.classList.add("task-gantt-daily-todo-popover-title");
-    title.textContent = `Daily ToDo ${moment(summary.date, "YYYY-MM-DD").format(
-      "M/D"
-    )}`;
-    el.appendChild(title);
-
-    if (summary.items.length === 0) {
-      const empty = document.createElement("div");
-      empty.classList.add("task-gantt-daily-todo-popover-empty");
-      empty.textContent = "項目なし";
-      el.appendChild(empty);
+    if (wasOpenForDate) {
       return;
     }
 
+    const generation = this.dailyTodoOpenGeneration;
+    if (this.dailyTodoQueue !== undefined) {
+      void this.enqueueDailyTodoTask(async () => {
+        await this.refreshDailyTodoSummaries();
+        if (generation !== this.dailyTodoOpenGeneration) {
+          return;
+        }
+        this.rebuildDailyTodoRowKeepingPopover();
+        const anchor = this.dailyTodoAnchorEls.get(date);
+        if (anchor?.isConnected) {
+          this.createDailyTodoPopover(date, anchor);
+        }
+      });
+      return;
+    }
+    this.createDailyTodoPopover(date, anchorEl);
+  }
 
-    // 読み込み元（loadDailyTodoSummaries）ごとに既に連続して並んでいるため、
-    // 並べ替えず直前のラベルとの比較だけでグルーピングできる。
-    let lastSourceLabel: string | null = null;
-    for (const item of summary.items) {
-      if (item.sourceLabel !== lastSourceLabel) {
-        const heading = document.createElement("div");
-        heading.classList.add("task-gantt-daily-todo-popover-heading");
-        heading.textContent = item.sourceLabel;
-        el.appendChild(heading);
-        lastSourceLabel = item.sourceLabel;
-      }
-      const itemEl = document.createElement("div");
-      itemEl.classList.add("task-gantt-daily-todo-popover-item");
-      if (item.completed) {
-        itemEl.classList.add("is-completed");
-      }
-      itemEl.textContent = item.text;
-      el.appendChild(itemEl);
+  private createDailyTodoPopover(date: string, anchorEl: HTMLElement): void {
+    const el = document.createElement("div");
+    el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
+    el.setAttribute("data-date", date);
+
+    const title = document.createElement("div");
+    title.classList.add("task-gantt-daily-todo-popover-title");
+    title.textContent = `Daily ToDo ${moment(date, "YYYY-MM-DD").format("M/D")}`;
+    el.appendChild(title);
+
+    const listEl = document.createElement("div");
+    listEl.classList.add("task-gantt-daily-todo-list");
+    el.appendChild(listEl);
+
+    const addButton = document.createElement("button");
+    addButton.classList.add("task-gantt-daily-todo-add", "vg-btn-sm");
+    addButton.textContent = "+";
+    addButton.setAttribute("aria-label", "ToDoを追加");
+    addButton.title = "ToDoを追加";
+    el.appendChild(addButton);
+
+    const state: DailyTodoPopoverState = {
+      el,
+      anchorEl,
+      date,
+      listEl,
+      rows: [],
+      outsideHandler: (evt: Event): void => {
+        const target = evt.target as Node | null;
+        if (
+          target !== null &&
+          !isNodeInside(target, state.el) &&
+          !isNodeInside(target, state.anchorEl) &&
+          !isNodeInsideMenu(target)
+        ) {
+          this.closeDailyTodoPopover();
+        }
+      },
+    };
+    this.dailyTodoPopoverState = state;
+
+    const summary = this.dailyTodoSummaries.find((s) => s.date === date);
+    for (const item of summary?.items ?? []) {
+      this.appendDailyTodoRow(state, { ...item }, false);
     }
 
-    // このポップオーバーはホバー専用のプレビューで編集操作を持たない
-    // （ 、編集はチップのクリックで別途 DailyTodoModal を開く）。
-    // 発見しにくいため、クリックで編集できることをヒントとして明示する。
-    const hint = document.createElement("div");
-    hint.classList.add("task-gantt-daily-todo-popover-hint");
-    hint.textContent = "クリックで編集";
-    el.appendChild(hint);
+    addButton.addEventListener("click", () => {
+      // One blank row at a time: reuse it instead of stacking empty rows.
+      const blank = state.rows.find(
+        (row) => row.item === null && row.inputEl.value.trim() === ""
+      );
+      if (blank !== undefined) {
+        blank.inputEl.focus();
+        return;
+      }
+      this.appendDailyTodoRow(state, null, true);
+      this.positionDailyTodoPopover(state.anchorEl);
+    });
+    el.addEventListener("keydown", (evt: KeyboardEvent) => {
+      if (evt.key === "Escape") {
+        this.closeDailyTodoPopover();
+      }
+    });
+
+    document.body.appendChild(el);
+    window.addEventListener("mousedown", state.outsideHandler, true);
+    this.positionDailyTodoPopover(anchorEl);
   }
 
   /**
- * positions the fixed preview above the chip when possible,
+   * Appends one `[check] [input] […]` row. `item` is null for a new row that
+   * has not been written to a note yet (it is saved once text is entered).
+   */
+  private appendDailyTodoRow(
+    state: DailyTodoPopoverState,
+    item: DailyTodoItem | null,
+    focus: boolean
+  ): void {
+    const rowEl = document.createElement("div");
+    rowEl.classList.add("task-gantt-daily-todo-row");
+    if (item !== null && item.sourceLabel !== "") {
+      rowEl.title = item.sourceLabel;
+    }
+
+    const checkEl = document.createElement("input");
+    checkEl.type = "checkbox";
+    checkEl.classList.add("task-gantt-daily-todo-check");
+    checkEl.setAttribute("aria-label", "完了");
+    checkEl.checked = item?.completed ?? false;
+    rowEl.appendChild(checkEl);
+
+    const inputEl = document.createElement("input");
+    inputEl.type = "text";
+    inputEl.classList.add("task-gantt-daily-todo-input", "vg-input-sm");
+    inputEl.placeholder = "ToDoを入力";
+    inputEl.value = item?.text ?? "";
+    rowEl.appendChild(inputEl);
+
+    const moreButton = document.createElement("button");
+    moreButton.classList.add("task-gantt-daily-todo-more", "vg-btn-sm");
+    moreButton.textContent = "…";
+    moreButton.setAttribute("aria-label", "その他の操作");
+    moreButton.title = "その他の操作";
+    rowEl.appendChild(moreButton);
+
+    const row: DailyTodoPopoverRow = { item, rowEl, checkEl, inputEl };
+    state.rows.push(row);
+    state.listEl.appendChild(rowEl);
+
+    // `change` fires on Enter / blur only, so IME composition is never cut off.
+    const save = (): void => {
+      void this.enqueueDailyTodoTask(() =>
+        this.commitDailyTodoRow(state, row)
+      );
+    };
+    checkEl.addEventListener("change", save);
+    inputEl.addEventListener("change", save);
+    moreButton.addEventListener("click", (evt: MouseEvent) => {
+      this.openDailyTodoRowMenu(state, row, evt);
+    });
+
+    if (focus) {
+      inputEl.focus();
+    }
+  }
+
+  /** 「開く」「削除」 menu behind a row's 「…」 button. */
+  private openDailyTodoRowMenu(
+    state: DailyTodoPopoverState,
+    row: DailyTodoPopoverRow,
+    evt: MouseEvent
+  ): void {
+    const menu = new Menu();
+    this.activateContextMenu(menu);
+    menu.addItem((menuItem) => {
+      menuItem.setTitle("開く").setIcon("file-text");
+      menuItem.setDisabled(row.item === null);
+      menuItem.onClick(() => {
+        void this.enqueueDailyTodoTask(async () => {
+          // Save pending edits first so the note and the jump target agree.
+          await this.commitDailyTodoRow(state, row);
+          if (row.item !== null) {
+            await this.host.openDailyTodoItem(row.item);
+            this.closeDailyTodoPopover();
+          }
+        });
+      });
+    });
+    menu.addItem((menuItem) => {
+      menuItem.setTitle("削除").setIcon("trash").setWarning(true);
+      menuItem.onClick(() => {
+        // Deleted at once, without confirmation; the write is on the undo history.
+        void this.enqueueDailyTodoTask(() =>
+          this.deleteDailyTodoRow(state, row)
+        );
+      });
+    });
+    menu.showAtMouseEvent(evt);
+  }
+
+  /**
+   * Runs a popover save after the previous one finished: every write re-reads
+   * the note and addresses a line number, so overlapping saves could race.
+   */
+  private enqueueDailyTodoTask(
+    task: () => Promise<void>
+  ): Promise<void> {
+    const next = (this.dailyTodoQueue ?? Promise.resolve()).then(task).catch((err: unknown) => {
+      this.host.logger.warn("TaskGanttView", "Daily ToDo popover save failed", err);
+      new Notice("Daily ToDoを保存できませんでした。");
+    });
+    const queued = next.finally(() => {
+      if (this.dailyTodoQueue === queued) {
+        this.dailyTodoQueue = undefined;
+      }
+    });
+    this.dailyTodoQueue = queued;
+    return queued;
+  }
+
+  /** Writes a row's checkbox / text if it differs from what is stored. */
+  private async commitDailyTodoRow(
+    state: DailyTodoPopoverState,
+    row: DailyTodoPopoverRow
+  ): Promise<void> {
+    const completed = row.checkEl.checked;
+    const inputValue = row.inputEl.value;
+    let text = inputValue.trim();
+    const item = row.item;
+
+    if (item === null) {
+      // A new row is only written once it has text.
+      if (text === "") {
+        return;
+      }
+      const created = await this.host.addDailyTodoItem(state.date, text, completed);
+      if (created === null) {
+        return;
+      }
+      // Lines at/after the insertion point of the same note moved down by one.
+      for (const other of state.rows) {
+        if (
+          other.item !== null &&
+          other.item.path === created.path &&
+          other.item.line >= created.line
+        ) {
+          other.item.line += 1;
+        }
+      }
+      row.item = created;
+      if (row.inputEl.value === inputValue) {
+        row.inputEl.value = text;
+      }
+      row.rowEl.title = created.sourceLabel;
+      await this.applyDailyTodoModel(state);
+      return;
+    }
+
+    if (text === "") {
+      // An empty line is never saved; removing a ToDo is 「…」→「削除」.
+      text = item.text;
+      row.inputEl.value = text;
+      if (this.dailyTodoPopoverState === state) {
+        new Notice("空欄にはできません。削除は「…」から行えます。");
+      }
+    }
+    if (text.trim() === item.text.trim() && completed === item.completed) {
+      return;
+    }
+    const ok = await this.host.updateDailyTodoItem(item, { text, completed });
+    if (!ok) {
+      await this.recoverDailyTodoPopover(state);
+      return;
+    }
+    if (row.inputEl.value === inputValue) {
+      row.inputEl.value = text;
+    }
+    await this.applyDailyTodoModel(state);
+  }
+
+  /** Deletes a row's ToDo line right away (a never-saved row is just dropped). */
+  private async deleteDailyTodoRow(
+    state: DailyTodoPopoverState,
+    row: DailyTodoPopoverRow
+  ): Promise<void> {
+    const item = row.item;
+    if (item !== null) {
+      const ok = await this.host.deleteDailyTodoItem(item);
+      if (!ok) {
+        await this.recoverDailyTodoPopover(state);
+        return;
+      }
+      // Lines below the removed one in the same note moved up by one.
+      for (const other of state.rows) {
+        if (
+          other !== row &&
+          other.item !== null &&
+          other.item.path === item.path &&
+          other.item.line > item.line
+        ) {
+          other.item.line -= 1;
+        }
+      }
+    }
+    state.rows.splice(state.rows.indexOf(row), 1);
+    row.rowEl.remove();
+    await this.applyDailyTodoModel(state);
+  }
+
+  /**
+   * The note changed under the popover (the stored line no longer matches), so
+   * reload from disk instead of risking an overwrite of the wrong line.
+   */
+  private async recoverDailyTodoPopover(
+    state: DailyTodoPopoverState
+  ): Promise<void> {
+    new Notice("ToDoのファイルが変更されていたため、最新の内容を読み込み直しました。");
+    await this.refreshDailyTodoSummaries();
+    if (this.dailyTodoPopoverState !== state) {
+      this.rebuildDailyTodoRowKeepingPopover();
+      return;
+    }
+    const summary = this.dailyTodoSummaries.find((s) => s.date === state.date);
+    state.rows.length = 0;
+    state.listEl.replaceChildren();
+    for (const item of summary?.items ?? []) {
+      this.appendDailyTodoRow(state, { ...item }, false);
+    }
+    this.rebuildDailyTodoRowKeepingPopover();
+  }
+
+  /** Mirrors the popover's saved rows into the cached summary and the row chips. */
+  private async applyDailyTodoModel(state: DailyTodoPopoverState): Promise<void> {
+    if (this.dailyTodoPopoverState !== state) {
+      await this.refreshDailyTodoSummaries();
+      this.rebuildDailyTodoRowKeepingPopover();
+      return;
+    }
+    const items = state.rows.flatMap((row) =>
+      row.item !== null ? [{ ...row.item }] : []
+    );
+    const index = this.dailyTodoSummaries.findIndex(
+      (summary) => summary.date === state.date
+    );
+    if (items.length === 0) {
+      if (index >= 0) {
+        this.dailyTodoSummaries.splice(index, 1);
+      }
+    } else {
+      const summary: DailyTodoSummary = {
+        date: state.date,
+        items,
+        completedCount: items.filter((item) => item.completed).length,
+        totalCount: items.length,
+      };
+      if (index >= 0) {
+        this.dailyTodoSummaries[index] = summary;
+      } else {
+        this.dailyTodoSummaries.push(summary);
+        this.dailyTodoSummaries.sort((a, b) =>
+          a.date < b.date ? -1 : a.date > b.date ? 1 : 0
+        );
+      }
+    }
+    this.rebuildDailyTodoRowKeepingPopover();
+    if (this.dailyTodoPopoverState === state) {
+      this.positionDailyTodoPopover(state.anchorEl);
+    }
+  }
+
+  /** Rebuilds the Daily ToDo row (chip counts) and re-anchors the open popover. */
+  private rebuildDailyTodoRowKeepingPopover(): void {
+    this.refreshDailyTodoRowIncremental(true);
+    const state = this.dailyTodoPopoverState;
+    if (state === undefined) {
+      return;
+    }
+    const anchor = this.dailyTodoAnchorEls.get(state.date);
+    if (anchor === undefined) {
+      this.closeDailyTodoPopover();
+      return;
+    }
+    state.anchorEl = anchor;
+    this.positionDailyTodoPopover(anchor);
+  }
+
+  /**
+ * positions the fixed popover above the anchor when possible,
  * otherwise below it, and keeps the box within the viewport horizontally.
  */
   private positionDailyTodoPopover(anchorEl: HTMLElement): void {
@@ -3249,29 +3590,26 @@ export class TaskGanttView extends ItemView {
     }
   }
 
-  /** starts/restarts the chip/popover hide debounce. */
-  private scheduleHideDailyTodoPopover(): void {
-    this.clearDailyTodoPopoverHideTimer();
-    this.dailyTodoPopoverHideTimer = setTimeout(() => {
-      this.dailyTodoPopoverHideTimer = undefined;
-      this.closeDailyTodoPopover();
-    }, DAILY_TODO_POPOVER_HIDE_DELAY_MS);
-  }
-
-  private clearDailyTodoPopoverHideTimer(): void {
-    if (this.dailyTodoPopoverHideTimer !== undefined) {
-      clearTimeout(this.dailyTodoPopoverHideTimer);
-      this.dailyTodoPopoverHideTimer = undefined;
-    }
-  }
-
-  /** idempotently removes the body-anchored detail popover. */
+  /**
+   * Idempotently removes the body-anchored popover. Text typed but not yet
+   * committed is saved first (a removed input never fires `change`).
+   */
   private closeDailyTodoPopover(): void {
-    this.clearDailyTodoPopoverHideTimer();
-    if (this.dailyTodoPopoverState !== undefined) {
-      this.dailyTodoPopoverState.el.remove();
+    this.dailyTodoOpenGeneration += 1;
+    const state = this.dailyTodoPopoverState;
+    if (state === undefined) {
+      return;
     }
     this.dailyTodoPopoverState = undefined;
+    window.removeEventListener("mousedown", state.outsideHandler, true);
+    for (const row of [...state.rows]) {
+      if (isDailyTodoRowDirty(row)) {
+        void this.enqueueDailyTodoTask(() =>
+          this.commitDailyTodoRow(state, row)
+        );
+      }
+    }
+    state.el.remove();
   }
 
 
@@ -3865,10 +4203,6 @@ export class TaskGanttView extends ItemView {
       if (barTagColor !== "" && barFilterState.visible) {
         barEl.style.backgroundColor = barTagColor;
         barEl.style.borderColor = barTagColor;
-        const barTextColor = readableTextColor(barTagColor);
-        if (barTextColor !== undefined) {
-          setStyleVar(barEl, "--vg-bar-text", barTextColor);
-        }
         if (bar.task.completed) {
           barEl.classList.add("is-tag-colored-completed");
         }

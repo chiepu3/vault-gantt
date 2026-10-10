@@ -4,9 +4,11 @@ import type { Mock } from "vitest";
 import { Notice, TFile, moment } from "obsidian";
 
 import type { App, Vault, Workspace } from "obsidian";
+import type { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import {
   DailyTodoService,
+  addDailyTodoItem,
   deleteDailyTodoItem,
   extractDateFromDailyPath as extractConfiguredDate,
   getDailyTodoInsertIndex,
@@ -671,6 +673,47 @@ describe("daily-todo-service", () => {
       expect(getContent(PATH)).toBe("- [x] keep me");
     });
 
+    it("leaves whitespace-only text changes untouched without an undo entry", async () => {
+      const { vault, modifySpy, getContent } = makeFakeVault({ [PATH]: "- [ ] text  " });
+      const history = { push: vi.fn(), clear: vi.fn() };
+      const item = todoItem({ path: PATH, line: 0, text: "text  " });
+      expect(await updateDailyTodoItem(item, { text: "text" }, vault,
+        history as unknown as HistoryManager)).toBe(true);
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(history.push).not.toHaveBeenCalled();
+      expect(getContent(PATH)).toBe("- [ ] text  ");
+      expect(item.text).toBe("text  ");
+    });
+
+    it("records the edit as an undo entry instead of clearing history", async () => {
+      const { vault } = makeFakeVault({ [PATH]: "- [ ] a" });
+      const history = { push: vi.fn(), clear: vi.fn() };
+
+      await updateDailyTodoItem(
+        todoItem({ path: PATH, line: 0, text: "a" }),
+        { completed: true },
+        vault,
+        history as unknown as HistoryManager
+      );
+
+      expect(history.clear).not.toHaveBeenCalled();
+      expect(history.push).toHaveBeenCalledWith({
+        label: "Daily ToDo更新",
+        files: [{ path: PATH, before: "- [ ] a", after: "- [x] a" }],
+      });
+    });
+
+    it("refuses to overwrite a line that no longer matches the item", async () => {
+      const { vault, modifySpy, getContent } = makeFakeVault({
+        [PATH]: ["- [ ] something else", "- [ ] a"].join("\n"),
+      });
+      const item = todoItem({ path: PATH, line: 0, text: "a" });
+
+      expect(await updateDailyTodoItem(item, { text: "b" }, vault)).toBe(false);
+      expect(modifySpy).not.toHaveBeenCalled();
+      expect(getContent(PATH)).toBe(["- [ ] something else", "- [ ] a"].join("\n"));
+    });
+
     it("returns false and touches nothing when path is empty", async () => {
       const { vault, modifySpy } = makeFakeVault({ [PATH]: "- [ ] x" });
       const item = todoItem({ path: "", line: 0 });
@@ -727,12 +770,47 @@ describe("daily-todo-service", () => {
       const { vault, getContent } = makeFakeVault({
         [PATH]: ["- [ ] one", "- [ ] two", "- [ ] three"].join("\n"),
       });
-      const item = todoItem({ path: PATH, line: 1 });
+      const item = todoItem({ path: PATH, line: 1, text: "two" });
 
       expect(await deleteDailyTodoItem(item, vault)).toBe(true);
       expect(getContent(PATH)).toBe(
         ["- [ ] one", "- [ ] three"].join("\n")
       );
+    });
+
+    it("records the deletion as an undo entry instead of clearing history", async () => {
+      const { vault } = makeFakeVault({
+        [PATH]: ["- [ ] one", "- [ ] two"].join("\n"),
+      });
+      const history = { push: vi.fn(), clear: vi.fn() };
+
+      await deleteDailyTodoItem(
+        todoItem({ path: PATH, line: 1, text: "two" }),
+        vault,
+        history as unknown as HistoryManager
+      );
+
+      expect(history.clear).not.toHaveBeenCalled();
+      expect(history.push).toHaveBeenCalledWith({
+        label: "Daily ToDo削除",
+        files: [
+          { path: PATH, before: "- [ ] one\n- [ ] two", after: "- [ ] one" },
+        ],
+      });
+    });
+
+    it("refuses to delete a line that no longer matches the item (shifted by an outside edit)", async () => {
+      const { vault, modifySpy } = makeFakeVault({
+        [PATH]: ["- [ ] inserted", "- [ ] two"].join("\n"),
+      });
+
+      expect(
+        await deleteDailyTodoItem(
+          todoItem({ path: PATH, line: 0, text: "two" }),
+          vault
+        )
+      ).toBe(false);
+      expect(modifySpy).not.toHaveBeenCalled();
     });
 
     it("returns false for an invalid path/line", async () => {
@@ -946,6 +1024,49 @@ describe("daily-todo-service", () => {
     });
   });
 
+  describe("addDailyTodoItem", () => {
+    const PATH = "デイリー/2026/07/260725_デイリー.md";
+
+    it("inserts at the end of the ToDo section and returns the item with its real line", async () => {
+      const { vault, getContent } = makeFakeVault({
+        [PATH]: ["## ToDoリスト", "- [ ] existing", "## 次"].join("\n"),
+      });
+      const history = { push: vi.fn(), clear: vi.fn() };
+
+      const item = await addDailyTodoItem(
+        "2026-07-25",
+        "new one",
+        true,
+        appFor(vault),
+        DEFAULT_SETTINGS,
+        history as unknown as HistoryManager
+      );
+
+      expect(getContent(PATH)).toBe(
+        ["## ToDoリスト", "- [ ] existing", "- [x] new one", "## 次"].join("\n")
+      );
+      expect(item).toMatchObject({
+        sourceKey: "main",
+        path: PATH,
+        line: 2,
+        text: "new one",
+        completed: true,
+        isNew: false,
+      });
+      expect(history.push).toHaveBeenCalledTimes(1);
+      expect(history.push.mock.calls[0][0].label).toBe("Daily ToDo追加");
+    });
+
+    it("returns null and writes nothing for blank text", async () => {
+      const { vault, modifySpy } = makeFakeVault({ [PATH]: "## ToDoリスト" });
+
+      expect(
+        await addDailyTodoItem("2026-07-25", "  ", false, appFor(vault), DEFAULT_SETTINGS)
+      ).toBeNull();
+      expect(modifySpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe("openOrCreateMainDailyTodoForDate", () => {
     const PATH = "デイリー/2026/07/260725_デイリー.md";
 
@@ -1001,6 +1122,15 @@ describe("daily-todo-service", () => {
 
       expect(openFile).toHaveBeenCalledTimes(1);
       expect(openFile.mock.calls[0][0].path).toBe(PATH);
+    });
+
+    it("jumps to the ToDo's line via eState.line", async () => {
+      const { vault } = makeFakeVault({ [PATH]: "content" });
+      const { workspace, openFile } = makeFakeWorkspace();
+
+      await openDailyTodoFile(todoItem({ path: PATH, line: 7 }), vault, workspace);
+
+      expect(openFile.mock.calls[0][1]).toEqual({ eState: { line: 7 } });
     });
 
     it("is a no-op when item.path is empty", async () => {
