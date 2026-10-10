@@ -348,8 +348,7 @@ describe("part 1 — file rules and prohibitions", () => {
   });
 
   it("uses no unapproved hardcoded colors in declaration values", () => {
-    // Scan CSS named colors while allowing the one intentional hardcoded
-    // color (#4da3ff). Mask variable interiors before scanning to avoid false positives
+    // Scan CSS named colors; no hardcoded color is approved. Mask variable interiors before scanning to avoid false positives
     // from names such as --color-red-rgb.
     const COLOR_KEYWORDS = new Set(
       (
@@ -413,22 +412,11 @@ describe("part 1 — file rules and prohibitions", () => {
     for (const rule of getRules()) {
       for (const decl of rule.decls) {
         const where = `${rule.selectors.join(", ")} { ${decl.prop}: ${decl.value} }`;
-        const isAllowedPriorityColor =
-          decl.prop === "color" &&
-          ((rule.selectors.includes(".task-workbench-priority-star.priority-auto") &&
-            decl.value === "#4da3ff") ||
-            (rule.selectors.includes(".task-workbench-priority-readonly.priority-auto") &&
-              decl.value === "#4da3ff") ||
-            (rule.selectors.includes(".task-workbench-priority-star.priority-manual") &&
-              decl.value === "var(--color-yellow)") ||
-            (rule.selectors.includes(".task-workbench-priority-readonly.priority-manual") &&
-              decl.value === "var(--color-yellow)"));
-
         // Shadows use --vg-shadow-* (theme-following); no rgba(0,0,0,..) literal is allowed.
         const isAllowedShadowLiteral = false;
 
-        // (a) #hex literals, except the two deliberate priority colors.
-        if (hexRe.test(decl.value) && !isAllowedPriorityColor) {
+        // (a) #hex literals.
+        if (hexRe.test(decl.value)) {
           violations.push(`hex color: ${where}`);
         }
         // (b) color functions whose first argument is not var(--...).
@@ -797,12 +785,12 @@ describe("part 3 — Workbench readability", () => {
     expectDecl(
       ".task-workbench-priority-star.priority-auto",
       "color",
-      "#4da3ff"
+      "var(--color-blue)"
     );
     expectDecl(
       ".task-workbench-priority-readonly.priority-auto",
       "color",
-      "#4da3ff"
+      "var(--color-blue)"
     );
   });
 

@@ -131,6 +131,9 @@ body {
 
 .task-workbench-row:hover { background: var(--background-modifier-hover); }
 
+/* Deadline rows keep their tint on hover; the hover layer is stacked on the cells so the row is still distinguishable. */
+.task-workbench-table .task-workbench-row.twb-due-soon-row:hover td, .task-workbench-table .task-workbench-row.twb-overdue-row:hover td { background-color: var(--vg-tint-hover); }
+
 .task-workbench-row.is-completed { text-decoration: line-through; color: var(--text-faint); }
 
 .task-workbench-col-name .task-indent { padding-left: 18px; }
@@ -141,11 +144,17 @@ body {
 button.twb-collapse-toggle { border: 0; background: transparent; box-shadow: none; outline: none; cursor: pointer; color: var(--text-muted); margin-right: 4px; padding: 0 2px; }
 
 .twb-collapse-summary { color: var(--text-faint); font-size: 0.85em; margin-left: 4px; }
+button.twb-collapse-toggle:focus-visible { outline: var(--vg-focus-ring); outline-offset: 1px; border-radius: var(--vg-radius-s); }
+
 .task-workbench-parent-prefix { color: var(--text-muted); }
 
 .task-workbench-row.twb-collapsed-preview-row { color: var(--text-muted); font-style: italic; }
 
-.task-workbench-empty { padding: 16px; text-align: center; color: var(--text-muted); }
+.task-workbench-empty { padding: var(--vg-space-6) var(--vg-space-5); text-align: center; color: var(--text-muted); font-size: var(--vg-font-m); }
+
+/* Tag cell: chips stay within the 20px row-content budget (chip 18px, no vertical margin). */
+.task-workbench-tag-chip { vertical-align: middle; font-style: normal; margin-right: var(--vg-space-1); }
+.task-workbench-tag-chip:last-child { margin-right: 0; }
 
 .task-workbench-priority-stars { display: inline-flex; align-items: center; gap: 0; }
 
@@ -156,8 +165,8 @@ button.task-workbench-priority-star:focus-visible, button.task-workbench-priorit
 button.task-workbench-priority-reset { border: 0; background: transparent; box-shadow: none; outline: none; cursor: pointer; color: var(--text-muted); margin-left: 4px; }
 
 /* The auto-priority rules precede the manual-priority rules. */
-.task-workbench-priority-star.priority-auto { color: #4da3ff; }
-.task-workbench-priority-readonly.priority-auto { color: #4da3ff; }
+.task-workbench-priority-star.priority-auto { color: var(--vg-priority-auto); }
+.task-workbench-priority-readonly.priority-auto { color: var(--vg-priority-auto); }
 
 .task-workbench-priority-star.priority-manual { color: var(--color-yellow); }
 .task-workbench-priority-readonly.priority-manual { color: var(--color-yellow); }
@@ -165,6 +174,25 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-workbench-inline-input.is-overdue { color: rgba(var(--color-red-rgb), 1); border-color: rgba(var(--color-red-rgb), 0.5); }
 
 .task-workbench-inline-input.is-today { border-color: var(--interactive-accent); }
+
+/* Embedded view (task-list code block). Scoped under .task-workbench-embed so Obsidian's
+   .markdown-rendered table styles lose on specificity; density matches the Workbench table. */
+.task-workbench-embed { display: flex; flex-direction: column; border: var(--vg-border); border-radius: var(--vg-radius-m); overflow: hidden; }
+.task-workbench-embed-titlebar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vg-space-3); padding: var(--vg-space-3); border-bottom: var(--vg-border); background: var(--background-secondary); font-size: var(--vg-font-m); }
+.task-workbench-embed-titlebar label { display: inline-flex; align-items: center; gap: var(--vg-space-1); white-space: nowrap; cursor: pointer; }
+.task-workbench-embed-titlebar .task-workbench-search { min-width: 140px; }
+.task-workbench-embed-titlebar .vg-btn-sm { margin-left: auto; }
+.task-workbench-embed .task-workbench-embed-title { font-weight: var(--vg-weight-strong); color: var(--text-normal); }
+.task-workbench-embed .task-workbench-embed-table { border-collapse: collapse; width: 100%; margin: 0; font-size: var(--vg-font-m); }
+.task-workbench-embed .task-workbench-embed-table th, .task-workbench-embed .task-workbench-embed-table td { font-size: var(--vg-font-m); padding: 2px 6px; text-align: left; vertical-align: middle; border: 0; border-bottom: var(--vg-border); }
+.task-workbench-embed .task-workbench-embed-table thead th { white-space: nowrap; padding-top: 6px; padding-bottom: 6px; font-size: var(--vg-font-s); font-weight: var(--vg-weight-strong); color: var(--text-muted); background: var(--background-secondary); }
+.task-workbench-embed .task-workbench-embed-table td:nth-child(5), .task-workbench-embed .task-workbench-embed-table td:nth-child(6) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.task-workbench-embed .task-workbench-embed-table tbody tr:last-child td { border-bottom: 0; }
+.task-workbench-embed .task-workbench-embed-table tbody tr:hover { background: var(--background-modifier-hover); }
+.task-workbench-embed .task-workbench-embed-table tbody tr.twb-due-soon-row { background: var(--vg-tint-warning); }
+.task-workbench-embed .task-workbench-embed-table tbody tr.twb-overdue-row { background: var(--vg-tint-danger); }
+.task-workbench-embed .task-workbench-embed-table tbody tr.twb-due-soon-row:hover td, .task-workbench-embed .task-workbench-embed-table tbody tr.twb-overdue-row:hover td { background-color: var(--vg-tint-hover); }
+.task-workbench-embed .task-workbench-embed-empty { padding: var(--vg-space-6) var(--vg-space-5); text-align: center; color: var(--text-muted); font-size: var(--vg-font-m); }
 
 /* position:relative establishes the containing block for
    .task-gantt-drag-tooltip, which is appended directly to the container. */

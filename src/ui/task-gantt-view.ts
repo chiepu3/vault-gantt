@@ -24,6 +24,7 @@ import {
   DEFAULT_STATUSES,
 } from "../core/constants";
 import { readableTextColor } from "../core/color";
+import { findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
 import { normalizeWorkloadMap } from "../core/task-patch";
 import {
@@ -111,19 +112,6 @@ type MenuItemWithRuntimeSubmenu = MenuItem & {
   setSubmenu?: () => Menu;
 };
 
-/**
- * Sets a CSS custom property inline. The real DOM exposes
- * CSSStyleDeclaration.setProperty; the small fake DOM used by the unit tests
- * exposes style as a plain record.
- */
-function setStyleVar(el: HTMLElement, name: string, value: string): void {
-  if (typeof el.style.setProperty === "function") {
-    el.style.setProperty(name, value);
-  } else {
-    (el.style as unknown as Record<string, string>)[name] = value;
-  }
-}
-
 /** Icon-only toolbar button: Lucide icon with a Japanese label for assistive tech and tooltip. */
 function setToolbarIcon(button: HTMLElement, icon: string, label: string): void {
   button.setAttribute("aria-label", label);
@@ -195,24 +183,6 @@ function canonicalizeTagNames(
           (definition) => definition.key === tag || definition.name === tag
         )?.name ?? tag
     )
-  );
-}
-
-/**
- * `getGanttTags`/`findGanttTag` equivalent — looks
- * up a configured tag by either its stable key or its current display name.
- */
-function findGanttTagDefinition(
-  settings: TaskWorkbenchSettings,
-  name: string
-): GanttTagDefinition | undefined {
-  if (name === "") {
-    return undefined;
-  }
-  const definitions = Array.isArray(settings.ganttTags) ? settings.ganttTags : [];
-  return definitions.find(
-    (definition) =>
-      definition.name === name || definition.key === name
   );
 }
 
