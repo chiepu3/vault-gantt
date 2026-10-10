@@ -200,7 +200,7 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
   if (state === "expired") h(card, "p", "vg-pv-note is-warn", "承認の期限が過ぎました。再プレビューしてください。");
 
   const projection = outcome ? outcome.actualProjection : (options.projection !== undefined ? options.projection : preview.projection);
-  const ctx: RenderContext = { projection, names: buildNameMap(projection ?? preview.projection) };
+  const ctx: RenderContext = { operationId: preview.operationId, projection, names: buildNameMap(projection ?? preview.projection) };
   const entries = h(card, "div", "vg-pv-entries");
   const limit = options.entryLimit ?? 20;
   for (const entry of preview.entries.slice(0, limit)) renderEntry(entries, entry, ctx, outcome);

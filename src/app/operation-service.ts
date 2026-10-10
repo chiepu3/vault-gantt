@@ -181,7 +181,8 @@ export class OperationService implements OperationServicePort {
       daily = await dailyPlan(id as DailyWriteId, parsed as OperationInputMap[DailyWriteId], snapshot, vault);
       entries = assignEntries(daily.entries); warnings.push(...daily.warnings);
     } else if (id === "V20" || id === "V21") {
-      historyPlanData = historyPlan(id, parsed as OperationInputMap["V20"], snapshot, this.host.historyManager);
+      historyPlanData = await historyPlan(id, parsed as OperationInputMap["V20"], snapshot, this.host.historyManager);
+      daily = historyPlanData.daily;
       afterParents = historyPlanData.afterParents; entries = assignEntries(historyPlanData.entries);
     } else if (id === "V23") {
       diagnostic = diagnosticPlan(parsed as OperationInputMap["V23"], this.host.logger!); entries = assignEntries(diagnostic.entries);
@@ -289,7 +290,7 @@ export class OperationService implements OperationServicePort {
     const preview = operationPreviewSchema.parse({ schemaVersion: 1, previewId, vaultInstanceId: this.vaultInstanceId, operationId: id, operationLabel: this.catalog.get(id).description.purpose, origin: context.origin, status: "pending", createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 600000).toISOString(),
       summary: { targetCount: entries.length, actionCount: entries.length }, entries, warnings,
       undo: settingKeys.length || historyPlanData || diagnostic || daily?.unresolvedTemplates.length || writes.some((write) => write.before === null) ? { support: "none", reason: "設定保存・親の新規ファイル作成はUndo対象外です。" } : { support: "full", reason: "履歴先頭かつ内容一致時にMarkdown差分を戻せます。" },
-      projection: daily ? await dailyProjection(daily, snapshot, entries) : project(snapshot, afterParents, afterSettings, entries) });
+      projection: daily ? await dailyProjection(daily, snapshot, entries, afterParents) : project(snapshot, afterParents, afterSettings, entries) });
     if (this.disposed || context.signal?.aborted) fail("POLICY_DENIED", "停止した要求の計画は破棄しました。");
     if (new TextEncoder().encode(JSON.stringify(preview)).length > 12 * 1024 * 1024) fail("INVALID_INPUT", "提案が12MiBを超えます。対象を分けて再提案してください。");
     while (this.pending.size >= 50) { const oldest = this.pending.keys().next().value!; this.pending.delete(oldest); this.previewPort.setStatus(oldest, "expired"); }
@@ -361,7 +362,7 @@ export class OperationService implements OperationServicePort {
         if (stored.history) this.clearSavedProjectionFocus();
         for (const [path, write] of this.ownWrites) if (write.until <= Date.now()) this.ownWrites.delete(path);
         for (const write of stored.writes) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
-        if (stored.daily) {
+        if (stored.daily && !stored.history) {
           await executeDailyPlan(stored.daily, vault, (path) => {
             const write = stored.writes.find((write) => write.path === path)!;
             write.actionIds.forEach((action) => committed.add(action));
@@ -432,7 +433,7 @@ export class OperationService implements OperationServicePort {
       }
       const actualEntries = stored.preview.entries.filter((entry) => committed.has(entry.actionId)).map((entry) => ({ ...entry, effects: actualEffects.get(entry.actionId) ?? entry.effects }));
       const outcome: OperationOutcomeV1 = { previewId: id, status, actions: stored.preview.entries.map((entry) => ({ actionId: entry.actionId, state: committed.has(entry.actionId) ? "committed" : failed.has(entry.actionId) ? "failed" : "not-attempted", actual: committed.has(entry.actionId) ? actualEffects.get(entry.actionId) ?? entry.effects : [], ...(committed.has(entry.actionId) ? {} : { errorCode: errorCode ?? "NOT_ATTEMPTED" }) })),
-        ...(history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action))) ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries) : project(stored.snapshot, parents, stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
+        ...(history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action))) ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
       if (committed.size && !this.disposed) { try { await this.host.invalidate(); } catch { /* Saved bytes remain authoritative. */ } }
       const validated = validatePreviewOutcome(stored.preview, outcome);
       if (!this.disposed) {

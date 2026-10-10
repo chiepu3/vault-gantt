@@ -8,6 +8,7 @@ import { canonical, contentRevision, fail, flatten, findTask, OperationFailure, 
 import { publicSettings, period, progress, hours, aggregates } from "./preview-projector";
 import { holidaySet } from "./gantt-actions";
 import { addDays } from "./gantt-layout";
+import { getDailyTodoSourceForPath, extractDateFromDailyPath } from "./daily-todo-service";
 import { DailyReadHandler } from "./operations/daily-handlers";
 const DEFAULT_FIELDS: readonly TaskFieldGroup[] = ["identity", "status", "schedule", "priority", "tags"];
 export function compactTask(row: TaskRow, snapshot: TaskSnapshot, fields: readonly TaskFieldGroup[]): CompactTaskV1 {
@@ -41,10 +42,12 @@ export class ContextIndex implements ContextReadPort {
     const parseSettings = { ...settings, autoPriorityEnabled: false };
     const contents = new Map<string, string>(), revisions = new Map<string, string>(), statRevisions = new Map<string, string>(), parents: TaskRow[] = [], parseFailures: string[] = [];
     const root = settings.taskFolder.replace(/\/$/, "");
-    for (const file of vault.getFiles().filter((file) => file.path.endsWith(".md") && file.path.startsWith(root + "/")).sort((a, b) => a.path.localeCompare(b.path))) {
+    for (const file of vault.getFiles().filter((file) => file.path.endsWith(".md") && (file.path.startsWith(root + "/") || getDailyTodoSourceForPath(file.path, settings))).sort((a, b) => a.path.localeCompare(b.path))) {
       try {
         const content = await vault.read(file), revision = await contentRevision(content);
         contents.set(file.path, content); revisions.set(file.path, revision); statRevisions.set(file.path, buildFileRevision(file as TaskRow["file"]));
+        // Daily bytes participate in conflict checks, but are never task models.
+        if (!file.path.startsWith(root + "/") || getDailyTodoSourceForPath(file.path, settings) && /^\d{4}-\d{2}-\d{2}$/.test(extractDateFromDailyPath(file.path, settings))) { this.parsed.delete(file.path); continue; }
         const parseRevision = revision + ":" + today;
         const cached = this.parsed.get(file.path);
         let parent: TaskRow | null;

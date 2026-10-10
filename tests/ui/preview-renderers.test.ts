@@ -251,6 +251,14 @@ describe("no internal names on screen", () => {
     }
     for (const output of outputs) expect(latinWords(output), output.slice(0, 80)).toEqual([]);
   });
+  it("explains the preserved business-day duration on T20 cards", async () => {
+    const f = await runtimeFixture();
+    const preview = await f.service.propose("T20", { subtaskId: f.child.id, calendarDelta: 3 }, f.context);
+    const card = renderOperationPreviewCard(root(), preview, {});
+    expect(text(card)).toContain("休日を除いた日数を保って移動します。終了日・マーカーは休日の分だけ後ろにずれることがあります。");
+    const explicit = await f.service.propose("T19", { subtaskId: f.child.id, start: "2026-10-16", end: "2026-10-19" }, f.context);
+    expect(text(renderOperationPreviewCard(root(), explicit, {}))).not.toContain("休日を除いた日数を保って移動します");
+  });
   it("shows the day-counting basis in plain words", () => {
     const business = root(); renderEffect(business, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "business-day" }, {});
     expect(text(business)).toContain("日数の数え方: 営業日（休日を除く）");
