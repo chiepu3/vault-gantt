@@ -1,19 +1,29 @@
 import { ItemView, Menu, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import { ChatSession, Proposal } from "../ai/chat-session";
+import { completionText, type ChatCompletion } from "../ai/chat-completion";
 import type { OperationResult, TaskDiff } from "../app/operation-registry";
+import type { PreviewUiHostPorts } from "../contracts/ports";
+import { captureFocusKey, PreviewCardController, renderOperationPreviewCard, restoreFocusKey } from "./operation-preview-card";
 import { renderScheduleTimeline } from "./schedule-timeline";
 
 export const VIEW_TYPE_AI_CHAT = "vault-gantt-ai-chat";
 export interface AgentViewHost {
   session: ChatSession;
-  secretIds(): string[];
+  /** Opens the plugin settings tab, where the connection is configured. */
+  openSettings(): void;
+  /** Model IDs fetched from the connection in the settings tab. */
+  modelOptions?(): string[];
   selectedTask?(): string | undefined;
   closeDiff?(): void;
   openGantt(): Promise<void> | void;
   undo(result: OperationResult): Promise<void> | void;
   canUndo(result: OperationResult): boolean;
   undoStatus?(result: OperationResult): "available" | "undone" | "unavailable";
+  /** Ports for operation previews (cards for every effect). Absent = legacy cards only. */
+  previewPorts?: PreviewUiHostPorts;
+  /** Reverse the history entry an outcome refers to; the ports only inspect history. */
+  undoEntry?(entryId: string): Promise<void> | void;
 }
 const fieldNames: Record<string, string> = { plannedStartDate: "開始日", plannedEndDate: "終了日", dueDate: "期限", notes: "メモ", displayName: "表示名", title: "名前", create: "作成" };
 export function diffText(diffs: TaskDiff[]): string {
@@ -21,23 +31,81 @@ export function diffText(diffs: TaskDiff[]): string {
 }
 function display(value: unknown): string { return value === "" || value == null ? "未設定" : typeof value === "string" ? value : JSON.stringify(value); }
 
-// Deliberately small Markdown subset: text nodes only, no HTML or executable links.
+// Deliberately small Markdown subset: text nodes only, no HTML, images or executable links.
+// Rendering is line based and stateless, so a half-received reply (open code fence, table
+// without its separator row yet, unclosed bold) stays readable and re-renders cleanly.
+const STATUS_WORDS: Record<string, string> = { active: "進行中", in_progress: "作業中", done: "完了", completed: "完了", todo: "未着手", pending: "未着手", blocked: "保留", cancelled: "中止" };
+function inline(parent: HTMLElement, content: string): void {
+  for (const part of content.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
+    if (!part) continue;
+    const tag = part.startsWith("**") && part.endsWith("**") && part.length > 4 ? "strong" : part.startsWith("`") && part.endsWith("`") && part.length > 2 ? "code" : "span";
+    const node = document.createElement(tag);
+    const raw = tag === "strong" ? part.slice(2, -2) : tag === "code" ? part.slice(1, -1) : part;
+    node.textContent = tag === "code" && STATUS_WORDS[raw] ? STATUS_WORDS[raw] : raw;
+    if (tag === "code" && STATUS_WORDS[raw]) node.title = raw;
+    parent.appendChild(node);
+  }
+}
+const tableCells = (line: string): string[] => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+const isSeparator = (line: string | undefined): boolean => !!line && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line) && line.includes("|");
 export function renderChatText(parent: HTMLElement, text: string): void {
-  for (const line of text.split("\n")) {
-    const block = document.createElement(line.startsWith("- ") ? "div" : "p");
-    parent.appendChild(block);
-    const content = line.startsWith("- ") ? "• " + line.slice(2) : line;
-    for (const part of content.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
-      const tag = part.startsWith("**") && part.endsWith("**") ? "strong" : part.startsWith("`") && part.endsWith("`") ? "code" : "span";
-      const node = document.createElement(tag);
-      node.textContent = tag === "strong" ? part.slice(2, -2) : tag === "code" ? part.slice(1, -1) : part;
-      block.appendChild(node);
+  const lines = text.split("\n");
+  const add = (tag: string, className?: string): HTMLElement => { const node = document.createElement(tag); if (className) node.className = className; parent.appendChild(node); return node; };
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (/^\s*```/.test(line)) {
+      const body: string[] = [];
+      index++;
+      while (index < lines.length && !/^\s*```/.test(lines[index])) body.push(lines[index++]);
+      const code = document.createElement("code"); code.textContent = body.join("\n");
+      add("pre", "vg-ai-codeblock").appendChild(code);
+      continue;
     }
+    if (line.includes("|") && line.trim().startsWith("|") && isSeparator(lines[index + 1])) {
+      const wrap = add("div", "vg-ai-table-wrap"); const table = document.createElement("table"); wrap.appendChild(table);
+      const head = document.createElement("thead"); const headRow = document.createElement("tr"); head.appendChild(headRow); table.appendChild(head);
+      for (const cell of tableCells(line)) { const th = document.createElement("th"); inline(th, cell); headRow.appendChild(th); }
+      const body = document.createElement("tbody"); table.appendChild(body);
+      index += 2;
+      while (index < lines.length && lines[index].trim().startsWith("|")) {
+        const row = document.createElement("tr"); body.appendChild(row);
+        for (const cell of tableCells(lines[index])) { const td = document.createElement("td"); inline(td, STATUS_WORDS[cell] ?? cell); row.appendChild(td); }
+        index++;
+      }
+      index--;
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) { inline(add("p", "vg-ai-heading"), heading[2]); continue; }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { add("hr"); continue; }
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote) { inline(add("p", "vg-ai-quote"), quote[1]); continue; }
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (bullet) { inline(add("div", "vg-ai-li"), "• " + bullet[1]); continue; }
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+    if (numbered) { inline(add("div", "vg-ai-li"), numbered[1] + ". " + numbered[2]); continue; }
+    inline(add("p"), line);
   }
 }
 
+/** One-line turn status under the reply. A created proposal shows as a card, so it gets no line. */
+export function completionLine(completion: ChatCompletion | undefined): string {
+  if (!completion || completion.kind === "proposal-created") return "";
+  const text = completionText[completion.kind];
+  return completion.kind === "connection-error" && completion.httpStatus ? text + "（HTTP " + completion.httpStatus + "）" : text;
+}
+/** The provider also appends the completion sentence to the reply text; drop it so the status line is the only copy. */
+function replyText(text: string, completion: ChatCompletion | undefined): string {
+  const tail = completion ? completionText[completion.kind] : "";
+  return tail && text.endsWith(tail) ? text.slice(0, -tail.length).trimEnd() : text;
+}
+
 export class AgentView extends ItemView {
+  private unregisterState?: () => void;
   private unsubscribe?: () => void;
+  private unsubscribePreviews: (() => void)[] = [];
+  private cards?: PreviewCardController;
+  private lastConversationId?: string;
   private timer?: ReturnType<typeof setTimeout>;
   private messagesEl!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -46,7 +114,6 @@ export class AgentView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private modelEl!: HTMLButtonElement;
   private modelLabelEl!: HTMLElement;
-  private modelSettingEl!: HTMLInputElement;
   private modelMenu?: Menu;
   private readonly models = new Set<string>();
   private sendEl!: HTMLButtonElement;
@@ -56,6 +123,8 @@ export class AgentView extends ItemView {
   getDisplayText(): string { return "AI チャット"; }
   getIcon(): string { return "messages-square"; }
   async onOpen(): Promise<void> {
+    const portsForState = this.host.previewPorts;
+    if (portsForState?.viewId) this.unregisterState = portsForState.viewStatePort?.register(portsForState.viewId, () => ({ viewId: portsForState.viewId!, kind: "chat", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [] }));
     const root = (this.containerEl.children[1] ?? this.containerEl) as HTMLElement;
     root.empty(); root.classList.add("vg-ai-chat");
     const headerShell = this.element(root, "header"); headerShell.className = "vg-ai-header";
@@ -66,19 +135,7 @@ export class AgentView extends ItemView {
     const history = this.element(header, "details"); history.className = "vg-ai-menu";
     const historyToggle = this.element(history, "summary"); this.decorateIcon(historyToggle, "history", "会話履歴を開く");
     this.historyEl = this.element(history, "div"); this.historyEl.className = "vg-ai-popover vg-ai-history";
-    const connection = this.element(header, "details"); connection.className = "vg-ai-menu";
-    const settingsToggle = this.element(connection, "summary"); this.decorateIcon(settingsToggle, "settings", "接続設定を開く");
-    const settings = this.element(connection, "div"); settings.className = "vg-ai-popover";
-    this.element(settings, "strong").textContent = "接続設定（このセッションのみ）";
-    const config = this.host.session.config;
-    const provider = this.select(settings, "プロバイダー", [["disconnected", "未接続"], ["openai-compatible", "OpenAI 互換"]], config.provider);
-    const endpoint = this.input(settings, "接続先URL", config.endpoint); endpoint.placeholder = "https://…/v1 または http://localhost:…/v1";
-    const model = this.input(settings, "モデルID", config.model); model.placeholder = "接続先で利用できるモデルID"; this.modelSettingEl = model;
-    const auth = this.select(settings, "認証方式", [["secret", "既存のObsidian秘密ストレージ"], ["none", "認証なし（明示選択）"]], config.auth);
-    const secret = this.select(settings, "既存の秘密ID", [["", "選択してください"], ...this.host.secretIds().map((id): [string, string] => [id, id])], config.secretId);
-    const apply = this.button(settings, "接続設定を適用", () => this.host.session.configure({ provider: provider.value as typeof config.provider, endpoint: endpoint.value.trim(), model: model.value.trim(), auth: auth.value as typeof config.auth, secretId: secret.value }));
-    apply.title = "設定の変更だけでは接続リクエストを送信しません";
-    this.element(settings, "p").textContent = "秘密は作成・コピー・保存しません。送信すると会話と必要なタスク情報がこの接続先へ送られます。";
+    this.iconButton(header, "settings", "接続設定を開く", () => this.host.openSettings());
     this.messagesEl = this.element(root, "div"); this.messagesEl.className = "vg-ai-messages"; this.messagesEl.setAttribute("role", "log"); this.messagesEl.setAttribute("aria-label", "会話履歴");
     const composer = this.element(root, "div"); composer.className = "vg-ai-content vg-ai-composer";
     this.contextEl = this.element(composer, "div"); this.contextEl.className = "vg-ai-context";
@@ -101,14 +158,33 @@ export class AgentView extends ItemView {
     this.unsubscribe = this.host.session.subscribe(() => {
       if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40);
     });
+    const ports = this.host.previewPorts;
+    if (ports) {
+      const rerender = () => { if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40); };
+      this.cards = new PreviewCardController(ports, { openGantt: () => this.host.openGantt(), undoEntry: this.host.undoEntry }, rerender);
+      this.unsubscribePreviews = [ports.previewPort.subscribe(rerender), ports.historyPort.subscribe(rerender)];
+    }
     this.render();
   }
-  async onClose(): Promise<void> { this.modelMenu?.hide(); this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  async onClose(): Promise<void> {
+    this.unregisterState?.(); this.unregisterState = undefined;
+    this.releasePreviewFocus();
+    for (const stop of this.unsubscribePreviews) stop();
+    this.unsubscribePreviews = []; this.cards = undefined;
+    this.modelMenu?.hide(); this.host.closeDiff?.(); this.unsubscribe?.(); this.unsubscribe = undefined; if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+  /** The Gantt overlay of a chat proposal is dropped on conversation switch and view close. The pending plan itself stays. */
+  private releasePreviewFocus(keepConversationId?: string): void {
+    const port = this.host.previewPorts?.previewPort; if (!port) return;
+    const focused = port.focusedPreviewId(); const preview = focused ? port.inspect(focused) : undefined;
+    if (preview?.origin.kind === "chat" && preview.origin.conversationId !== keepConversationId) port.focus(null);
+  }
   render(): void {
     if (!this.messagesEl) return;
     const session = this.host.session; const conversation = session.active;
+    if (this.lastConversationId !== conversation.id) { if (this.lastConversationId !== undefined) this.releasePreviewFocus(conversation.id); this.lastConversationId = conversation.id; }
     const names = { idle: "待機中", running: "実行中", preview: "確認待ち", failed: "失敗", cancelled: "停止済み" };
     this.statusEl.textContent = session.connected ? names[conversation.status] : "未接続";
+    this.statusEl.dataset.state = session.connected ? conversation.status : "disconnected";
     this.statusEl.title = (session.connected ? "接続設定あり" : "未接続") + " · " + names[conversation.status] + (conversation.error ? " — " + conversation.error : "");
     this.historyEl.empty();
     for (const item of session.conversations) {
@@ -122,35 +198,60 @@ export class AgentView extends ItemView {
     if (this.inputEl.value !== conversation.draft) { this.inputEl.value = conversation.draft; this.resizeInput(); }
     const running = conversation.status === "running";
     this.sendEl.disabled = running || !session.connected; this.sendEl.hidden = running; this.stopEl.hidden = !running;
+    for (const id of this.host.modelOptions?.() ?? []) this.models.add(id);
     if (session.config.model) this.models.add(session.config.model);
     this.modelEl.disabled = running || !this.models.size;
     this.modelLabelEl.textContent = session.config.model || "モデル";
-    this.modelEl.title = session.config.model || "接続設定でモデルIDを指定";
+    this.modelEl.title = session.config.model || "設定画面でモデルを選択";
     this.modelEl.dataset.model = session.config.model;
     if (running) this.modelMenu?.hide();
     const stickToBottom = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 64;
+    const focusKey = captureFocusKey();
     this.messagesEl.empty();
+    if (session.config.connectionError) {
+      const error = this.element(this.messagesEl, "p"); error.className = "vg-ai-error"; error.textContent = session.config.connectionError;
+    }
     if (!conversation.messages.length) {
       const empty = this.element(this.messagesEl, "div"); empty.className = "vg-ai-empty";
-      this.element(empty, "strong").textContent = "予定の整理を、会話から";
-      this.element(empty, "p").textContent = "タスクを探して、変更案を確認。保存は確認して実行したときだけ。";
-      if (!session.connected) this.element(empty, "p").textContent = "歯車から接続先を設定してください。";
+      const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");
+      this.element(empty, "strong").textContent = "AIチャット";
+      this.element(empty, "p").textContent = "タスクの検索や変更ができます。変更は「確認して実行」を押すと保存されます。";
+      if (!session.connected) this.element(empty, "p").textContent = "歯車ボタンから設定画面を開き、接続先とモデルを設定してください。";
     }
     for (const [index, message] of conversation.messages.entries()) {
       const item = this.element(this.messagesEl, "section"); item.className = "vg-ai-message vg-ai-" + message.role;
       this.element(item, "strong").textContent = message.role === "user" ? "あなた" : "AI";
+      if (running && message.role === "assistant" && index === conversation.messages.length - 1) item.dataset.streaming = "true";
       const body = this.element(item, "div"); body.className = "vg-ai-message-body";
-      renderChatText(body, message.text || (running ? "応答中…" : "（テキスト応答なし）"));
+      const line = completionLine(message.completion);
+      const shown = replyText(message.text, message.completion);
+      if (shown || !line) renderChatText(body, shown || (running ? "応答中…" : message.proposals.length ? "変更案を作成しました。" : "変更案はありません。"));
       for (const proposal of message.proposals) this.renderProposal(item, proposal, running);
+      if (line && !running && message.completion) {
+        const note = this.element(item, "p"); note.className = "vg-ai-completion"; note.dataset.kind = message.completion.kind; note.setAttribute("role", "status"); note.textContent = line;
+      }
       if (message.role === "assistant" && index === conversation.messages.length - 1) {
         this.renderToolStatus(item);
         if (["failed", "cancelled"].includes(conversation.status)) {
-          const error = this.element(item, "p"); error.className = "vg-ai-error"; error.textContent = conversation.error;
+          if (!message.completion) { const error = this.element(item, "p"); error.className = "vg-ai-error"; error.textContent = conversation.error; }
           this.button(item, "応答を再試行", () => { void session.retry(); }).disabled = running || !session.connected;
         }
       }
     }
+    this.renderPreviewCards(conversation.id);
+    restoreFocusKey(this.messagesEl, focusKey);
     if (stickToBottom) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  }
+  /** Operation previews raised by this conversation, in creation order. */
+  private renderPreviewCards(conversationId: string): void {
+    const controller = this.cards; const ports = this.host.previewPorts;
+    if (!controller || !ports) return;
+    const previews = ports.previewPort.list().filter((preview) => preview.origin.kind === "chat" && preview.origin.conversationId === conversationId)
+      .slice().sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    controller.pager.prune(new Set(ports.previewPort.list().map((preview) => preview.previewId)));
+    if (!previews.length) return;
+    const section = this.element(this.messagesEl, "section"); section.className = "vg-pv-chat-previews"; section.setAttribute("aria-label", "変更案");
+    for (const preview of previews) renderOperationPreviewCard(section, preview, controller.optionsFor(preview));
   }
   private openModelMenu(): void {
     if (this.modelEl.disabled || this.host.session.active.status === "running") return;
@@ -158,7 +259,6 @@ export class AgentView extends ItemView {
     const menu = new Menu(); this.modelMenu = menu;
     for (const id of this.models) menu.addItem((item) => item.setTitle(id).setChecked(id === this.host.session.config.model).onClick(() => {
       if (this.host.session.active.status === "running") return;
-      this.modelSettingEl.value = id;
       this.host.session.configure({ ...this.host.session.config, model: id });
       menu.hide();
     }));
@@ -181,7 +281,10 @@ export class AgentView extends ItemView {
     for (const tool of tools) this.element(details, "div").textContent = names[tool] ?? tool;
   }
   private renderProposal(parent: HTMLElement, proposal: Proposal, running: boolean): void {
+    if (this.cards && this.host.previewPorts?.previewPort.inspect(proposal.plan.previewId)) return;
     const item = this.element(parent, "div"); item.className = "vg-ai-diff";
+    const undone = !!proposal.result && this.host.undoStatus?.(proposal.result) === "undone";
+    item.dataset.state = proposal.result ? (undone ? "undone" : proposal.result.kind) : "proposal";
     const outcomes = { success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み", stale: "失効" };
     const status = this.element(item, "span"); status.className = "vg-ai-result-status"; status.setAttribute("role", "status");
     status.textContent = proposal.result ? (this.host.undoStatus?.(proposal.result) === "undone" ? "元に戻しました" : outcomes[proposal.result.kind]) : "変更案";
@@ -197,7 +300,7 @@ export class AgentView extends ItemView {
       this.element(details, "p").textContent = proposal.result.message;
     }
     const actions = this.element(item, "div"); actions.className = "vg-ai-actions";
-    if (!proposal.consumed) this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }).disabled = running;
+    if (!proposal.consumed) { const confirm = this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }); confirm.classList.add("mod-cta"); confirm.disabled = running; }
     if (proposal.consumed && !proposal.retryPrepared && proposal.result?.kind !== "success" && (!proposal.result || proposal.result.committed < proposal.result.total)) this.button(actions, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
     if (proposal.result?.committed) {
       const result = proposal.result;
@@ -222,6 +325,4 @@ export class AgentView extends ItemView {
   private button(parent: HTMLElement, text: string, action: () => void): HTMLButtonElement { const button = this.element(parent, "button"); button.type = "button"; button.textContent = text; button.addEventListener("click", action); return button; }
   private decorateIcon(element: HTMLElement, icon: string, label: string): void { element.className = "clickable-icon vg-ai-icon-button"; element.title = label; element.setAttribute("aria-label", label); setIcon(element, icon); }
   private iconButton(parent: HTMLElement, icon: string, label: string, action: () => void): HTMLButtonElement { const button = this.button(parent, "", action); this.decorateIcon(button, icon, label); return button; }
-  private input(parent: HTMLElement, text: string, value: string): HTMLInputElement { const label = this.element(parent, "label"); label.textContent = text; const input = this.element(label, "input"); input.value = value; return input; }
-  private select(parent: HTMLElement, text: string, choices: [string, string][], value: string): HTMLSelectElement { const label = this.element(parent, "label"); label.textContent = text; const select = this.element(label, "select"); for (const [id, name] of choices) { const option = this.element(select, "option"); option.value = id; option.textContent = name; } select.value = value; return select; }
 }

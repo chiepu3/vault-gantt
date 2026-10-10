@@ -67,8 +67,17 @@ const {
       min: "",
       rows: 0,
       disabled: false,
+      autocomplete: "",
+      listeners: {} as Record<string, () => void>,
+      addEventListener(name: string, listener: () => void): void {
+        this.listeners[name] = listener;
+      },
     };
     handler: ((value: string) => void) | null = null;
+
+    getValue(): string {
+      return this.value;
+    }
 
     setValue(value: string): this {
       this.value = value;
@@ -86,11 +95,63 @@ const {
     }
   }
 
+  class FakeDropdown {
+    value = "";
+    options: Record<string, string> = {};
+    selectEl = { options: [] as { value: string; text: string }[] };
+    handler: ((value: string) => unknown) | null = null;
+
+    addOption(value: string, label: string): this {
+      this.options[value] = label;
+      this.selectEl.options.push({ value, text: label });
+      return this;
+    }
+
+    addOptions(options: Record<string, string>): this {
+      for (const [value, label] of Object.entries(options)) this.addOption(value, label);
+      return this;
+    }
+
+    setValue(value: string): this {
+      this.value = value;
+      return this;
+    }
+
+    onChange(handler: (value: string) => unknown): this {
+      this.handler = handler;
+      return this;
+    }
+  }
+
   class FakeButton {
     text = "";
     cta = false;
+    warning = false;
+    icon = "";
+    tooltip = "";
     disabled = false;
     handler: (() => unknown) | null = null;
+    classes: string[] = [];
+    buttonEl = {
+      addClass: (cls: string): void => {
+        this.classes.push(cls);
+      },
+    };
+
+    setIcon(icon: string): this {
+      this.icon = icon;
+      return this;
+    }
+
+    setTooltip(tooltip: string): this {
+      this.tooltip = tooltip;
+      return this;
+    }
+
+    setWarning(): this {
+      this.warning = true;
+      return this;
+    }
 
     setButtonText(text: string): this {
       this.text = text;
@@ -112,8 +173,6 @@ const {
       return this;
     }
   }
-
-
   class FakeColorPicker {
     value = "#000000";
     handler: ((value: string) => void) | null = null;
@@ -136,11 +195,13 @@ const {
     desc = "";
     heading = false;
     toggles: FakeToggle[] = [];
+    dropdowns: FakeDropdown[] = [];
     texts: FakeText[] = [];
     textAreas: FakeText[] = [];
     buttons: FakeButton[] = [];
     colorPickers: FakeColorPicker[] = [];
     controlEl = new FakeElement();
+    settingEl = { classList: { add: vi.fn() } };
 
     constructor(public containerEl: unknown) {
       RecordingSetting.all.push(this);
@@ -165,6 +226,13 @@ const {
       const toggle = new FakeToggle();
       this.toggles.push(toggle);
       callback(toggle);
+      return this;
+    }
+
+    addDropdown(callback: (dropdown: FakeDropdown) => void): this {
+      const dropdown = new FakeDropdown();
+      this.dropdowns.push(dropdown);
+      callback(dropdown);
       return this;
     }
 
@@ -289,38 +357,39 @@ describe("TaskWorkbenchSettingTab", () => {
     tab.display();
 
     expect(RecordingSetting.all.map((setting) => setting.name)).toEqual([
-      "Task Workbench 設定",
+      "Task Workbench",
       "基本設定",
-      "Task folder",
-      "Filename uses date prefix",
-      "Hide completed by default",
-      "Current Status rows",
+      "タスクフォルダ",
+      "ファイル名に日付を付ける",
+      "完了を既定で隠す",
+      "現在の進捗の行数",
       "期限にもとづく優先度の自動設定",
-      "Task Gantt 休日",
+      "休日",
       "内閣府の祝日",
       "今年度の特別休暇",
-      "Task Gantt 機能の有効化",
+      "機能の有効化",
       "Daily ToDoを表示",
       "作業時間を表示",
       "その他 行を表示",
       "同期機能",
       "タグ機能",
       "Gantt差分描画を有効化",
-      "Task Gantt タグ",
+      "タグ",
       "サブタスク上にタグ名を表示",
       "親タスクのタグ名を子タスクにも表示",
       "親タスク列にタグ名を表示",
       "",
       "タグを追加",
-      "Task Gantt Daily ToDo",
+      "Daily ToDo",
+      "新規ToDoの追加先",
       "デイリー",
       "デイリーミーティング",
       "ソース操作",
-      "Task Gantt 外部同期",
-      "Gantt server sync",
-      "Gantt server URL",
-      "Gantt sync interval minutes",
-      "Gantt sync now",
+      "外部同期",
+      "Gantt サーバー同期",
+      "Gantt サーバー URL",
+      "Gantt 同期間隔（分）",
+      "今すぐ同期",
     ]);
 
     const names = RecordingSetting.all.map((setting) => setting.name);
@@ -343,8 +412,8 @@ describe("TaskWorkbenchSettingTab", () => {
   it("changes representative controls on the live object and saves immediately", async () => {
     tab.display();
 
-    const folder = settingByName("Task folder").texts[0];
-    const filename = settingByName("Filename uses date prefix").toggles[0];
+    const folder = settingByName("タスクフォルダ").texts[0];
+    const filename = settingByName("ファイル名に日付を付ける").toggles[0];
     const feature = settingByName("Daily ToDoを表示").toggles[0];
 
     const folderSave = folder.handler!("project/tasks");
@@ -361,7 +430,7 @@ describe("TaskWorkbenchSettingTab", () => {
 
   it("trims folders, defaults empty input, and rejects exact .. segments", async () => {
     tab.display();
-    const folder = settingByName("Task folder").texts[0];
+    const folder = settingByName("タスクフォルダ").texts[0];
 
     await folder.handler!("  ../outside  ");
     expect(settings.taskFolder).toBe("tasks");
@@ -373,8 +442,8 @@ describe("TaskWorkbenchSettingTab", () => {
 
   it("preserves float values and applies the exact numeric fallbacks", async () => {
     tab.display();
-    const rows = settingByName("Current Status rows").texts[0];
-    const interval = settingByName("Gantt sync interval minutes").texts[0];
+    const rows = settingByName("現在の進捗の行数").texts[0];
+    const interval = settingByName("Gantt 同期間隔（分）").texts[0];
 
     await rows.handler!("");
     expect(settings.currentStatusRows).toBe(5);
@@ -470,11 +539,18 @@ describe("TaskWorkbenchSettingTab", () => {
       "Templates/daily.md",
     ]);
     expect(rows[0].toggles[0].value).toBe(true);
-    expect(rows[0].buttons.map((button) => button.text)).toEqual([
-      "↑",
-      "↓",
+    expect(rows[0].buttons.map((button) => button.icon || button.text)).toEqual([
+      "arrow-up",
+      "arrow-down",
       "削除",
     ]);
+    expect(rows[0].buttons.map((button) => button.tooltip)).toEqual([
+      "上へ移動",
+      "下へ移動",
+      "",
+    ]);
+    expect(rows[0].buttons[2].warning).toBe(false);
+    expect(rows[0].buttons[2].classes).toContain("vg-btn-danger-text");
     expect(rows[0].buttons[0].disabled).toBe(true);
     expect(rows[1].texts.map((text) => text.value)).toEqual([
       "会議",
@@ -515,6 +591,24 @@ describe("TaskWorkbenchSettingTab", () => {
       creatableFromGantt: true,
     });
     expect(saveSettings).toHaveBeenCalledTimes(4);
+    expect(settingByName("新規ToDoの追加先").dropdowns[0].selectEl.options
+      .find((option) => option.value === "source")?.text).toBe("新しいラベル");
+  });
+
+  it("keeps the selected key through reordering and asks to select again after deletion", async () => {
+    settings.dailyTodoTargetSourceKey = "main";
+    tab.display();
+    const target = settingByName("新規ToDoの追加先").dropdowns[0];
+    expect(target.value).toBe("main");
+    expect(target.options).toEqual({ main: "デイリー", meeting: "デイリーミーティング" });
+    await dailySourceRows()[0].buttons[1].handler!();
+    expect(settings.dailyTodoTargetSourceKey).toBe("main");
+    const currentRows = dailySourceRows().slice(-2);
+    await currentRows[1].buttons[2].handler!();
+    expect(settings.dailyTodoTargetSourceKey).toBe("main");
+    const currentTarget = [...RecordingSetting.all].reverse().find((setting) => setting.name === "新規ToDoの追加先")!.dropdowns[0];
+    expect(currentTarget.value).toBe("main");
+    expect(currentTarget.options).toEqual({ main: "追加先を選んでください", meeting: "デイリーミーティング" });
   });
 
   it("deletes a source without confirmation and saves the list", async () => {
@@ -602,6 +696,13 @@ describe("TaskWorkbenchSettingTab", () => {
       creatableFromGantt: true,
     });
     expect(saveSettings).toHaveBeenCalledTimes(1);
+
+    const target = [...RecordingSetting.all].reverse().find((setting) => setting.name === "新規ToDoの追加先")!.dropdowns[0];
+    const importedKey = settings.dailyTodoSources[1].key;
+    expect(target.options[importedKey]).toBe("10_Daily");
+    await target.handler!(importedKey);
+    expect(settings.dailyTodoTargetSourceKey).toBe(importedKey);
+    expect(saveSettings).toHaveBeenCalledTimes(2);
   });
 
   it("shows a Notice and leaves sources unchanged when import is unavailable", async () => {
@@ -667,9 +768,9 @@ describe("TaskWorkbenchSettingTab", () => {
 
   it("saves sync fields, rearms the timer, and fires manual sync without awaiting", async () => {
     tab.display();
-    const enabled = settingByName("Gantt server sync").toggles[0];
-    const url = settingByName("Gantt server URL").texts[0];
-    const now = settingByName("Gantt sync now").buttons[0];
+    const enabled = settingByName("Gantt サーバー同期").toggles[0];
+    const url = settingByName("Gantt サーバー URL").texts[0];
+    const now = settingByName("今すぐ同期").buttons[0];
 
     enabled.handler!(true);
     url.handler!("  http://localhost:8787/anything?x=1#fragment  ");
@@ -710,8 +811,16 @@ describe("TaskWorkbenchSettingTab", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].texts.map((text) => text.value)).toEqual(["First", "#111111"]);
     expect(rows[1].texts.map((text) => text.value)).toEqual(["Second", ""]);
-    expect(rows[0].buttons.map((button) => button.text)).toEqual(["↑", "↓", "削除"]);
-    expect(rows[1].buttons.map((button) => button.text)).toEqual(["↑", "↓", "削除"]);
+    expect(rows[0].buttons.map((button) => button.icon || button.text)).toEqual([
+      "arrow-up",
+      "arrow-down",
+      "削除",
+    ]);
+    expect(rows[1].buttons.map((button) => button.icon || button.text)).toEqual([
+      "arrow-up",
+      "arrow-down",
+      "削除",
+    ]);
     expect(rows[0].buttons[0].disabled).toBe(true);
     expect(rows[1].buttons[1].disabled).toBe(true);
   });
@@ -882,5 +991,206 @@ describe("TaskWorkbenchSettingTab", () => {
       order: 2000,
     });
     expect(saveSettings).toHaveBeenCalledTimes(1);
+  });
+
+  describe("AI チャット接続", () => {
+    const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+    let ai: any;
+    let fetchAiModels: Mock;
+    beforeEach(() => {
+      ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
+      let registered = false;
+      fetchAiModels = vi.fn().mockResolvedValue({ ok: true, models: ["a/one", "b/two"] });
+      Object.assign(hostPlugin, {
+        getAiSettings: () => ({ ...ai }),
+        updateAiSettings: vi.fn(async (patch: any) => { ai = { ...ai, ...patch }; }),
+        hasAiApiKey: () => registered,
+        setAiApiKey: vi.fn(async () => { registered = true; }),
+        clearAiApiKey: vi.fn(async () => { registered = false; }),
+        aiKeyStorage: () => "data",
+        fetchAiModels,
+        app: { vault: { configDir: ".obsidian" } },
+        manifest: { id: "vault-gantt" },
+      });
+      (tab as any).app = { vault: { configDir: ".obsidian" } };
+    });
+    const last = (name: string) => [...RecordingSetting.all].reverse().find((setting) => setting.name === name)!;
+
+    it("shows only the plain connection settings and names the key location", async () => {
+      tab.display();
+      await flush();
+      const names = RecordingSetting.all.map((setting) => setting.name);
+      for (const name of ["AI チャット", "接続先", "接続先URL", "APIキーを使う", "APIキー", "モデル", "接続テスト"]) expect(names).toContain(name);
+      expect(names.join()).not.toMatch(/認証|秘密ID|プロバイダー/);
+      expect(last("APIキー").desc).toContain(".obsidian/plugins/vault-gantt/data.json");
+      expect(last("APIキー").desc).toContain("未登録");
+    });
+
+    it("does not fetch models until a key is registered, then offers the fetched list", async () => {
+      tab.display();
+      await flush();
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      expect(last("モデル").desc).toContain("APIキーを登録");
+      await last("APIキー").buttons.find((b) => b.text === "保存")!.handler!();
+      expect(hostPlugin.setAiApiKey).not.toHaveBeenCalled(); // empty input is refused
+      last("APIキー").texts[0].setValue("sk-synthetic-secret");
+      await last("APIキー").buttons.find((b) => b.text === "保存")!.handler!();
+      await flush();
+      expect(hostPlugin.setAiApiKey).toHaveBeenCalledWith("sk-synthetic-secret");
+      expect(fetchAiModels).toHaveBeenCalledTimes(1);
+      const model = last("モデル");
+      expect(Object.keys(model.dropdowns[0].options)).toEqual(["", "a/one", "b/two"]);
+      await model.dropdowns[0].handler!("b/two");
+      expect(ai.model).toBe("b/two");
+      // the key is never rendered back into any label or description
+      expect(JSON.stringify(RecordingSetting.all.map((s) => [s.name, s.desc, s.texts.map((t) => t.placeholder)]))).not.toContain("sk-synthetic-secret");
+    });
+
+    it("falls back to a manual model field when the list cannot be fetched", async () => {
+      ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "my-model", useApiKey: false };
+      fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
+      tab.display();
+      await flush();
+      const model = last("モデル");
+      expect(model.dropdowns).toHaveLength(0);
+      expect(model.texts[0].value).toBe("my-model");
+      expect(model.desc).toContain("一覧を取得できませんでした");
+      expect(model.desc).toContain("直接入力");
+      expect(RecordingSetting.all.map((s) => s.name)).not.toContain("APIキー");
+      await model.texts[0].handler!("typed-model");
+      expect(ai.model).toBe("typed-model");
+    });
+
+    it("keeps a saved model visible when it is not in the fetched list", async () => {
+      ai = { ...ai, model: "gone/model" };
+      tab.display();
+      hostPlugin.hasAiApiKey = () => true;
+      await (tab as any).refreshAiModels();
+      expect(Object.keys(last("モデル").dropdowns[0].options)).toContain("gone/model");
+    });
+
+    it("switching the preset applies its URL and key default", async () => {
+      tab.display();
+      await flush();
+      await last("接続先").dropdowns[0].handler!("local");
+      expect(ai).toMatchObject({ preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false, model: "" });
+      await last("接続先").dropdowns[0].handler!("custom");
+      expect(ai).toMatchObject({ preset: "custom", baseUrl: "http://localhost:1234/v1" });
+    });
+    it("shows the saved origin warning after a custom URL edit and stops model fetching until the key is replaced", async () => {
+      ai = { ...ai, model: "a/one", apiKeyOrigin: "https://openrouter.ai" };
+      hostPlugin.hasAiApiKey = () => true;
+      hostPlugin.setAiApiKey = vi.fn(async () => { ai.apiKeyOrigin = new URL(ai.baseUrl).origin; });
+      tab.display(); await flush();
+      await last("接続先").dropdowns[0].handler!("custom"); await flush();
+      fetchAiModels.mockClear();
+      const field = last("接続先URL").texts[0];
+      await field.handler!("https://other.example/v1");
+      field.inputEl.listeners.change(); await flush();
+      const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+      expect(RecordingSetting.all.some((row) => row.desc === reason)).toBe(true);
+      expect(last("モデル").desc).toBe(reason);
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain(reason);
+      expect(fetchAiModels).not.toHaveBeenCalled();
+      last("APIキー").texts[0].setValue("sk-synthetic-replacement");
+      await last("APIキー").buttons.find((button) => button.text === "保存")!.handler!();
+      expect(ai.apiKeyOrigin).toBe("https://other.example");
+      expect(last("モデル").desc).not.toContain(reason);
+      expect(fetchAiModels).toHaveBeenCalledOnce();
+    });
+
+    describe("取得の開始・完了で入力中の欄を作り直さない", () => {
+      const count = (name: string) => RecordingSetting.all.filter((setting) => setting.name === name).length;
+      function deferredFetch() {
+        let resolve!: (value: any) => void;
+        fetchAiModels.mockImplementation(() => new Promise((done) => { resolve = done; }));
+        return (value: any) => resolve(value);
+      }
+
+      it("keeps the manual model field when the fetch fails", async () => {
+        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const field = row.texts[0];
+        field.value = "typing-in-progress";
+        const settingsBefore = RecordingSetting.all.length;
+        finish({ ok: false, reason: "接続できませんでした。" });
+        await flush();
+        expect(RecordingSetting.all.length).toBe(settingsBefore);
+        expect(last("モデル")).toBe(row);
+        expect(last("モデル").texts[0]).toBe(field);
+        expect(field.value).toBe("typing-in-progress");
+        expect(row.desc).toContain("一覧を取得できませんでした");
+      });
+
+      it("applies a successful list after the focused manual field loses focus", async () => {
+        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const inputEl: any = row.texts[0].inputEl;
+        inputEl.ownerDocument = { activeElement: inputEl };
+        finish({ ok: true, models: ["a/one"] });
+        await flush();
+        expect(count("モデル")).toBe(1);
+        expect(row.dropdowns).toHaveLength(0);
+        expect(row.desc).toContain("1件");
+        inputEl.ownerDocument = { activeElement: null };
+        inputEl.listeners.focusout();
+        expect(last("モデル").dropdowns).toHaveLength(1);
+      });
+
+      it("keeps an unsaved API key typed before the fetch completes", async () => {
+        ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
+        hostPlugin.hasAiApiKey = () => true;
+        const finish = deferredFetch();
+        tab.display();
+        await flush();
+        const keyRow = last("APIキー");
+        keyRow.texts[0].setValue("sk-typed-not-saved");
+        finish({ ok: true, models: ["a/one", "b/two"] });
+        await flush();
+        expect(count("APIキー")).toBe(1);
+        expect(last("APIキー")).toBe(keyRow);
+        expect(keyRow.texts[0].value).toBe("sk-typed-not-saved");
+        expect(last("モデル").dropdowns).toHaveLength(1);
+      });
+
+      it("does not destroy the model field when the URL field blurs into it", async () => {
+        ai = { preset: "custom", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
+        fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
+        tab.display();
+        await flush();
+        const row = last("モデル");
+        const field = row.texts[0];
+        const urlRow = last("接続先URL");
+        const finish = deferredFetch();
+        (urlRow.texts[0].inputEl as any).listeners.change();
+        expect(row.desc).toContain("取得しています");
+        field.value = "clicked-and-typing";
+        finish({ ok: false, reason: "接続できませんでした。" });
+        await flush();
+        expect(count("モデル")).toBe(1);
+        expect(last("モデル").texts[0]).toBe(field);
+        expect(field.value).toBe("clicked-and-typing");
+      });
+    });
+
+    it("reports the connection test result in the section", async () => {
+      ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "x", useApiKey: false };
+      tab.display();
+      await flush();
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain("接続できました");
+      expect(last("接続テスト").desc).toContain("一覧にありません");
+      fetchAiModels.mockResolvedValue({ ok: false, reason: "APIキーが受け付けられませんでした（HTTP 401）。" });
+      await last("接続テスト").buttons[0].handler!();
+      expect(last("接続テスト").desc).toContain("HTTP 401");
+    });
   });
 });

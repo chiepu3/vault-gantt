@@ -19,6 +19,7 @@ import {
   parseTaskFile,
   buildFullNote,
 } from "../core/note-format";
+import { mergeTaskNote } from "../core/note-update";
 import { applyPatchToParent } from "../core/task-patch";
 import type { HistoryFileChange, HistoryManager } from "./history-manager";
 
@@ -170,8 +171,8 @@ export async function createTask(
   // Write via vault.create + buildFullNote
   const content = buildFullNote(defaultRow, new Map());
   await vault.create(taskPath, content);
-  // Creation bypasses batch before/after capture, so it is a history barrier.
-  historyManager?.clear();
+  // File creation itself is not recorded for undo.
+  historyManager?.discardRedo();
 
   // Re-parse and return the task row
   const file = vault.getFileByPath(taskPath);
@@ -245,6 +246,16 @@ export async function loadTasks(
       continue;
     }
 
+    // Unchanged files need neither a read nor a parse. Only trust a revision
+    // when the adapter supplies file stats; stat-less adapters still read.
+    const cachedEntry = cache.get(file.path);
+    if (file.stat && cachedEntry && cachedEntry.revision === buildFileRevision(file as any)) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (cachedEntry.taskRow) {
+        result.push(cachedEntry.taskRow);
+      }
+      continue;
+    }
+
     // Read file content
     let content: string;
     try {
@@ -265,7 +276,6 @@ export async function loadTasks(
     const revision = buildFileRevision(file as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 
     // Check cache hit
-    const cachedEntry = cache.get(file.path);
     if (cachedEntry && cachedEntry.revision === revision) {
       // Cache hit - skip parsing
       if (cachedEntry.taskRow) {
@@ -432,6 +442,8 @@ export async function updateTaskItemsBatch(
         }
       }
 
+      const beforeNote = buildFullNote(parent, parent.subtasks);
+
       // Apply each command in order via applyPatchToParent in memory
       for (const cmd of fileCommands) {
         const taskId = cmd.row.id;
@@ -439,7 +451,7 @@ export async function updateTaskItemsBatch(
       }
 
       // Single vault.modify per file for the whole batch
-      const newContent = buildFullNote(parent, parent.subtasks);
+      const newContent = mergeTaskNote(parentContent, beforeNote, buildFullNote(parent, parent.subtasks));
       await vault.modify(parentFile, newContent);
       appliedChanges.push({
         path: parentPath,
@@ -559,22 +571,26 @@ export async function addSubtask(
     }
   }
 
-  // Add to parent's subtasks and bump updatedAt
-  if (!parentRow.subtasks) {
-    parentRow.subtasks = new Map();
-  }
-  parentRow.subtasks.set(subtaskKey, defaultSubtask);
-  parentRow.updatedAt = todayStr();
-
-  // Write and re-parse
   const parentFile = vault.getFileByPath(parentRow.file.path);
   if (!parentFile) {
     throw new Error("Task file not found");
   }
+  const parentContent = await vault.read(parentFile);
+  const beforeNote = buildFullNote(parentRow, parentRow.subtasks);
 
-  const content = buildFullNote(parentRow, parentRow.subtasks);
+  // Build separately so a refused save leaves the caller's row unchanged.
+  const updatedParent = { ...parentRow, subtasks: new Map(parentRow.subtasks) };
+  updatedParent.subtasks.set(subtaskKey, defaultSubtask);
+  updatedParent.updatedAt = todayStr();
+
+  // Write and re-parse
+  const content = mergeTaskNote(parentContent, beforeNote, buildFullNote(updatedParent, updatedParent.subtasks));
   await vault.modify(parentFile, content);
-  historyManager?.clear();
+  Object.assign(parentRow, updatedParent);
+  historyManager?.push({
+    label: "サブタスク追加",
+    files: [{ path: parentFile.path, before: parentContent, after: content }],
+  });
 
   // Re-parse to get fresh state
   const fileContent = await vault.read(parentFile);
@@ -597,7 +613,18 @@ export async function addSubtask(
 
 /**
  *
- * Convenience wrapper: set both plannedStartDate and plannedEndDate to dateStr.
+ * A concurrent edit must be kept instead of overwritten by subtask creation.
+ */
+export class SubtaskAddConflictError extends Error {
+  constructor() {
+    super("ノートが変更されたため、サブタスクを追加できませんでした。もう一度追加してください。");
+    this.name = "SubtaskAddConflictError";
+  }
+}
+
+/**
+ * Add to the latest parent, with both planned dates set to dateStr.
+ * Guard the read content atomically so edits during creation are preserved.
  */
 export async function addSubtaskWithPlan(
   vault: VaultAdapter,
@@ -607,12 +634,40 @@ export async function addSubtaskWithPlan(
   dateStr: string,
   historyManager?: HistoryManager
 ): Promise<TaskRow> {
+  const parentFile = vault.getFileByPath(parentRow.file.path);
+  if (!parentFile) {
+    throw new Error("親タスクのノートが見つかりません。");
+  }
+  const parentContent = await vault.read(parentFile);
+  const parent = parseTaskFile({ path: parentFile.path }, parentContent, settings);
+  if (!parent) {
+    throw new Error("親タスクのノートを読み込めませんでした。");
+  }
+  if (!vault.process) {
+    throw new Error("サブタスクを安全に保存できませんでした。");
+  }
+
+  // Reuse subtask defaults and serialization, replacing only the write path.
+  const guardedVault: VaultAdapter = {
+    create: (path, content) => vault.create(path, content),
+    read: (file) => vault.read(file),
+    getFiles: () => vault.getFiles(),
+    getFileByPath: (path) => vault.getFileByPath(path),
+    modify: async (file, content) => {
+      await vault.process!(file, (current) => {
+        if (current !== parentContent) {
+          throw new SubtaskAddConflictError();
+        }
+        return content;
+      });
+    },
+  };
   const patch: TaskPatch = {
     plannedStartDate: dateStr,
     plannedEndDate: dateStr,
   };
 
-  return addSubtask(vault, settings, parentRow, name, patch, historyManager);
+  return addSubtask(guardedVault, settings, parent, name, patch, historyManager);
 }
 
 /**
@@ -654,6 +709,8 @@ export async function deleteSubtaskTaskItem(
     throw new Error("Managed task not found");
   }
 
+  const beforeNote = buildFullNote(parent, parent.subtasks);
+
   // Filter by key
   const countBefore = parent.subtasks.size;
   parent.subtasks.delete(row.key);
@@ -665,7 +722,10 @@ export async function deleteSubtaskTaskItem(
   }
 
   // Write updated parent
-  const content = buildFullNote(parent, parent.subtasks);
+  const content = mergeTaskNote(parentContent, beforeNote, buildFullNote(parent, parent.subtasks));
   await vault.modify(parentFile, content);
-  historyManager?.clear();
+  historyManager?.push({
+    label: "サブタスク削除",
+    files: [{ path: parentFile.path, before: parentContent, after: content }],
+  });
 }

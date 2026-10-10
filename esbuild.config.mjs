@@ -6,15 +6,17 @@ import process from "process";
 
 const prod = process.argv[2] === "production";
 const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
-let commit = "unknown";
+let commit = process.env.VG_BUILD_COMMIT || "unknown";
 
-try {
-  commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-} catch {
-  // A source archive or other non-Git build environment has no commit hash.
+if (!process.env.VG_BUILD_COMMIT) {
+  try {
+    commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // A source archive or other non-Git build environment has no commit hash.
+  }
 }
 
 const buildOptions = {
@@ -43,6 +45,7 @@ const buildOptions = {
     "@lezer/highlight",
     "@lezer/lr",
     ...builtinModules,
+    "node:*",
   ],
   format: "cjs",
   target: "ES2018",
@@ -53,11 +56,22 @@ const buildOptions = {
   minify: prod,
 };
 
+const bridgeOptions = {
+  entryPoints: ["tools/mcp-bridge/cli.ts"],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  target: "node20",
+  outfile: "tools/mcp-bridge/dist/bridge.cjs",
+  minify: prod,
+  logLevel: "info",
+};
+
 if (prod) {
-  esbuild.build(buildOptions).catch(() => process.exit(1));
+  Promise.all([esbuild.build(buildOptions), esbuild.build(bridgeOptions)]).catch(() => process.exit(1));
 } else {
   esbuild
     .context(buildOptions)
-    .then((ctx) => ctx.watch())
+    .then(async (ctx) => { await ctx.watch(); await (await esbuild.context(bridgeOptions)).watch(); })
     .catch(() => process.exit(1));
 }

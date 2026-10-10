@@ -5,14 +5,27 @@ import {
   updateTaskItemsBatch,
   addSubtask,
   addSubtaskWithPlan,
+  SubtaskAddConflictError,
   deleteSubtaskTaskItem,
   getTaskFolderForDate,
   getAvailableTaskPath,
 } from "../../src/app/task-operations";
+import type { Vault } from "obsidian";
 import { FakeVault } from "./fake-vault";
 import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { HistoryManager } from "../../src/app/history-manager";
+import { buildFullNote, parseTaskFile } from "../../src/core/note-format";
+
+class ProcessingVault extends FakeVault {
+  async process(file: { path: string }, transform: (content: string) => string): Promise<string> {
+    const current = this.getFileContent(file.path);
+    if (current === null) throw new Error("File not found");
+    const content = transform(current);
+    await this.modify(file, content);
+    return content;
+  }
+}
 
 class FailingBatchVault extends FakeVault {
   private modifyAttempts = 0;
@@ -49,6 +62,55 @@ describe("Task Operations - Integration Tests", () => {
     vault.clear();
   });
 
+
+  it("keeps earlier edits undoable through Gantt subtask addition and deletion", async () => {
+    vault = new ProcessingVault();
+    const history = new HistoryManager();
+    const parent = await createTask(vault, settings, "Parent");
+    const file = vault.getFileByPath(parent.file.path)!;
+    const extra = "project: 顧客A\nreferences:\n  - 資料A\n";
+    const section = "\n## 参考資料\n消してはいけない資料\n";
+    await vault.modify(file, (await vault.read(file))
+      .replace("type: task\n", `type: task\n${extra}`)
+      .replace("tags: []", "tags:\n  - a\n  - b") + section);
+    const original = vault.getFileContent(parent.file.path);
+    await updateTaskItemsBatch(vault, settings, cache, [{ row: parent, patch: { dueDate: "2026-08-01" } }], undefined, history);
+    const edited = vault.getFileContent(parent.file.path);
+    const updated = (await loadTasks(vault, settings, cache))[0];
+    const subtask = await addSubtaskWithPlan(vault, settings, updated, "Child", "2026-07-27", history);
+    const added = vault.getFileContent(parent.file.path);
+    await deleteSubtaskTaskItem(vault, settings, subtask, history);
+    const deleted = vault.getFileContent(parent.file.path);
+    for (const content of [edited, added, deleted]) {
+      expect(content).toContain(extra);
+      expect(content).toContain(section.trim());
+      expect(content).toContain('tags: ["a","b"]');
+    }
+    const undoVault = {
+      getFileByPath: vault.getFileByPath.bind(vault),
+      read: vault.read.bind(vault),
+      process: async (file: { path: string }, fn: (content: string) => string) => {
+        const content = fn(await vault.read(file));
+        await vault.modify(file, content);
+        return content;
+      },
+    } as unknown as Vault;
+    for (const expected of [added, edited, original]) {
+      expect((await history.undo(undoVault)).kind).toBe("success");
+      expect(vault.getFileContent(parent.file.path)).toBe(expected);
+    }
+    for (const expected of [edited, added, deleted]) {
+      expect((await history.redo(undoVault)).kind).toBe("success");
+      expect(vault.getFileContent(parent.file.path)).toBe(expected);
+    }
+  });
+
+  it("preserves undo history when creating a new task file", async () => {
+    const history = new HistoryManager();
+    history.push({ label: "以前の変更", files: [{ path: "other.md", before: "before", after: "after" }] });
+    await createTask(vault, settings, "New task", history);
+    expect(history.peekUndoLabel()).toBe("以前の変更");
+  });
 
   // TASK CREATION TESTS
 
@@ -255,6 +317,38 @@ describe("Task Operations - Integration Tests", () => {
       expect(loaded[0].file.path).toBe(task.file.path);
     });
 
+    it("unchanged tasks and non-task files skip reads; changed files are reloaded", async () => {
+      const task = await createTask(vault, settings, "Cached task");
+      await vault.create("tasks/plain.md", "plain note");
+      await loadTasks(vault, settings, cache);
+      const read = vi.spyOn(vault, "read");
+
+      const unchanged = await loadTasks(vault, settings, cache);
+      expect(read).not.toHaveBeenCalled();
+      expect(unchanged.map((row) => row.title)).toEqual(["Cached task"]);
+
+      const file = vault.getFileByPath(task.file.path)!;
+      const content = await vault.read(file);
+      await vault.modify(file, content.split("Cached task").join("Changed cached task"));
+      read.mockClear();
+      const changed = await loadTasks(vault, settings, cache);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith(expect.objectContaining({ path: file.path }));
+      expect(changed[0].title).toBe("Changed cached task");
+    });
+
+    it("a failed changed-file read is retried rather than cached", async () => {
+      const task = await createTask(vault, settings, "Read retry");
+      await loadTasks(vault, settings, cache);
+      const file = vault.getFileByPath(task.file.path)!;
+      await vault.modify(file, (await vault.read(file)) + "\nchanged");
+      const read = vi.spyOn(vault, "read").mockRejectedValueOnce(new Error("read failed"));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(await loadTasks(vault, settings, cache)).toEqual([]);
+      expect(await loadTasks(vault, settings, cache)).toHaveLength(1);
+      expect(read).toHaveBeenCalledTimes(2);
+    });
+
     it("cache hit skips parsing", async () => {
       vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
 
@@ -347,6 +441,49 @@ describe("Task Operations - Integration Tests", () => {
     });
   });
 
+
+  describe("custom note content", () => {
+    it("preserves custom content across updates, subtask addition and deletion", async () => {
+      const parent = await createTask(vault, settings, "親タスク");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const extra = "project: 顧客A\nreferences:\n  - 資料A\n";
+      const section = "\n## 参考資料\n[資料](https://example.com)\n";
+      await vault.modify(file, (await vault.read(file))
+      .replace("type: task\n", `type: task\n${extra}`)
+      .replace("tags: []", "tags:\n  - a\n  - b") + section);
+      const history = new HistoryManager();
+      await updateTaskItemsBatch(vault, settings, cache, [{ row: parent, patch: { dueDate: "2026-10-20" } }], {}, history);
+      expect(await vault.read(file)).toContain("dueDate: 2026-10-20");
+      expect(await vault.read(file)).toContain(extra);
+      expect(await vault.read(file)).toContain(section.trim());
+      const fresh = (await loadTasks(vault, settings, cache)).find((row) => row.id === parent.id)!;
+      const subtask = await addSubtask(vault, settings, fresh, "作業");
+      await updateTaskItemsBatch(vault, settings, cache, [{ row: subtask, patch: { notes: "作業メモ" } }], {});
+      await deleteSubtaskTaskItem(vault, settings, subtask);
+      const saved = await vault.read(file);
+      expect(saved).toContain(extra);
+      expect(saved).toContain(section.trim());
+      expect(saved).not.toContain("subtask__");
+    });
+
+    it("refuses a subtask rewrite with custom inner sections without writing or mutating the row", async () => {
+      const parent = await createTask(vault, settings, "親タスク");
+      const subtask = await addSubtask(vault, settings, parent, "作業");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const original = await vault.read(file) + "\n#### 参考資料\n消してはいけない資料\n";
+      await vault.modify(file, original);
+      vault.resetCounters();
+      await expect(updateTaskItemsBatch(vault, settings, cache, [{ row: subtask, patch: { displayName: "変更" } }], {}))
+        .rejects.toThrow("保持できない記述があります: ## Subtasks");
+      await expect(addSubtask(vault, settings, parent, "追加"))
+        .rejects.toThrow("保持できない記述があります: ## Subtasks");
+      await expect(deleteSubtaskTaskItem(vault, settings, subtask))
+        .rejects.toThrow("保持できない記述があります: ## Subtasks");
+      expect(parent.subtasks?.size).toBe(1);
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(await vault.read(file)).toBe(original);
+    });
+  });
 
   // TASK UPDATE TESTS
 
@@ -699,6 +836,13 @@ describe("Task Operations - Integration Tests", () => {
   });
 
   describe("addSubtaskWithPlan", () => {
+    let processingVault: ProcessingVault;
+
+    beforeEach(() => {
+      processingVault = new ProcessingVault();
+      vault = processingVault;
+    });
+
     it("sets both plannedStartDate and plannedEndDate to dateStr", async () => {
       vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
 
@@ -713,6 +857,89 @@ describe("Task Operations - Integration Tests", () => {
 
       expect(subtask.plannedStartDate).toBe("2026-08-15");
       expect(subtask.plannedEndDate).toBe("2026-08-15");
+    });
+
+    it("keeps latest notes, due date and subtasks, generating keys from the latest parent", async () => {
+      const staleParent = await createTask(vault, settings, "Parent");
+      const file = vault.getFileByPath(staleParent.file.path)!;
+      const latestParent = parseTaskFile(file, await vault.read(file), settings)!;
+      latestParent.notes = "表示後に更新したメモ";
+      latestParent.dueDate = "2026-09-01";
+      await vault.modify(file, buildFullNote(latestParent, latestParent.subtasks));
+      const existing = await addSubtask(vault, settings, latestParent, "Duplicate", {
+        notes: "既存サブタスクのメモ",
+      });
+
+      const added = await addSubtaskWithPlan(vault, settings, staleParent, "Duplicate", "2026-08-15");
+      const addedAgain = await addSubtaskWithPlan(vault, settings, staleParent, "Duplicate", "2026-08-16");
+      const saved = parseTaskFile(file, await vault.read(file), settings)!;
+
+      expect(saved.notes).toBe(latestParent.notes);
+      expect(saved.dueDate).toBe(latestParent.dueDate);
+      expect(saved.subtasks?.size).toBe(3);
+      expect(saved.subtasks?.get(existing.key!)?.notes).toBe("既存サブタスクのメモ");
+      expect(added.key).toBe(`${existing.key}-1`);
+      expect(addedAgain.key).toBe(`${existing.key}-2`);
+      expect(staleParent.subtasks?.size).toBe(0);
+      expect(staleParent.notes).toBe("");
+    });
+
+    it("rejects an edit after reading without writing or clearing history, and allows retry", async () => {
+      const parent = await createTask(vault, settings, "Parent");
+      const file = vault.getFileByPath(parent.file.path)!;
+      const latestParent = parseTaskFile(file, await vault.read(file), settings)!;
+      latestParent.notes = "読込後に更新したメモ";
+      latestParent.dueDate = "2026-09-02";
+      const editedContent = buildFullNote(latestParent, latestParent.subtasks);
+      const historyManager = new HistoryManager();
+      historyManager.push({ label: "先行編集", files: [{ path: file.path, before: "before", after: "after" }] });
+      const process = processingVault.process.bind(processingVault);
+      vi.spyOn(processingVault, "process").mockImplementationOnce(async (target, transform) => {
+        await vault.modify(target, editedContent);
+        vault.resetCounters();
+        return process(target, transform);
+      });
+
+      await expect(addSubtaskWithPlan(vault, settings, parent, "New", "2026-08-15", historyManager))
+        .rejects.toBeInstanceOf(SubtaskAddConflictError);
+      expect(await vault.read(file)).toBe(editedContent);
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(parent.subtasks?.size).toBe(0);
+      expect(historyManager.canUndo()).toBe(true);
+
+      const added = await addSubtaskWithPlan(vault, settings, parent, "New", "2026-08-15", historyManager);
+      const saved = parseTaskFile(file, await vault.read(file), settings)!;
+      expect(saved.notes).toBe(latestParent.notes);
+      expect(saved.dueDate).toBe(latestParent.dueDate);
+      expect(saved.subtasks?.get(added.key!)?.plannedStartDate).toBe("2026-08-15");
+      expect(historyManager.canUndo()).toBe(true);
+      const addedContent = await vault.read(file);
+      expect((await historyManager.undo(processingVault as unknown as Vault)).kind).toBe("success");
+      expect(await vault.read(file)).toBe(editedContent);
+      expect((await historyManager.redo(processingVault as unknown as Vault)).kind).toBe("success");
+      expect(await vault.read(file)).toBe(addedContent);
+    });
+
+    it("does not overwrite a note that is no longer a managed task", async () => {
+      const parent = await createTask(vault, settings, "Parent");
+      const file = vault.getFileByPath(parent.file.path)!;
+      await vault.modify(file, "タスクではないノート");
+      vault.resetCounters();
+
+      await expect(addSubtaskWithPlan(vault, settings, parent, "New", "2026-08-15"))
+        .rejects.toThrow("親タスクのノートを読み込めませんでした。");
+      expect(await vault.read(file)).toBe("タスクではないノート");
+      expect(vault.getModifyCallCount()).toBe(0);
+    });
+
+    it("refuses to save without atomic process support", async () => {
+      const plainVault = new FakeVault();
+      const parent = await createTask(plainVault, settings, "Parent");
+      plainVault.resetCounters();
+
+      await expect(addSubtaskWithPlan(plainVault, settings, parent, "New", "2026-08-15"))
+        .rejects.toThrow("サブタスクを安全に保存できませんでした。");
+      expect(plainVault.getModifyCallCount()).toBe(0);
     });
   });
 

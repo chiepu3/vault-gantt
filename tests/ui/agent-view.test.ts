@@ -2,21 +2,43 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { AgentView, diffText, renderChatText } from "../../src/ui/agent-view";
 import { ChatSession } from "../../src/ai/chat-session";
+import { completionText, type ChatCompletion } from "../../src/ai/chat-completion";
 import { OperationRegistry } from "../../src/app/operation-registry";
 import { HistoryManager } from "../../src/app/history-manager";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { FakeVault } from "../app/fake-vault";
 import { FakeProvider } from "../ai/fake-provider";
-import { createFakeDocument, findAll, type FakeEl } from "../stubs/fake-dom";
+import { createFakeDocument, deepText, findAll, type FakeEl } from "../stubs/fake-dom";
+import { CREATE_PREVIEW, MCP_PREVIEW } from "../contracts/fixtures";
+import { fakePorts } from "./preview-fakes";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("independent AgentView", () => {
+  it("shows the origin warning and blocks sending with existing conversation history", async () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const provider = new FakeProvider();
+    const session = new ChatSession(vault, registry, provider);
+    const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+    session.configure({ provider: "openai-compatible", endpoint: "https://other.example/v1", model: "test", auth: "secret", secretId: "test", connectionError: reason });
+    session.active.messages = [{ role: "user", text: "前の会話", proposals: [] }];
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false });
+    await view.onOpen();
+    const root = view.containerEl as unknown as FakeEl;
+    expect(findAll(root, (el) => el.textContent === reason)).toHaveLength(1);
+    expect(findAll(root, (el) => el.textContent === "送信 ↑")[0].disabled).toBe(true);
+    await session.send("テスト");
+    expect(session.active.error).toBe(reason);
+    expect(provider.requests).toHaveLength(0);
+    await view.onClose(); session.dispose();
+  });
   it("pane close/reopen preserves the vault session, draft and streaming state", async () => {
     vi.stubGlobal("document", createFakeDocument());
     const vault = new FakeVault();
     const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
     const session = new ChatSession(vault, registry, new FakeProvider());
     session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
-    const host = { session, secretIds: () => [], openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false };
+    const host = { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false };
     const view = new AgentView({} as any, host); await view.onOpen();
     await session.send("合成会話"); session.active.draft = "未送信"; await view.onClose();
     const reopened = new AgentView({} as any, host); await reopened.onOpen();
@@ -37,12 +59,16 @@ describe("independent AgentView", () => {
     const session = new ChatSession(vault, registry, new FakeProvider());
     session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
     const undo = vi.fn();
-    const view = new AgentView({} as any, { session, secretIds: () => [], selectedTask: () => "合成タスク", openGantt: vi.fn(), undo, canUndo: () => true });
+    const openSettings = vi.fn();
+    const view = new AgentView({} as any, { session, openSettings, selectedTask: () => "合成タスク", openGantt: vi.fn(), undo, canUndo: () => true });
     await view.onOpen();
     const root = view.containerEl as unknown as FakeEl;
     const button = (text: string) => findAll(root, (el) => el.tagName === "BUTTON" && el.textContent === text)[0] as any;
     expect(findAll(root, (el) => el.tagName === "HEADER")).toHaveLength(1);
-    expect(findAll(root, (el) => el.tagName === "SELECT")).toHaveLength(3); // Connection settings only; model uses Obsidian Menu.
+    // Connection settings live in the plugin settings tab: no form in the chat, the gear only opens it.
+    expect(findAll(root, (el) => el.tagName === "SELECT" || el.tagName === "INPUT")).toHaveLength(0);
+    for (const listener of findAll(root, (el) => el.getAttribute("aria-label") === "接続設定を開く")[0].listeners.click) listener({});
+    expect(openSettings).toHaveBeenCalledTimes(1);
     const model = findAll(root, (el) => el.getAttribute("aria-label") === "モデルを選択")[0];
     expect(model.tagName).toBe("BUTTON"); expect(model.dataset.model).toBe("synthetic");
     expect(model.getAttribute("aria-haspopup")).toBe("menu");
@@ -93,7 +119,7 @@ describe("independent AgentView", () => {
     session.active.messages = [{ role: "assistant", text: "合成提案", proposals: [proposal] }];
     let canUndo = false; let undone = false;
     const undo = vi.fn(async () => { canUndo = false; undone = true; });
-    const view = new AgentView({} as any, { session, secretIds: () => [], openGantt: vi.fn(), undo, canUndo: () => canUndo, undoStatus: () => undone ? "undone" : "unavailable" });
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo, canUndo: () => canUndo, undoStatus: () => undone ? "undone" : "unavailable" });
     await view.onOpen(); const root = view.containerEl as unknown as FakeEl;
     const text = (value: string) => findAll(root, el => el.textContent === value);
     const button = (value: string) => findAll(root, el => el.tagName === "BUTTON" && el.textContent === value)[0];
@@ -131,7 +157,151 @@ describe("independent AgentView", () => {
     expect(findAll(fake, (el) => ["IMG", "A", "SCRIPT"].includes(el.tagName))).toHaveLength(0);
     expect(findAll(fake, (el) => el.textContent.includes("<img"))).toHaveLength(1);
   });
+  it("renders tables, headings, lists, quotes and code blocks as elements, with status words in Japanese", () => {
+    vi.stubGlobal("document", createFakeDocument());
+    const root = document.createElement("div");
+    renderChatText(root, "## 見出し\n\n| タスク | 状態 |\n|---|---|\n| 画面設計 | in_progress |\n| 経費 | `active` |\n1. 一つ目\n* 二つ目\n> 引用\n```\n<b>x</b>\n```");
+    const fake = root as unknown as FakeEl;
+    expect(findAll(fake, (el) => el.tagName === "TABLE")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.tagName === "TH").map((el) => deepText(el))).toEqual(["タスク", "状態"]);
+    const cells = findAll(fake, (el) => el.tagName === "TD").map((el) => deepText(el));
+    expect(cells).toEqual(["画面設計", "作業中", "経費", "進行中"]);
+    expect(findAll(fake, (el) => el.className === "vg-ai-heading")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.className === "vg-ai-li").map((el) => deepText(el))).toEqual(["• 一つ目".replace("•", "1."), "• 二つ目"]);
+    expect(findAll(fake, (el) => el.className === "vg-ai-quote")).toHaveLength(1);
+    expect(findAll(fake, (el) => el.tagName === "PRE" && deepText(el) === "<b>x</b>")).toHaveLength(1);
+    expect(findAll(fake, (el) => ["B", "A", "IMG"].includes(el.tagName))).toHaveLength(0);
+  });
+  it("keeps a half-received reply readable (open fence, header without separator, unclosed bold)", () => {
+    vi.stubGlobal("document", createFakeDocument());
+    for (const partial of ["| a | b |", "| a | b |\n|---", "```\nコード", "**途中", "- "]) {
+      const root = document.createElement("div");
+      expect(() => renderChatText(root, partial), partial).not.toThrow();
+      expect(deepText(root as unknown as FakeEl).length, partial).toBeGreaterThan(0);
+    }
+  });
   it("diff text conveys old/new dates and non-date changes without relying on color", () => {
     expect(diffText([{ taskId: "synthetic", name: "作業", fields: [{ field: "plannedStartDate", before: "2026-10-01", after: "2026-10-03" }, { field: "notes", before: "旧", after: "新" }] }])).toBe("作業\n開始日: 2026-10-01 → 2026-10-03\nメモ: 旧 → 新");
+  });
+});
+
+describe("AgentView operation preview cards", () => {
+  async function open(previews: readonly any[], extras: Record<string, unknown> = {}) {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const session = new ChatSession(vault, registry, new FakeProvider());
+    session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
+    const ports = fakePorts(previews.map((preview) => ({ ...preview, origin: preview.origin.kind === "chat" ? { kind: "chat", conversationId: session.active.id } : preview.origin })));
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false, previewPorts: ports, ...extras });
+    await view.onOpen();
+    return { view, session, ports, root: view.containerEl as unknown as FakeEl };
+  }
+  it("shows this conversation's chat previews as cards, not other origins or conversations", async () => {
+    const other = { ...CREATE_PREVIEW, previewId: "elsewhere", origin: { kind: "chat", conversationId: "other-conversation" } };
+    const { root, ports, view, session } = await open([CREATE_PREVIEW, MCP_PREVIEW]);
+    ports.previewPort.set({ ...other, origin: { kind: "chat", conversationId: "other-conversation" } } as any);
+    view.render();
+    const cards = findAll(root, (el) => el.classList.contains("vg-pv-card"));
+    expect(cards.map((card) => card.dataset.previewId)).toEqual(["create-fixture"]);
+    await view.onClose(); session.dispose();
+  });
+  it("renders nothing extra without preview ports (legacy view unchanged)", async () => {
+    const { root, view, session } = await open([], { previewPorts: undefined });
+    expect(findAll(root, (el) => el.classList.contains("vg-pv-card"))).toHaveLength(0);
+    await view.onClose(); session.dispose();
+  });
+  it("keeps keyboard focus on the same button across re-renders", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-09T03:05:00Z"));
+    const { root, view, session } = await open([CREATE_PREVIEW]);
+    const reject = findAll(root, (el) => el.dataset?.action === "reject")[0];
+    (document as any).activeElement = reject;
+    view.render();
+    const again = findAll(root, (el) => el.dataset?.action === "reject")[0];
+    expect(again).not.toBe(reject); expect(again.focused).toBe(true);
+    await view.onClose(); session.dispose();
+  });
+  it("approves through the human port and re-renders with the saved result", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-09T03:05:00Z"));
+    const { root, ports, view, session } = await open([CREATE_PREVIEW]);
+    const approve = findAll(root, (el) => el.dataset?.action === "approve")[0];
+    expect(approve.disabled).toBe(false);
+    for (const listener of approve.listeners.click) listener({});
+    await vi.waitFor(() => expect(ports.approved).toEqual(["create-fixture"]));
+    await vi.waitFor(() => expect(findAll(root, (el) => el.classList.contains("vg-pv-card"))[0]?.dataset.state).toBe("success"));
+    await view.onClose(); session.dispose();
+  });
+  it("drops the Gantt overlay of a chat plan on conversation switch and on close, but keeps the plan", async () => {
+    const { ports, view, session } = await open([CREATE_PREVIEW]);
+    ports.previewPort.focused = "create-fixture";
+    session.newConversation(); view.render();
+    expect(ports.previewPort.focused).toBeNull();
+    ports.previewPort.focused = "create-fixture"; await view.onClose();
+    expect(ports.previewPort.focused).toBeNull(); expect(ports.previewPort.previews.has("create-fixture")).toBe(true);
+    session.dispose();
+  });
+  it("leaves another origin's Gantt focus alone when the chat closes", async () => {
+    const { ports, view, session } = await open([CREATE_PREVIEW, MCP_PREVIEW]);
+    ports.previewPort.focused = "mcp-fixture"; await view.onClose();
+    expect(ports.previewPort.focused).toBe("mcp-fixture"); session.dispose();
+  });
+});
+
+describe("AgentView turn completion line", () => {
+  async function turn(completion: ChatCompletion | undefined, text = "回答です。", appendSentence = false) {
+    vi.stubGlobal("document", createFakeDocument());
+    const vault = new FakeVault();
+    const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
+    const provider = new FakeProvider(async function* () {
+      yield { type: "text", text };
+      if (completion && appendSentence) yield { type: "text", text: "\n\n" + completionText[completion.kind] };
+      if (completion) yield { type: "completion", completion };
+    });
+    const session = new ChatSession(vault, registry, provider);
+    session.configure({ provider: "openai-compatible", endpoint: "http://localhost:1234", model: "synthetic", auth: "none", secretId: "" });
+    const view = new AgentView({} as any, { session, openSettings: vi.fn(), openGantt: vi.fn(), undo: vi.fn(), canUndo: () => false });
+    await view.onOpen(); await session.send("質問");
+    view.render();
+    const root = view.containerEl as unknown as FakeEl;
+    return { view, session, root, lines: findAll(root, (el) => el.classList.contains("vg-ai-completion")) };
+  }
+  const base = { proposalIds: [], toolErrors: 0 };
+  for (const kind of ["no-proposal", "tool-refused", "timeout", "step-limit"] as const) {
+    it(kind + " shows one quiet status line under the reply", async () => {
+      const { lines, root, view, session } = await turn({ kind, ...base }, "回答です。", true);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].textContent).toBe(completionText[kind]);
+      expect(deepText(root).split(completionText[kind])).toHaveLength(2);
+      expect(findAll(root, (el) => el.textContent === "回答です。")).toHaveLength(1);
+      await view.onClose(); session.dispose();
+    });
+  }
+  it("connection-error adds the HTTP status when known, and does not repeat the error box", async () => {
+    const { lines, root, view, session } = await turn({ kind: "connection-error", ...base, httpStatus: 503 });
+    expect(lines[0].textContent).toBe(completionText["connection-error"] + "（HTTP 503）");
+    expect(findAll(root, (el) => el.classList.contains("vg-ai-error"))).toHaveLength(0);
+    expect(findAll(root, (el) => el.tagName === "BUTTON" && el.textContent === "応答を再試行")).toHaveLength(1);
+    await view.onClose(); session.dispose();
+  });
+  it("connection-error without a status has no HTTP note", async () => {
+    const { lines, view, session } = await turn({ kind: "connection-error", ...base });
+    expect(lines[0].textContent).toBe(completionText["connection-error"]);
+    await view.onClose(); session.dispose();
+  });
+  it("cancelled shows the stop line", async () => {
+    const { lines, view, session } = await turn({ kind: "cancelled", ...base });
+    expect(lines[0].textContent).toBe(completionText.cancelled);
+    await view.onClose(); session.dispose();
+  });
+  it("proposal-created adds no line (the card is the signal) and hides the duplicated sentence", async () => {
+    const { lines, root, view, session } = await turn({ kind: "proposal-created", proposalIds: ["p"], toolErrors: 0 }, "回答です。", true);
+    expect(lines).toHaveLength(0);
+    expect(deepText(root)).not.toContain(completionText["proposal-created"]);
+    await view.onClose(); session.dispose();
+  });
+  it("never shows internal kind names", async () => {
+    const { root, view, session } = await turn({ kind: "step-limit", ...base });
+    expect(deepText(root)).not.toMatch(/step-limit|tool-refused|connection-error|no-proposal/);
+    await view.onClose(); session.dispose();
   });
 });

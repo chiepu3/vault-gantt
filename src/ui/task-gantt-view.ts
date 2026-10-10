@@ -1,6 +1,13 @@
+import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
+import type { OperationRequestResultV1 } from "../contracts/preview";
+import type { PreviewUiHostPorts } from "../contracts/ports";
+import { NotePreservationError } from "../core/note-update";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
-import { renderGhost } from "./ghost-layer";
-import { ItemView, Menu, Notice, moment } from "obsidian";
+import { renderGhost, renderPointGhosts } from "./ghost-layer";
+import type { PreviewPort } from "../contracts/ports";
+import { PreviewGanttLayer } from "./preview-gantt-layer";
+import { SubtaskAddConflictError } from "../app/task-operations";
+import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
 
 import type { Logger } from "../core/logger";
@@ -8,6 +15,7 @@ import type { Logger } from "../core/logger";
 import type {
   GanttEvent,
   GanttMarker,
+  DailyTodoItem,
   DailyTodoSummary,
   GanttTagDefinition,
   StatusLabel,
@@ -23,6 +31,7 @@ import {
   DEFAULT_GANTT_TAG_COLORS,
   DEFAULT_STATUSES,
 } from "../core/constants";
+import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
 import { normalizeWorkloadMap } from "../core/task-patch";
 import {
@@ -79,7 +88,6 @@ import {
   pixelDeltaToDayDelta,
   roundHalfHour,
   setValue,
-  shiftMarkers,
   shiftWorkloadMap,
   snapForward,
   snapMarkerDate,
@@ -100,6 +108,7 @@ import {
   updateWeeklyWorkSchedule,
 } from "../app/gantt-task-service";
 import { WeeklyWorkScheduleModal } from "./modals";
+import { registerHistoryHotkeys } from "./history-hotkeys";
 
 
 /**
@@ -109,6 +118,13 @@ import { WeeklyWorkScheduleModal } from "./modals";
 type MenuItemWithRuntimeSubmenu = MenuItem & {
   setSubmenu?: () => Menu;
 };
+
+/** Icon-only toolbar button: Lucide icon with a Japanese label for assistive tech and tooltip. */
+function setToolbarIcon(button: HTMLElement, icon: string, label: string): void {
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  setIcon(button, icon);
+}
 
 function formatWorkloadHours(hours: number): string {
   const rounded = Math.round(hours * 2) / 2;
@@ -178,24 +194,6 @@ function canonicalizeTagNames(
 }
 
 /**
- * `getGanttTags`/`findGanttTag` equivalent — looks
- * up a configured tag by either its stable key or its current display name.
- */
-function findGanttTagDefinition(
-  settings: TaskWorkbenchSettings,
-  name: string
-): GanttTagDefinition | undefined {
-  if (name === "") {
-    return undefined;
-  }
-  const definitions = Array.isArray(settings.ganttTags) ? settings.ganttTags : [];
-  return definitions.find(
-    (definition) =>
-      definition.name === name || definition.key === name
-  );
-}
-
-/**
  * `getPrimaryGanttTag` equivalent. Selects the first
  * matching registry entry in registry order. An orphan task tag remains
  * renderable through the fallback synthetic definition
@@ -242,8 +240,54 @@ function getPrimaryGanttTagDefinition(
 
 
 
-export interface TaskGanttViewHost {
+/** One editable row of the Daily ToDo popover; `item` is null until it is written to a note. */
+interface DailyTodoPopoverRow {
+  item: DailyTodoItem | null;
+  rowEl: HTMLElement;
+  checkEl: HTMLInputElement;
+  inputEl: HTMLInputElement;
+}
+
+interface DailyTodoPopoverState {
+  el: HTMLElement;
+  anchorEl: HTMLElement;
+  date: string;
+  listEl: HTMLElement;
+  rows: DailyTodoPopoverRow[];
+  outsideHandler: (evt: Event) => void;
+}
+
+function isDailyTodoRowDirty(row: DailyTodoPopoverRow): boolean {
+  const text = row.inputEl.value.trim();
+  if (row.item === null) {
+    return text !== "";
+  }
+  return text !== row.item.text.trim() || row.checkEl.checked !== row.item.completed;
+}
+
+function isNodeInside(node: Node, root: Node): boolean {
+  for (let current: Node | null = node; current; current = current.parentNode) {
+    if (current === root) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True for clicks inside an Obsidian menu (e.g. the row's 「…」 menu). */
+function isNodeInsideMenu(node: Node): boolean {
+  for (let current: Node | null = node; current; current = current.parentNode) {
+    if ((current as Element).classList?.contains("menu")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
   ghosts?: ScheduleGhostStore;
+  /** Pending/saved operation previews to project onto the chart. Absent = no preview overlay. */
+  previewPort?: PreviewPort;
 
   logger: Logger;
 
@@ -251,16 +295,23 @@ export interface TaskGanttViewHost {
   loadTasks(): Promise<TaskRow[]>;
   loadDailyTodoSummaries(): Promise<DailyTodoSummary[]>;
   /**
- * `onSaved` fires only once the modal's edit is actually persisted (not
- * merely opened) — the returned Promise itself resolves as soon as the
- * modal opens, since Modal.open is fire-and-forget. Callers that need
- * to react to the save (e.g. re-rendering to show updated counts) MUST
- * use `onSaved`, not await this method's own return.
- */
-  openOrCreateDailyTodoForDate(
+   * Daily ToDo popover persistence. Each call rewrites a single line of the
+   * note (and records an undo entry); `false` means the line could not be
+   * written (missing file, or the line changed since it was loaded).
+   */
+  updateDailyTodoItem(
+    item: DailyTodoItem,
+    patch: { text?: string; completed?: boolean }
+  ): Promise<boolean>;
+  deleteDailyTodoItem(item: DailyTodoItem): Promise<boolean>;
+  /** Appends a ToDo to the date's main note; null when it could not be added. */
+  addDailyTodoItem(
     dateStr: string,
-    onSaved?: () => void
-  ): Promise<void>;
+    text: string,
+    completed: boolean
+  ): Promise<DailyTodoItem | null>;
+  /** Opens the note holding the ToDo, scrolled to its line. */
+  openDailyTodoItem(item: DailyTodoItem): Promise<void>;
   saveSettings(): Promise<void>;
 
 
@@ -547,9 +598,8 @@ const WORKLOAD_DAY_SUMMARY_POPOVER_GAP_PX = 12;
 // Minimum measured height for the day-summary popup.
 const WORKLOAD_DAY_SUMMARY_POPOVER_MIN_HEIGHT_PX = 90;
 
-// Daily ToDo detail popover — independent lifecycle from the
-// workload popovers, with the same body-anchored/fixed positioning pattern.
-const DAILY_TODO_POPOVER_HIDE_DELAY_MS = 140;
+// Daily ToDo popover — independent lifecycle from the workload popovers,
+// with the same body-anchored/fixed positioning pattern.
 const DAILY_TODO_POPOVER_GAP_PX = 12;
 const DAILY_TODO_POPOVER_VIEWPORT_MARGIN_PX = 8;
 const DAILY_TODO_POPOVER_MIN_WIDTH_PX = 180;
@@ -823,6 +873,7 @@ export function computeRichPopoverPosition(
 
 
 export class TaskGanttView extends ItemView {
+  private unregisterHistoryHotkeys?: () => void;
   // --- Data ---
   /** Last loaded task list returned by host.loadTasks. */
   private tasks: TaskRow[] = [];
@@ -835,6 +886,7 @@ export class TaskGanttView extends ItemView {
   /** Number of consecutive days from rangeStart. */
   private rangeDays = 90;
   /** Pixels per day, initialized from settings.ganttZoom. */
+  private unregisterState?: () => void;
   private dayWidth: number;
   /**
  * The date list last built by renderChart (buildDates(rangeStart,
@@ -874,6 +926,7 @@ export class TaskGanttView extends ItemView {
 
   /** last month shown in the floating label (dedupe key). */
   private lastFloatingMonth = "";
+  private chartNeedsVisibleRender = false;
 
 
 
@@ -897,6 +950,12 @@ export class TaskGanttView extends ItemView {
   private unsubscribeGhosts?: () => void;
   private readonly ghostNodes = new Map<string, { nodes: HTMLElement[]; current?: HTMLElement }>();
   private ghostLegend?: HTMLElement;
+  private previewLayer?: PreviewGanttLayer;
+  private unsubscribePreview?: () => void;
+  private previewDockHost?: HTMLElement;
+  /** Overlay-only nodes (deadline/marker ghosts, delete labels) and the bars we marked. Live rows are untouched. */
+  private readonly previewNodes = new Map<string, HTMLElement[]>();
+  private readonly previewMarkedBars = new Set<HTMLElement>();
   /** The scrollable element. */
   private wrapEl!: HTMLElement;
   /** Always-visible current-month label, kept in the toolbar so it survives
@@ -1066,18 +1125,14 @@ export class TaskGanttView extends ItemView {
   /** The fixed Daily ToDo row, retained for incremental summary refreshes. */
   private dailyTodoRowEl: HTMLElement | undefined = undefined;
 
-  /**
- *
- * The currently open Daily ToDo detail popover. It is kept separate from
- * the workload popovers because its trigger and content are independent.
- */
-  private dailyTodoPopoverState:
-    | { el: HTMLElement; anchorEl: HTMLElement; summary: DailyTodoSummary }
-    | undefined = undefined;
+  /** Anchor per date in the Daily ToDo row: the count chip, or the empty cell when the date has no ToDo. */
+  private dailyTodoAnchorEls = new Map<string, HTMLElement>();
 
-  /** pending chip/popover mouse-leave hide debounce. */
-  private dailyTodoPopoverHideTimer: ReturnType<typeof setTimeout> | undefined =
-    undefined;
+  /** The currently open Daily ToDo popover (click to open, editable in place). */
+  private dailyTodoPopoverState: DailyTodoPopoverState | undefined = undefined;
+  private dailyTodoQueue: Promise<void> | undefined = undefined;
+  private dailyTodoOpenGeneration = 0;
+  private dailyTodoCommandGeneration = 0;
 
 
 
@@ -1224,7 +1279,46 @@ export class TaskGanttView extends ItemView {
  * inside requestAnimationFrame — auto-scrolls so today sits 220px from the
  * left edge.
  */
+  async requestViewOperation(id: ViewOperationId, input: unknown): Promise<OperationRequestResultV1> {
+    const args = operationInputSchemas[id].parse(input), before = { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter] };
+    if (id === "V13") { this.activeTagFilter = new Set((args as OperationInputMap["V13"]).tagNames); await this.render(); }
+    else if (id === "V14") await this.setZoom((args as OperationInputMap["V14"]).dayWidth);
+    else if (id === "V15") { const target = args as OperationInputMap["V15"]; if (!this.dates.includes(target.date)) { this.rangeStart = addDays(target.date, -14); this.rangeDays = 90; this.renderChart(); } this.scrollToDate(target.date, target.offset); }
+    else if (id === "V16") await this.render();
+    else if (id === "V18") {
+      const target = args as OperationInputMap["V18"];
+      const task = this.tasks.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]).find((row) => row.id === target.targetId);
+      if (target.targetKind === "task" && (!task || task.kind !== "subtask") || target.targetKind === "event" && !this.host.settings.ganttEvents.some((event) => event.key === target.targetId)) throw new Error("NOT_FOUND");
+      this.workloadModeStore.set(target.targetKind === "task" ? getWorkloadTaskKey(task!) : target.targetId, { mode: target.mode });
+      this.closeWorkloadPopup();
+    } else if (id === "V19") {
+      const target = args as OperationInputMap["V19"];
+      if (!target.enabled) this.bulkMoveState = undefined;
+      else {
+        const parent = this.tasks.find((row) => row.kind === "parent" && row.id === target.parentId);
+        const anchor = [...parent?.subtasks?.values() ?? []].find((row) => row.id === target.anchorId);
+        if (!parent || target.anchorId && !anchor) throw new Error("NOT_FOUND");
+        this.bulkMoveState = { parentKey: parent.id, anchorKey: anchor?.id ?? "", anchorStart: anchor?.plannedStartDate ?? todayStr() };
+      }
+    } else if (id === "V17") {
+      const target = args as OperationInputMap["V17"], anchorEl = this.barElsByTaskId.get(target.target) ?? this.wrapEl;
+      if (target.kind === "weekly") {
+        const button = this.wrapEl.querySelector<HTMLButtonElement>(".task-gantt-workload-settings-button"); if (!button) throw new Error("UI_UNAVAILABLE"); button.click();
+      } else if (target.kind === "workload") { if (!this.host.settings.ganttFeatureWorkloadEnabled || !this.dates.includes(target.target)) throw new Error("UI_UNAVAILABLE"); this.showWorkloadDaySummaryPopup(target.target, anchorEl); }
+      else if (target.kind === "daily") { const summary = this.dailyTodoSummaries.find((day) => day.date === target.target); if (!summary || !this.host.settings.ganttFeatureDailyTodoEnabled) throw new Error("UI_UNAVAILABLE"); this.openDailyTodoPopover(summary.date, anchorEl); }
+      else if (target.kind === "event") { const event = this.host.settings.ganttEvents.find((event) => event.key === target.target); if (!event || !this.host.settings.ganttFeatureEventsEnabled || !this.host.settings.ganttFeatureWorkloadEnabled) throw new Error("UI_UNAVAILABLE"); this.showWorkloadPopupForEvent(event, anchorEl); }
+      else {
+        const task = this.tasks.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]).find((row) => row.id === target.target && (target.kind === "parent" ? row.kind === "parent" : true));
+        if (!task) throw new Error("NOT_FOUND");
+        this.closeRichPopover(); this.openRichPopover(task.kind === "parent" ? { kind: "parent", task, anchorEl } : { kind: "subtask", task, anchorEl, barStart: task.plannedStartDate ?? "", barEnd: task.plannedEndDate ?? "" }, new MouseEvent("mouseover"));
+      }
+    } else return { schemaVersion: 1, resultKind: "request", operationId: id, status: "unavailable", effects: [], error: { code: "UI_UNAVAILABLE", retryable: false, nextAction: "Ganttに対応する表示操作を指定してください。" } };
+    return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before, after: { dayWidth: this.dayWidth, tagNames: [...this.activeTagFilter], request: args as import("../contracts/context").Json }, affectedIds: [this.host.viewId!] }] };
+  }
   async onOpen(): Promise<void> {
+    this.unregisterHistoryHotkeys?.();
+    this.unregisterHistoryHotkeys = registerHistoryHotkeys(this, this.containerEl, this.host);
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "gantt", filterText: "", statusFilter: "all", showCompleted: true, tagNames: [...this.activeTagFilter], dayWidth: this.dayWidth }), (id, input) => this.requestViewOperation(id, input));
 
     this.host.logger.info?.("TaskGanttView", "view opened", {});
 
@@ -1239,6 +1333,19 @@ export class TaskGanttView extends ItemView {
     container.appendChild(this.toolbarEl);
     this.renderToolbar();
 
+    if (this.host.previewPort) {
+      this.previewDockHost = document.createElement("div");
+      this.previewDockHost.classList.add("vg-pv-dockhost");
+      this.previewDockHost.hidden = true;
+      container.appendChild(this.previewDockHost);
+      this.previewLayer = new PreviewGanttLayer(this.host.previewPort);
+      this.unsubscribePreview = this.previewLayer.subscribe(() => {
+        this.clearGhostLayer();
+        this.renderPreviewDock();
+        this.renderChart();
+      });
+      this.renderPreviewDock();
+    }
 
     this.wrapEl = document.createElement("div");
     this.wrapEl.classList.add("task-gantt-wrap");
@@ -1269,6 +1376,22 @@ export class TaskGanttView extends ItemView {
     });
   }
 
+  onResize(): void {
+    const wrap = this.wrapEl;
+    if (!wrap || !this.floatingMonthEl) return;
+    // Obsidian can restore a hidden tab's scroll position as it reveals it,
+    // without a usable scroll event during the range-extension guard.
+    requestAnimationFrame(() => {
+      if (this.wrapEl !== wrap || !wrap.isConnected || wrap.offsetParent === null) return;
+      if (this.chartNeedsVisibleRender) {
+        const initial = !this.dates.length;
+        this.renderChart();
+        if (initial) this.scrollToDate(todayStr(), INITIAL_SCROLL_OFFSET_PX);
+      }
+      this.updateFloatingMonth();
+    });
+  }
+
   /**
  * The three popover kinds (rich popover, workload popup, workload day
  * summary popover) are appended to document.body rather than containerEl
@@ -1282,6 +1405,13 @@ export class TaskGanttView extends ItemView {
  * no-ops when nothing is open.
  */
   onClose(): Promise<void> {
+    this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
+    this.unregisterState?.(); this.unregisterState = undefined;
+    // The overlay never outlives the view; a pending plan itself stays in the store.
+    this.unsubscribePreview?.(); this.unsubscribePreview = undefined;
+    if (this.previewLayer?.active) this.previewLayer.close();
+    this.previewLayer?.dispose(); this.previewLayer = undefined;
+    this.dailyTodoCommandGeneration += 1;
     this.unsubscribeGhosts?.(); this.unsubscribeGhosts = undefined;
     this.host.ghosts?.clear();
     this.clearGhostLayer();
@@ -1310,6 +1440,38 @@ export class TaskGanttView extends ItemView {
       nodes.forEach((node) => node.remove()); current?.classList.remove("vg-ai-target");
     }
     this.ghostNodes.clear(); this.ghostLegend?.remove(); this.ghostLegend = undefined;
+    for (const [taskId, nodes] of this.previewNodes) {
+      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      nodes.forEach((node) => node.remove());
+    }
+    this.previewNodes.clear();
+    for (const bar of this.previewMarkedBars) bar.classList.remove("vg-pv-delete-target");
+    this.previewMarkedBars.clear();
+  }
+
+  /** Re-draws the separate preview region (after-state rows, panels) for the focused preview. */
+  private renderPreviewDock(): void {
+    const host = this.previewDockHost; if (!host || !this.previewLayer) return;
+    host.empty();
+    this.previewLayer.renderDock(host);
+    host.hidden = !this.previewLayer.active;
+  }
+
+  /** Deadline/marker ghosts and delete labels for one task, in the same lane as the schedule ghost. */
+  private paintPreviewExtras(timeline: HTMLElement, taskId: string, baseDate: string, dayWidth: number, top: number, bar?: HTMLElement): void {
+    const layer = this.previewLayer; if (!layer?.active) return;
+    this.previewNodes.get(taskId)?.forEach((node) => node.remove());
+    const nodes: HTMLElement[] = [];
+    const points = layer.pointsFor(taskId);
+    if (points.length) nodes.push(...renderPointGhosts(timeline, points, baseDate, dayWidth, top));
+    if (layer.isDeleted(taskId)) {
+      if (bar) { bar.classList.add("vg-pv-delete-target"); this.previewMarkedBars.add(bar); }
+      const note = document.createElement("span"); note.className = "vg-pv-live-delete";
+      note.textContent = "削除予定"; note.title = "承認すると削除されます（元の行は承認まで変わりません）";
+      note.style.top = Math.max(0, top - 10) + "px"; note.style.left = (bar ? Number.parseFloat(bar.style.left || "0") : 0) + "px";
+      timeline.appendChild(note); nodes.push(note);
+    }
+    if (nodes.length) this.previewNodes.set(taskId, nodes);
   }
 
   /** Opens a context menu after closing any prior menu and its native children. */
@@ -1363,12 +1525,17 @@ export class TaskGanttView extends ItemView {
  * selects the full-render escape hatch.
  */
   renderChart(): void {
+    // Hidden tabs report zero scroll offsets. Rebuilding them would discard
+    // the visible date and derive a month from the range's far-left edge.
+    if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
+    this.chartNeedsVisibleRender = false;
     this.dateClassesCache.clear();
-    if (this.host.ghosts?.entries.size && !this.ghostLegend) {
+    if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
+      const legend = this.previewLayer?.legend();
       this.ghostLegend = document.createElement("span");
       this.ghostLegend.className = "vg-ai-legend";
-      this.ghostLegend.textContent = "AI変更 · 上: 前 ┄ ／ 下: 後 ▰ · 60秒";
-      this.ghostLegend.title = "変更前は上段の破線帯、変更後は下段の通常バー。矢印は期間の端、◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
+      this.ghostLegend.textContent = legend?.text ?? "AI変更 · 上: 前（破線） ／ 下: 後 · 60秒";
+      this.ghostLegend.title = legend?.title ?? "変更前は上段の破線帯、変更後は下段の通常バー。◀ ▶は範囲外。詳細は会話の結果カードで確認できます。";
       this.toolbarEl.appendChild(this.ghostLegend);
     }
 
@@ -1443,7 +1610,9 @@ export class TaskGanttView extends ItemView {
     dates: string[],
     headerFingerprint: string
   ): void {
-
+    // Removing live scroll content clamps the browser's offsets to zero.
+    // Restore them after rebuilding, before deriving the visible month.
+    const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
 
     // header, then the fixed rows — rendered even when
@@ -1463,6 +1632,7 @@ export class TaskGanttView extends ItemView {
       empty.textContent =
         "ガント表示対象の親タスクがありません。親タスクの frontmatter / ダッシュボードで ganttEnabled を true にしてください。";
       this.wrapEl.appendChild(empty);
+      this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
       this.updateFloatingMonth();
       return;
     }
@@ -1488,7 +1658,7 @@ export class TaskGanttView extends ItemView {
       const rowEl = this.renderParentRow(parent, dates);
       rowFragment.appendChild(rowEl);
       rowEls.set(parent.file.path, rowEl);
-      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? ""));
+      rowFingerprints.set(parent.file.path, computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? ""));
     }
     this.wrapEl.appendChild(rowFragment);
 
@@ -1507,6 +1677,8 @@ export class TaskGanttView extends ItemView {
 
     // the add row is (re)built at the very end.
     this.renderParentAddRow();
+
+    this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
 
     // keep the floating month in sync after every chart render.
     this.updateFloatingMonth();
@@ -1591,7 +1763,7 @@ export class TaskGanttView extends ItemView {
       }
 
 
-      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "");
+      const fingerprint = computeRowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? "");
       if (
         oldEl !== undefined &&
         cache.rowFingerprints.get(path) === fingerprint
@@ -1694,8 +1866,8 @@ export class TaskGanttView extends ItemView {
 
     // ±6px per click, clamped to [14, 72].
     const zoomOut = document.createElement("button");
-    zoomOut.classList.add("task-gantt-zoom-out");
-    zoomOut.textContent = "−";
+    zoomOut.classList.add("task-gantt-zoom-out", "clickable-icon");
+    setToolbarIcon(zoomOut, "minus", "縮小");
     zoomOut.addEventListener("click", () => {
       void this.setZoom(this.clampZoom(this.dayWidth - ZOOM_STEP_PX));
     });
@@ -1708,8 +1880,8 @@ export class TaskGanttView extends ItemView {
     this.toolbarEl.appendChild(this.zoomLabelEl);
 
     const zoomIn = document.createElement("button");
-    zoomIn.classList.add("task-gantt-zoom-in");
-    zoomIn.textContent = "+";
+    zoomIn.classList.add("task-gantt-zoom-in", "clickable-icon");
+    setToolbarIcon(zoomIn, "plus", "拡大");
     zoomIn.addEventListener("click", () => {
       void this.setZoom(this.clampZoom(this.dayWidth + ZOOM_STEP_PX));
     });
@@ -1725,16 +1897,16 @@ export class TaskGanttView extends ItemView {
     this.toolbarEl.appendChild(refreshButton);
 
     const undoButton = document.createElement("button");
-    undoButton.classList.add("task-gantt-undo");
-    undoButton.textContent = "⟲ 元に戻す";
+    undoButton.classList.add("task-gantt-undo", "clickable-icon");
+    setToolbarIcon(undoButton, "undo-2", "元に戻す");
     undoButton.addEventListener("click", () => {
       void this.host.undoLastAction();
     });
     this.toolbarEl.appendChild(undoButton);
 
     const redoButton = document.createElement("button");
-    redoButton.classList.add("task-gantt-redo");
-    redoButton.textContent = "⟳ やり直す";
+    redoButton.classList.add("task-gantt-redo", "clickable-icon");
+    setToolbarIcon(redoButton, "redo-2", "やり直す");
     redoButton.addEventListener("click", () => {
       void this.host.redoLastAction();
     });
@@ -2016,6 +2188,7 @@ export class TaskGanttView extends ItemView {
     const footer = document.createElement("div");
     footer.classList.add("task-gantt-tag-filter-footer");
     const clearButton = document.createElement("button");
+    clearButton.classList.add("vg-btn-sm");
     clearButton.textContent = "解除";
     clearButton.addEventListener("click", () => {
       const scrollLeft = this.wrapEl.scrollLeft;
@@ -2025,6 +2198,7 @@ export class TaskGanttView extends ItemView {
     });
     footer.appendChild(clearButton);
     const closeButton = document.createElement("button");
+    closeButton.classList.add("vg-btn-sm");
     closeButton.textContent = "閉じる";
     closeButton.addEventListener("click", () => {
       this.tagFilterMenuEl?.remove();
@@ -2514,13 +2688,7 @@ export class TaskGanttView extends ItemView {
       const planRatio = Math.max(0, Math.min(1, planTotal / capacityHours));
       const actualRatio = Math.max(0, Math.min(1, actualTotal / capacityHours));
       const setRatio = (name: string, value: string): void => {
-        // The real DOM exposes CSSStyleDeclaration.setProperty; the small
-        // fake DOM used by the unit tests exposes style as a plain record.
-        if (typeof cell.style.setProperty === "function") {
-          cell.style.setProperty(name, value);
-        } else {
-          (cell.style as unknown as Record<string, string>)[name] = value;
-        }
+        setStyleVar(cell, name, value);
       };
       setRatio("--twb-workload-plan-ratio", `${(planRatio * 100).toFixed(1)}%`);
       setRatio(
@@ -2574,7 +2742,11 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadDaySummaryPopover(); // Close any open day-summary popover.
 
     const el = document.createElement("div");
-    el.classList.add("task-gantt-workload-day-summary-popover");
+    el.classList.add(
+      "task-gantt-workload-day-summary-popover",
+      "vg-surface",
+      "vg-popover"
+    );
 
     // title "作業時間 M/D".
     const title = document.createElement("div");
@@ -3012,6 +3184,7 @@ export class TaskGanttView extends ItemView {
     timeline.style.width = `${this.dates.length * this.dayWidth}px`;
     timeline.style.height = `${DAILY_TODO_ROW_HEIGHT_PX}px`;
 
+    const anchors = new Map<string, HTMLElement>();
     this.dates.forEach((date, index) => {
       const bg = document.createElement("div");
       bg.classList.add("task-gantt-fixed-bg");
@@ -3027,6 +3200,11 @@ export class TaskGanttView extends ItemView {
       if (isToday) {
         bg.classList.add("is-today");
       }
+      // An empty cell opens the same popover so a ToDo can be added to any date.
+      bg.addEventListener("click", () => {
+        this.openDailyTodoPopover(date, bg);
+      });
+      anchors.set(date, bg);
       timeline.appendChild(bg);
     });
 
@@ -3050,30 +3228,15 @@ export class TaskGanttView extends ItemView {
         diffDays(this.dates[0], summary.date) * this.dayWidth +
         this.dayWidth / 2
       }px`;
-      // A summary chip has no separate edit label or drag surface, so a
-      // single click directly opens the existing date-specific modal.
-      // Re-render only once the modal's edit is actually SAVED (onSaved),
-      // not right after it opens — openOrCreateDailyTodoForDate's own
-      // returned Promise resolves as soon as Modal.open returns, long
-      // before the user has entered or saved anything.
+      // Clicking a chip opens the inline editor popover for that date.
       chip.addEventListener("click", () => {
-        this.closeDailyTodoPopover();
-        void this.host.openOrCreateDailyTodoForDate(summary.date, () => {
-          void this.render();
-        });
+        this.openDailyTodoPopover(summary.date, chip);
       });
-      // hovering a chip shows the item's detailed names in a
-      // lightweight preview; the existing click-to-edit behavior above stays
-      // unchanged.
-      chip.addEventListener("mouseenter", () => {
-        this.showDailyTodoPopover(summary, chip);
-      });
-      chip.addEventListener("mouseleave", () => {
-        this.scheduleHideDailyTodoPopover();
-      });
+      anchors.set(summary.date, chip);
       timeline.appendChild(chip);
     }
 
+    this.dailyTodoAnchorEls = anchors;
     const row = document.createElement("div");
     row.classList.add("task-gantt-fixed-row");
     row.appendChild(left);
@@ -3081,8 +3244,12 @@ export class TaskGanttView extends ItemView {
     return row;
   }
 
-  /** Refreshes the Daily ToDo row without disturbing incremental parent rows. */
-  private refreshDailyTodoRowIncremental(): void {
+  /**
+   * Refreshes the Daily ToDo row without disturbing incremental parent rows.
+   * The popover is closed first (its anchor is replaced) unless the caller
+   * keeps it open and re-anchors it itself.
+   */
+  private refreshDailyTodoRowIncremental(keepPopover = false): void {
     if (!this.host.settings.ganttFeatureDailyTodoEnabled) {
       return;
     }
@@ -3091,9 +3258,11 @@ export class TaskGanttView extends ItemView {
       return;
     }
     // replacing the row detaches the chip used as the popover's
-    // anchor, so close the body-anchored preview before building its
+    // anchor, so close the body-anchored popover before building its
     // replacement even when this incremental helper is called directly.
-    this.closeDailyTodoPopover();
+    if (!keepPopover) {
+      this.closeDailyTodoPopover();
+    }
     const insertBeforeRef = oldRow.nextSibling;
     const row = this.buildDailyTodoRow();
     if (insertBeforeRef !== null) {
@@ -3105,89 +3274,422 @@ export class TaskGanttView extends ItemView {
     this.dailyTodoRowEl = row;
   }
 
+  /** Reveals a date and opens its Daily ToDo editor, including empty days. */
+  async openDailyTodoPopoverForDate(date: string): Promise<void> {
+    if (!this.host.settings.ganttFeatureDailyTodoEnabled) {
+      new Notice("設定で「Daily ToDoを表示」を有効にしてください。");
+      return;
+    }
+    const generation = ++this.dailyTodoCommandGeneration;
+    // Closing commits focused edits; wait for those writes before reloading.
+    this.closeDailyTodoPopover();
+    await this.dailyTodoQueue;
+    if (generation !== this.dailyTodoCommandGeneration) return;
+    this.ensureDateInRange(date);
+    await this.refreshDailyTodoSummaries();
+    if (generation !== this.dailyTodoCommandGeneration) return;
+    this.renderChart();
+    const nextFrame = (): Promise<void> => new Promise((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    await nextFrame();
+    const anchor = this.dailyTodoAnchorEls.get(date);
+    if (generation !== this.dailyTodoCommandGeneration || !anchor?.isConnected) return;
+    anchor.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX);
+    // Scroll events close popovers and may extend the range over two frames.
+    // Open only after those events and the range's scroll restoration finish.
+    await nextFrame();
+    await nextFrame();
+    await nextFrame();
+    const currentAnchor = this.dailyTodoAnchorEls.get(date);
+    if (generation === this.dailyTodoCommandGeneration && currentAnchor?.isConnected) {
+      this.openDailyTodoPopover(date, currentAnchor);
+    }
+  }
+
   /**
- * creates and shows the Daily ToDo detail preview for one
- * summary. The popover is body-anchored so Obsidian view containment and
- * the chart's clipped scroll subtree cannot hide it.
- */
-  private showDailyTodoPopover(
-    summary: DailyTodoSummary,
-    anchorEl: HTMLElement
-  ): void {
+   * Opens the Daily ToDo popover for a date, anchored to its chip / empty
+   * cell. Clicking the anchor of the open popover closes it again. The
+   * popover is body-anchored so Obsidian view containment and the chart's
+   * clipped scroll subtree cannot hide it.
+   */
+  private openDailyTodoPopover(date: string, anchorEl: HTMLElement): void {
     if (!anchorEl.isConnected) {
       return;
     }
+    const wasOpenForDate = this.dailyTodoPopoverState?.date === date;
     this.closeDailyTodoPopover();
-
-    const el = document.createElement("div");
-    el.classList.add("task-gantt-daily-todo-popover");
-    el.setAttribute("data-date", summary.date);
-    this.renderDailyTodoPopover(el, summary);
-
-    el.addEventListener("mouseenter", () => {
-      this.clearDailyTodoPopoverHideTimer();
-    });
-    el.addEventListener("mouseleave", () => {
-      this.scheduleHideDailyTodoPopover();
-    });
-
-    document.body.appendChild(el);
-    this.dailyTodoPopoverState = { el, anchorEl, summary };
-    this.positionDailyTodoPopover(anchorEl);
-  }
-
-  /** renders the date heading and each Daily ToDo item name. */
-  private renderDailyTodoPopover(
-    el: HTMLElement,
-    summary: DailyTodoSummary
-  ): void {
-    const title = document.createElement("div");
-    title.classList.add("task-gantt-daily-todo-popover-title");
-    title.textContent = `Daily ToDo ${moment(summary.date, "YYYY-MM-DD").format(
-      "M/D"
-    )}`;
-    el.appendChild(title);
-
-    if (summary.items.length === 0) {
-      const empty = document.createElement("div");
-      empty.classList.add("task-gantt-daily-todo-popover-empty");
-      empty.textContent = "項目なし";
-      el.appendChild(empty);
+    if (wasOpenForDate) {
       return;
     }
 
+    const generation = this.dailyTodoOpenGeneration;
+    if (this.dailyTodoQueue !== undefined) {
+      void this.enqueueDailyTodoTask(async () => {
+        await this.refreshDailyTodoSummaries();
+        if (generation !== this.dailyTodoOpenGeneration) {
+          return;
+        }
+        this.rebuildDailyTodoRowKeepingPopover();
+        const anchor = this.dailyTodoAnchorEls.get(date);
+        if (anchor?.isConnected) {
+          this.createDailyTodoPopover(date, anchor);
+        }
+      });
+      return;
+    }
+    this.createDailyTodoPopover(date, anchorEl);
+  }
 
-    // 読み込み元（loadDailyTodoSummaries）ごとに既に連続して並んでいるため、
-    // 並べ替えず直前のラベルとの比較だけでグルーピングできる。
-    let lastSourceLabel: string | null = null;
-    for (const item of summary.items) {
-      if (item.sourceLabel !== lastSourceLabel) {
-        const heading = document.createElement("div");
-        heading.classList.add("task-gantt-daily-todo-popover-heading");
-        heading.textContent = item.sourceLabel;
-        el.appendChild(heading);
-        lastSourceLabel = item.sourceLabel;
-      }
-      const itemEl = document.createElement("div");
-      itemEl.classList.add("task-gantt-daily-todo-popover-item");
-      if (item.completed) {
-        itemEl.classList.add("is-completed");
-      }
-      itemEl.textContent = item.text;
-      el.appendChild(itemEl);
+  private createDailyTodoPopover(date: string, anchorEl: HTMLElement): void {
+    const el = document.createElement("div");
+    el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
+    el.setAttribute("data-date", date);
+
+    const title = document.createElement("div");
+    title.classList.add("task-gantt-daily-todo-popover-title");
+    title.textContent = `Daily ToDo ${moment(date, "YYYY-MM-DD").format("M/D")}`;
+    el.appendChild(title);
+
+    const listEl = document.createElement("div");
+    listEl.classList.add("task-gantt-daily-todo-list");
+    el.appendChild(listEl);
+
+    const addButton = document.createElement("button");
+    addButton.classList.add("task-gantt-daily-todo-add", "vg-btn-sm");
+    addButton.textContent = "+";
+    addButton.setAttribute("aria-label", "ToDoを追加");
+    addButton.title = "ToDoを追加";
+    el.appendChild(addButton);
+
+    const state: DailyTodoPopoverState = {
+      el,
+      anchorEl,
+      date,
+      listEl,
+      rows: [],
+      outsideHandler: (evt: Event): void => {
+        const target = evt.target as Node | null;
+        if (
+          target !== null &&
+          !isNodeInside(target, state.el) &&
+          !isNodeInside(target, state.anchorEl) &&
+          !isNodeInsideMenu(target)
+        ) {
+          this.closeDailyTodoPopover();
+        }
+      },
+    };
+    this.dailyTodoPopoverState = state;
+
+    const summary = this.dailyTodoSummaries.find((s) => s.date === date);
+    for (const item of summary?.items ?? []) {
+      this.appendDailyTodoRow(state, { ...item }, false);
     }
 
-    // このポップオーバーはホバー専用のプレビューで編集操作を持たない
-    // （ 、編集はチップのクリックで別途 DailyTodoModal を開く）。
-    // 発見しにくいため、クリックで編集できることをヒントとして明示する。
-    const hint = document.createElement("div");
-    hint.classList.add("task-gantt-daily-todo-popover-hint");
-    hint.textContent = "クリックで編集";
-    el.appendChild(hint);
+    addButton.addEventListener("click", () => {
+      // One blank row at a time: reuse it instead of stacking empty rows.
+      const blank = state.rows.find(
+        (row) => row.item === null && row.inputEl.value.trim() === ""
+      );
+      if (blank !== undefined) {
+        blank.inputEl.focus();
+        return;
+      }
+      this.appendDailyTodoRow(state, null, true);
+      this.positionDailyTodoPopover(state.anchorEl);
+    });
+    el.addEventListener("keydown", (evt: KeyboardEvent) => {
+      if (evt.key === "Escape") {
+        this.closeDailyTodoPopover();
+      }
+    });
+
+    document.body.appendChild(el);
+    window.addEventListener("mousedown", state.outsideHandler, true);
+    this.positionDailyTodoPopover(anchorEl);
   }
 
   /**
- * positions the fixed preview above the chip when possible,
+   * Appends one `[check] [input] […]` row. `item` is null for a new row that
+   * has not been written to a note yet (it is saved once text is entered).
+   */
+  private appendDailyTodoRow(
+    state: DailyTodoPopoverState,
+    item: DailyTodoItem | null,
+    focus: boolean
+  ): void {
+    const rowEl = document.createElement("div");
+    rowEl.classList.add("task-gantt-daily-todo-row");
+    if (item !== null && item.sourceLabel !== "") {
+      rowEl.title = item.sourceLabel;
+    }
+
+    const checkEl = document.createElement("input");
+    checkEl.type = "checkbox";
+    checkEl.classList.add("task-gantt-daily-todo-check");
+    checkEl.setAttribute("aria-label", "完了");
+    checkEl.checked = item?.completed ?? false;
+    rowEl.appendChild(checkEl);
+
+    const inputEl = document.createElement("input");
+    inputEl.type = "text";
+    inputEl.classList.add("task-gantt-daily-todo-input", "vg-input-sm");
+    inputEl.placeholder = "ToDoを入力";
+    inputEl.value = item?.text ?? "";
+    rowEl.appendChild(inputEl);
+
+    const moreButton = document.createElement("button");
+    moreButton.classList.add("task-gantt-daily-todo-more", "vg-btn-sm");
+    moreButton.textContent = "…";
+    moreButton.setAttribute("aria-label", "その他の操作");
+    moreButton.title = "その他の操作";
+    rowEl.appendChild(moreButton);
+
+    const row: DailyTodoPopoverRow = { item, rowEl, checkEl, inputEl };
+    state.rows.push(row);
+    state.listEl.appendChild(rowEl);
+
+    // `change` fires on Enter / blur only, so IME composition is never cut off.
+    const save = (): void => {
+      void this.enqueueDailyTodoTask(() =>
+        this.commitDailyTodoRow(state, row)
+      );
+    };
+    checkEl.addEventListener("change", save);
+    inputEl.addEventListener("change", save);
+    moreButton.addEventListener("click", (evt: MouseEvent) => {
+      this.openDailyTodoRowMenu(state, row, evt);
+    });
+
+    if (focus) {
+      inputEl.focus();
+    }
+  }
+
+  /** 「開く」「削除」 menu behind a row's 「…」 button. */
+  private openDailyTodoRowMenu(
+    state: DailyTodoPopoverState,
+    row: DailyTodoPopoverRow,
+    evt: MouseEvent
+  ): void {
+    const menu = new Menu();
+    this.activateContextMenu(menu);
+    menu.addItem((menuItem) => {
+      menuItem.setTitle("開く").setIcon("file-text");
+      menuItem.setDisabled(row.item === null);
+      menuItem.onClick(() => {
+        void this.enqueueDailyTodoTask(async () => {
+          // Save pending edits first so the note and the jump target agree.
+          await this.commitDailyTodoRow(state, row);
+          if (row.item !== null) {
+            await this.host.openDailyTodoItem(row.item);
+            this.closeDailyTodoPopover();
+          }
+        });
+      });
+    });
+    menu.addItem((menuItem) => {
+      menuItem.setTitle("削除").setIcon("trash").setWarning(true);
+      menuItem.onClick(() => {
+        // Deleted at once, without confirmation; the write is on the undo history.
+        void this.enqueueDailyTodoTask(() =>
+          this.deleteDailyTodoRow(state, row)
+        );
+      });
+    });
+    menu.showAtMouseEvent(evt);
+  }
+
+  /**
+   * Runs a popover save after the previous one finished: every write re-reads
+   * the note and addresses a line number, so overlapping saves could race.
+   */
+  private enqueueDailyTodoTask(
+    task: () => Promise<void>
+  ): Promise<void> {
+    const next = (this.dailyTodoQueue ?? Promise.resolve()).then(task).catch((err: unknown) => {
+      this.host.logger.warn("TaskGanttView", "Daily ToDo popover save failed", err);
+      new Notice("Daily ToDoを保存できませんでした。");
+    });
+    const queued = next.finally(() => {
+      if (this.dailyTodoQueue === queued) {
+        this.dailyTodoQueue = undefined;
+      }
+    });
+    this.dailyTodoQueue = queued;
+    return queued;
+  }
+
+  /** Writes a row's checkbox / text if it differs from what is stored. */
+  private async commitDailyTodoRow(
+    state: DailyTodoPopoverState,
+    row: DailyTodoPopoverRow
+  ): Promise<void> {
+    const completed = row.checkEl.checked;
+    const inputValue = row.inputEl.value;
+    let text = inputValue.trim();
+    const item = row.item;
+
+    if (item === null) {
+      // A new row is only written once it has text.
+      if (text === "") {
+        return;
+      }
+      const created = await this.host.addDailyTodoItem(state.date, text, completed);
+      if (created === null) {
+        return;
+      }
+      // Lines at/after the insertion point of the same note moved down by one.
+      for (const other of state.rows) {
+        if (
+          other.item !== null &&
+          other.item.path === created.path &&
+          other.item.line >= created.line
+        ) {
+          other.item.line += 1;
+        }
+      }
+      row.item = created;
+      if (row.inputEl.value === inputValue) {
+        row.inputEl.value = text;
+      }
+      row.rowEl.title = created.sourceLabel;
+      await this.applyDailyTodoModel(state);
+      return;
+    }
+
+    if (text === "") {
+      // An empty line is never saved; removing a ToDo is 「…」→「削除」.
+      text = item.text;
+      row.inputEl.value = text;
+      if (this.dailyTodoPopoverState === state) {
+        new Notice("空欄にはできません。削除は「…」から行えます。");
+      }
+    }
+    if (text.trim() === item.text.trim() && completed === item.completed) {
+      return;
+    }
+    const ok = await this.host.updateDailyTodoItem(item, { text, completed });
+    if (!ok) {
+      await this.recoverDailyTodoPopover(state);
+      return;
+    }
+    if (row.inputEl.value === inputValue) {
+      row.inputEl.value = text;
+    }
+    await this.applyDailyTodoModel(state);
+  }
+
+  /** Deletes a row's ToDo line right away (a never-saved row is just dropped). */
+  private async deleteDailyTodoRow(
+    state: DailyTodoPopoverState,
+    row: DailyTodoPopoverRow
+  ): Promise<void> {
+    const item = row.item;
+    if (item !== null) {
+      const ok = await this.host.deleteDailyTodoItem(item);
+      if (!ok) {
+        await this.recoverDailyTodoPopover(state);
+        return;
+      }
+      // Lines below the removed one in the same note moved up by one.
+      for (const other of state.rows) {
+        if (
+          other !== row &&
+          other.item !== null &&
+          other.item.path === item.path &&
+          other.item.line > item.line
+        ) {
+          other.item.line -= 1;
+        }
+      }
+    }
+    state.rows.splice(state.rows.indexOf(row), 1);
+    row.rowEl.remove();
+    await this.applyDailyTodoModel(state);
+  }
+
+  /**
+   * The note changed under the popover (the stored line no longer matches), so
+   * reload from disk instead of risking an overwrite of the wrong line.
+   */
+  private async recoverDailyTodoPopover(
+    state: DailyTodoPopoverState
+  ): Promise<void> {
+    new Notice("ToDoのファイルが変更されていたため、最新の内容を読み込み直しました。");
+    await this.refreshDailyTodoSummaries();
+    if (this.dailyTodoPopoverState !== state) {
+      this.rebuildDailyTodoRowKeepingPopover();
+      return;
+    }
+    const summary = this.dailyTodoSummaries.find((s) => s.date === state.date);
+    state.rows.length = 0;
+    state.listEl.replaceChildren();
+    for (const item of summary?.items ?? []) {
+      this.appendDailyTodoRow(state, { ...item }, false);
+    }
+    this.rebuildDailyTodoRowKeepingPopover();
+  }
+
+  /** Mirrors the popover's saved rows into the cached summary and the row chips. */
+  private async applyDailyTodoModel(state: DailyTodoPopoverState): Promise<void> {
+    if (this.dailyTodoPopoverState !== state) {
+      await this.refreshDailyTodoSummaries();
+      this.rebuildDailyTodoRowKeepingPopover();
+      return;
+    }
+    const items = state.rows.flatMap((row) =>
+      row.item !== null ? [{ ...row.item }] : []
+    );
+    const index = this.dailyTodoSummaries.findIndex(
+      (summary) => summary.date === state.date
+    );
+    if (items.length === 0) {
+      if (index >= 0) {
+        this.dailyTodoSummaries.splice(index, 1);
+      }
+    } else {
+      const summary: DailyTodoSummary = {
+        date: state.date,
+        items,
+        completedCount: items.filter((item) => item.completed).length,
+        totalCount: items.length,
+      };
+      if (index >= 0) {
+        this.dailyTodoSummaries[index] = summary;
+      } else {
+        this.dailyTodoSummaries.push(summary);
+        this.dailyTodoSummaries.sort((a, b) =>
+          a.date < b.date ? -1 : a.date > b.date ? 1 : 0
+        );
+      }
+    }
+    this.rebuildDailyTodoRowKeepingPopover();
+    if (this.dailyTodoPopoverState === state) {
+      this.positionDailyTodoPopover(state.anchorEl);
+    }
+  }
+
+  /** Rebuilds the Daily ToDo row (chip counts) and re-anchors the open popover. */
+  private rebuildDailyTodoRowKeepingPopover(): void {
+    this.refreshDailyTodoRowIncremental(true);
+    const state = this.dailyTodoPopoverState;
+    if (state === undefined) {
+      return;
+    }
+    const anchor = this.dailyTodoAnchorEls.get(state.date);
+    if (anchor === undefined) {
+      this.closeDailyTodoPopover();
+      return;
+    }
+    state.anchorEl = anchor;
+    this.positionDailyTodoPopover(anchor);
+  }
+
+  /**
+ * positions the fixed popover above the anchor when possible,
  * otherwise below it, and keeps the box within the viewport horizontally.
  */
   private positionDailyTodoPopover(anchorEl: HTMLElement): void {
@@ -3258,29 +3760,26 @@ export class TaskGanttView extends ItemView {
     }
   }
 
-  /** starts/restarts the chip/popover hide debounce. */
-  private scheduleHideDailyTodoPopover(): void {
-    this.clearDailyTodoPopoverHideTimer();
-    this.dailyTodoPopoverHideTimer = setTimeout(() => {
-      this.dailyTodoPopoverHideTimer = undefined;
-      this.closeDailyTodoPopover();
-    }, DAILY_TODO_POPOVER_HIDE_DELAY_MS);
-  }
-
-  private clearDailyTodoPopoverHideTimer(): void {
-    if (this.dailyTodoPopoverHideTimer !== undefined) {
-      clearTimeout(this.dailyTodoPopoverHideTimer);
-      this.dailyTodoPopoverHideTimer = undefined;
-    }
-  }
-
-  /** idempotently removes the body-anchored detail popover. */
+  /**
+   * Idempotently removes the body-anchored popover. Text typed but not yet
+   * committed is saved first (a removed input never fires `change`).
+   */
   private closeDailyTodoPopover(): void {
-    this.clearDailyTodoPopoverHideTimer();
-    if (this.dailyTodoPopoverState !== undefined) {
-      this.dailyTodoPopoverState.el.remove();
+    this.dailyTodoOpenGeneration += 1;
+    const state = this.dailyTodoPopoverState;
+    if (state === undefined) {
+      return;
     }
     this.dailyTodoPopoverState = undefined;
+    window.removeEventListener("mousedown", state.outsideHandler, true);
+    for (const row of [...state.rows]) {
+      if (isDailyTodoRowDirty(row)) {
+        void this.enqueueDailyTodoTask(() =>
+          this.commitDailyTodoRow(state, row)
+        );
+      }
+    }
+    state.el.remove();
   }
 
 
@@ -3424,7 +3923,9 @@ export class TaskGanttView extends ItemView {
         );
 
         new Notice(
-          "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+          err instanceof NotePreservationError
+            ? `${chosen.file.path}: ${err.message}`
+            : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
         );
       }
       await this.render();
@@ -3735,9 +4236,8 @@ export class TaskGanttView extends ItemView {
       parent.tags
     );
     if (primaryParentTag?.color) {
-      left.style.borderLeftWidth = "4px";
-      left.style.borderLeftStyle = "solid";
-      left.style.borderLeftColor = primaryParentTag.color;
+      left.classList.add("has-tag-accent");
+      setStyleVar(left, "--vg-tag-accent", primaryParentTag.color);
     }
 
     // Render the title; double-clicking it opens the inline editor.
@@ -3756,12 +4256,11 @@ export class TaskGanttView extends ItemView {
       tags.classList.add("task-gantt-parent-tags");
       for (const tag of parent.tags.slice(0, MAX_TAG_CHIPS)) {
         const chip = document.createElement("span");
-        chip.classList.add("task-gantt-parent-tag");
+        chip.classList.add("task-gantt-parent-tag", "vg-chip", "is-tag");
         chip.textContent = tag;
         const definition = findGanttTagDefinition(this.host.settings, tag);
         if (definition?.color) {
-          chip.style.color = definition.color;
-          chip.style.borderColor = definition.color;
+          setStyleVar(chip, "--vg-chip-color", definition.color);
         }
         tags.appendChild(chip);
       }
@@ -3844,11 +4343,13 @@ export class TaskGanttView extends ItemView {
 
     const renderedIds = new Set(renders.map((item) => item.bar.task.id));
     for (const subtask of parent.subtasks?.values() ?? []) {
-      const ghost = this.host.ghosts?.entries.get(subtask.id);
+      const savedGhost = this.host.ghosts?.entries.get(subtask.id);
+      const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(subtask.id);
       if (ghost && !renderedIds.has(subtask.id)) {
         this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
-        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX) });
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, BAR_VERTICAL_INSET_PX, undefined, savedGhost ? "saved" : this.previewLayer?.ghostMode) });
       }
+      if (!renderedIds.has(subtask.id)) this.paintPreviewExtras(timeline, subtask.id, baseDate, dayWidth, BAR_VERTICAL_INSET_PX);
     }
     // Bars, their markers and their external labels.
     for (const render of renders) {
@@ -3904,10 +4405,10 @@ export class TaskGanttView extends ItemView {
       ) {
         barEl.classList.add("has-tag-badge");
         const badge = document.createElement("span");
-        badge.classList.add("task-gantt-bar-tag-badge");
+        badge.classList.add("task-gantt-bar-tag-badge", "vg-chip", "is-tag");
         badge.textContent = primaryBadgeTag.name;
         if (primaryBadgeTag.color) {
-          badge.style.color = primaryBadgeTag.color;
+          setStyleVar(badge, "--vg-chip-color", primaryBadgeTag.color);
         }
         barEl.appendChild(badge);
       }
@@ -3918,11 +4419,13 @@ export class TaskGanttView extends ItemView {
       resizeEnd.classList.add("task-gantt-resize-end");
       barEl.appendChild(resizeEnd);
       timeline.appendChild(barEl);
-      const ghost = this.host.ghosts?.entries.get(bar.task.id);
+      const savedGhost = this.host.ghosts?.entries.get(bar.task.id);
+      const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(bar.task.id);
       if (ghost) {
         this.ghostNodes.get(ghost.taskId)?.nodes.forEach((node) => node.remove());
-        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl), current: barEl });
+        this.ghostNodes.set(ghost.taskId, { nodes: renderGhost(timeline, ghost, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl, savedGhost ? "saved" : this.previewLayer?.ghostMode), current: barEl });
       }
+      this.paintPreviewExtras(timeline, bar.task.id, baseDate, dayWidth, barBandTop + BAR_VERTICAL_INSET_PX, barEl);
       // Keep a keyed lookup for Bulk-Move previews and drag-state styling.
       this.barElsByTaskId.set(bar.task.id, barEl);
 
@@ -3969,10 +4472,10 @@ export class TaskGanttView extends ItemView {
           );
           if (primaryMarkerTag !== undefined) {
             const markerBadge = document.createElement("span");
-            markerBadge.classList.add("task-gantt-marker-tag");
+            markerBadge.classList.add("task-gantt-marker-tag", "vg-chip", "is-tag");
             markerBadge.textContent = primaryMarkerTag.name;
             if (primaryMarkerTag.color) {
-              markerBadge.style.color = primaryMarkerTag.color;
+              setStyleVar(markerBadge, "--vg-chip-color", primaryMarkerTag.color);
             }
             markerEl.appendChild(markerBadge);
           }
@@ -4306,10 +4809,10 @@ export class TaskGanttView extends ItemView {
     );
     if (primaryBadgeTag !== undefined) {
       const badge = document.createElement("span");
-      badge.classList.add("task-gantt-label-badge");
+      badge.classList.add("task-gantt-label-badge", "vg-chip", "is-tag");
       badge.textContent = primaryBadgeTag.name;
       if (primaryBadgeTag.color) {
-        badge.style.color = primaryBadgeTag.color;
+        setStyleVar(badge, "--vg-chip-color", primaryBadgeTag.color);
       }
       label.appendChild(badge);
     }
@@ -4401,6 +4904,7 @@ export class TaskGanttView extends ItemView {
           // put.
           this.wrapEl.scrollLeft += RANGE_EXTEND_DAYS * this.dayWidth;
           this.isExtendingRange = false;
+          this.updateFloatingMonth();
         });
       });
     } else if (
@@ -4414,6 +4918,7 @@ export class TaskGanttView extends ItemView {
       requestAnimationFrame(() => {
         this.renderChart();
         this.isExtendingRange = false;
+        this.updateFloatingMonth();
       });
     }
 
@@ -4429,7 +4934,7 @@ export class TaskGanttView extends ItemView {
   private updateFloatingMonth(): void {
     const startDate = this.getVisibleStartDate();
     const month = moment(startDate, "YYYY-MM-DD").format("YYYY年M月");
-    if (month === this.lastFloatingMonth) {
+    if (month === this.lastFloatingMonth && this.floatingMonthEl.textContent === month) {
       return;
     }
     this.lastFloatingMonth = month;
@@ -4776,16 +5281,16 @@ export class TaskGanttView extends ItemView {
       if (!movedPastThreshold) {
         return;
       }
-      // NOT snapped during the drag — the raw
-      // (un-snapped) range is shown; only the confirm step snaps.
+      // Move dates use the same business-day calculation as the saved patch.
       const dayDelta = pixelDeltaToDayDelta(dxPx, dayWidth);
       let tooltipText: string;
       if (kind === "move") {
-        // duration preserved in the preview.
-        tooltipText = formatDragRangeTooltip(
-          addDays(originalStart, dayDelta),
-          addDays(originalEnd, dayDelta)
+        const { nextStart, nextEnd } = moveBarByCalendarDelta(
+          { start: originalStart, end: originalEnd },
+          dayDelta,
+          holidaySet
         );
+        tooltipText = formatDragRangeTooltip(nextStart, nextEnd);
       } else if (kind === "resize-start") {
         // end stays fixed in the preview.
         tooltipText = formatDragRangeTooltip(
@@ -4902,6 +5407,11 @@ export class TaskGanttView extends ItemView {
         plannedStartDate: nextStart,
         plannedEndDate: nextEnd, //  no inversion check needed for move
         ganttMarkers: shiftedMarkers,
+        workloadPlan: shiftWorkloadMap(task.workloadPlan, dayDelta, {
+          oldStart: originalStart,
+          newStart: nextStart,
+          holidaySet,
+        }),
       };
     } else if (kind === "resize-start") {
 
@@ -5606,7 +6116,11 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${parent.file.path}: ${err.message}`
+          : err instanceof SubtaskAddConflictError
+            ? err.message
+            : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();
@@ -5739,8 +6253,13 @@ export class TaskGanttView extends ItemView {
         return;
       }
       const dayDelta = pixelDeltaToDayDelta(dxPx, dayWidth);
+      const { nextStart } = moveBarByCalendarDelta(
+        { start: anchorStart, end: anchor?.plannedEndDate ?? anchorStart },
+        dayDelta,
+        this.holidaySet
+      );
       this.showDragTooltip(
-        formatBulkMoveDragTooltip(anchorStart, addDays(anchorStart, dayDelta)),
+        formatBulkMoveDragTooltip(anchorStart, nextStart),
         moveEvt.clientX,
         moveEvt.clientY
       );
@@ -5786,7 +6305,7 @@ export class TaskGanttView extends ItemView {
     // ONE combined warning for the whole group, not per task.
     if (targets.some(hasWorkloadActual)) {
       const proceed = await this.host.confirmWorkloadShift(
-        "この一括移動により作業記録がずれます。移動を実行しますか？"
+        "予定日と計画時間を一括移動します。実績時間の日付は変更しません。実行しますか？"
       );
       if (!proceed) {
         return; // analog: nothing saved, screen unchanged
@@ -5794,12 +6313,17 @@ export class TaskGanttView extends ItemView {
     }
 
 
-    // each target's own oldStart/newStart pair drives its own business-day
-    // offset re-basing (falls back to the plain calendar-day
-    // shiftDays whenever a target's plannedStartDate is missing/invalid).
+    // Preserve each task's working-day duration, just as for a single bar move.
     const commands: TaskUpdateCommand[] = targets.map((task) => {
-      const newStart = addDays(task.plannedStartDate ?? "", shiftDays);
-      const newEnd = addDays(task.plannedEndDate ?? "", shiftDays);
+      const { nextStart: newStart, nextEnd: newEnd, shiftedMarkers } = moveBarByCalendarDelta(
+        {
+          start: task.plannedStartDate ?? "",
+          end: task.plannedEndDate ?? "",
+          markers: task.ganttMarkers,
+        },
+        shiftDays,
+        this.holidaySet
+      );
       const workingDayCalendar = {
         oldStart: task.plannedStartDate,
         newStart,
@@ -5811,22 +6335,9 @@ export class TaskGanttView extends ItemView {
           plannedStartDate: newStart,
           plannedEndDate: newEnd,
 
-          // every caller — Bulk-Move's own start/end shift stays a uniform
-
-          // markers now relocate via the corrected snap/relative-position/
-          // clamp algorithm instead of a blind uniform shift.
-          ganttMarkers: shiftMarkers(task.ganttMarkers, shiftDays, this.holidaySet, {
-            oldStart: task.plannedStartDate ?? "",
-            newStart,
-            newEnd,
-          }),
+          ganttMarkers: shiftedMarkers,
           workloadPlan: shiftWorkloadMap(
             task.workloadPlan,
-            shiftDays,
-            workingDayCalendar
-          ),
-          workloadActual: shiftWorkloadMap(
-            task.workloadActual,
             shiftDays,
             workingDayCalendar
           ),
@@ -5849,7 +6360,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? err.message
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render(); // analog
@@ -5900,7 +6413,7 @@ export class TaskGanttView extends ItemView {
     evt: MouseEvent
   ): void {
     const el = document.createElement("div");
-    el.classList.add("task-gantt-rich-popover");
+    el.classList.add("task-gantt-rich-popover", "vg-surface", "vg-popover");
     if (anchor.kind === "subtask") {
       el.classList.add("is-subtask");
       this.buildSubtaskPopoverContent(
@@ -6086,14 +6599,22 @@ export class TaskGanttView extends ItemView {
     try {
       const anchorRect = anchor.getBoundingClientRect();
       const width = this.richPopoverWidth();
-      const measured = el.offsetHeight;
+      const viewportWidth = Number(window.innerWidth) || 0;
+      const viewportHeight = Number(window.innerHeight) || 0;
+      // Measure the final layout, including wrapping and the scroll limit.
+      el.style.width = `${width}px`;
+      el.style.maxHeight = `${Math.max(
+        120,
+        viewportHeight - RICH_POPOVER_VIEWPORT_MARGIN_PX * 2
+      )}px`;
+      el.style.overflowY = "auto";
+      // offsetHeight rounds to an integer and can undercount the border box.
+      const measured = el.getBoundingClientRect().height;
       // Use the measured content height with a minimum of 180px.
       const height = Math.max(
         RICH_POPOVER_MIN_HEIGHT_PX,
         typeof measured === "number" ? measured : 0
       );
-      const viewportWidth = Number(window.innerWidth) || 0;
-      const viewportHeight = Number(window.innerHeight) || 0;
       const pos: RichPopoverPosition = el.classList.contains("is-parent")
         ? this.computeParentRichPopoverPosition(
             anchorRect,
@@ -6115,13 +6636,6 @@ export class TaskGanttView extends ItemView {
           );
       el.style.left = `${pos.left}px`;
       el.style.top = `${pos.top}px`;
-      el.style.width = `${width}px`;
-      // Clamp the maximum height to the viewport and allow scrolling.
-      el.style.maxHeight = `${Math.max(
-        120,
-        viewportHeight - RICH_POPOVER_VIEWPORT_MARGIN_PX * 2
-      )}px`;
-      el.style.overflowY = "auto";
       el.setAttribute("data-side", pos.side);
     } catch (err) {
       // positioning is best-effort and must never throw.
@@ -6294,7 +6808,7 @@ export class TaskGanttView extends ItemView {
     persist: () => Promise<void>
   ): void {
     const el = document.createElement("div");
-    el.classList.add("task-gantt-workload-popover");
+    el.classList.add("task-gantt-workload-popover", "vg-surface", "vg-popover");
     el.style.boxSizing = "border-box";
 
     const header = document.createElement("div");
@@ -6349,13 +6863,11 @@ export class TaskGanttView extends ItemView {
 
     const graphScroll = document.createElement("div");
     graphScroll.classList.add("task-gantt-workload-popover-graph-scroll");
-    graphScroll.style.overflowX = "auto";
     const graph = document.createElement("div");
     graph.classList.add(
       "task-gantt-workload-graph",
       "task-gantt-workload-popover-graph"
     );
-    graph.style.position = "relative";
     graph.style.height = `${WORKLOAD_POPOVER_GRAPH_HEIGHT_PX}px`;
     graph.style.width = `${Math.max(
       this.dayWidth,
@@ -6385,7 +6897,6 @@ export class TaskGanttView extends ItemView {
         cell.classList.add("is-non-working");
       }
       cell.setAttribute("data-date", date);
-      cell.style.position = "absolute";
       cell.style.left = `${index * this.dayWidth}px`;
       cell.style.width = `${this.dayWidth}px`;
       cell.style.height = `${WORKLOAD_POPOVER_GRAPH_HEIGHT_PX}px`;
@@ -7001,6 +7512,9 @@ export class TaskGanttView extends ItemView {
         "failed to save workload paint",
         err
       );
+      if (err instanceof NotePreservationError) {
+        new Notice(`${task.file.path}: ${err.message}`);
+      }
 
     }
 
@@ -7080,7 +7594,7 @@ export class TaskGanttView extends ItemView {
  */
   private buildStatusSelect(task: TaskRow): HTMLElement {
     const select = document.createElement("select");
-    select.classList.add("task-gantt-popover-status-select");
+    select.classList.add("task-gantt-popover-status-select", "vg-input-sm");
     this.bindRichPopoverInteraction(select);
     for (const key of Object.keys(DEFAULT_STATUSES) as StatusLabel[]) {
       const option = document.createElement("option");
@@ -7117,7 +7631,7 @@ export class TaskGanttView extends ItemView {
 
   private buildCurrentStatusArea(task: TaskRow): HTMLElement {
     const area = document.createElement("textarea");
-    area.classList.add("task-gantt-popover-current-status");
+    area.classList.add("task-gantt-popover-current-status", "vg-input-sm");
     area.value = task.currentStatus ?? "";
     this.bindRichPopoverInteraction(area);
 
@@ -7247,7 +7761,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(chips);
 
     const statusChip = document.createElement("span");
-    statusChip.classList.add("task-gantt-popover-status-chip");
+    statusChip.classList.add("task-gantt-popover-status-chip", "vg-chip");
     // Single source of truth for both the class and the text: `completed`
     // and `statusLabel` are two separate frontmatter fields that CAN
     // disagree on hand-edited/stale data (only save-time normalization
@@ -7275,7 +7789,7 @@ export class TaskGanttView extends ItemView {
     // exists to mirror (the Workbench renders all five stars always).
     if (task.priority > 0) {
       const priorityChip = document.createElement("span");
-      priorityChip.classList.add("task-gantt-popover-priority-chip");
+      priorityChip.classList.add("task-gantt-popover-priority-chip", "vg-chip");
       priorityChip.textContent = `P${task.priority}`;
       chips.appendChild(priorityChip);
     }
@@ -7328,8 +7842,8 @@ export class TaskGanttView extends ItemView {
         "タグ"
       );
       const value = document.createElement("span");
-      value.classList.add("task-gantt-popover-value");
-      value.textContent = task.tags.join(" ");
+      value.classList.add("task-gantt-popover-value", "task-gantt-popover-tag-chips");
+      appendTagChips(value, task.tags, this.host.settings);
       tagsField.appendChild(value);
     }
 
@@ -7377,7 +7891,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(chips);
 
     const statusChip = document.createElement("span");
-    statusChip.classList.add("task-gantt-popover-status-chip");
+    statusChip.classList.add("task-gantt-popover-status-chip", "vg-chip");
     // See the subtask popover's identical effectiveStatus comment above:
     // completed/statusLabel can disagree on hand-edited data, so both the
     // class and the text derive from the same value.
@@ -7403,7 +7917,7 @@ export class TaskGanttView extends ItemView {
     );
     const dueInput = document.createElement("input");
     dueInput.type = "date";
-    dueInput.classList.add("task-gantt-popover-due-input");
+    dueInput.classList.add("task-gantt-popover-due-input", "vg-input-sm");
     dueInput.value = parent.dueDate ?? "";
     this.bindRichPopoverInteraction(dueInput);
     dueInput.addEventListener("change", () => {
@@ -7478,7 +7992,10 @@ export class TaskGanttView extends ItemView {
         "failed to save popover change",
         err
       );
-      // Log the failure without showing a Notice.
+      if (err instanceof NotePreservationError) {
+        new Notice(`${task.file.path}: ${err.message}`);
+      }
+      // Other save failures are logged without a Notice.
 
     }
     try {
@@ -7494,7 +8011,7 @@ export class TaskGanttView extends ItemView {
  *
  * Saves Current Status separately from saveTaskPatch and savePopoverPatch.
  * It writes only when the trimmed value changes. On failure, it logs to the
- * console without showing a Notice and restores the in-memory value while
+ * console and shows preservation errors in a Notice. It restores the in-memory value while
  * leaving the user's text visible in the textarea. It does not render,
  * because a mid-typing render would tear down the popover.
  */
@@ -7517,6 +8034,9 @@ export class TaskGanttView extends ItemView {
         "failed to save current status",
         err
       );
+      if (err instanceof NotePreservationError) {
+        new Notice(`${task.file.path}: ${err.message}`);
+      }
 
       task.currentStatus = previous; // Roll back the in-memory value.
       // Leave area.value unchanged so the displayed text stays in place.
@@ -7557,7 +8077,7 @@ export class TaskGanttView extends ItemView {
   ): Promise<void> {
     if (options.checkWorkload && hasWorkloadActual(task)) {
       const proceed = await this.host.confirmWorkloadShift(
-        "この移動により作業記録がずれます。実行しますか？"
+        "予定日と計画時間を移動します。実績時間の日付は変更しません。実行しますか？"
       );
       if (!proceed) {
         return; // no save, no re-render
@@ -7575,7 +8095,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${task.file.path}: ${err.message}`
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       ); // file-write failure surfaces as an in-view warning
     }
     // render either way; the tooltip/is-dragging/
@@ -8408,7 +8930,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${task.file.path}: ${err.message}`
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();
@@ -8427,7 +8951,7 @@ export class TaskGanttView extends ItemView {
   private async deleteSubtaskInteractively(task: TaskRow): Promise<void> {
     const name = task.displayName || task.title || "サブタスク";
     const confirmed = window.confirm(
-      `サブタスク『${name}』をタスクとして削除します。元に戻せません。`
+      `サブタスク『${name}』をタスクとして削除します。`
     );
     if (!confirmed) {
       return;
@@ -8444,7 +8968,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${task.file.path}: ${err.message}`
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();

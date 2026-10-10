@@ -3,7 +3,7 @@ import type { App, Vault, Workspace } from "obsidian";
 
 import type { Logger } from "../core/logger";
 
-import type { HistoryManager } from "./history-manager";
+import type { HistoryFileChange, HistoryManager } from "./history-manager";
 import {
   createDailyTodoFile,
   ensureParentFolderExists,
@@ -460,6 +460,22 @@ function formatDailyTodoLine(completed: boolean, text: string): string {
 }
 
 /**
+ * True when `rawLine` is still the checkbox line `item` was read from. The
+ * popover edits one line at a time from a cached model, so a line shifted by
+ * an outside edit must not be overwritten or deleted by mistake.
+ */
+function lineStillMatchesItem(rawLine: string, item: DailyTodoItem): boolean {
+  const match = rawLine.replace(/\r$/, "").match(CHECKBOX_PATTERN);
+  if (!match) {
+    return false;
+  }
+  const [, marker, text] = match;
+  return (
+    text === item.text && (marker === "x" || marker === "X") === item.completed
+  );
+}
+
+/**
  *
  * Rewrites one checkbox line in place. `patch.text`/`patch.completed` are
  * optional — an omitted field falls back to `item`'s current value (a
@@ -490,7 +506,7 @@ export async function updateDailyTodoItem(
 
   const content = await vault.read(file);
   const lines = content.split("\n");
-  if (item.line >= lines.length) {
+  if (item.line >= lines.length || !lineStillMatchesItem(lines[item.line], item)) {
     return false;
   }
 
@@ -499,10 +515,17 @@ export async function updateDailyTodoItem(
     return false;
   }
   const nextCompleted = patch.completed ?? item.completed;
+  if (nextText.trim() === item.text.trim() && nextCompleted === item.completed) {
+    return true;
+  }
 
   lines[item.line] = formatDailyTodoLine(nextCompleted, nextText);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo更新",
+    files: [{ path: file.path, before: content, after }],
+  });
 
   // sync the caller's in-memory item on success.
   item.text = nextText;
@@ -532,50 +555,65 @@ export async function deleteDailyTodoItem(
 
   const content = await vault.read(file);
   const lines = content.split("\n");
-  if (item.line >= lines.length) {
+  if (item.line >= lines.length || !lineStillMatchesItem(lines[item.line], item)) {
     return false;
   }
 
   lines.splice(item.line, 1);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo削除",
+    files: [{ path: file.path, before: content, after }],
+  });
   return true;
 }
 
-// level-2 "## ToDoリスト" heading only — "#"/"###" etc. don't count.
-const TODO_HEADING_PATTERN = /^##\s+ToDoリスト\s*$/;
-// any heading (level 1-6) that would close the ToDo section.
-const ANY_HEADING_PATTERN = /^#{1,6}\s+/;
+// Recognize the built-in heading and common daily-note template headings.
+const TODO_HEADING_PATTERN = /^(?:今日の\s*)?to\s*do(?:リスト)?$/i;
+const ANY_HEADING_PATTERN = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
 
-/**
- *
- * Finds where newly-inserted ToDo lines should land: right before the next
- * heading after "## ToDoリスト" (or EOF if that section runs to the end of
- * the file), or EOF outright when no such heading exists at all.
- */
-export function getDailyTodoInsertIndex(lines: string[]): number {
-  const headingIndex = lines.findIndex((line) =>
-    TODO_HEADING_PATTERN.test(line)
-  );
-  if (headingIndex === -1) {
-    return lines.length;
-  }
+/** Finds the end of the ToDo section, or EOF when its heading is absent. */
+export function getDailyTodoInsertIndex(
+  lines: string[],
+  todoHeading?: string
+): number {
+  const configuredHeading = todoHeading?.trim().replace(/^#{1,6}\s+/, "")
+    .replace(/\s+#+$/, "").trim();
+  let headingLevel = 0;
+  const headingIndex = lines.findIndex((line) => {
+    const match = line.match(ANY_HEADING_PATTERN);
+    if (!match) return false;
+    const matches = configuredHeading
+      ? match[2] === configuredHeading
+      : TODO_HEADING_PATTERN.test(match[2]);
+    if (matches) headingLevel = match[1].length;
+    return matches;
+  });
+  if (headingIndex === -1) return lines.length;
 
   for (let i = headingIndex + 1; i < lines.length; i += 1) {
-    if (ANY_HEADING_PATTERN.test(lines[i])) {
-      return i;
-    }
+    const match = lines[i].match(ANY_HEADING_PATTERN);
+    if (match && match[1].length <= headingLevel) return i;
   }
   return lines.length;
 }
 
+function getDailyTodoTargetSource(
+  settings: TaskWorkbenchSettings
+): DailyTodoSourceConfig | undefined {
+  return getDailyTodoSources(settings).find(
+    (candidate) => candidate.key === (settings.dailyTodoTargetSourceKey ?? "main")
+  );
+}
+
 /**
  *
- * Appends `items` into the given date's main daily note, inside its
- * "## ToDoリスト" section (or at EOF if that section/heading is absent).
+ * Appends `items` into the given date's selected daily note, inside its
+ * ToDo section (or at EOF if that section/heading is absent).
  * Items whose text is empty/whitespace-only are dropped; if that
  * leaves nothing to insert, this returns false without touching the file.
- * A missing creatable main file is created by requireMainDailyTodoFile.
+ * A missing creatable target file is created by requireMainDailyTodoFile.
  */
 
 export async function insertDailyTodoItems(
@@ -584,6 +622,18 @@ export async function insertDailyTodoItems(
   app: App,
   settings: TaskWorkbenchSettings,
   historyManager?: HistoryManager
+): Promise<boolean> {
+  return insertDailyTodoItemsWithHistory(dateStr, items, app, settings, (change) => {
+    historyManager?.push({ label: "Daily ToDo追加", files: [change] });
+  });
+}
+
+async function insertDailyTodoItemsWithHistory(
+  dateStr: string,
+  items: DailyTodoItem[],
+  app: App,
+  settings: TaskWorkbenchSettings,
+  record: (change: HistoryFileChange) => void
 ): Promise<boolean> {
   const vault = app.vault;
   const file = await requireMainDailyTodoFile(dateStr, app, settings);
@@ -600,29 +650,74 @@ export async function insertDailyTodoItems(
 
   const content = await vault.read(file);
   const lines = content === "" ? [] : content.split("\n");
-  const insertIndex = getDailyTodoInsertIndex(lines);
+  const insertIndex = getDailyTodoInsertIndex(
+    lines, getDailyTodoTargetSource(settings)?.todoHeading
+  );
   lines.splice(insertIndex, 0, ...newLines);
-  await vault.modify(file, lines.join("\n"));
-  historyManager?.clear();
+  const after = lines.join("\n");
+  await vault.modify(file, after);
+  record({ path: file.path, before: content, after });
   return true;
 }
 
 
 
 /**
- * the main daily note file for `dateStr`, or null when it
- * doesn't exist yet. Meeting notes are never a target here — only "main"
- * daily notes are ever created/appended from the Gantt/DailyToDo UI
- * The meeting-note source is not creatable from the Gantt view.
+ * Appends one ToDo to the date's selected daily note (same placement as
+ * insertDailyTodoItems) and returns it with its real path and line, so the
+ * caller can keep editing that exact line. Returns null when the text is
+ * empty or the selected note is unavailable. The write is recorded as an undo
+ * entry.
+ */
+export async function addDailyTodoItem(
+  dateStr: string,
+  text: string,
+  completed: boolean,
+  app: App,
+  settings: TaskWorkbenchSettings,
+  historyManager?: HistoryManager
+): Promise<DailyTodoItem | null> {
+  if (text.trim() === "") {
+    return null;
+  }
+  const file = await requireMainDailyTodoFile(dateStr, app, settings);
+  if (!file) {
+    return null;
+  }
+  const content = await app.vault.read(file);
+  const lines = content === "" ? [] : content.split("\n");
+  const insertIndex = getDailyTodoInsertIndex(
+    lines, getDailyTodoTargetSource(settings)?.todoHeading
+  );
+  lines.splice(insertIndex, 0, formatDailyTodoLine(completed, text));
+  const after = lines.join("\n");
+  await app.vault.modify(file, after);
+  historyManager?.push({
+    label: "Daily ToDo追加",
+    files: [{ path: file.path, before: content, after }],
+  });
+  const source = getDailyTodoTargetSource(settings);
+  return {
+    sourceKey: source?.key ?? "",
+    sourceLabel: source?.label ?? "",
+    path: file.path,
+    line: insertIndex,
+    text,
+    completed,
+    isNew: false,
+  };
+}
+
+/**
+ * Resolves the selected target's file for `dateStr`, or null if absent.
+ * The historical function name is retained for existing callers.
  */
 export function getMainDailyTodoFile(
   dateStr: string,
   app: App,
   settings: TaskWorkbenchSettings
 ): TFile | null {
-  const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
-  );
+  const source = getDailyTodoTargetSource(settings);
   if (!source) {
     return null;
   }
@@ -633,30 +728,26 @@ export function getMainDailyTodoFile(
 
 /**
  *
- * Resolves or auto-creates the configured main source; non-creatable sources
- * retain the Notice-and-null behavior.
- * A missing creatable file is created through createDailyTodoFile; a missing
- * or non-creatable main source receives the Notice-and-null response so
- * every write path has an explicit user-visible outcome.
+ * Resolves or auto-creates the selected target. Existing notes can be
+ * appended to regardless of creation permission. Missing targets require
+ * an explicit selection; missing files require creation permission.
  */
 export async function requireMainDailyTodoFile(
   dateStr: string,
   app: App,
   settings: TaskWorkbenchSettings
 ): Promise<TFile | null> {
-  const source = getDailyTodoSources(settings).find(
-    (candidate) => candidate.key === "main"
-  );
-  const path = source
-    ? getDailyTodoPathForDate(dateStr, source.key, settings)
-    : "";
-  const file = source
-    ? getMainDailyTodoFile(dateStr, app, settings)
-    : null;
+  const source = getDailyTodoTargetSource(settings);
+  if (!source) {
+    new Notice("設定で「新規ToDoの追加先」を選んでください。");
+    return null;
+  }
+  const path = getDailyTodoPathForDate(dateStr, source.key, settings);
+  const file = getMainDailyTodoFile(dateStr, app, settings);
   if (file) {
     return file;
   }
-  if (!source || !source.creatableFromGantt) {
+  if (!source.creatableFromGantt) {
     new Notice(
       `デイリーノートがまだありません: ${path}。Templater等で先に作成してから追加してください。`
     );
@@ -668,8 +759,8 @@ export async function requireMainDailyTodoFile(
 /**
  *
  * "新しいタスク" quick-add: inserts one placeholder item into the given
- * date's main daily note and, only on success, invokes onDone (e.g. to
- * refresh a caller's view). A missing or non-creatable main source causes
+ * date's selected daily note and, only on success, invokes onDone (e.g. to
+ * refresh a caller's view). A missing target or non-creatable missing file causes
  * insertDailyTodoItems to return false after its Notice, so this simply
  * stops without calling onDone in that case.
  */
@@ -718,7 +809,10 @@ export async function openDailyTodoFile(
   if (!(file instanceof TFile)) {
     return;
   }
-  await workspace.getLeaf().openFile(file);
+  // eState.line scrolls the opened note to the ToDo's line.
+  await workspace
+    .getLeaf()
+    .openFile(file, item.line >= 0 ? { eState: { line: item.line } } : undefined);
 }
 
 
@@ -807,50 +901,62 @@ export async function updateDailyTodos(
     }
   }
 
-  for (const [path, originals] of byPath) {
-    const file = vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) {
-      continue;
-    }
+  const changes = new Map<string, HistoryFileChange>();
+  const record = (change: HistoryFileChange): void => {
+    const previous = changes.get(change.path);
+    changes.set(change.path, { ...change, before: previous?.before ?? change.before });
+  };
 
-    const content = await vault.read(file);
-    const lines = content.split("\n");
-
-    // descending line-number order.
-    const sorted = [...originals].sort((a, b) => b.line - a.line);
-
-    let changed = false;
-    for (const original of sorted) {
-      if (original.line >= lines.length) {
+  try {
+    for (const [path, originals] of byPath) {
+      const file = vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) {
         continue;
       }
-      const match = matchByKey.get(`${original.path}::${original.line}`);
-      if (!match) {
-        continue;
+
+      const content = await vault.read(file);
+      const lines = content.split("\n");
+
+      // descending line-number order.
+      const sorted = [...originals].sort((a, b) => b.line - a.line);
+
+      let changed = false;
+      for (const original of sorted) {
+        if (original.line >= lines.length) {
+          continue;
+        }
+        const match = matchByKey.get(`${original.path}::${original.line}`);
+        if (!match) {
+          continue;
+        }
+        // skip (leave the line untouched) when the matched
+        // next-item's text is empty.
+        if (!match.text || match.text.trim() === "") {
+          continue;
+        }
+        lines[original.line] = formatDailyTodoLine(match.completed, match.text);
+        changed = true;
       }
-      // skip (leave the line untouched) when the matched
-      // next-item's text is empty.
-      if (!match.text || match.text.trim() === "") {
-        continue;
+
+      if (changed) {
+        const after = lines.join("\n");
+        await vault.modify(file, after);
+        record({ path: file.path, before: content, after });
       }
-      lines[original.line] = formatDailyTodoLine(match.completed, match.text);
-      changed = true;
     }
 
-    if (changed) {
-      await vault.modify(file, lines.join("\n"));
-      historyManager?.clear();
+    // insert the unmatched new items.
+    if (newItems.length > 0) {
+      await insertDailyTodoItemsWithHistory(
+        summary.date,
+        newItems,
+        app,
+        settings,
+        record
+      );
     }
-  }
-
-  // insert the unmatched new items.
-  if (newItems.length > 0) {
-    await insertDailyTodoItems(
-      summary.date,
-      newItems,
-      app,
-      settings,
-      historyManager
-    );
+  } finally {
+    // Keep completed writes undoable even if a later file failed to save.
+    historyManager?.push({ label: "Daily ToDo保存", files: [...changes.values()] });
   }
 }

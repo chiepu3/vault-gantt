@@ -1,7 +1,11 @@
+import * as McpModule from "../src/mcp/server";
+import { AI_SECRET_ID } from "../src/ai/connection-settings";
+import { VIEW_TYPE_AI_APPROVAL } from "../src/ui/approval-view";
+import { VIEW_TYPE_AI_CHAT } from "../src/ui/agent-view";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Mock } from "vitest";
-import { Modal, Notice, PluginSettingTab, requestUrl, TFile } from "obsidian";
+import { Modal, Notice, PluginSettingTab, requestUrl, TFile, Platform } from "obsidian";
 import TaskWorkbenchPlugin, {
   VIEW_TYPE_TASK_WORKBENCH,
   VIEW_TYPE_TASK_GANTT,
@@ -91,6 +95,7 @@ function createHarness(storedData: unknown = undefined): Harness {
 
   const workspace = {
     detachLeavesOfType: vi.fn(),
+    revealLeaf: vi.fn(async () => undefined),
     getActiveFile: vi.fn(() => null),
     getLeaf: vi.fn(),
     getLeavesOfType: vi.fn(() => []),
@@ -196,9 +201,11 @@ function createHarness(storedData: unknown = undefined): Harness {
       processors.set(lang, handler);
     }
   );
-  (plugin as any).loadData = vi.fn(async () => storedData);
+  let persistedData = storedData;
+  (plugin as any).loadData = vi.fn(async () => persistedData);
   (plugin as any).saveData = vi.fn(async (data: any) => {
     savedData.push(data);
+    persistedData = structuredClone(data);
   });
 
   return {
@@ -256,6 +263,57 @@ describe("TaskWorkbenchPlugin", () => {
     vi.useRealTimers();
   });
 
+  describe("P3 hosts and MCP lifecycle", () => {
+    it("passes shared ports to each view and registers actual view state for the approval list", async () => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      await h.plugin.onload();
+      for (const type of [VIEW_TYPE_TASK_WORKBENCH, VIEW_TYPE_TASK_GANTT, VIEW_TYPE_AI_CHAT, VIEW_TYPE_AI_APPROVAL]) {
+        const view = h.views.get(type)!({});
+        const ports = type === VIEW_TYPE_AI_CHAT ? (view as any).host.previewPorts : (view as any).host;
+        expect(ports.operationService).toBe(h.plugin.operationService);
+        expect(ports.previewPort).toBe(h.plugin.previewPort); expect(ports.projectionDetailPort).toBe(h.plugin.previewPort);
+        expect(ports.humanApprovalPort).toBe(h.plugin.humanApprovalPort); expect(ports.historyPort).toBe(h.plugin.historyPort);
+        expect(ports.uiPort).toBe(h.plugin.uiPort); expect(ports.undoPort.undoEntry).toBeTypeOf("function");
+        if (type === VIEW_TYPE_AI_APPROVAL) {
+          await (view as any).onOpen(); expect(h.plugin.uiPort.inspectView(ports.viewId)?.kind).toBe("approval");
+          await (view as any).onClose(); expect(h.plugin.uiPort.inspectView(ports.viewId)).toBeUndefined();
+        }
+      }
+      h.plugin.onunload();
+    });
+    it("starts MCP only when enabled, persists secret references, rotates tokens and stops on unload", async () => {
+      const stop = vi.fn(async () => undefined), regenerateToken = vi.fn(async () => "b".repeat(43));
+      const handle = { running: true, endpoint: "http://127.0.0.1:8788/mcp", sessionToken: "a".repeat(43), stop, regenerateToken };
+      const start = vi.spyOn(McpModule, "startMcpServer").mockResolvedValue(handle);
+      const secrets = new Map<string, string>();
+      const h = createHarness({ autoPriorityEnabled: false, mcp: { ...McpModule.DEFAULT_MCP_SETTINGS, enabled: true } });
+      (h.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, token: string) => secrets.set(id, token) };
+      await h.plugin.onload(); expect(start).toHaveBeenCalledTimes(1);
+      expect(start.mock.calls[0][0]).toMatchObject({ operations: h.plugin.operationService, previews: h.plugin.previewPort, context: h.plugin.contextReadPort, history: h.plugin.historyPort, isDesktop: true });
+      expect(secrets.get(h.plugin.settings.mcp!.secretId!)).toBe("a".repeat(43));
+      expect(JSON.stringify(h.savedData)).not.toContain("a".repeat(43));
+      await h.plugin.generateMcpToken(true); expect(regenerateToken).toHaveBeenCalledTimes(1);
+      expect(secrets.get(h.plugin.settings.mcp!.secretId!)).toBe("b".repeat(43));
+      h.plugin.onunload(); await (h.plugin as any).mcpTail; expect(stop).toHaveBeenCalledTimes(1);
+    });
+    it("keeps MCP disabled on mobile and closes a late-starting server after unload", async () => {
+      const start = vi.spyOn(McpModule, "startMcpServer");
+      const platform = Platform as { isDesktopApp: boolean }; platform.isDesktopApp = false;
+      const mobile = createHarness({ autoPriorityEnabled: false, mcp: { ...McpModule.DEFAULT_MCP_SETTINGS, enabled: true } });
+      try { await mobile.plugin.onload(); expect(start).not.toHaveBeenCalled(); mobile.plugin.onunload(); }
+      finally { platform.isDesktopApp = true; }
+      let resolve!: (handle: McpModule.McpServerHandle) => void;
+      start.mockImplementation(() => new Promise((done) => { resolve = done; }));
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      h.plugin.settings.mcp = { ...McpModule.DEFAULT_MCP_SETTINGS, enabled: true };
+      const starting = h.plugin.configureMcp();
+      while (!resolve) await Promise.resolve();
+      h.plugin.onunload(); const stop = vi.fn(async () => undefined);
+      resolve({ running: true, endpoint: "http://127.0.0.1:8788/mcp", sessionToken: null, stop, regenerateToken: async () => "unused" });
+      await starting; await (h.plugin as any).mcpTail; expect(stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("onload: settings", () => {
     it("loads once and merges stored data over defaults", async () => {
       const h = createHarness({
@@ -297,8 +355,203 @@ describe("TaskWorkbenchPlugin", () => {
       await h.plugin.saveSettings();
 
       expect(h.savedData).toHaveLength(1);
-      expect(h.savedData[0]).toBe(h.plugin.settings);
+      expect(h.savedData[0]).toEqual({ ...h.plugin.settings, ai: h.plugin.aiSettings });
       expect(h.savedData[0].taskFolder).toBe("changed");
+    });
+    it("keeps the AI connection outside settings and the API key out of data.json when secret storage exists", async () => {
+      const secrets = new Map<string, string>();
+      const h = createHarness({ autoPriorityEnabled: false, ai: { preset: "local", baseUrl: "http://localhost:1234/v1", model: "m", useApiKey: false } });
+      (h.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, v: string) => secrets.set(id, v) };
+      await h.plugin.onload();
+      expect("ai" in h.plugin.settings).toBe(false);
+      expect(h.plugin.chatSession.config).toMatchObject({ provider: "openai-compatible", endpoint: "http://localhost:1234/v1", model: "m", auth: "none" });
+      await h.plugin.updateAiSettings({ useApiKey: true });
+      await h.plugin.setAiApiKey("sk-synthetic-secret");
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(secrets.get(AI_SECRET_ID)).toBe("sk-synthetic-secret");
+      expect(JSON.stringify(h.savedData)).not.toContain("sk-synthetic-secret");
+      expect(JSON.stringify(h.plugin.getAiSettings())).not.toContain("sk-synthetic-secret");
+      expect(JSON.stringify(h.plugin.chatSession.config)).not.toContain("sk-synthetic-secret");
+      expect(h.plugin.chatSession.connected).toBe(true);
+      await h.plugin.clearAiApiKey();
+      expect(h.plugin.hasAiApiKey()).toBe(false); expect(h.plugin.chatSession.connected).toBe(false);
+      h.plugin.onunload();
+    });
+    it.each(["secret", "data"] as const)("binds a saved key to its origin and blocks model/chat requests to another origin (%s)", async (storage) => {
+      const h = createHarness({ autoPriorityEnabled: false, ai: { model: "test-model" } });
+      const secrets = new Map<string, string>();
+      if (storage === "secret") h.fakeApp.secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, value: string) => secrets.set(id, value) };
+      await h.plugin.onload();
+      await h.plugin.setAiApiKey("sk-synthetic-original");
+      expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe("https://openrouter.ai");
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ data: [{ id: "test-model" }] })));
+      vi.stubGlobal("fetch", fetchMock);
+      await h.plugin.updateAiSettings({ preset: "custom" });
+      await h.plugin.updateAiSettings({ baseUrl: "https://other.example/v1" });
+      const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://openrouter.ai");
+      expect((h.plugin as any).readAiApiKey("https://openrouter.ai/api/v1")).toBeNull();
+      expect(await h.plugin.fetchAiModels()).toEqual({ ok: false, reason });
+      await h.plugin.chatSession.send("テスト");
+      expect(h.plugin.chatSession.active.error).toBe(reason);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(JSON.stringify([h.plugin.chatSession.config, h.plugin.chatSession.active])).not.toContain("sk-synthetic-original");
+
+      await h.plugin.updateAiSettings({ baseUrl: "https://OPENROUTER.ai:443/another/v1" });
+      expect(h.plugin.chatSession.connected).toBe(true);
+      expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+      expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("authorization")).toBe("Bearer sk-synthetic-original");
+      await h.plugin.updateAiSettings({ baseUrl: "https://other.example/v1" });
+      const oldConfig = h.plugin.chatSession.config;
+      await h.plugin.setAiApiKey("sk-synthetic-replacement");
+      expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://other.example");
+      expect(h.plugin.chatSession.config).not.toHaveProperty("connectionError");
+      expect(h.plugin.chatSession.connected).toBe(true);
+      expect((h.plugin as any).readAiApiKey("https://openrouter.ai/api/v1")).toBeNull();
+      expect(oldConfig.connectionError).toBe(reason);
+      expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+      expect(new Headers(fetchMock.mock.calls.at(-1)![1]?.headers).get("authorization")).toBe("Bearer sk-synthetic-replacement");
+
+      await h.plugin.updateAiSettings({ preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false });
+      expect(h.plugin.chatSession.connected).toBe(true);
+      expect((await h.plugin.fetchAiModels()).ok).toBe(true);
+      expect(new Headers(fetchMock.mock.calls.at(-1)![1]?.headers).has("authorization")).toBe(false);
+      await h.plugin.clearAiApiKey();
+      expect((await h.plugin.loadData()).ai).not.toHaveProperty("apiKeyOrigin");
+      h.plugin.onunload();
+    });
+    it.each(["secret", "data"] as const)("persists the current origin for a legacy key once (%s)", async (storage) => {
+      const h = createHarness({ ai: { preset: "custom", baseUrl: "https://legacy.example:8443/v1", ...(storage === "data" ? { apiKey: "sk-synthetic-legacy" } : {}) } });
+      if (storage === "secret") h.fakeApp.secretStorage = { getSecret: () => "sk-synthetic-legacy", setSecret: vi.fn() };
+      await h.plugin.loadSettings();
+      expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://legacy.example:8443");
+      expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe("https://legacy.example:8443");
+      await h.plugin.loadSettings();
+      expect(h.plugin.saveData).toHaveBeenCalledOnce();
+    });
+    it("stores the API key in data.json only without secret storage, and moves it into secret storage later", async () => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      await h.plugin.onload();
+      expect(h.plugin.aiKeyStorage()).toBe("data");
+      await h.plugin.setAiApiKey("sk-synthetic-secret");
+      expect(h.savedData.at(-1).ai.apiKey).toBe("sk-synthetic-secret");
+      expect(h.plugin.getAiSettings()).not.toHaveProperty("apiKey");
+      h.plugin.onunload();
+      const secrets = new Map<string, string>();
+      const next = createHarness(structuredClone(h.savedData.at(-1)));
+      (next.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, v: string) => secrets.set(id, v) };
+      await next.plugin.onload();
+      expect(secrets.get(AI_SECRET_ID)).toBe("sk-synthetic-secret");
+      expect(JSON.stringify(next.savedData.at(-1))).not.toContain("sk-synthetic-secret");
+      next.plugin.onunload();
+    });
+    it.each(["secret-failure", "write-failure", "success"] as const)("migrates a plaintext AI key: %s", async (outcome) => {
+      const key = "sk-synthetic-migration";
+      const h = createHarness({ ai: { apiKey: key } });
+      const secrets = new Map<string, string>();
+      const setSecret = vi.fn((id: string, value: string) => {
+        if (outcome === "secret-failure") throw new Error("secret unavailable");
+        secrets.set(id, value);
+      });
+      h.fakeApp.secretStorage = { setSecret, getSecret: (id: string) => secrets.get(id) ?? null };
+      if (outcome === "write-failure") (h.plugin.saveData as Mock).mockRejectedValueOnce(new Error("write unavailable"));
+
+      await h.plugin.loadSettings();
+
+      expect(setSecret).toHaveBeenCalledWith(AI_SECRET_ID, key);
+      expect(secrets.get(AI_SECRET_ID)).toBe(outcome === "secret-failure" ? undefined : key);
+      expect(h.plugin.aiSettings.apiKey).toBe(outcome === "success" ? undefined : key);
+      expect((await h.plugin.loadData()).ai.apiKey).toBe(outcome === "success" ? undefined : key);
+      expect(h.plugin.aiKeyStorage()).toBe(outcome === "success" ? "secret" : "data");
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(h.plugin.getAiSettings()).not.toHaveProperty("apiKey");
+      if (outcome === "success") expect(NoticeMock).not.toHaveBeenCalled();
+      else {
+        expect(NoticeMock).toHaveBeenCalledWith(outcome === "secret-failure"
+          ? "APIキーを秘密ストレージへ移せませんでした。"
+          : "data.json の平文のAPIキーを削除できませんでした。");
+        expect(h.plugin.saveData).toHaveBeenCalledTimes(outcome === "secret-failure" ? 0 : 1);
+        setSecret.mockImplementation((id, value) => { secrets.set(id, value); });
+        await h.plugin.loadSettings();
+        expect(h.plugin.aiSettings).not.toHaveProperty("apiKey");
+        expect((await h.plugin.loadData()).ai).not.toHaveProperty("apiKey");
+        expect(h.plugin.aiKeyStorage()).toBe("secret");
+      }
+    });
+    it("keeps the plaintext key when migration readback still contains it", async () => {
+      const h = createHarness({ ai: { apiKey: "sk-synthetic-migration" } });
+      h.fakeApp.secretStorage = { setSecret: vi.fn(), getSecret: () => "sk-synthetic-migration" };
+      (h.plugin.saveData as Mock).mockResolvedValue(undefined);
+      await h.plugin.loadSettings();
+      expect(h.plugin.aiSettings.apiKey).toBe("sk-synthetic-migration");
+      expect(h.plugin.aiKeyStorage()).toBe("data");
+      expect(NoticeMock).toHaveBeenCalledWith("data.json の平文のAPIキーを削除できませんでした。");
+    });
+    it("rejects an AI settings save when readback does not match", async () => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      (h.plugin.saveData as Mock).mockResolvedValueOnce(undefined);
+      await expect(h.plugin.updateAiSettings({ model: "new-model" })).rejects.toThrow("SETTINGS_SAVE_CONFLICT");
+    });
+    it.each(["ai-first", "settings-first"])("preserves AI and workbench settings through concurrent saves: %s", async (order) => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      let started!: () => void, release!: () => void;
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const saveWorkbench = () => { h.plugin.settings.taskFolder = "new-folder"; return h.plugin.saveSettings(); };
+      const saveAi = () => h.plugin.updateAiSettings({ model: "new-model" });
+      const first = order === "ai-first" ? saveAi() : saveWorkbench();
+      await writing;
+      const second = order === "ai-first" ? saveWorkbench() : saveAi();
+      expect(save).toHaveBeenCalledTimes(1);
+      release(); await Promise.all([first, second]);
+      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "new-folder", ai: { model: "new-model" } });
+      expect(h.plugin.settings.taskFolder).toBe("new-folder");
+      expect(h.plugin.aiSettings.model).toBe("new-model");
+      expect(h.plugin.settings).not.toHaveProperty("ai");
+    });
+    it("UI persistence shares the approval queue and keeps unrelated settings edited during the AI save", async () => {
+      const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
+      const service = h.plugin.operationService;
+      const preview = await service.propose("S01", { taskFolder: "AI-folder" }, service.legacyContext());
+      let started!: () => void, release!: () => void;
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const ai = service.humanApprovalPort.approve(preview.previewId); await writing;
+      h.plugin.settings.ganttZoom = 60; const ui = h.plugin.saveSettings();
+      expect(h.plugin.saveData).toHaveBeenCalledTimes(1);
+      release(); expect((await ai).status).toBe("success"); await ui;
+      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "AI-folder", ganttZoom: 60 });
+      expect(h.plugin.settings).toMatchObject({ taskFolder: "AI-folder", ganttZoom: 60 });
+    });
+    it.each(["modify", "create", "delete", "rename"])("Vault %s clears the new saved projection without deleting the receipt", async (event) => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      (h.plugin as any).registerEvent = vi.fn(); h.vaultApi.on = vi.fn(); await h.plugin.onload();
+      const preview = await h.plugin.operationService.propose("S02", { filenameUsesDatePrefix: false }, h.plugin.operationService.legacyContext());
+      await h.plugin.humanApprovalPort.approve(preview.previewId); h.plugin.previewPort.focus(preview.previewId);
+      const callback = h.vaultApi.on.mock.calls.find(([name]: [string]) => name === event)[1];
+      callback({ path: "external.md" }); await flush();
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull(); expect(h.plugin.previewPort.inspectOutcome(preview.previewId)).toBeDefined();
+    });
+    it("does not republish the AI setting over UI changes that returned to the original value", async () => {
+      const h = createHarness({ autoPriorityEnabled: false, currentStatusRows: 28 }); await h.plugin.onload();
+      const service = h.plugin.operationService;
+      const preview = await service.propose("S04", { currentStatusRows: 50 }, service.legacyContext());
+      let release!: () => void, started!: () => void;
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const writing = new Promise<void>((resolve) => { started = resolve; });
+      const save = h.plugin.saveData as Mock, original = save.getMockImplementation()!;
+      save.mockImplementationOnce(async (data: unknown) => { started(); await blocked; await original(data); });
+      const ai = service.humanApprovalPort.approve(preview.previewId); await writing;
+      h.plugin.settings.currentStatusRows = 60; const first = h.plugin.saveSettings();
+      h.plugin.settings.currentStatusRows = 28; const last = h.plugin.saveSettings();
+      release(); expect((await ai).status).toBe("success"); expect(h.plugin.settings.currentStatusRows).toBe(28);
+      await Promise.all([first, last]);
+      expect(h.plugin.settings.currentStatusRows).toBe(28); expect(await h.plugin.loadData()).toMatchObject({ currentStatusRows: 28 });
     });
   });
 
@@ -343,9 +596,9 @@ describe("TaskWorkbenchPlugin", () => {
         expect.any(Error)
       );
 
-      expect(h.commands).toHaveLength(13);
+      expect(h.commands).toHaveLength(14);
 
-      expect(h.views.size).toBe(3);
+      expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
       expect(h.settingTabs).toHaveLength(1);
     });
@@ -387,9 +640,9 @@ describe("TaskWorkbenchPlugin", () => {
 
       expect(refresh).toHaveBeenCalledTimes(1);
 
-      expect(h.commands).toHaveLength(13);
+      expect(h.commands).toHaveLength(14);
 
-      expect(h.views.size).toBe(3);
+      expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
     });
   });
@@ -483,6 +736,7 @@ describe("TaskWorkbenchPlugin", () => {
         "open-ai-chat-tab",
         "open-ai-chat-left",
         "open-ai-chat-right",
+        "open-ai-approval",
       ]);
       expect(h.commands.map((c) => c.name)).toEqual([
         "Open task workbench",
@@ -490,7 +744,7 @@ describe("TaskWorkbenchPlugin", () => {
         "Open task finder",
         "Create new managed task note",
         "Add subtask to current managed task note",
-        "Open daily ToDo",
+        "Daily ToDo を開く",
 
         "Start log recording",
         "Stop log recording",
@@ -500,6 +754,7 @@ describe("TaskWorkbenchPlugin", () => {
         "AI チャットを開く（タブ）",
         "AI チャットを開く（左サイドバー）",
         "AI チャットを開く（右サイドバー）",
+        "AIの承認一覧を開く",
       ]);
     });
 
@@ -537,6 +792,8 @@ describe("TaskWorkbenchPlugin", () => {
     it("undo/redo actions report history outcomes and refresh both open views after success", async () => {
       const h = createHarness({});
       await h.plugin.onload();
+      const preview = await h.plugin.operationService.propose("S02", { filenameUsesDatePrefix: false }, h.plugin.operationService.legacyContext());
+      await h.plugin.humanApprovalPort.approve(preview.previewId); h.plugin.previewPort.focus(preview.previewId);
       const workbenchView = Object.create(
         TaskWorkbenchView.prototype
       ) as TaskWorkbenchView;
@@ -564,11 +821,13 @@ describe("TaskWorkbenchPlugin", () => {
 
       await h.plugin.undoLastAction();
       expect(undo).toHaveBeenCalledWith(h.fakeApp.vault);
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(workbenchRender).toHaveBeenCalledTimes(1);
       expect(ganttRender).toHaveBeenCalledTimes(1);
       expect(NoticeMock).toHaveBeenLastCalledWith("元に戻しました: タスク更新");
 
-      await h.plugin.redoLastAction();
+      h.plugin.previewPort.focus(preview.previewId); await h.plugin.redoLastAction();
+      expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(redo).toHaveBeenCalledWith(h.fakeApp.vault);
       expect(workbenchRender).toHaveBeenCalledTimes(2);
       expect(ganttRender).toHaveBeenCalledTimes(2);
@@ -593,35 +852,6 @@ describe("TaskWorkbenchPlugin", () => {
       expect(NoticeMock).toHaveBeenLastCalledWith(
         "やり直し履歴を破棄しました: 補償失敗"
       );
-    });
-
-    it("saveDailyTodoItems normalizes a null summary and inserts a row for today's date", async () => {
-      // Exercise saveDailyTodoItems when today's daily note has no ToDo items.
-      // Fake system time keeps the daily-note path deterministic.
-      const h = createHarness({});
-      await h.plugin.onload();
-
-      const path = "デイリー/2026/07/260729_デイリー.md";
-      h.files.set(path, {
-        content: "# 2026-07-29\n\n## ToDoリスト\n",
-        mtime: 1,
-        size: 20,
-      });
-
-      await (h.plugin as any).saveDailyTodoItems(null, "2026-07-29", [
-        {
-          sourceKey: "",
-          sourceLabel: "",
-          path: "",
-          line: -1,
-          text: "新しいタスク",
-          completed: false,
-          isNew: true,
-        },
-      ]);
-
-      expect(h.vaultApi.modify).toHaveBeenCalledTimes(1);
-      expect(h.files.get(path)?.content).toContain("- [ ] 新しいタスク");
     });
 
     it("workbench command routes to navigation.activateView", async () => {
@@ -669,32 +899,31 @@ describe("TaskWorkbenchPlugin", () => {
       expect(openTaskFinder).toHaveBeenCalledTimes(1);
     });
 
-    it("opens a requested DailyTodo date and delegates with today", async () => {
-      // The command is responsible for wiring the action. With no daily note
-      // seeded for today, this also exercises the null-summary path, where the
-      // DailyTodoModal renders zero rows, without erroring.
+    it.each([false, true])("Daily ToDo command opens today's editor (existing view: %s)", async (existing) => {
       const h = createHarness({});
-      const openSpy = vi
-        .spyOn(Modal.prototype, "open")
-        .mockImplementation(() => undefined);
       await h.plugin.onload();
-
-      await (h.plugin as any).openOrCreateDailyTodoForDate("2026-07-28");
-      expect(openSpy).toHaveBeenCalledTimes(1);
-      expect((openSpy.mock.instances[0] as any).title).toBe(
-        "デイリーToDo（2026-07-28）"
+      const view = Object.create(TaskGanttView.prototype) as TaskGanttView;
+      const open = vi.fn(async () => undefined);
+      view.openDailyTodoPopoverForDate = open;
+      const leaf = { view, setViewState: vi.fn(async () => undefined) };
+      h.workspace.getLeavesOfType.mockImplementation((type: string) =>
+        type === VIEW_TYPE_TASK_GANTT && (existing || leaf.setViewState.mock.calls.length > 0) ? [leaf] : []
       );
-
-      h.commands[5].callback();
+      h.getLeaf.mockReturnValue(leaf);
+      const modal = vi.spyOn(Modal.prototype, "open").mockImplementation(() => undefined);
+      const command = h.commands.find((c) => c.id === "open-daily-todo")!;
+      expect(command.name).toBe("Daily ToDo を開く");
+      command.callback();
       await flush();
-
-      expect(h.vaultApi.getMarkdownFiles).toHaveBeenCalled();
-      expect(openSpy).toHaveBeenCalledTimes(2);
-      expect((openSpy.mock.instances[1] as any).title).toBe(
-        "デイリーToDo（2026-07-29）"
-      );
-
-      openSpy.mockRestore();
+      expect(leaf.setViewState).toHaveBeenCalledWith({ type: VIEW_TYPE_TASK_GANTT, active: true });
+      expect(h.workspace.revealLeaf).toHaveBeenCalledWith(leaf);
+      expect(h.getLeaf).toHaveBeenCalledTimes(existing ? 0 : 1);
+      expect(open).toHaveBeenCalledWith("2026-07-29");
+      open.mockClear();
+      await (h.plugin as any).requestGlobalView("V05", { date: "2026-08-03" });
+      expect(open).toHaveBeenCalledWith("2026-08-03");
+      expect(modal).not.toHaveBeenCalled();
+      modal.mockRestore();
     });
 
     it("create command delegates to TaskFileService.createTaskInteractively", async () => {
@@ -1191,9 +1420,9 @@ describe("TaskWorkbenchPlugin", () => {
 
       // startup registrations all happened
 
-      expect(h.commands).toHaveLength(13);
+      expect(h.commands).toHaveLength(14);
 
-      expect(h.views.size).toBe(3);
+      expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
       // auto priority ran once on startup
       expect(
@@ -1368,8 +1597,10 @@ describe("TaskWorkbenchPlugin", () => {
       expect(cells[4].textContent).toBe("");
       expect(row.classList.contains("twb-overdue-row")).toBe(false);
       expect(row.classList.contains("twb-due-soon-row")).toBe(false);
-      // col6 タグ: tags are joined with commas and no added spaces.
-      expect(cells[5].textContent).toBe("urgent,backend");
+      // col6 タグ: one chip per tag.
+      expect(
+        byClass(cells[5], "vg-chip").map((c: { textContent: string }) => c.textContent)
+      ).toEqual(["urgent", "backend"]);
       // col7 開く: button.
       expect(byTag(cells[6], "button")[0].textContent).toBe("開く");
     });
@@ -1493,7 +1724,7 @@ describe("TaskWorkbenchPlugin", () => {
       const h = createHarness({});
       stubHolidays(h.plugin, {});
       await h.plugin.onload();
-      await seedParentTask(h, "Done Task", { completed: true });
+      await seedParentTask(h, "Done Task", { statusLabel: "done", completed: false });
 
       const hiddenEl = await renderTaskListEmbed(h, "showCompleted=false");
       expect(deepText(hiddenEl)).toContain("表示対象のタスクがありません");

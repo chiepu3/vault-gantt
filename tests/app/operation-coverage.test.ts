@@ -336,14 +336,21 @@ describe("batch limits and history outcomes", () => {
     expect((await a.history.redo(a.historyVault)).kind).toBe("empty");
   });
 
-  it.each(["undo", "redo"] as const)("parent create is a clear barrier for existing %s history", async (direction) => {
+  it.each(["undo", "redo"] as const)("parent create preserves undo and discards redo with existing %s history", async (direction) => {
     const a = await setup(); await a.update(a.child.id, { notes: "existing history" });
     if (direction === "redo") await a.history.undo(a.historyVault);
     const plan = await a.registry.plan("create", { name: "Synthetic new parent" });
     expect(a.history.canUndo() || a.history.canRedo()).toBe(true);
     const result = await a.registry.commit(plan.previewId);
     expect(result).toMatchObject({ kind: "success", committed: 1, created: { kind: "parent", displayName: "Synthetic new parent" } });
-    expect(result.undoLabel).toBeUndefined(); expect(a.history.canUndo()).toBe(false); expect(a.history.canRedo()).toBe(false);
+    expect(result.undoLabel).toBeUndefined();
+    expect(a.history.canUndo()).toBe(direction === "undo");
+    expect(a.history.canRedo()).toBe(false);
+    if (direction === "undo") {
+      expect((await a.history.undo(a.historyVault)).kind).toBe("success");
+      expect((await a.registry.get(a.child.id)).notes).toBe("");
+      expect(a.vault.getFileByPath(result.created!.id)).not.toBeNull();
+    }
   });
 
   it("subtask create through parent-file modify is undoable, not a clear barrier", async () => {

@@ -1,6 +1,8 @@
+import { Notice } from "obsidian";
 import { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { applyAutoPriorityFields, todayStr } from "../core/utils";
 import { buildFullNote } from "../core/note-format";
+import { mergeTaskNote, NotePreservationError } from "../core/note-update";
 
 import type { Logger } from "../core/logger";
 
@@ -56,7 +58,13 @@ export class AutoPriorityController {
     const tasks = await loadTasks(vault, settings, cache, logger);
 
 
-    for (const task of tasks) {
+    let skippedNotes = 0;
+    for (const cachedTask of tasks) {
+      // Do not mutate cached rows when preservation rejects this update.
+      const task = {
+        ...cachedTask,
+        subtasks: new Map([...(cachedTask.subtasks ?? [])].map(([key, row]) => [key, { ...row }])),
+      };
       let fileChanged = false;
 
       // Recompute priority from the task's own dueDate. Parent attributes
@@ -91,19 +99,29 @@ export class AutoPriorityController {
         continue;
       }
 
-      // Only overwrite changed files, rebuilding each complete note. If a
-      // file disappears mid-run, propagate the failure; earlier files may
-      // already have been updated. Obsidian serializes file operations but
-      // provides no exclusive lock. modify performs a plain overwrite and
-      // does not resolve conflicts with external sync tools.
+      const beforeNote = buildFullNote(cachedTask, cachedTask.subtasks);
+      // Read only changed files and retain unmanaged YAML and body sections.
       const file = vault.getFileByPath(task.file.path);
       if (!file) {
         throw new Error(`Task file not found: ${task.file.path}`);
       }
-      const content = buildFullNote(task, task.subtasks ?? new Map());
+      const original = await vault.read(file);
+      let content: string;
+      try {
+        content = mergeTaskNote(original, beforeNote, buildFullNote(task, task.subtasks));
+      } catch (error) {
+        if (!(error instanceof NotePreservationError)) throw error;
+        skippedNotes++;
+        console.warn(`Skipping automatic priority update: ${task.file.path}`, error);
+        continue;
+      }
       // modify failures (e.g. file locks)
       // propagate uncaptured and stop the iteration
       await vault.modify(file, content);
+    }
+
+    if (skippedNotes > 0) {
+      new Notice(`自動優先度を更新できなかったノートが ${skippedNotes} 件あります（独自の書式を含むため）`);
     }
 
     // record the run date (YYYY-MM-DD)

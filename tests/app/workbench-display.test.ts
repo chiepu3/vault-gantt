@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { TaskRow } from "../../src/core/types";
+import { moment } from "obsidian";
+import { compareBy } from "../../src/core/utils";
 import {
   getDisplayRows,
   getCollapsedWorkbenchRows,
@@ -71,6 +73,32 @@ function ids(rows: TaskRow[]): string[] {
 }
 
 describe("getDisplayRows", () => {
+  it.each(["dueDate", "default", ""])("%s sorting preserves strict date buckets, stable ties and both directions", (sortKey) => {
+    const dates = [undefined, "", "2026-02-30", "bad", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-10"];
+    const tasks = dates.map((dueDate, i) => makeRow({ dueDate, displayName: `名前${i % 3}` }));
+    const today = moment("2026-10-10", "YYYY-MM-DD", true).startOf("day");
+    for (const sortDir of ["asc", "desc"] as const) {
+      const expected = [...tasks].sort((a, b) => compareBy(sortKey, sortDir, a, b, today));
+      const actual = getDisplayRows(tasks, defaultOpts({ sortKey, sortDir, today }));
+      expect(actual).toEqual(expected);
+      actual.forEach((row, i) => expect(row).toBe(expected[i]));
+    }
+  });
+
+  it("flat due sorting recomputes buckets after a date edit and after midnight", () => {
+    const child = makeSubtask("child", { dueDate: "2026-10-10" });
+    const parent = withSubtasks(makeRow({ dueDate: "2026-10-09" }), [child]);
+    const tasks = [parent, makeRow({ dueDate: "2026-10-11" })];
+    const flat = [parent, child, tasks[1]];
+    for (const date of ["2026-10-10", "2026-10-11"]) {
+      const today = moment(date, "YYYY-MM-DD", true).startOf("day");
+      const opts = defaultOpts({ sortKey: "title", flatDueSort: true, today });
+      expect(getDisplayRows(tasks, opts)).toEqual([...flat].sort((a, b) => compareBy("dueDate", "desc", a, b, today)));
+      child.dueDate = "2026-10-12";
+      expect(getDisplayRows(tasks, opts)).toEqual([...flat].sort((a, b) => compareBy("dueDate", "desc", a, b, today)));
+    }
+  });
+
   it("flattens parents and their subtasks Map values into one filtered, sorted row set", () => {
     const s1 = makeSubtask("s1");
     const s2 = makeSubtask("s2");
@@ -723,6 +751,18 @@ describe("getCollapsedWorkbenchRows", () => {
 });
 
 describe("pickWorkbenchPreviewSubtask", () => {
+  it("keeps the first exact tie, leaves input order intact and observes later edits", () => {
+    const first = makeSubtask("first", { dueDate: "2026-01-01", displayName: "same" });
+    const second = makeSubtask("second", { dueDate: "2026-01-01", displayName: "same" });
+    const children = [second, first];
+    expect(pickWorkbenchPreviewSubtask(children)).toBe(second);
+    expect(children).toEqual([second, first]);
+    second.dueDate = "2026-02-01";
+    expect(pickWorkbenchPreviewSubtask(children)).toBe(first);
+    first.completed = true;
+    expect(pickWorkbenchPreviewSubtask(children)).toBe(second);
+  });
+
   it("excludes completed children", () => {
     const done = makeSubtask("done", {
       completed: true,

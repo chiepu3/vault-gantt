@@ -1,8 +1,6 @@
 import { Modal, Setting } from "obsidian";
 import type { App } from "obsidian";
 import type {
-  DailyTodoItem,
-  DailyTodoSummary,
   TaskRow,
   WeeklyWorkSchedule,
 } from "../core/types";
@@ -111,6 +109,7 @@ export class GanttParentPickerModal extends Modal {
     content.appendChild(input);
 
     this.listEl = document.createElement("div");
+    this.listEl.className = "vg-modal-list vg-finder-list";
     content.appendChild(this.listEl);
 
     this.renderList();
@@ -176,8 +175,17 @@ export class GanttParentPickerModal extends Modal {
       return;
     }
     listEl.replaceChildren();
+    if (this.filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "vg-empty";
+      empty.textContent = "該当するタスクがありません";
+      listEl.appendChild(empty);
+      return;
+    }
+    let selectedRow: HTMLElement | null = null;
     this.filtered.forEach((item, index) => {
       const row = document.createElement("div");
+      row.className = "vg-list-row";
       // bold task name + "[ステータス] • [ファイルパス]" meta
       const titleEl = document.createElement("div");
       titleEl.className = "task-workbench-finder-title";
@@ -191,13 +199,18 @@ export class GanttParentPickerModal extends Modal {
       row.appendChild(titleEl);
       row.appendChild(metaEl);
       if (index === this.selectedIndex) {
-        row.className = "is-selected";
+        row.className = "vg-list-row is-selected";
+        selectedRow = row;
       }
       row.addEventListener("click", () => {
         void this.chooseItem(item);
       });
       listEl.appendChild(row);
     });
+    const target = selectedRow as HTMLElement | null;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ block: "nearest" });
+    }
   }
 }
 
@@ -223,167 +236,6 @@ function pickerMatches(query: string, item: TaskRow): boolean {
   const filePath = item.file?.path || fallback;
   const searchText = `${name} ${item.currentStatus ?? ""} ${filePath}`.toLowerCase();
   return fuzzyIncludes(searchText, q);
-}
-
-/**
- *
- * Aggregate editor for daily-note / daily-meeting ToDos: a scrollable list
- * of checkbox + text input + source label rows, 「新しいタスクを追加」 /
- * 「保存」 (CTA) / 「キャンセル」 buttons. Saving trims each row's text,
- * drops rows whose trimmed text is empty, and hands the rest to onSubmit
- * before closing. Cancel discards everything (edits happen on internal
- * copies). A null summary renders zero rows; new rows can still be added.
- */
-export class DailyTodoModal extends Modal {
-  private readonly rows: DailyTodoItem[];
-  private listEl: HTMLElement | null = null;
-
-  constructor(
-    app: App,
-    private readonly title: string,
-    summary: DailyTodoSummary | null,
-    private readonly onSubmit: (items: DailyTodoItem[]) => void
-  ) {
-    super(app);
-    // null summary → iterate over an empty array. Copies keep
-    // the caller's summary untouched so cancel discards cleanly.
-    this.rows = (summary?.items || []).map((item) => ({ ...item }));
-  }
-
-  onOpen(): void {
-    this.titleEl.setText(this.title);
-    const content = this.contentEl;
-    content.replaceChildren();
-
-    // description line
-    const desc = document.createElement("p");
-    desc.className = "task-workbench-modal-desc";
-    desc.textContent =
-      "デイリーとデイリーミーティングのToDoをまとめて表示します。ここで確認・編集できます。";
-    content.appendChild(desc);
-
-    // scrollable row list
-    const list = document.createElement("div");
-    list.className = "task-workbench-daily-todo-list";
-    list.style.overflowY = "auto";
-    content.appendChild(list);
-    this.listEl = list;
-
-    for (const item of this.rows) {
-      this.appendRow(item);
-    }
-
-    // three buttons — add, save (CTA), cancel
-    const buttons = document.createElement("div");
-    buttons.className = "task-workbench-modal-buttons";
-    content.appendChild(buttons);
-
-    const addButton = document.createElement("button");
-    addButton.textContent = "新しいタスクを追加";
-    addButton.addEventListener("click", () => {
-      this.addRow();
-    });
-    buttons.appendChild(addButton);
-
-    const saveButton = document.createElement("button");
-    saveButton.textContent = "保存";
-    saveButton.className = "mod-cta";
-    saveButton.addEventListener("click", () => {
-      this.save();
-    });
-    buttons.appendChild(saveButton);
-
-    const cancelButton = document.createElement("button");
-    cancelButton.textContent = "キャンセル";
-    cancelButton.addEventListener("click", () => {
-      this.close();
-    });
-    buttons.appendChild(cancelButton);
-  }
-
-  onClose(): void {
-    this.contentEl.replaceChildren();
-    this.listEl = null;
-  }
-
-  /**
- * append the fixed new-row literal, then autofocus
- * with select-all on its text input.
- */
-  addRow(): void {
-    const item: DailyTodoItem = {
-      sourceKey: "main",
-      sourceLabel: "デイリー",
-      path: "",
-      line: -1,
-      text: "新しいタスク",
-      completed: false,
-      isNew: true,
-    };
-    this.rows.push(item);
-    const input = this.appendRow(item);
-    input.focus();
-    input.select();
-  }
-
-  /**
- * collect the rows — identity fields pass
- * through, text is trimmed, empty-text rows are filtered out — then
- * onSubmit and close.
- */
-  save(): void {
-    const items: DailyTodoItem[] = this.rows
-      .map((item) => ({
-        sourceKey: item.sourceKey,
-        sourceLabel: item.sourceLabel,
-        path: item.path,
-        line: item.line,
-        text: item.text.trim(),
-        completed: item.completed,
-        isNew: item.isNew,
-      }))
-      .filter((item) => item.text);
-    this.onSubmit(items);
-    this.close();
-  }
-
-  /**
- * Renders one row (checkbox + text input + source label) and returns the
- * text input so addRow can focus it. Edits flow back into the item
- * object, which stays the single source of truth for save.
- */
-  private appendRow(item: DailyTodoItem): HTMLInputElement {
-    const list = this.listEl;
-    const row = document.createElement("div");
-    row.className = "task-workbench-daily-todo-row";
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = item.completed;
-    checkbox.addEventListener("change", () => {
-      item.completed = checkbox.checked;
-    });
-    row.appendChild(checkbox);
-
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "task-workbench-daily-todo-text";
-    input.value = item.text;
-    input.addEventListener("input", () => {
-      item.text = input.value;
-    });
-    row.appendChild(input);
-
-    const source = document.createElement("span");
-    source.className = "task-workbench-daily-todo-source";
-    source.textContent = item.sourceLabel;
-    row.appendChild(source);
-
-    if (list) {
-      list.appendChild(row);
-    }
-    return input;
-  }
 }
 
 /**
@@ -761,6 +613,7 @@ export class WeeklyWorkScheduleModal extends Modal {
 
     const deleteButton = document.createElement("button");
     deleteButton.textContent = "削除";
+    deleteButton.className = "mod-warning";
     deleteButton.addEventListener("click", () => {
       this.invokeCallback(() => this.callbacks.delete(schedule.key));
       this.renderRows();
