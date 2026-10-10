@@ -22,7 +22,6 @@ import {
 import type { EmbedConfig } from "./core/utils";
 import {
   confirmDragWorkloadShift,
-  DailyTodoModal,
   GanttParentPickerModal,
   openMarkerModal,
   TextInputModal,
@@ -33,7 +32,6 @@ import {
   deleteDailyTodoItem,
   openDailyTodoFile,
   updateDailyTodoItem,
-  updateDailyTodos,
 } from "./app/daily-todo-service";
 import { getGanttParentRows } from "./app/gantt-layout";
 import {
@@ -275,9 +273,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
   // aggregate (loadDailyTodoSummaries) plus the write-side functions
-  // (updateDailyTodos etc., imported directly since they're bare functions,
+  // (imported directly since they're bare functions,
   // not methods). One instance, mirroring holidays/taskFiles below, so its
-  // per-file mtime/size cache persists across repeated modal opens.
+  // per-file mtime/size cache persists across repeated popover opens.
   readonly dailyTodos = new DailyTodoService();
 
   // experimental Agent Tools API
@@ -1218,11 +1216,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
 
-    // same command-only way "open-task-finder" above opens TaskFinderModal
-    // (no ribbon icon; registerRibbonIcons below stays at its existing 2).
+    // Command-only entry point to the Gantt Daily ToDo popover.
     this.addCommand({
       id: "open-daily-todo",
-      name: "Open daily ToDo",
+      name: "Daily ToDo を開く",
       callback: () => {
         void this.runOpenDailyTodoCommand();
       },
@@ -1332,70 +1329,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
   private async runOpenDailyTodoCommand(): Promise<void> {
-    await this.openOrCreateDailyTodoForDate(todayStr());
-  }
-
-  /**
- * `onSaved` fires only once the modal's onSubmit has actually persisted
- * (i.e. the user clicked Save, not just opened/cancelled the modal) — the
- * returned Promise itself resolves as soon as the modal is OPEN (Modal.open
- * is synchronous/fire-and-forget; onSubmit fires later, whenever the user
- * acts). A caller that needs to react to the save completing (e.g. the
- * Gantt view re-rendering to pick up the new counts) must use `onSaved`,
- * not await this method's own return.
- */
-  private async openOrCreateDailyTodoForDate(
-    dateStr: string,
-    onSaved?: () => void
-  ): Promise<void> {
-
-    const summaries = await this.dailyTodos.loadDailyTodoSummaries(
-
-      this.app.vault,
-      this.settings,
-      this.logger
-
-    );
-
-    const summary = summaries.find((s) => s.date === dateStr) ?? null;
-
-    new DailyTodoModal(
-      this.app,
-      `デイリーToDo（${dateStr}）`,
-      summary,
-      (items: DailyTodoItem[]) => {
-        void this.saveDailyTodoItems(summary, dateStr, items).then(() =>
-          onSaved?.()
-        );
-      }
-    ).open();
-  }
-
-  /**
- * Persists the DailyTodoModal's edited rows. When `summary` is null because
- * today had no prior ToDo items, it creates an empty-items summary so
- * updateDailyTodos still has a `date` for inserting new rows.
- */
-  private async saveDailyTodoItems(
-    summary: DailyTodoSummary | null,
-    dateStr: string,
-    items: DailyTodoItem[]
-  ): Promise<void> {
-    const effectiveSummary: DailyTodoSummary = summary ?? {
-      date: dateStr,
-      items: [],
-      completedCount: 0,
-      totalCount: 0,
-    };
-
-    await updateDailyTodos(
-      effectiveSummary,
-      items,
-      this.app,
-      this.settings,
-      this.historyManager
-    );
-
+    await this.navigation.activateGanttView();
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT)[0];
+    if (leaf?.view instanceof TaskGanttView) {
+      await leaf.view.openDailyTodoPopoverForDate(todayStr());
+    }
   }
 
   /**

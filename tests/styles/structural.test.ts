@@ -1584,15 +1584,8 @@ describe("part 6 — Modal minimum", () => {
     expectDecl(".vg-modal-list.vg-finder-list", "max-height", "60vh");
   });
 
-  it("DailyTodoModal: desc/list/row/text/source/buttons rules", () => {
+  it("shared modal description and buttons rules", () => {
     expectDecl(".task-workbench-modal-desc", "color", "var(--text-muted)");
-    expectDecl(".task-workbench-daily-todo-list", "display", "flex");
-    expectDecl(".task-workbench-daily-todo-list", "flex-direction", "column");
-    expectDecl(".task-workbench-daily-todo-list", "max-height");
-    expectDecl(".task-workbench-daily-todo-row", "display", "flex");
-    expectDecl(".task-workbench-daily-todo-row", "align-items", "center");
-    expectDecl(".task-workbench-daily-todo-text", "flex", "1 1 auto");
-    expectDecl(".task-workbench-daily-todo-source", "color", "var(--text-faint)");
     expectDecl(".task-workbench-modal-buttons", "display", "flex");
     expectDecl(".task-workbench-modal-buttons", "justify-content", "flex-end");
   });
