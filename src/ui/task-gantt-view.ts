@@ -6218,14 +6218,22 @@ export class TaskGanttView extends ItemView {
     try {
       const anchorRect = anchor.getBoundingClientRect();
       const width = this.richPopoverWidth();
-      const measured = el.offsetHeight;
+      const viewportWidth = Number(window.innerWidth) || 0;
+      const viewportHeight = Number(window.innerHeight) || 0;
+      // Measure the final layout, including wrapping and the scroll limit.
+      el.style.width = `${width}px`;
+      el.style.maxHeight = `${Math.max(
+        120,
+        viewportHeight - RICH_POPOVER_VIEWPORT_MARGIN_PX * 2
+      )}px`;
+      el.style.overflowY = "auto";
+      // offsetHeight rounds to an integer and can undercount the border box.
+      const measured = el.getBoundingClientRect().height;
       // Use the measured content height with a minimum of 180px.
       const height = Math.max(
         RICH_POPOVER_MIN_HEIGHT_PX,
         typeof measured === "number" ? measured : 0
       );
-      const viewportWidth = Number(window.innerWidth) || 0;
-      const viewportHeight = Number(window.innerHeight) || 0;
       const pos: RichPopoverPosition = el.classList.contains("is-parent")
         ? this.computeParentRichPopoverPosition(
             anchorRect,
@@ -6247,13 +6255,6 @@ export class TaskGanttView extends ItemView {
           );
       el.style.left = `${pos.left}px`;
       el.style.top = `${pos.top}px`;
-      el.style.width = `${width}px`;
-      // Clamp the maximum height to the viewport and allow scrolling.
-      el.style.maxHeight = `${Math.max(
-        120,
-        viewportHeight - RICH_POPOVER_VIEWPORT_MARGIN_PX * 2
-      )}px`;
-      el.style.overflowY = "auto";
       el.setAttribute("data-side", pos.side);
     } catch (err) {
       // positioning is best-effort and must never throw.
