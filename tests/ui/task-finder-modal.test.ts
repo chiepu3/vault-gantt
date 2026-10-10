@@ -138,12 +138,12 @@ describe("TaskFinderModal", () => {
     const input = contentEl.children[0];
     const list = contentEl.children[1];
 
-    expect(list.children[0].className).toBe("is-selected");
+    expect(list.children[0].className).toBe("vg-list-row is-selected");
 
     input.listeners["keydown"][0](keyEvent("ArrowDown"));
     input.listeners["keydown"][0](keyEvent("ArrowDown"));
-    expect(list.children[2].className).toBe("is-selected");
-    expect(list.children[0].className).toBe("");
+    expect(list.children[2].className).toBe("vg-list-row is-selected");
+    expect(list.children[0].className).toBe("vg-list-row");
 
     input.listeners["keydown"][0](keyEvent("Enter"));
 
@@ -158,7 +158,7 @@ describe("TaskFinderModal", () => {
 
     input.listeners["keydown"][0](keyEvent("ArrowUp"));
 
-    expect(list.children[0].className).toBe("is-selected");
+    expect(list.children[0].className).toBe("vg-list-row is-selected");
     expect(nav.openTaskItem).not.toHaveBeenCalled();
   });
 
@@ -287,7 +287,12 @@ describe("TaskFinderModal", () => {
 
     expect(contentEl.children).toHaveLength(2);
     expect(contentEl.children[0].type).toBe("search");
-    expect(contentEl.children[1].children).toHaveLength(0);
+    // no rows, only the empty-state message
+    expect(contentEl.children[1].children).toHaveLength(1);
+    expect(contentEl.children[1].children[0].className).toBe("vg-empty");
+    expect(contentEl.children[1].children[0].textContent).toBe(
+      "該当するタスクがありません"
+    );
 
     // Enter with no candidates opens nothing
     contentEl.children[0].listeners["keydown"][0](keyEvent("Enter"));

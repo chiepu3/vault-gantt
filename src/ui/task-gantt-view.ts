@@ -5,7 +5,7 @@ import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
 import type { PreviewPort } from "../contracts/ports";
 import { PreviewGanttLayer } from "./preview-gantt-layer";
-import { ItemView, Menu, Notice, moment } from "obsidian";
+import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
 
 import type { Logger } from "../core/logger";
@@ -28,6 +28,8 @@ import {
   DEFAULT_GANTT_TAG_COLORS,
   DEFAULT_STATUSES,
 } from "../core/constants";
+import { readableTextColor } from "../core/color";
+import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
 import { normalizeWorkloadMap } from "../core/task-patch";
 import {
@@ -116,6 +118,13 @@ type MenuItemWithRuntimeSubmenu = MenuItem & {
   setSubmenu?: () => Menu;
 };
 
+/** Icon-only toolbar button: Lucide icon with a Japanese label for assistive tech and tooltip. */
+function setToolbarIcon(button: HTMLElement, icon: string, label: string): void {
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  setIcon(button, icon);
+}
+
 function formatWorkloadHours(hours: number): string {
   const rounded = Math.round(hours * 2) / 2;
   if (rounded === 0) {
@@ -180,24 +189,6 @@ function canonicalizeTagNames(
           (definition) => definition.key === tag || definition.name === tag
         )?.name ?? tag
     )
-  );
-}
-
-/**
- * `getGanttTags`/`findGanttTag` equivalent — looks
- * up a configured tag by either its stable key or its current display name.
- */
-function findGanttTagDefinition(
-  settings: TaskWorkbenchSettings,
-  name: string
-): GanttTagDefinition | undefined {
-  if (name === "") {
-    return undefined;
-  }
-  const definitions = Array.isArray(settings.ganttTags) ? settings.ganttTags : [];
-  return definitions.find(
-    (definition) =>
-      definition.name === name || definition.key === name
   );
 }
 
@@ -1827,8 +1818,8 @@ export class TaskGanttView extends ItemView {
 
     // ±6px per click, clamped to [14, 72].
     const zoomOut = document.createElement("button");
-    zoomOut.classList.add("task-gantt-zoom-out");
-    zoomOut.textContent = "−";
+    zoomOut.classList.add("task-gantt-zoom-out", "clickable-icon");
+    setToolbarIcon(zoomOut, "minus", "縮小");
     zoomOut.addEventListener("click", () => {
       void this.setZoom(this.clampZoom(this.dayWidth - ZOOM_STEP_PX));
     });
@@ -1841,8 +1832,8 @@ export class TaskGanttView extends ItemView {
     this.toolbarEl.appendChild(this.zoomLabelEl);
 
     const zoomIn = document.createElement("button");
-    zoomIn.classList.add("task-gantt-zoom-in");
-    zoomIn.textContent = "+";
+    zoomIn.classList.add("task-gantt-zoom-in", "clickable-icon");
+    setToolbarIcon(zoomIn, "plus", "拡大");
     zoomIn.addEventListener("click", () => {
       void this.setZoom(this.clampZoom(this.dayWidth + ZOOM_STEP_PX));
     });
@@ -1858,16 +1849,16 @@ export class TaskGanttView extends ItemView {
     this.toolbarEl.appendChild(refreshButton);
 
     const undoButton = document.createElement("button");
-    undoButton.classList.add("task-gantt-undo");
-    undoButton.textContent = "⟲ 元に戻す";
+    undoButton.classList.add("task-gantt-undo", "clickable-icon");
+    setToolbarIcon(undoButton, "undo-2", "元に戻す");
     undoButton.addEventListener("click", () => {
       void this.host.undoLastAction();
     });
     this.toolbarEl.appendChild(undoButton);
 
     const redoButton = document.createElement("button");
-    redoButton.classList.add("task-gantt-redo");
-    redoButton.textContent = "⟳ やり直す";
+    redoButton.classList.add("task-gantt-redo", "clickable-icon");
+    setToolbarIcon(redoButton, "redo-2", "やり直す");
     redoButton.addEventListener("click", () => {
       void this.host.redoLastAction();
     });
@@ -2149,6 +2140,7 @@ export class TaskGanttView extends ItemView {
     const footer = document.createElement("div");
     footer.classList.add("task-gantt-tag-filter-footer");
     const clearButton = document.createElement("button");
+    clearButton.classList.add("vg-btn-sm");
     clearButton.textContent = "解除";
     clearButton.addEventListener("click", () => {
       const scrollLeft = this.wrapEl.scrollLeft;
@@ -2158,6 +2150,7 @@ export class TaskGanttView extends ItemView {
     });
     footer.appendChild(clearButton);
     const closeButton = document.createElement("button");
+    closeButton.classList.add("vg-btn-sm");
     closeButton.textContent = "閉じる";
     closeButton.addEventListener("click", () => {
       this.tagFilterMenuEl?.remove();
@@ -2647,13 +2640,7 @@ export class TaskGanttView extends ItemView {
       const planRatio = Math.max(0, Math.min(1, planTotal / capacityHours));
       const actualRatio = Math.max(0, Math.min(1, actualTotal / capacityHours));
       const setRatio = (name: string, value: string): void => {
-        // The real DOM exposes CSSStyleDeclaration.setProperty; the small
-        // fake DOM used by the unit tests exposes style as a plain record.
-        if (typeof cell.style.setProperty === "function") {
-          cell.style.setProperty(name, value);
-        } else {
-          (cell.style as unknown as Record<string, string>)[name] = value;
-        }
+        setStyleVar(cell, name, value);
       };
       setRatio("--twb-workload-plan-ratio", `${(planRatio * 100).toFixed(1)}%`);
       setRatio(
@@ -2707,7 +2694,11 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadDaySummaryPopover(); // Close any open day-summary popover.
 
     const el = document.createElement("div");
-    el.classList.add("task-gantt-workload-day-summary-popover");
+    el.classList.add(
+      "task-gantt-workload-day-summary-popover",
+      "vg-surface",
+      "vg-popover"
+    );
 
     // title "作業時間 M/D".
     const title = document.createElement("div");
@@ -3253,7 +3244,7 @@ export class TaskGanttView extends ItemView {
     this.closeDailyTodoPopover();
 
     const el = document.createElement("div");
-    el.classList.add("task-gantt-daily-todo-popover");
+    el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
     el.setAttribute("data-date", summary.date);
     this.renderDailyTodoPopover(el, summary);
 
@@ -3868,9 +3859,8 @@ export class TaskGanttView extends ItemView {
       parent.tags
     );
     if (primaryParentTag?.color) {
-      left.style.borderLeftWidth = "4px";
-      left.style.borderLeftStyle = "solid";
-      left.style.borderLeftColor = primaryParentTag.color;
+      left.classList.add("has-tag-accent");
+      setStyleVar(left, "--vg-tag-accent", primaryParentTag.color);
     }
 
     // Render the title; double-clicking it opens the inline editor.
@@ -3889,12 +3879,11 @@ export class TaskGanttView extends ItemView {
       tags.classList.add("task-gantt-parent-tags");
       for (const tag of parent.tags.slice(0, MAX_TAG_CHIPS)) {
         const chip = document.createElement("span");
-        chip.classList.add("task-gantt-parent-tag");
+        chip.classList.add("task-gantt-parent-tag", "vg-chip", "is-tag");
         chip.textContent = tag;
         const definition = findGanttTagDefinition(this.host.settings, tag);
         if (definition?.color) {
-          chip.style.color = definition.color;
-          chip.style.borderColor = definition.color;
+          setStyleVar(chip, "--vg-chip-color", definition.color);
         }
         tags.appendChild(chip);
       }
@@ -4011,6 +4000,10 @@ export class TaskGanttView extends ItemView {
       if (barTagColor !== "" && barFilterState.visible) {
         barEl.style.backgroundColor = barTagColor;
         barEl.style.borderColor = barTagColor;
+        const barTextColor = readableTextColor(barTagColor);
+        if (barTextColor !== undefined) {
+          setStyleVar(barEl, "--vg-bar-text", barTextColor);
+        }
         if (bar.task.completed) {
           barEl.classList.add("is-tag-colored-completed");
         }
@@ -4039,10 +4032,10 @@ export class TaskGanttView extends ItemView {
       ) {
         barEl.classList.add("has-tag-badge");
         const badge = document.createElement("span");
-        badge.classList.add("task-gantt-bar-tag-badge");
+        badge.classList.add("task-gantt-bar-tag-badge", "vg-chip", "is-tag");
         badge.textContent = primaryBadgeTag.name;
         if (primaryBadgeTag.color) {
-          badge.style.color = primaryBadgeTag.color;
+          setStyleVar(badge, "--vg-chip-color", primaryBadgeTag.color);
         }
         barEl.appendChild(badge);
       }
@@ -4106,10 +4099,10 @@ export class TaskGanttView extends ItemView {
           );
           if (primaryMarkerTag !== undefined) {
             const markerBadge = document.createElement("span");
-            markerBadge.classList.add("task-gantt-marker-tag");
+            markerBadge.classList.add("task-gantt-marker-tag", "vg-chip", "is-tag");
             markerBadge.textContent = primaryMarkerTag.name;
             if (primaryMarkerTag.color) {
-              markerBadge.style.color = primaryMarkerTag.color;
+              setStyleVar(markerBadge, "--vg-chip-color", primaryMarkerTag.color);
             }
             markerEl.appendChild(markerBadge);
           }
@@ -4443,10 +4436,10 @@ export class TaskGanttView extends ItemView {
     );
     if (primaryBadgeTag !== undefined) {
       const badge = document.createElement("span");
-      badge.classList.add("task-gantt-label-badge");
+      badge.classList.add("task-gantt-label-badge", "vg-chip", "is-tag");
       badge.textContent = primaryBadgeTag.name;
       if (primaryBadgeTag.color) {
-        badge.style.color = primaryBadgeTag.color;
+        setStyleVar(badge, "--vg-chip-color", primaryBadgeTag.color);
       }
       label.appendChild(badge);
     }
@@ -6039,7 +6032,7 @@ export class TaskGanttView extends ItemView {
     evt: MouseEvent
   ): void {
     const el = document.createElement("div");
-    el.classList.add("task-gantt-rich-popover");
+    el.classList.add("task-gantt-rich-popover", "vg-surface", "vg-popover");
     if (anchor.kind === "subtask") {
       el.classList.add("is-subtask");
       this.buildSubtaskPopoverContent(
@@ -6433,7 +6426,7 @@ export class TaskGanttView extends ItemView {
     persist: () => Promise<void>
   ): void {
     const el = document.createElement("div");
-    el.classList.add("task-gantt-workload-popover");
+    el.classList.add("task-gantt-workload-popover", "vg-surface", "vg-popover");
     el.style.boxSizing = "border-box";
 
     const header = document.createElement("div");
@@ -6488,13 +6481,11 @@ export class TaskGanttView extends ItemView {
 
     const graphScroll = document.createElement("div");
     graphScroll.classList.add("task-gantt-workload-popover-graph-scroll");
-    graphScroll.style.overflowX = "auto";
     const graph = document.createElement("div");
     graph.classList.add(
       "task-gantt-workload-graph",
       "task-gantt-workload-popover-graph"
     );
-    graph.style.position = "relative";
     graph.style.height = `${WORKLOAD_POPOVER_GRAPH_HEIGHT_PX}px`;
     graph.style.width = `${Math.max(
       this.dayWidth,
@@ -6524,7 +6515,6 @@ export class TaskGanttView extends ItemView {
         cell.classList.add("is-non-working");
       }
       cell.setAttribute("data-date", date);
-      cell.style.position = "absolute";
       cell.style.left = `${index * this.dayWidth}px`;
       cell.style.width = `${this.dayWidth}px`;
       cell.style.height = `${WORKLOAD_POPOVER_GRAPH_HEIGHT_PX}px`;
@@ -7219,7 +7209,7 @@ export class TaskGanttView extends ItemView {
  */
   private buildStatusSelect(task: TaskRow): HTMLElement {
     const select = document.createElement("select");
-    select.classList.add("task-gantt-popover-status-select");
+    select.classList.add("task-gantt-popover-status-select", "vg-input-sm");
     this.bindRichPopoverInteraction(select);
     for (const key of Object.keys(DEFAULT_STATUSES) as StatusLabel[]) {
       const option = document.createElement("option");
@@ -7256,7 +7246,7 @@ export class TaskGanttView extends ItemView {
 
   private buildCurrentStatusArea(task: TaskRow): HTMLElement {
     const area = document.createElement("textarea");
-    area.classList.add("task-gantt-popover-current-status");
+    area.classList.add("task-gantt-popover-current-status", "vg-input-sm");
     area.value = task.currentStatus ?? "";
     this.bindRichPopoverInteraction(area);
 
@@ -7386,7 +7376,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(chips);
 
     const statusChip = document.createElement("span");
-    statusChip.classList.add("task-gantt-popover-status-chip");
+    statusChip.classList.add("task-gantt-popover-status-chip", "vg-chip");
     // Single source of truth for both the class and the text: `completed`
     // and `statusLabel` are two separate frontmatter fields that CAN
     // disagree on hand-edited/stale data (only save-time normalization
@@ -7414,7 +7404,7 @@ export class TaskGanttView extends ItemView {
     // exists to mirror (the Workbench renders all five stars always).
     if (task.priority > 0) {
       const priorityChip = document.createElement("span");
-      priorityChip.classList.add("task-gantt-popover-priority-chip");
+      priorityChip.classList.add("task-gantt-popover-priority-chip", "vg-chip");
       priorityChip.textContent = `P${task.priority}`;
       chips.appendChild(priorityChip);
     }
@@ -7467,8 +7457,8 @@ export class TaskGanttView extends ItemView {
         "タグ"
       );
       const value = document.createElement("span");
-      value.classList.add("task-gantt-popover-value");
-      value.textContent = task.tags.join(" ");
+      value.classList.add("task-gantt-popover-value", "task-gantt-popover-tag-chips");
+      appendTagChips(value, task.tags, this.host.settings);
       tagsField.appendChild(value);
     }
 
@@ -7516,7 +7506,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(chips);
 
     const statusChip = document.createElement("span");
-    statusChip.classList.add("task-gantt-popover-status-chip");
+    statusChip.classList.add("task-gantt-popover-status-chip", "vg-chip");
     // See the subtask popover's identical effectiveStatus comment above:
     // completed/statusLabel can disagree on hand-edited data, so both the
     // class and the text derive from the same value.
@@ -7542,7 +7532,7 @@ export class TaskGanttView extends ItemView {
     );
     const dueInput = document.createElement("input");
     dueInput.type = "date";
-    dueInput.classList.add("task-gantt-popover-due-input");
+    dueInput.classList.add("task-gantt-popover-due-input", "vg-input-sm");
     dueInput.value = parent.dueDate ?? "";
     this.bindRichPopoverInteraction(dueInput);
     dueInput.addEventListener("change", () => {

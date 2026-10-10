@@ -1,6 +1,6 @@
 import type { Moment } from "moment";
 import type { TaskRow } from "../core/types";
-import { compareBy, getStatusLabel } from "../core/utils";
+import { compareBy, dueBucket, getStatusLabel } from "../core/utils";
 
 
 
@@ -227,8 +227,20 @@ export function getDisplayRows(
       : "desc"
     : opts.sortDir;
 
+  // Date classification belongs to this sort pass, not to each comparison.
+  // Keep it local so edits and a new day's render cannot reuse old buckets.
+  let dueBuckets: Map<string | undefined, number> | undefined;
+  if (!effectiveSortKey || effectiveSortKey === "default" || effectiveSortKey === "dueDate") {
+    dueBuckets = new Map();
+    for (const row of filtered) {
+      if (!dueBuckets.has(row.dueDate)) {
+        dueBuckets.set(row.dueDate, dueBucket(row.dueDate, opts.today));
+      }
+    }
+  }
+
   filtered.sort((a, b) =>
-    compareBy(effectiveSortKey, effectiveSortDir, a, b, opts.today)
+    compareBy(effectiveSortKey, effectiveSortDir, a, b, opts.today, dueBuckets)
   );
 
   return filtered;
@@ -405,15 +417,7 @@ export function getCollapsedWorkbenchRows(
 export function pickWorkbenchPreviewSubtask(
   children: TaskRow[]
 ): TaskRow | null {
-  // only incomplete children are eligible.
-  const candidates = children.filter((child) => child.completed === false);
-
-  // no candidates → null.
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  candidates.sort((a, b) => {
+  const compare = (a: TaskRow, b: TaskRow): number => {
     // effective date = dueDate || plannedEndDate, ascending.
     // Empty string and undefined both mean "no date" — the codebase-wide
     // convention (dueDaysFromToday in src/core/utils.ts treats "" and
@@ -440,10 +444,17 @@ export function pickWorkbenchPreviewSubtask(
 
     // locale-aware displayName ascending.
     return a.displayName.localeCompare(b.displayName);
-  });
+  };
 
-  // the first element after sorting is the representative.
-  return candidates[0];
+  // Only the minimum is needed. Strictly smaller keeps the first child on
+  // exact ties, matching the previous stable sort without allocating/sorting.
+  let preview: TaskRow | null = null;
+  for (const child of children) {
+    if (child.completed === false && (preview === null || compare(child, preview) < 0)) {
+      preview = child;
+    }
+  }
+  return preview;
 }
 
 /**

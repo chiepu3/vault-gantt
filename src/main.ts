@@ -81,6 +81,7 @@ import type {
   TaskWorkbenchViewHost,
 } from "./ui/task-workbench-view";
 import { TaskGanttView } from "./ui/task-gantt-view";
+import { appendTagChips } from "./ui/tag-chip";
 import type { TaskGanttViewHost } from "./ui/task-gantt-view";
 
 // re-exported so consumers (and tests) can reference the real
@@ -1117,6 +1118,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     // Workbench view (activateView), not the Gantt view.
     const openViewButton = document.createElement("button");
     openViewButton.textContent = "ビューを開く";
+    openViewButton.classList.add("vg-btn-sm");
     openViewButton.addEventListener("click", () => {
       void this.navigation.activateView();
     });
@@ -1307,7 +1309,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     tr.appendChild(this.buildEmbedPlainCell(row.currentStatus ?? ""));
     tr.appendChild(this.buildEmbedPlainCell(row.dueDate ?? ""));
     // (row.tags || []) guards null/undefined defensively.
-    tr.appendChild(this.buildEmbedPlainCell((row.tags || []).join(",")));
+    tr.appendChild(this.buildEmbedTagsCell(row.tags || []));
     tr.appendChild(this.buildEmbedOpenCell(row));
     return tr;
   }
@@ -1374,6 +1376,12 @@ export default class TaskWorkbenchPlugin extends Plugin {
     return td;
   }
 
+  private buildEmbedTagsCell(tags: readonly string[]): HTMLTableCellElement {
+    const td = document.createElement("td");
+    appendTagChips(td, tags, this.settings);
+    return td;
+  }
+
   private buildEmbedPlainCell(text: string): HTMLTableCellElement {
     const td = document.createElement("td");
     td.textContent = text;
@@ -1388,6 +1396,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     const td = document.createElement("td");
     const button = document.createElement("button");
     button.textContent = "開く";
+    button.classList.add("vg-btn-sm");
     button.addEventListener("click", (evt) => {
       evt.stopPropagation();
       void this.navigation.openTaskItem?.(row);
@@ -1635,8 +1644,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
   /**
  * Production single-line prompt (modal based). Overridden in tests.
  */
-  protected promptInput(defaultValue?: string): Promise<string | null> {
-    return modalPrompt(this.app)(defaultValue);
+  protected promptInput(
+    defaultValue?: string,
+    title?: string
+  ): Promise<string | null> {
+    return modalPrompt(this.app)(defaultValue, title);
   }
 
   /**

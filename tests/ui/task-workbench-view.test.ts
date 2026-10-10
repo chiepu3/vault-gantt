@@ -723,7 +723,9 @@ describe("TaskWorkbenchView", () => {
       // The add button is present.
       expect(byTag(tds[11], "button")[0].textContent).toBe("+");
       // tags column
-      expect(tds[7].textContent).toBe("backend, urgent");
+      const chips = byClass(tds[7], "vg-chip");
+      expect(chips.map((c) => c.textContent)).toEqual(["backend", "urgent"]);
+      expect(chips.every((c) => c.classList.contains("is-tag"))).toBe(true);
     });
 
     it("subtask rows are marked, indented under the parent, with empty gantt/+ cells", async () => {
@@ -2189,9 +2191,11 @@ describe("TaskWorkbenchView", () => {
       dispatch(input, "keydown", { key: "Escape" });
       expect(input.dataset.cancelled).toBe("1");
       expect((view as any).editing).toBeNull();
-      // display mode restored with the original tags text
+      // display mode restored with the original tag chips
       expect(byTag(cells(bodyRows(container)[0])[7], "input")).toHaveLength(0);
-      expect(cells(bodyRows(container)[0])[7].textContent).toBe("backend, urgent");
+      expect(
+        byClass(cells(bodyRows(container)[0])[7], "vg-chip").map((c) => c.textContent)
+      ).toEqual(["backend", "urgent"]);
 
       dispatch(input, "blur");
       await flush();

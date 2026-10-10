@@ -255,6 +255,38 @@ describe("Task Operations - Integration Tests", () => {
       expect(loaded[0].file.path).toBe(task.file.path);
     });
 
+    it("unchanged tasks and non-task files skip reads; changed files are reloaded", async () => {
+      const task = await createTask(vault, settings, "Cached task");
+      await vault.create("tasks/plain.md", "plain note");
+      await loadTasks(vault, settings, cache);
+      const read = vi.spyOn(vault, "read");
+
+      const unchanged = await loadTasks(vault, settings, cache);
+      expect(read).not.toHaveBeenCalled();
+      expect(unchanged.map((row) => row.title)).toEqual(["Cached task"]);
+
+      const file = vault.getFileByPath(task.file.path)!;
+      const content = await vault.read(file);
+      await vault.modify(file, content.split("Cached task").join("Changed cached task"));
+      read.mockClear();
+      const changed = await loadTasks(vault, settings, cache);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith(expect.objectContaining({ path: file.path }));
+      expect(changed[0].title).toBe("Changed cached task");
+    });
+
+    it("a failed changed-file read is retried rather than cached", async () => {
+      const task = await createTask(vault, settings, "Read retry");
+      await loadTasks(vault, settings, cache);
+      const file = vault.getFileByPath(task.file.path)!;
+      await vault.modify(file, (await vault.read(file)) + "\nchanged");
+      const read = vi.spyOn(vault, "read").mockRejectedValueOnce(new Error("read failed"));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      expect(await loadTasks(vault, settings, cache)).toEqual([]);
+      expect(await loadTasks(vault, settings, cache)).toHaveLength(1);
+      expect(read).toHaveBeenCalledTimes(2);
+    });
+
     it("cache hit skips parsing", async () => {
       vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
 
