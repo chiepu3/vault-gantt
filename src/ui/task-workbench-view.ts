@@ -1,4 +1,5 @@
-import { ItemView, moment, setIcon } from "obsidian";
+import { NotePreservationError } from "../core/note-update";
+import { ItemView, moment, Notice, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
 import type { Logger } from "../core/logger";
@@ -1267,7 +1268,14 @@ export class TaskWorkbenchView extends ItemView {
 
     const startedAt = Date.now();
 
-    await this.host.updateTaskItem(row, patch);
+    try {
+      await this.host.updateTaskItem(row, patch);
+    } catch (error) {
+      if (error instanceof NotePreservationError) {
+        new Notice(`${row.file.path}: ${error.message}`);
+      }
+      throw error;
+    }
 
     this.host.logger.info?.("TaskWorkbenchView", "workbench edit saved", {
       taskId: row.id,

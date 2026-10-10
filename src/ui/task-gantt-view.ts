@@ -1,3 +1,4 @@
+import { NotePreservationError } from "../core/note-update";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { SubtaskAddConflictError } from "../app/task-operations";
 import { renderGhost } from "./ghost-layer";
@@ -3789,7 +3790,9 @@ export class TaskGanttView extends ItemView {
         );
 
         new Notice(
-          "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+          err instanceof NotePreservationError
+            ? `${chosen.file.path}: ${err.message}`
+            : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
         );
       }
       await this.render();
@@ -5974,9 +5977,11 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        err instanceof SubtaskAddConflictError
-          ? err.message
-          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${parent.file.path}: ${err.message}`
+          : err instanceof SubtaskAddConflictError
+            ? err.message
+            : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();
@@ -6216,7 +6221,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? err.message
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render(); // analog
@@ -7365,6 +7372,9 @@ export class TaskGanttView extends ItemView {
         "failed to save workload paint",
         err
       );
+      if (err instanceof NotePreservationError) {
+        new Notice(`${task.file.path}: ${err.message}`);
+      }
 
     }
 
@@ -7842,7 +7852,10 @@ export class TaskGanttView extends ItemView {
         "failed to save popover change",
         err
       );
-      // Log the failure without showing a Notice.
+      if (err instanceof NotePreservationError) {
+        new Notice(`${task.file.path}: ${err.message}`);
+      }
+      // Other save failures are logged without a Notice.
 
     }
     try {
@@ -7858,7 +7871,7 @@ export class TaskGanttView extends ItemView {
  *
  * Saves Current Status separately from saveTaskPatch and savePopoverPatch.
  * It writes only when the trimmed value changes. On failure, it logs to the
- * console without showing a Notice and restores the in-memory value while
+ * console and shows preservation errors in a Notice. It restores the in-memory value while
  * leaving the user's text visible in the textarea. It does not render,
  * because a mid-typing render would tear down the popover.
  */
@@ -7881,6 +7894,9 @@ export class TaskGanttView extends ItemView {
         "failed to save current status",
         err
       );
+      if (err instanceof NotePreservationError) {
+        new Notice(`${task.file.path}: ${err.message}`);
+      }
 
       task.currentStatus = previous; // Roll back the in-memory value.
       // Leave area.value unchanged so the displayed text stays in place.
@@ -7939,7 +7955,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${task.file.path}: ${err.message}`
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       ); // file-write failure surfaces as an in-view warning
     }
     // render either way; the tooltip/is-dragging/
@@ -8772,7 +8790,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${task.file.path}: ${err.message}`
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();
@@ -8808,7 +8828,9 @@ export class TaskGanttView extends ItemView {
       );
 
       new Notice(
-        "ガント操作の保存に失敗しました。詳細は console を確認してください。"
+        err instanceof NotePreservationError
+          ? `${task.file.path}: ${err.message}`
+          : "ガント操作の保存に失敗しました。詳細は console を確認してください。"
       );
     }
     await this.render();

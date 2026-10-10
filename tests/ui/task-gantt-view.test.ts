@@ -1,3 +1,4 @@
+import { NotePreservationError } from "../../src/core/note-update";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 
@@ -9749,6 +9750,27 @@ describe("empty-cell menu and Bulk-Move", () => {
       "ノートが変更されたため、サブタスクを追加できませんでした。もう一度追加してください。"
     );
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["saveTaskPatch", "savePopoverPatch"])("%s shows the note and preservation reason", async (method) => {
+    const { view, h, parent } = await openViewWithParent([]);
+    const error = new NotePreservationError("保存できません。frontmatterに保持できない記述があります: tags");
+    h.updateTaskItem.mockRejectedValueOnce(error);
+    vi.mocked(Notice).mockClear();
+    await (view as any)[method](parent, { tags: ["変更"] }, { checkWorkload: false });
+    expect(Notice).toHaveBeenCalledWith(`${parent.file.path}: ${error.message}`);
+  });
+
+  it("shows the preservation reason when adding a subtask fails", async () => {
+    const { h, timeline, parent } = await openViewWithParent([]);
+    vi.mocked(Notice).mockClear();
+    const error = new NotePreservationError("保存できません。同じ見出しが複数あります: ## Notes");
+    h.addSubtaskWithPlan.mockRejectedValue(error);
+    dispatch(bgAt(timeline, 14), "contextmenu", { clientX: 100, clientY: 50 });
+    dispatch(menuItemWithText(`新規サブタスクを ${dateOffset(0)} に作成`), "click");
+    h.openTextPrompt.mock.calls[0][3]("新しいサブタスク");
+    await flush();
+    expect(Notice).toHaveBeenCalledWith(`${parent.file.path}: ${error.message}`);
   });
 
   it("an empty (whitespace-only) name cancels subtask creation without saving or re-rendering", async () => {
