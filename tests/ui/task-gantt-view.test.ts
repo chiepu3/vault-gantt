@@ -12,11 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import moment from "moment";
 import { Menu, Notice } from "obsidian";
-
-vi.mock("obsidian", async (importOriginal) => ({
-  ...await importOriginal<typeof import("obsidian")>(),
-  Notice: vi.fn(),
-}));
+import { SubtaskAddConflictError } from "../../src/app/task-operations";
 import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
 import type { TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import {
@@ -57,6 +53,11 @@ import {
   makeFakeEl,
 } from "../stubs/fake-dom";
 import type { FakeEl } from "../stubs/fake-dom";
+
+vi.mock("obsidian", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("obsidian")>();
+  return { ...actual, Notice: vi.fn() };
+});
 
 
 // Helpers
@@ -4523,6 +4524,46 @@ describe("TaskGanttView", () => {
       void view;
     });
 
+    it.each([
+      { start: "2026-10-09", end: "2026-10-09", delta: 1, holidays: [], nextStart: "2026-10-12", nextEnd: "2026-10-12" },
+      { start: "2026-10-12", end: "2026-10-12", delta: -1, holidays: [], nextStart: "2026-10-09", nextEnd: "2026-10-09" },
+      { start: "2026-10-09", end: "2026-10-12", delta: 1, holidays: ["2026-10-12"], nextStart: "2026-10-13", nextEnd: "2026-10-13" },
+      { start: "2026-10-08", end: "2026-10-09", delta: 1, holidays: [], nextStart: "2026-10-09", nextEnd: "2026-10-12" },
+    ])("single and bulk moves share saved dates and date previews: $start / $delta / $holidays", async ({ start, end, delta, holidays, nextStart, nextEnd }) => {
+      vi.setSystemTime(new Date("2026-10-09T00:00:00"));
+      const { view, container, timeline, h, parent, sub } = await openViewWithBar({
+        plannedStartDate: start,
+        plannedEndDate: end,
+        ganttMarkers: [{ key: "m1", title: "M1", date: start }],
+        workloadPlan: { [start]: 4 },
+      });
+      const holidaySet = new Set(holidays);
+      (view as any).holidaySet = holidaySet;
+      const bar = barElOf(timeline);
+      (view as any).runBarDrag("move", sub, bar, parseFloat(bar.style.left), parseFloat(bar.style.width), [], 100, 1);
+      dispatch(winEl, "pointermove", { clientX: 100 + delta * 28, clientY: 50 });
+      const tooltip = byClass(container, "task-gantt-drag-tooltip")[0];
+      expect(tooltip.textContent).toBe(`${nextStart} → ${nextEnd}`);
+      dispatch(winEl, "pointerup", { clientX: 100 + delta * 28, clientY: 50 });
+      await flush();
+      const singlePatch = h.updateTaskItem.mock.calls[0][1];
+      expect(singlePatch.plannedStartDate).toBe(nextStart);
+      expect(singlePatch.plannedEndDate).toBe(nextEnd);
+
+      (view as any).holidaySet = holidaySet;
+      (view as any).startBulkMoveDrag(parent, start, 100);
+      dispatch(winEl, "pointermove", { clientX: 100 + delta * 28, clientY: 50 });
+      expect(tooltip.textContent).toContain(`${start} → ${nextStart}`);
+      dispatch(winEl, "pointerup", { clientX: 100 + delta * 28, clientY: 50 });
+      await flush();
+      const commands = h.updateTaskItemsBatch.mock.calls[0][0];
+      expect(commands).toHaveLength(1);
+      expect(commands[0].patch.plannedStartDate).toBe(nextStart);
+      expect(commands[0].patch.plannedEndDate).toBe(nextEnd);
+      expect(commands[0].patch.ganttMarkers).toEqual(singlePatch.ganttMarkers);
+      expect(commands[0].patch.workloadPlan).toEqual({ [nextStart]: 4 });
+    });
+
     it("zero net movement resets the preview and saves nothing", async () => {
       const { timeline, h } = await openViewWithBar();
       const bar = barElOf(timeline);
@@ -4578,7 +4619,7 @@ describe("TaskGanttView", () => {
       expect(patch.plannedEndDate).toBeUndefined();
     });
 
-    it("a left-edge drag past the end date clamps to the day before end", async () => {
+    it("a left-edge drag past the end date clamps to end", async () => {
       const { timeline, h } = await openViewWithBar();
       const bar = barElOf(timeline);
       setBarRect(bar, 100);
@@ -4588,7 +4629,7 @@ describe("TaskGanttView", () => {
       await flush();
 
       const [, patch] = h.updateTaskItem.mock.calls[0];
-      expect(patch.plannedStartDate < dateOffset(5)).toBe(true);
+      expect(patch.plannedStartDate).toBe(dateOffset(5));
     });
 
     it("a right-edge drag resizes only the end date", async () => {
@@ -4683,7 +4724,7 @@ describe("TaskGanttView", () => {
       expect(patch.plannedStartDate).toBeUndefined();
     });
 
-    it("a right-edge drag past the start date clamps to the day after start", async () => {
+    it("a right-edge drag past the start date clamps to start", async () => {
       const { timeline, h } = await openViewWithBar();
       const bar = barElOf(timeline);
       setBarRect(bar, 100 - (parseFloat(bar.style.width) - 1));
@@ -4693,7 +4734,7 @@ describe("TaskGanttView", () => {
       await flush();
 
       const [, patch] = h.updateTaskItem.mock.calls[0];
-      expect(patch.plannedEndDate > dateOffset(0)).toBe(true);
+      expect(patch.plannedEndDate).toBe(dateOffset(0));
     });
 
     it("the preview width is clamped to a minimum of 8px", async () => {
@@ -4714,8 +4755,9 @@ describe("TaskGanttView", () => {
 
 
 
-    it("a workload-actual bar prompts for confirmation before saving", async () => {
-      const { timeline, h } = await openViewWithBar({
+    it("a bar move shifts planned hours and keeps actual hours after confirmation", async () => {
+      const { timeline, h, sub } = await openViewWithBar({
+        workloadPlan: { [dateOffset(0)]: 4, [dateOffset(2)]: 1 },
         workloadActual: { [dateOffset(0)]: 3 },
       });
       h.confirmWorkloadShift.mockResolvedValue(true);
@@ -4727,9 +4769,16 @@ describe("TaskGanttView", () => {
 
       expect(h.confirmWorkloadShift).toHaveBeenCalledTimes(1);
       expect(h.confirmWorkloadShift.mock.calls[0][0]).toContain(
-        "この移動により作業記録がずれます"
+        "実績時間の日付は変更しません"
       );
       expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+      const [, patch] = h.updateTaskItem.mock.calls[0];
+      expect(patch.workloadPlan).toEqual({
+        [dateOffset(2)]: 4,
+        [dateOffset(6)]: 1,
+      });
+      expect(patch).not.toHaveProperty("workloadActual");
+      expect(sub.workloadActual).toEqual({ [dateOffset(0)]: 3 });
     });
 
     it("cancelling the workload warning saves nothing and does not re-render", async () => {
@@ -4953,6 +5002,22 @@ describe("TaskGanttView", () => {
       expect(commands[0].patch.workloadPlan).toEqual({ [dateOffset(1)]: 4 });
     });
 
+    it("bulk moves snap each target separately and preserve working-day durations", async () => {
+      const targets = [
+        makeBarSubtask("thursday", { plannedStartDate: "2026-10-08", plannedEndDate: "2026-10-09" }),
+        makeBarSubtask("friday", { plannedStartDate: "2026-10-09", plannedEndDate: "2026-10-09" }),
+      ];
+      const parent = withChildren(makeParent({ ganttEnabled: true }), targets);
+      const { view, h } = await openView([parent]);
+      (view as any).holidaySet = new Set<string>();
+      await (view as any).finishBulkMoveDrag(targets, 1);
+      const commands = h.updateTaskItemsBatch.mock.calls[0][0];
+      expect(commands.map((command: { patch: { plannedStartDate?: string; plannedEndDate?: string } }) => [command.patch.plannedStartDate, command.patch.plannedEndDate])).toEqual([
+        ["2026-10-09", "2026-10-12"],
+        ["2026-10-12", "2026-10-12"],
+      ]);
+    });
+
     it("bulk-move preview distinguishes its anchor from follower bars and shows the '一括移動' tooltip", async () => {
       const parent = withChildren(makeParent({ ganttEnabled: true }), [
         makeBarSubtask("s1", {
@@ -5016,7 +5081,15 @@ describe("TaskGanttView", () => {
 
       expect(h.confirmWorkloadShift).toHaveBeenCalledTimes(1);
       expect(h.updateTaskItemsBatch).toHaveBeenCalledTimes(1);
-      expect(h.updateTaskItemsBatch.mock.calls[0][0]).toHaveLength(2);
+      const commands = h.updateTaskItemsBatch.mock.calls[0][0];
+      expect(commands).toHaveLength(2);
+      expect(h.confirmWorkloadShift).toHaveBeenCalledWith(
+        "予定日と計画時間を一括移動します。実績時間の日付は変更しません。実行しますか？"
+      );
+      for (const command of commands) {
+        expect(command.patch).not.toHaveProperty("workloadActual");
+      }
+      expect(commands[0].row.workloadActual).toEqual({ [dateOffset(0)]: 2 });
     });
   });
 });
@@ -9429,7 +9502,7 @@ describe("inline title editing and marker modal", () => {
       await flush();
 
       expect(confirmSpy).toHaveBeenCalledWith(
-        "サブタスク『削除対象』をタスクとして削除します。元に戻せません。"
+        "サブタスク『削除対象』をタスクとして削除します。"
       );
       expect(h.deleteSubtaskTaskItem).not.toHaveBeenCalled();
     });
@@ -9447,7 +9520,7 @@ describe("inline title editing and marker modal", () => {
 
       // both displayName and title empty falls back to「サブタスク」
       expect((globalThis as any).window.confirm).toHaveBeenCalledWith(
-        "サブタスク『サブタスク』をタスクとして削除します。元に戻せません。"
+        "サブタスク『サブタスク』をタスクとして削除します。"
       );
       expect(h.deleteSubtaskTaskItem).toHaveBeenCalledWith(sub);
       expect(h.loadTasks).toHaveBeenCalledTimes(1); // re-render after delete
@@ -9657,6 +9730,23 @@ describe("empty-cell menu and Bulk-Move", () => {
       parent,
       "新しいやつ",
       dateOffset(0)
+    );
+    expect(h.loadTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the user to retry a conflicting subtask addition and refreshes the chart", async () => {
+    const { h, timeline } = await openViewWithParent([]);
+    h.loadTasks.mockClear();
+    vi.mocked(Notice).mockClear();
+    const conflict = new SubtaskAddConflictError();
+    h.addSubtaskWithPlan.mockRejectedValue(conflict);
+    dispatch(bgAt(timeline, 14), "contextmenu", { clientX: 100, clientY: 50 });
+    dispatch(menuItemWithText(`新規サブタスクを ${dateOffset(0)} に作成`), "click");
+    h.openTextPrompt.mock.calls[0][3]("新しいサブタスク");
+    await flush();
+
+    expect(Notice).toHaveBeenCalledWith(
+      "ノートが変更されたため、サブタスクを追加できませんでした。もう一度追加してください。"
     );
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
   });

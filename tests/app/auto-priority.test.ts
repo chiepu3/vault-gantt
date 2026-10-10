@@ -4,6 +4,7 @@ import { AutoPriorityController, TaskCache } from "../../src/app/auto-priority";
 import { VaultAdapter, VaultFile } from "../../src/app/task-operations";
 import { FakeVault } from "./fake-vault";
 import { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
+import { buildFullNote } from "../../src/core/note-format";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { applyAutoPriorityFields, buildFileRevision } from "../../src/core/utils";
 
@@ -131,9 +132,10 @@ describe("AutoPriorityController", () => {
   /** Seeds a file and a matching-revision cache entry holding staleRow. */
   async function seedStaleCache(
     path: string,
-    staleRow: TaskRow
+    staleRow: TaskRow,
+    original = buildFullNote(staleRow, staleRow.subtasks)
   ): Promise<void> {
-    const created = await vault.create(path, "placeholder");
+    const created = await vault.create(path, original);
     const revision = buildFileRevision(created as any);
     cache.set(path, { revision, taskRow: staleRow });
   }
@@ -233,6 +235,54 @@ describe("AutoPriorityController", () => {
 
       expect(ran).toBe(true);
       expect(vault.getModifyCallCount()).toBe(0);
+    });
+
+    it("preserves unmanaged YAML, block tags and custom sections for parent and subtask updates", async () => {
+      const path = "tasks/2026-07/preserved.md";
+      const row = makeStaleParent(path, "2026-07-28");
+      row.tags = ["a", "b:c"];
+      row.subtasks!.set("sub", {
+        ...makeStaleParent(path, "2026-07-28"), kind: "subtask", key: "sub", id: `${path}::sub`,
+      });
+      const extras = "project: 顧客A\nlinks:\n  - https://example.com\n";
+      const section = "\n## 参考資料\n独自セクション\n";
+      const original = buildFullNote(row, row.subtasks)
+        .replace('tags: ["a","b:c"]', "tags:\n  - a\n  - 'b:c'")
+        .replace("type: task\n", `type: task\n${extras}`) + section;
+      await seedStaleCache(path, row, original);
+
+      await controller.updateAutoPriorities(vault, settings, cache);
+
+      const content = vault.getFileContent(path)!;
+      expect(content).toContain(extras);
+      expect(content).toContain(section);
+      expect(content).toContain('tags: ["a","b:c"]');
+      expect(content).toContain("priority: 5");
+      expect(content).toContain("subtask__sub__priority: 5");
+      expect(vault.getModifyCallCount()).toBe(1);
+    });
+
+    it("skips only an unpreservable note without mutating its cached priorities", async () => {
+      const path = "tasks/2026-07/unsafe.md";
+      const row = makeStaleParent(path, "2026-07-28");
+      row.subtasks!.set("sub", {
+        ...makeStaleParent(path, "2026-07-28"), kind: "subtask", key: "sub", id: `${path}::sub`,
+      });
+      const original = buildFullNote(row, row.subtasks) + "\n## Notes\n重複\n";
+      await seedStaleCache(path, row, original);
+      const safePath = "tasks/2026-07/safe.md";
+      await seedStaleCache(safePath, makeStaleParent(safePath, "2026-07-28"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      expect(await controller.updateAutoPriorities(vault, settings, cache)).toBe(true);
+
+      expect(vault.getFileContent(path)).toBe(original);
+      expect(row.priority).toBe(0);
+      expect(row.subtasks!.get("sub")!.priority).toBe(0);
+      expect(vault.getFileContent(safePath)).toContain("priority: 5");
+      expect(vault.getModifyCallCount()).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(settings.lastAutoPriorityUpdate).toBe("2026-07-29");
     });
 
     it("stale cached parent is recomputed and its file rewritten once", async () => {
@@ -335,7 +385,7 @@ describe("AutoPriorityController", () => {
       // earlier file already updated (partial state)
       expect(vault.getFileContent(pathA)).toContain("priority: 5");
       // later files are not processed
-      expect(vault.getFileContent(pathB)).toBe("placeholder");
+      expect(vault.getFileContent(pathB)).toContain("priority: 0");
       // run date not recorded on failure
       expect(settings.lastAutoPriorityUpdate).toBe("");
     });

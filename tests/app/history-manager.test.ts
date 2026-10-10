@@ -401,6 +401,32 @@ describe("HistoryManager", () => {
     expect(manager.peekRedoLabel()).toBeUndefined();
   });
 
+  it("discards redo while preserving older undo entries", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+    manager.push(makeEntry("以前の編集", [makeChange("other.md")]));
+    manager.push(makeEntry("編集"));
+    await manager.undo(vault.asVault());
+    expect(manager.canRedo()).toBe(true);
+    manager.discardRedo();
+    expect(manager.peekUndoLabel()).toBe("以前の編集");
+    expect(manager.canRedo()).toBe(false);
+  });
+
+  it("discards redo requested during undo after the disk transition", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+    manager.push(makeEntry("以前の編集", [makeChange("other.md")]));
+    manager.push(makeEntry("編集"));
+    const undo = manager.undo(vault.asVault());
+    manager.discardRedo();
+    await expect(undo).resolves.toEqual({ kind: "success", label: "編集" });
+    expect(manager.peekUndoLabel()).toBe("以前の編集");
+    expect(manager.canRedo()).toBe(false);
+  });
+
   it("applies a clear requested during undo after the disk transition", async () => {
     const manager = new HistoryManager();
     const vault = new ProcessFakeVault();

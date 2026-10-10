@@ -729,7 +729,7 @@ Some notes here
       expect(rebuilt).toContain("Some notes here");
     });
 
-    it("statusLabel/completed synchronized only during update, not during load", () => {
+    it("statusLabel determines completed during load, completion updates still set status", () => {
       // Parse with inconsistent values
       const inconsistentContent = `---
 type: task
@@ -751,13 +751,13 @@ subtaskOrder: []
 # Inconsistent
 `;
 
-      // Should load without error despite inconsistency
+      // Load resolves inconsistency using the explicit status.
       const task = parseTaskFile({ path: "tasks/2026/07/test.md" }, inconsistentContent, settings);
       expect(task).not.toBeNull();
       expect(task?.statusLabel).toBe("active");
-      expect(task?.completed).toBe(true); // Inconsistency preserved
+      expect(task?.completed).toBe(false);
 
-      // But during patch, it gets synchronized - completed true -> statusLabel done
+      // An explicit completion update still changes the status to done.
       if (task) {
         const normalized = normalizeTaskPatch({ completed: true }, "parent");
         expect(normalized.statusLabel).toBe("done"); // Gets synchronized

@@ -86,6 +86,29 @@ const {
     }
   }
 
+  class FakeDropdown {
+    value = "";
+    options: Record<string, string> = {};
+    selectEl = { options: [] as { value: string; text: string }[] };
+    handler: ((value: string) => unknown) | null = null;
+
+    addOption(value: string, label: string): this {
+      this.options[value] = label;
+      this.selectEl.options.push({ value, text: label });
+      return this;
+    }
+
+    setValue(value: string): this {
+      this.value = value;
+      return this;
+    }
+
+    onChange(handler: (value: string) => unknown): this {
+      this.handler = handler;
+      return this;
+    }
+  }
+
   class FakeButton {
     text = "";
     cta = false;
@@ -160,6 +183,7 @@ const {
     desc = "";
     heading = false;
     toggles: FakeToggle[] = [];
+    dropdowns: FakeDropdown[] = [];
     texts: FakeText[] = [];
     textAreas: FakeText[] = [];
     buttons: FakeButton[] = [];
@@ -189,6 +213,13 @@ const {
       const toggle = new FakeToggle();
       this.toggles.push(toggle);
       callback(toggle);
+      return this;
+    }
+
+    addDropdown(callback: (dropdown: FakeDropdown) => void): this {
+      const dropdown = new FakeDropdown();
+      this.dropdowns.push(dropdown);
+      callback(dropdown);
       return this;
     }
 
@@ -337,6 +368,7 @@ describe("TaskWorkbenchSettingTab", () => {
       "",
       "タグを追加",
       "Daily ToDo",
+      "新規ToDoの追加先",
       "デイリー",
       "デイリーミーティング",
       "ソース操作",
@@ -546,6 +578,24 @@ describe("TaskWorkbenchSettingTab", () => {
       creatableFromGantt: true,
     });
     expect(saveSettings).toHaveBeenCalledTimes(4);
+    expect(settingByName("新規ToDoの追加先").dropdowns[0].selectEl.options
+      .find((option) => option.value === "source")?.text).toBe("新しいラベル");
+  });
+
+  it("keeps the selected key through reordering and asks to select again after deletion", async () => {
+    settings.dailyTodoTargetSourceKey = "main";
+    tab.display();
+    const target = settingByName("新規ToDoの追加先").dropdowns[0];
+    expect(target.value).toBe("main");
+    expect(target.options).toEqual({ main: "デイリー", meeting: "デイリーミーティング" });
+    await dailySourceRows()[0].buttons[1].handler!();
+    expect(settings.dailyTodoTargetSourceKey).toBe("main");
+    const currentRows = dailySourceRows().slice(-2);
+    await currentRows[1].buttons[2].handler!();
+    expect(settings.dailyTodoTargetSourceKey).toBe("main");
+    const currentTarget = [...RecordingSetting.all].reverse().find((setting) => setting.name === "新規ToDoの追加先")!.dropdowns[0];
+    expect(currentTarget.value).toBe("main");
+    expect(currentTarget.options).toEqual({ main: "追加先を選んでください", meeting: "デイリーミーティング" });
   });
 
   it("deletes a source without confirmation and saves the list", async () => {
@@ -633,6 +683,13 @@ describe("TaskWorkbenchSettingTab", () => {
       creatableFromGantt: true,
     });
     expect(saveSettings).toHaveBeenCalledTimes(1);
+
+    const target = [...RecordingSetting.all].reverse().find((setting) => setting.name === "新規ToDoの追加先")!.dropdowns[0];
+    const importedKey = settings.dailyTodoSources[1].key;
+    expect(target.options[importedKey]).toBe("10_Daily");
+    await target.handler!(importedKey);
+    expect(settings.dailyTodoTargetSourceKey).toBe(importedKey);
+    expect(saveSettings).toHaveBeenCalledTimes(2);
   });
 
   it("shows a Notice and leaves sources unchanged when import is unavailable", async () => {
