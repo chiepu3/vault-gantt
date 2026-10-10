@@ -167,17 +167,21 @@ describe("gantt-drag pure helpers", () => {
       );
     });
 
-    it("clamps to the business day just before end when start would reach/pass end", () => {
-
-
+    it("clamps to end when start would pass end", () => {
       expect(snapResizeStart("2026-08-25", "2026-08-20", HOLIDAYS)).toBe(
-        "2026-08-19"
+        "2026-08-20"
       );
     });
 
-    it("clamps even when start would land EXACTLY on end", () => {
+    it("allows start to land exactly on end", () => {
       expect(snapResizeStart("2026-08-20", "2026-08-20", HOLIDAYS)).toBe(
-        "2026-08-19"
+        "2026-08-20"
+      );
+    });
+
+    it("clamps to a non-working end when snapping would pass it", () => {
+      expect(snapResizeStart("2026-08-01", "2026-08-01", HOLIDAYS)).toBe(
+        "2026-08-01"
       );
     });
   });
@@ -191,19 +195,21 @@ describe("gantt-drag pure helpers", () => {
       );
     });
 
-    it("clamps to the business day just after start when end would reach/precede start", () => {
-
-      // The task starts on a business day. When the proposed end reaches
-      // or precedes it, the result is clamped to the next business day.
-
+    it("clamps to start when end would precede a non-working start", () => {
       expect(snapResizeEnd("2026-08-01", "2026-07-20", HOLIDAYS)).toBe(
-        "2026-08-04"
+        "2026-08-01"
       );
     });
 
-    it("clamps even when end would land EXACTLY on start", () => {
+    it("allows end to land exactly on start", () => {
+      expect(snapResizeEnd("2026-08-20", "2026-08-20", HOLIDAYS)).toBe(
+        "2026-08-20"
+      );
+    });
+
+    it("clamps to a non-working start when snapping would precede it", () => {
       expect(snapResizeEnd("2026-08-01", "2026-08-01", HOLIDAYS)).toBe(
-        "2026-08-04"
+        "2026-08-01"
       );
     });
   });

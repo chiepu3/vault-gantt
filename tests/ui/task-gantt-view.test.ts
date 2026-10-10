@@ -4578,7 +4578,7 @@ describe("TaskGanttView", () => {
       expect(patch.plannedEndDate).toBeUndefined();
     });
 
-    it("a left-edge drag past the end date clamps to the day before end", async () => {
+    it("a left-edge drag past the end date clamps to end", async () => {
       const { timeline, h } = await openViewWithBar();
       const bar = barElOf(timeline);
       setBarRect(bar, 100);
@@ -4588,7 +4588,7 @@ describe("TaskGanttView", () => {
       await flush();
 
       const [, patch] = h.updateTaskItem.mock.calls[0];
-      expect(patch.plannedStartDate < dateOffset(5)).toBe(true);
+      expect(patch.plannedStartDate).toBe(dateOffset(5));
     });
 
     it("a right-edge drag resizes only the end date", async () => {
@@ -4683,7 +4683,7 @@ describe("TaskGanttView", () => {
       expect(patch.plannedStartDate).toBeUndefined();
     });
 
-    it("a right-edge drag past the start date clamps to the day after start", async () => {
+    it("a right-edge drag past the start date clamps to start", async () => {
       const { timeline, h } = await openViewWithBar();
       const bar = barElOf(timeline);
       setBarRect(bar, 100 - (parseFloat(bar.style.width) - 1));
@@ -4693,7 +4693,7 @@ describe("TaskGanttView", () => {
       await flush();
 
       const [, patch] = h.updateTaskItem.mock.calls[0];
-      expect(patch.plannedEndDate > dateOffset(0)).toBe(true);
+      expect(patch.plannedEndDate).toBe(dateOffset(0));
     });
 
     it("the preview width is clamped to a minimum of 8px", async () => {
