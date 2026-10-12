@@ -1,3 +1,5 @@
+import { Notice } from "obsidian";
+import { NotePreservationError } from "../../src/core/note-update";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 
@@ -9,7 +11,13 @@
 
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { ViewStateService } from "../../src/app/view-state-service";
+import { PreviewStore } from "../../src/app/preview-store";
 import moment from "moment";
+vi.mock("obsidian", async (importOriginal) => ({
+  ...await importOriginal<typeof import("obsidian")>(),
+  Notice: vi.fn(),
+}));
 import { TaskWorkbenchView } from "../../src/ui/task-workbench-view";
 import type { TaskWorkbenchViewHost } from "../../src/ui/task-workbench-view";
 import { TaskFinderModal } from "../../src/ui/task-finder-modal";
@@ -210,6 +218,7 @@ function buttonByText(root: FakeEl, text: string): FakeEl {
 describe("TaskWorkbenchView", () => {
   beforeEach(() => {
     vi.stubGlobal("document", createFakeDocument());
+    vi.stubGlobal("window", makeFakeEl("window"));
   });
 
   afterEach(() => {
@@ -221,6 +230,15 @@ describe("TaskWorkbenchView", () => {
 
 
 
+
+  it("registered view requests change real filters and unregister on close without saving", async () => {
+    const previews = new PreviewStore({ reject: () => {}, repreview: async () => { throw new Error("unused"); } }), ui = new ViewStateService(previews);
+    const { view, container, h } = await openView([makeParent({ id: "tasks/a.md", displayName: "Alpha" }), makeParent({ id: "tasks/b.md", displayName: "Beta" })], {}, { viewId: "workbench-live", viewStatePort: ui });
+    expect(bodyRows(container)).toHaveLength(2);
+    expect(await ui.request("V07", { viewId: "workbench-live", text: "Beta" })).toMatchObject({ status: "applied" });
+    expect(bodyRows(container)).toHaveLength(1); expect(deepText(bodyRows(container)[0])).toContain("Beta"); expect(ui.inspectView("workbench-live")?.filterText).toBe("Beta"); expect(h.updateTaskItem).not.toHaveBeenCalled();
+    await view.onClose(); expect(ui.inspectView("workbench-live")).toBeUndefined(); expect(await ui.request("V07", { viewId: "workbench-live", text: "Alpha" })).toMatchObject({ status: "unavailable" }); previews.dispose();
+  });
 
   describe("identity and onOpen", () => {
     it("exposes view type, title and icon", () => {
@@ -568,6 +586,28 @@ describe("TaskWorkbenchView", () => {
       expect(bodyRows(container)).toHaveLength(1);
     });
 
+    it("routes history keys only while focused in the view and removes listeners on close", async () => {
+      const { view, container, h } = await openView([]);
+      const stopImmediatePropagation = vi.fn();
+      dispatch(container, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "Z", ctrlKey: true, shiftKey: true, stopImmediatePropagation });
+      dispatch(container, "keydown", { target: container, key: "y", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+      expect(h.redoLastAction).toHaveBeenCalledTimes(2);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
+      const input = makeFakeEl("input"); container.appendChild(input);
+      for (const shortcut of [{ key: "z" }, { key: "Z", shiftKey: true }, { key: "y" }]) {
+        const event = dispatch(container, "keydown", { target: input, ctrlKey: true, stopImmediatePropagation, ...shortcut });
+        expect(event.__defaultPrevented).toBeUndefined();
+      }
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+      expect(h.redoLastAction).toHaveBeenCalledTimes(2);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(3);
+      await view.onClose();
+      dispatch(container, "keydown", { target: container, key: "z", ctrlKey: true, stopImmediatePropagation });
+      expect(h.undoLastAction).toHaveBeenCalledTimes(1);
+    });
+
     it("Undo/Redo buttons delegate to their host actions", async () => {
       const { container, h } = await openView([]);
 
@@ -689,7 +729,9 @@ describe("TaskWorkbenchView", () => {
       // The add button is present.
       expect(byTag(tds[11], "button")[0].textContent).toBe("+");
       // tags column
-      expect(tds[7].textContent).toBe("backend, urgent");
+      const chips = byClass(tds[7], "vg-chip");
+      expect(chips.map((c) => c.textContent)).toEqual(["backend", "urgent"]);
+      expect(chips.every((c) => c.classList.contains("is-tag"))).toBe(true);
     });
 
     it("subtask rows are marked, indented under the parent, with empty gantt/+ cells", async () => {
@@ -2035,6 +2077,17 @@ describe("TaskWorkbenchView", () => {
     // synchronously before awaiting onCommit.
 
 
+    it("shows the note and preservation reason while keeping the editor open", async () => {
+      const parent = makeParent();
+      const { view, container, h } = await startStatusEdit([parent]);
+      const error = new NotePreservationError("保存できません。保持できない記述があります: ## Current Status");
+      h.updateTaskItem.mockRejectedValueOnce(error);
+      vi.mocked(Notice).mockClear();
+      await expect((view as any).savePatch(parent, { currentStatus: "変更" })).rejects.toBe(error);
+      expect(Notice).toHaveBeenCalledWith(`${parent.file.path}: ${error.message}`);
+      expect(byClass(container, "task-workbench-inline-textarea")).toHaveLength(1);
+    });
+
     it("a rejected save is silent (no Notice — this file never imports Notice) and leaves the currentStatus editor open for retry", async () => {
       const parent = makeParent();
       const { view, container, h } = await startStatusEdit([parent]);
@@ -2155,9 +2208,11 @@ describe("TaskWorkbenchView", () => {
       dispatch(input, "keydown", { key: "Escape" });
       expect(input.dataset.cancelled).toBe("1");
       expect((view as any).editing).toBeNull();
-      // display mode restored with the original tags text
+      // display mode restored with the original tag chips
       expect(byTag(cells(bodyRows(container)[0])[7], "input")).toHaveLength(0);
-      expect(cells(bodyRows(container)[0])[7].textContent).toBe("backend, urgent");
+      expect(
+        byClass(cells(bodyRows(container)[0])[7], "vg-chip").map((c) => c.textContent)
+      ).toEqual(["backend", "urgent"]);
 
       dispatch(input, "blur");
       await flush();

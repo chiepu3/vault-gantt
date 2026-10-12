@@ -53,6 +53,7 @@ export class TaskFinderModal extends Modal {
     content.appendChild(input);
 
     this.listEl = document.createElement("div");
+    this.listEl.className = "vg-modal-list vg-finder-list";
     content.appendChild(this.listEl);
 
     this.renderList();
@@ -131,8 +132,17 @@ export class TaskFinderModal extends Modal {
       return;
     }
     listEl.replaceChildren();
+    if (this.filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "vg-empty";
+      empty.textContent = "該当するタスクがありません";
+      listEl.appendChild(empty);
+      return;
+    }
+    let selectedRow: HTMLElement | null = null;
     this.filtered.forEach((item, index) => {
       const row = document.createElement("div");
+      row.className = "vg-list-row";
       // bold, larger task name
       const titleEl = document.createElement("div");
       titleEl.className = "task-workbench-finder-title";
@@ -145,13 +155,18 @@ export class TaskFinderModal extends Modal {
       row.appendChild(titleEl);
       row.appendChild(metaEl);
       if (index === this.selectedIndex) {
-        row.className = "is-selected";
+        row.className = "vg-list-row is-selected";
+        selectedRow = row;
       }
       row.addEventListener("click", () => {
         this.chooseItem(item);
       });
       listEl.appendChild(row);
     });
+    const target = selectedRow as HTMLElement | null;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ block: "nearest" });
+    }
   }
 }
 

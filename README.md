@@ -11,6 +11,8 @@ Vault内のMarkdownタスクノートを正本として、タスクを一覧・�
 
 ## インストール
 
+Windows でインストーラーを使う手順は [docs/INSTALL.md](docs/INSTALL.md) を参照してください。手動でビルドして配置する場合は次のとおりです。
+
 1. リポジトリのルートでビルドします。
 
    ```sh
@@ -47,6 +49,8 @@ Obsidianのコマンドパレットで以下の登録名を検索して実行で
 
 Workbenchの「Ganttで管理」を有効にした親タスクがGanttの対象になります。設定したタスクフォルダー内にある `type: task` のMarkdownノートが、タスク情報の読み書き対象です。
 
+タスクの編集時は、独自のfrontmatterプロパティや `## 参考資料` などの独自セクションを残します。変更する管理セクション内に保持できない記述がある場合は、保存を止めて対象の見出しを知らせます。
+
 ## 設定
 
 設定画面では、タスクフォルダー、作成ファイル名の日付接頭辞、完了タスクの初期表示、期限にもとづく優先度の自動設定を変更できます。Ganttでは休日、Daily ToDoソース、タグ定義、作業時間・イベント・タグ機能、差分描画、外部同期の有効化・URL・間隔を設定できます。
@@ -74,9 +78,9 @@ npm run test:e2e
 
 `npm run test:e2e` はNode.js 22以上とLinuxのXvfbを使用し、実際のObsidianを起動します。利用可能なキャッシュがない場合は、固定バージョンのObsidian AppImageをダウンロードします。手元のAppImageを使う場合は `E2E_OBSIDIAN_APPIMAGE`、キャッシュ先を変更する場合は `E2E_CACHE_DIR` を設定できます。
 
-## 別PCのVaultへの更新
+## Windowsへのインストール・更新
 
-GitHub Actionsのartifactから別Windows PCのVaultへ3ファイルだけを更新・rollbackする手順は [tools/faroe/README.md](tools/faroe/README.md) を参照してください（実機未テスト）。
+公開branchを選択してビルド・配置するinstallerと、GitHub Actionsの検証済みartifactから更新・rollbackするupdaterを [tools/updater/README.md](tools/updater/README.md) にまとめています。標準のplugin配置先では両方式が同じnamed mutexを使い、並行配置を拒否します。installerは配置先のmanifest ID（初回はフォルダー構造）を確認し、失敗時は例外が発生したファイルも復元・hash/存在状態を検証します。復元を確認できなければbackupと作業フォルダーを保持して手動復元を案内します。build用作業フォルダーのcleanupは長いパスに対応しています。
 
 ## ライセンス
 

@@ -1,4 +1,8 @@
-import { ItemView, moment } from "obsidian";
+import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
+import type { OperationRequestResultV1 } from "../contracts/preview";
+import type { PreviewUiHostPorts, ViewStateV1 } from "../contracts/ports";
+import { NotePreservationError } from "../core/note-update";
+import { ItemView, moment, Notice, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
 import type { Logger } from "../core/logger";
@@ -22,6 +26,8 @@ import type {
   WorkbenchDisplayRow,
 } from "../app/workbench-display";
 import { TaskFinderModal } from "./task-finder-modal";
+import { registerHistoryHotkeys } from "./history-hotkeys";
+import { appendTagChips } from "./tag-chip";
 
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
@@ -52,7 +58,7 @@ const FILTER_RENDER_DEBOUNCE_MS = 200;
 
 
 
-export interface TaskWorkbenchViewHost {
+export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
 
   logger: Logger;
 
@@ -92,8 +98,10 @@ export interface TaskWorkbenchViewHost {
 
 
 export class TaskWorkbenchView extends ItemView {
+  private unregisterHistoryHotkeys?: () => void;
   // --- Header control state (persists for the view's lifetime) ---
 
+  private unregisterState?: () => void;
   private filterText = "";
 
   private statusFilter = "all";
@@ -171,7 +179,26 @@ export class TaskWorkbenchView extends ItemView {
  * then runs the initial render. A fresh View instance is created per
  * open, so all control/collapse state starts from its defaults.
  */
+  async requestViewOperation(id: ViewOperationId, input: unknown): Promise<OperationRequestResultV1> {
+    const args = operationInputSchemas[id].parse(input), before = { filterText: this.filterText, statusFilter: this.statusFilter, showCompleted: this.showCompleted, sort: this.sortKey, direction: this.sortDir, flatDueSort: this.flatDueSort };
+    if (id === "V07") this.filterText = (args as OperationInputMap["V07"]).text;
+    else if (id === "V08") this.statusFilter = (args as OperationInputMap["V08"]).status;
+    else if (id === "V09") { this.sortKey = (args as OperationInputMap["V09"]).sort; this.sortDir = (args as OperationInputMap["V09"]).direction; }
+    else if (id === "V10") this.flatDueSort = (args as OperationInputMap["V10"]).flatDueSort;
+    else if (id === "V11") this.showCompleted = (args as OperationInputMap["V11"]).showCompleted;
+    else if (id === "V12") {
+      const target = args as OperationInputMap["V12"];
+      if (!this.tasks.some((task) => task.kind === "parent" && task.id === target.parentId)) throw new Error("NOT_FOUND");
+      const collapsed = this.ensureCollapseState(); if (target.expanded) collapsed.delete(target.parentId); else collapsed.add(target.parentId);
+    } else if (id === "V16") await this.render();
+    else return { schemaVersion: 1, resultKind: "request", operationId: id, status: "unavailable", effects: [], error: { code: "UI_UNAVAILABLE", retryable: false, nextAction: "Workbenchに対応する表示操作を指定してください。" } };
+    this.editing = null; this.cancelFilterRender(); this.renderHeader(); this.renderTableImmediately();
+    return { schemaVersion: 1, resultKind: "request", operationId: id, status: "applied", effects: [{ kind: "view", before, after: { filterText: this.filterText, statusFilter: this.statusFilter, showCompleted: this.showCompleted, sort: this.sortKey, direction: this.sortDir, flatDueSort: this.flatDueSort }, affectedIds: [this.host.viewId!] }] };
+  }
   async onOpen(): Promise<void> {
+    this.unregisterHistoryHotkeys?.();
+    this.unregisterHistoryHotkeys = registerHistoryHotkeys(this, this.containerEl, this.host);
+    if (this.host.viewId) this.unregisterState = this.host.viewStatePort?.register(this.host.viewId, () => ({ viewId: this.host.viewId!, kind: "workbench", filterText: this.filterText, statusFilter: this.statusFilter as ViewStateV1["statusFilter"], showCompleted: this.showCompleted, tagNames: [] }), (id, input) => this.requestViewOperation(id, input));
     const container = this.containerEl;
     // Obsidian's HTMLElement.empty extension.
     container.empty();
@@ -268,6 +295,8 @@ export class TaskWorkbenchView extends ItemView {
  * may target the detached view.
  */
   onClose(): Promise<void> {
+    this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
+    this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
     return Promise.resolve();
   }
@@ -479,15 +508,25 @@ export class TaskWorkbenchView extends ItemView {
     );
 
     right.appendChild(
-      this.buildButton("⟲ 元に戻す", "task-workbench-undo", () => {
-        void this.host.undoLastAction();
-      })
+      this.buildIconButton(
+        "undo-2",
+        "元に戻す",
+        ["task-workbench-undo"],
+        () => {
+          void this.host.undoLastAction();
+        }
+      )
     );
 
     right.appendChild(
-      this.buildButton("⟳ やり直す", "task-workbench-redo", () => {
-        void this.host.redoLastAction();
-      })
+      this.buildIconButton(
+        "redo-2",
+        "やり直す",
+        ["task-workbench-redo"],
+        () => {
+          void this.host.redoLastAction();
+        }
+      )
     );
 
 
@@ -1066,9 +1105,9 @@ export class TaskWorkbenchView extends ItemView {
       td.appendChild(this.buildTagsEditor(row));
       return td;
     }
-    // comma-separated display.
+    // one chip per tag.
     // (row.tags || []) guards undefined/null at runtime.
-    td.textContent = (row.tags || []).join(", ");
+    appendTagChips(td, row.tags || [], this.host.settings);
     // dblclick on the cell starts inline editing.
     td.addEventListener("dblclick", () => {
       this.startEditing(row, "tags");
@@ -1143,6 +1182,7 @@ export class TaskWorkbenchView extends ItemView {
     td.classList.add("tiny-col");
     const button = document.createElement("button");
     button.textContent = "開";
+    button.classList.add("vg-btn-sm");
     button.addEventListener("click", (evt) => {
       // open the task file, click propagation stopped.
       evt.stopPropagation();
@@ -1166,6 +1206,7 @@ export class TaskWorkbenchView extends ItemView {
     td.classList.add("tiny-col");
     const button = document.createElement("button");
     button.textContent = "+";
+    button.classList.add("vg-btn-sm");
     button.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.addSubtaskForRow(row);
@@ -1254,7 +1295,14 @@ export class TaskWorkbenchView extends ItemView {
 
     const startedAt = Date.now();
 
-    await this.host.updateTaskItem(row, patch);
+    try {
+      await this.host.updateTaskItem(row, patch);
+    } catch (error) {
+      if (error instanceof NotePreservationError) {
+        new Notice(`${row.file.path}: ${error.message}`);
+      }
+      throw error;
+    }
 
     this.host.logger.info?.("TaskWorkbenchView", "workbench edit saved", {
       taskId: row.id,
@@ -1598,6 +1646,22 @@ export class TaskWorkbenchView extends ItemView {
     label.appendChild(checkbox);
     label.appendChild(document.createTextNode(labelText));
     return label;
+  }
+
+  /** Icon-only toolbar button: Lucide icon with a Japanese label for assistive tech and tooltip. */
+  private buildIconButton(
+    icon: string,
+    label: string,
+    cssClasses: string[],
+    onClick: () => void
+  ): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.classList.add(...cssClasses, "clickable-icon");
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    setIcon(button, icon);
+    button.addEventListener("click", onClick);
+    return button;
   }
 
   private buildButton(

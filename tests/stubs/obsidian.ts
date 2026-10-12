@@ -4,6 +4,16 @@
  */
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any */
 
+import { createRequire } from "node:module";
+
+// Use the YAML parser already installed by ESLint instead of approximating YAML.
+const yaml = createRequire(import.meta.url)("js-yaml") as {
+  load: (input: string) => unknown;
+};
+export function parseYaml(input: string): unknown {
+  return yaml.load(input);
+}
+
 export { default as moment } from "moment";
 
 export class Plugin {
@@ -43,6 +53,9 @@ export class Modal {
 
 export class ItemView {
   containerEl: HTMLElement = document.createElement("div");
+  registerDomEvent(el: EventTarget, type: string, callback: (event: Event) => void, options?: boolean): void {
+    el.addEventListener(type, callback, options);
+  }
   getViewType(): string {
     return "";
   }
@@ -81,6 +94,11 @@ export class App {
 
 
 
+
+export function setIcon(parent: HTMLElement, iconId: string): void {
+  const svg = document.createElement("svg"); svg.setAttribute("data-icon", iconId);
+  parent.replaceChildren(svg);
+}
 
 export class MenuItem {
   dom: any;
@@ -351,3 +369,5 @@ export async function requestUrl(
     "tests/stubs/obsidian.ts: requestUrl() was not mocked for this test"
   );
 }
+
+export const Platform = { isDesktopApp: true, isMobileApp: false, isMacOS: false };

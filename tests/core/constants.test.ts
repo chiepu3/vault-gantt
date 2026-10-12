@@ -117,6 +117,10 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.ganttFeatureDailyTodoEnabled).toBe(true);
   });
 
+  it("keeps main as the default new ToDo target", () => {
+    expect(DEFAULT_SETTINGS.dailyTodoTargetSourceKey).toBe("main");
+  });
+
 
   it("DEFAULT_SETTINGS.dailyTodoSources keeps the default source formats", () => {
     expect(DEFAULT_SETTINGS.dailyTodoSources).toEqual([
@@ -148,12 +152,12 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.agentToolsEnabled).toBe(false);
   });
 
-  it("DEFAULT_SETTINGS has exactly 31 keys", () => {
+  it("DEFAULT_SETTINGS has exactly 32 keys", () => {
     const keys = Object.keys(DEFAULT_SETTINGS);
-    expect(keys.length).toBe(31);
+    expect(keys.length).toBe(32);
   });
 
-  it("DEFAULT_SETTINGS has all 31 required keys", () => {
+  it("DEFAULT_SETTINGS has all 32 required keys", () => {
     const required = [
       // Task storage settings.
       "taskFolder",
@@ -191,14 +195,15 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
       // Daily-note settings.
       "ganttFeatureDailyTodoEnabled",
       "dailyTodoSources",
+      "dailyTodoTargetSourceKey",
       // Rendering and integration settings.
       "ganttFeatureSyncEnabled",
       "incrementalGanttRender",
       "agentToolsEnabled",
     ];
 
-    // Verify we have exactly 31 required keys
-    expect(required.length).toBe(31);
+    // Verify we have exactly 32 required keys
+    expect(required.length).toBe(32);
 
     for (const key of required) {
       expect(key in DEFAULT_SETTINGS).toBe(true);

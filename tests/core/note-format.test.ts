@@ -327,7 +327,7 @@ Content 2`;
     const settings: TaskWorkbenchSettings = DEFAULT_SETTINGS;
 
 
-    it("round-trips parent, subtask, and marker tags from frontmatter CSV", () => {
+    it("round-trips parent YAML tags and subtask/marker CSV tags", () => {
       const parentTags = ["親タグ", "重要タグ"];
       const subtaskTags = ["子タグ", "レビュー"];
       const markerTags = ["マーカー", "期限"];
@@ -382,15 +382,16 @@ Content 2`;
         expect(parsedSubtask?.ganttMarkers?.[0]?.tags).toEqual(markerTags);
       };
 
-      // buildFullNote emits the non-bracket CSV representation used by the
-      // production save path.
+      // Parent tags use YAML arrays; child and marker tags still use CSV.
       assertTags(note);
 
-      // Existing notes may use bracket-wrapped arrays; internal empty slots
-      // must be preserved there too, across all three tag consumers.
+      // Legacy parent CSV remains readable, including empty slots.
+      assertTags(note.replace('tags: ["親タグ","","重要タグ"]', "tags: 親タグ,,重要タグ"));
+
+      // Older bracket-wrapped CSV with empty slots also remains readable.
       assertTags(
         note
-          .replace("tags: 親タグ,,重要タグ", "tags: [親タグ,,重要タグ]")
+          .replace('tags: ["親タグ","","重要タグ"]', "tags: [親タグ,,重要タグ]")
           .replace(
             "subtask__s1__tags: 子タグ,,レビュー",
             "subtask__s1__tags: [子タグ,,レビュー]"
@@ -402,6 +403,53 @@ Content 2`;
       );
     });
 
+
+    it.each([
+      ["block list", "tags:\n  - work\n  - urgent"],
+      ["unindented block list", "tags:\n- work\n- urgent"],
+      ["flow list", "tags: [work, urgent]"],
+      ["quoted flow list", 'tags: ["work", \'urgent\'] # comment'],
+      ["multiline flow list", 'tags: [\n  "work",\n  "urgent"\n]'],
+      ["legacy CSV", "tags: work,urgent"],
+      ["quoted legacy CSV", 'tags: "work,urgent"'],
+    ])("reads %s parent tags and preserves them after saving", (_name, tagField) => {
+      const content = `---\ntype: task\n${tagField}\npriority: 2\npriorityMode: manual\n---\n# Parent`;
+      const parsed = parseTaskFile({ path: "test/file.md" }, content, settings)!;
+      expect(parsed.tags).toEqual(["work", "urgent"]);
+      expect(parsed.priority).toBe(2);
+      const saved = buildFullNote(parsed, undefined, settings);
+      expect(saved).toContain('tags: ["work","urgent"]');
+      expect(parseTaskFile({ path: "test/file.md" }, saved, settings)?.tags)
+        .toEqual(["work", "urgent"]);
+    });
+
+    it("keeps leading hash characters in legacy CSV tags", () => {
+      const content = "---\ntype: task\ntags: #work,#urgent\n---";
+      const parsed = parseTaskFile({ path: "test/file.md" }, content, settings)!;
+      expect(parsed.tags).toEqual(["#work", "#urgent"]);
+      const saved = buildFullNote(parsed, undefined, settings);
+      expect(parseTaskFile({ path: "test/file.md" }, saved, settings)?.tags)
+        .toEqual(["#work", "#urgent"]);
+    });
+
+    it("preserves quoted YAML tag values with punctuation and escapes", () => {
+      const tags = ["work,urgent", "colon: value", "#hash", 'a"b', "a\\b", "a\nb", "", "日本語"];
+      const note = buildFullNote(makeParent({ tags }), undefined, settings);
+      const parsed = parseTaskFile({ path: "test/file.md" }, note, settings);
+      expect(parsed?.tags).toEqual(tags);
+      // Colons inside list items must not become frontmatter fields.
+      const block = `---\ntype: task\ntags:\n  - 'colon: value'\n  - 'it''s work'\n---`;
+      expect(parseFrontmatter(block)).toEqual({ type: "task", tags: ["colon: value", "it's work"] });
+    });
+
+    it.each(["tags:", "tags: []", "tags: null", 'tags: ""'])(
+      "reads empty parent tags (%s) and writes an empty YAML array",
+      (tagField) => {
+        const parsed = parseTaskFile({ path: "test/file.md" }, `---\ntype: task\n${tagField}\n---`, settings)!;
+        expect(parsed.tags).toEqual([]);
+        expect(buildFrontmatter(parsed)).toContain("tags: []");
+      }
+    );
 
     it("parseTaskFile returns null when type !== 'task'", () => {
       const content = `---
@@ -539,52 +587,44 @@ Content`;
       expect(result?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
-    it("parseTaskFile loads inconsistent statusLabel/completed without error", () => {
-      const content = `---
-type: task
-displayName: "Test"
-statusLabel: done
-completed: false
----
-Content`;
-      const result = parseTaskFile(
-        { path: "test/file.md" },
-        content,
-        settings
-      );
-      expect(result?.statusLabel).toBe("done");
-      expect(result?.completed).toBe(false);
-    });
-
-    it("parseTaskFile loads file with inconsistent status/completed during load", () => {
-      const content = `---
-type: task
-displayName: "Test"
-statusLabel: active
-completed: true
----
-Content`;
-      // Load should NOT throw - inconsistency is only checked during patch update
-      const result = parseTaskFile(
-        { path: "test/file.md" },
-        content,
-        settings
-      );
-      expect(result).not.toBeNull();
-      expect(result?.statusLabel).toBe("active");
-      expect(result?.completed).toBe(true);
-    });
-
-    it("parseTaskFile completed field is a boolean, not a string", () => {
-      const content = `---
-type: task
-displayName: "Test"
-completed: true
----
-Content`;
+    it.each([
+      ["done", "false", "done", true],
+      ["done", undefined, "done", true],
+      ["active", "true", "active", false],
+      ["in_progress", "true", "in_progress", false],
+      ["waiting", "true", "waiting", false],
+      ["hold", "true", "hold", false],
+      [undefined, "true", "done", true],
+      [undefined, "false", "active", false],
+      [undefined, undefined, "active", false],
+      ["", "true", "done", true],
+    ])("uses status %s and legacy completion %s for parent and subtask", (
+      status, completed, expectedStatus, expectedCompleted
+    ) => {
+      const fields = (prefix: string): string[] => [
+        ...(status === undefined ? [] : [`${prefix}statusLabel: ${status}`]),
+        ...(completed === undefined ? [] : [`${prefix}completed: ${completed}`]),
+      ];
+      const content = [
+        "---", "type: task", "subtaskOrder: [s1]",
+        ...fields(""), ...fields("subtask__s1__"),
+        "---", "# Test", "## Subtasks", "### Sub",
+      ].join("\n");
       const result = parseTaskFile({ path: "test/file.md" }, content, settings);
-      expect(typeof result?.completed).toBe("boolean");
-      expect(result?.completed).toBe(true);
+      expect(result).not.toBeNull();
+      const subtask = result?.subtasks?.get("s1");
+      expect(subtask).toBeDefined();
+      for (const row of [result, subtask]) {
+        expect(row?.statusLabel).toBe(expectedStatus);
+        expect(row?.completed).toBe(expectedCompleted);
+      }
+      // The normal explicit save writes the effective values back to the note.
+      const saved = buildFullNote(result!, result!.subtasks, settings);
+      const frontmatter = parseFrontmatter(saved);
+      for (const prefix of ["", "subtask__s1__"]) {
+        expect(frontmatter[`${prefix}statusLabel`]).toBe(expectedStatus);
+        expect(frontmatter[`${prefix}completed`]).toBe(String(expectedCompleted));
+      }
     });
 
     it("parseTaskFile generates a new key when subtaskOrder[i] is missing", () => {
@@ -697,7 +737,7 @@ subtaskOrder: [alpha, beta]
       }
     });
 
-    it("buildFrontmatter quotes subtask title/workload fields and serializes tags as unquoted CSV", () => {
+    it("buildFrontmatter quotes subtask title/workload fields and uses parent YAML and subtask CSV tags", () => {
       const subs = new Map([
         [
           "s1",
@@ -711,6 +751,7 @@ subtaskOrder: [alpha, beta]
       const fm = buildFrontmatter(makeParent(), subs);
       expect(fm).toContain('subtask__s1__title: "Sub One"');
       expect(fm).toContain('subtask__s1__workloadPlan: "2026-07-05=3"');
+      expect(fm).toContain('tags: ["a"]');
       expect(fm).toContain("subtask__s1__tags: x,y");
     });
 

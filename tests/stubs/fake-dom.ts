@@ -33,6 +33,8 @@ export interface FakeEl {
 
   // clamping, so tests can set scrollLeft/scrollWidth/clientWidth directly
   // and read back exactly what the view assigned. ---
+  scrolledIntoView?: { block?: string; inline?: string };
+  scrollIntoView(options?: { block?: string; inline?: string }): void;
   scrollLeft: number;
   scrollTop: number;
   scrollWidth: number;
@@ -140,6 +142,9 @@ export function makeFakeEl(tag = "div"): FakeEl {
     focused: false,
     selected: false,
     rows: 0,
+    scrollIntoView(options?: { block?: string; inline?: string }): void {
+      el.scrolledIntoView = options;
+    },
     scrollLeft: 0,
     scrollTop: 0,
     scrollWidth: 0,

@@ -1,0 +1,65 @@
+name: Vault Gantt Updater Artifact
+
+# Builds the Vault Gantt bundle for tools/updater/Update-VaultGantt.ps1.
+#
+# Actions are pinned to the commit the official v4 tag pointed to when this file was written
+# (resolved via the GitHub API from each official actions/* repository).
+#
+# Trust model: only push / workflow_dispatch on an allow-listed branch of this
+# repository. There is no pull_request trigger, so code from arbitrary PRs is
+# never run here. The token is read-only; the artifact is produced in the same
+# job, strictly after check -> build -> E2E have all succeeded for the exact
+# commit (github.sha).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vault-gantt-updater-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-package:
+    if: github.ref_type == 'branch' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # Same pinned, SHA256-verified, root-owned install with the SUID sandbox
+      # helper as e2e.yml (Chromium sandbox stays enabled). Exports
+      # E2E_OBSIDIAN_BIN via GITHUB_ENV. No actions/cache is trusted.
+      - name: Install Obsidian (sandbox-enabled)
+        run: bash tools/e2e/ci-install-obsidian.sh
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm run test:e2e
+
+      # Reached only if every step above succeeded.
+      - name: Package bundle
+        run: node tools/updater/package-bundle.mjs "$RUNNER_TEMP/vault-gantt-updater-bundle"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vault-gantt-updater-${{ github.sha }}
+          path: ${{ runner.temp }}/vault-gantt-updater-bundle/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

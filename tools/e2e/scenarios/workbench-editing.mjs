@@ -36,12 +36,12 @@ const TARGET_NAME = "E2E Fixture Task 0001";
 const DUE_DATE_VALUE = "2027-03-15";
 const TAGS_INPUT_VALUE = "foo, , bar";
 // parseTagsInput splits on commas and trims each element:
-// "foo,, bar" becomes ["foo", "", "bar"]. buildFrontmatter serializes tags
-// with tags.join(","), so the empty element is preserved as "foo,,bar".
+// "foo, , bar" becomes ["foo", "", "bar"]. buildFrontmatter serializes parent
+// tags as a quoted array, preserving the empty element as ["foo","","bar"].
 // applyPatchToParent previously ran the clean array through ensureArray,
 // which dropped the empty string. This scenario verifies that the full edit
 // now round-trips the empty element to the saved file.
-const EXPECTED_TAGS_LINE = "tags: foo,,bar";
+const EXPECTED_TAGS_LINE = 'tags: ["foo","","bar"]';
 const CURRENT_STATUS_VALUE = "E2E workbench inline status edit";
 
 const SETTLE_MS = 800;

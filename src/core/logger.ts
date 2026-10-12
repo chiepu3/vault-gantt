@@ -25,6 +25,7 @@ export class Logger {
   private recordingBuffer: LogEntry[] = [];
   private recordingActive = false;
   private recordingName = DEFAULT_RECORDING_NAME;
+  private recordingRevision = 0;
 
   constructor(private readonly app: App) {}
 
@@ -45,10 +46,23 @@ export class Logger {
   }
 
   startRecording(name?: string): void {
+    this.recordingRevision++;
     this.recordingName =
       name?.trim().replace(/[^A-Za-z0-9_-]/g, "_") || DEFAULT_RECORDING_NAME;
     this.recordingBuffer = [];
     this.recordingActive = true;
+  }
+
+  /** Planning reads only. Do not call stopRecording before human approval. */
+  inspectRecording(): { revision: number; recording: boolean; name: string; content: string; entryCount: number } {
+    return { revision: this.recordingRevision, recording: this.recordingActive, name: this.recordingName, content: this.recordingBuffer.map((entry) => JSON.stringify(entry)).join("\n"), entryCount: this.recordingBuffer.length };
+  }
+
+  /** Clear only the exact recording whose frozen bytes have been successfully saved. */
+  finishRecording(revision: number): boolean {
+    if (revision !== this.recordingRevision || !this.recordingActive) return false;
+    this.recordingActive = false; this.recordingBuffer = []; this.recordingRevision++;
+    return true;
   }
 
   async stopRecording(): Promise<void> {
@@ -60,6 +74,7 @@ export class Logger {
     const recordingName = this.recordingName;
     this.recordingActive = false;
     this.recordingBuffer = [];
+    this.recordingRevision++;
 
     try {
       await this.app.vault.createFolder(LOG_FOLDER);
@@ -106,6 +121,7 @@ export class Logger {
     }
 
     if (this.recordingActive) {
+      this.recordingRevision++;
       this.recordingBuffer.push(entry);
       if (this.recordingBuffer.length > RECORDING_BUFFER_LIMIT) {
         this.recordingBuffer.shift();

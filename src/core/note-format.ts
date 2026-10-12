@@ -1,3 +1,4 @@
+import { parseYaml } from "obsidian";
 import {
   TaskRow,
   TaskWorkbenchSettings,
@@ -60,12 +61,15 @@ export function parseSimpleValue(raw: string): unknown {
 
 
 /**
- * Parse the comma-separated tag representation used by task frontmatter.
- * Keep empty elements in non-empty tag lists: buildFrontmatter emits CSV
- * whose positional slots must survive a load/save round-trip. Bracket-wrapped
- * arrays remain readable for existing notes as well.
+ * Parse legacy CSV tags and YAML tag arrays.
+ * Preserve empty slots for compatibility with existing notes.
+ * Subtask and marker tags still use the legacy representation.
  */
 function parseFrontmatterTags(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((value) => String(value).trim());
+  }
+
   const rawText = raw === undefined || raw === null ? "" : String(raw);
   if (rawText === "") {
     return [];
@@ -80,7 +84,7 @@ function parseFrontmatterTags(raw: unknown): string[] {
 /**
  *
  * Parse YAML-like frontmatter: flat key=value pairs, separated by ---.
- * Lines without colons are ignored.
+ * Parent tags are parsed as YAML; other lines without colons are ignored.
  * Split on FIRST colon only.
  */
 export function parseFrontmatter(
@@ -123,7 +127,34 @@ export function parseFrontmatter(
     const key = line.substring(0, colonIndex).trim();
     const valueRaw = line.substring(colonIndex + 1).trim();
 
-    // Store the value (no parsing at this level)
+    if (key === "tags") {
+      // Parse only parent tags so legacy subtask/marker fields and other
+      // frontmatter values retain their existing behavior.
+      const tagLines = [`tags: ${valueRaw}`];
+      while (i + 1 < fmEndIndex && /^(\s|$|#|-([ \t]|$)|\])/.test(lines[i + 1])) {
+        tagLines.push(lines[++i]);
+      }
+      try {
+        const parsed: unknown = parseYaml(tagLines.join("\n"));
+        const tags = (parsed as { tags?: unknown })?.tags;
+        if (Array.isArray(tags)) {
+          result[key] = parseFrontmatterTags(tags);
+        } else if (tags == null && valueRaw.startsWith("#")) {
+          // Legacy CSV may include leading # characters without YAML quotes.
+          result[key] = parseFrontmatterTags(valueRaw);
+        } else {
+          result[key] = tags == null || tags === ""
+            ? []
+            : String(tags).split(",").map((tag) => tag.trim());
+        }
+      } catch {
+        // Older bracket-wrapped CSV can contain empty slots invalid in YAML.
+        result[key] = parseFrontmatterTags(valueRaw);
+      }
+      continue;
+    }
+
+    // Store other values without parsing.
     result[key] = valueRaw;
   }
 
@@ -294,6 +325,14 @@ export function splitSubtasksSection(body: string): SubtaskSectionPart[] {
 // PARSING: Main Task File Parser
 
 
+// Explicit status wins; legacy notes without a status inherit their completion flag.
+function parseTaskStatus(status: unknown, completed: unknown): StatusLabel {
+  const normalized = normalizeStatusValue(status);
+  return (normalized || (parseSimpleValue(String(completed || "false")) === true
+    ? "done"
+    : "active")) as StatusLabel;
+}
+
 /**
  *
  * Parse a task file into a TaskRow (or null if type !== "task").
@@ -346,7 +385,7 @@ export function parseTaskFile(
   const title = displayName; // Derived from displayName
 
   // Extract basic fields
-  const statusLabel = normalizeStatusValue(fm["statusLabel"] || "active") as StatusLabel;
+  const statusLabel = parseTaskStatus(fm["statusLabel"], fm["completed"]);
   const createdAt = String(fm["createdAt"] || todayStr()).trim();
   const updatedAt = String(fm["updatedAt"] || todayStr()).trim();
   const dueDate = String(fm["dueDate"] || "").trim() || undefined;
@@ -355,7 +394,7 @@ export function parseTaskFile(
   const priorityMode = String(fm["priorityMode"] || "auto").trim() === "manual"
     ? "manual"
     : "auto";
-  const completed = parseSimpleValue(String(fm["completed"] || "false")) === true;
+  const completed = statusLabel === "done";
   const currentStatus = extractSection(content, "Current Status", 2);
   const notes = extractSection(content, "Notes", 2);
 
@@ -433,9 +472,10 @@ export function parseTaskFile(
 
         // Build subtask row
         const subtaskId = `${file.path}::${subtaskKey}`;
-        const subtaskStatusLabel = normalizeStatusValue(
-          fm[`subtask__${subtaskKey}__statusLabel`] || "active"
-        ) as StatusLabel;
+        const subtaskStatusLabel = parseTaskStatus(
+          fm[`subtask__${subtaskKey}__statusLabel`],
+          fm[`subtask__${subtaskKey}__completed`]
+        );
         const subtaskCreatedAt = String(
           fm[`subtask__${subtaskKey}__createdAt`] || todayStr()
         ).trim();
@@ -452,9 +492,7 @@ export function parseTaskFile(
           "manual"
             ? "manual"
             : "auto";
-        const subtaskCompleted =
-          parseSimpleValue(String(fm[`subtask__${subtaskKey}__completed`] || "false")) ===
-          true;
+        const subtaskCompleted = subtaskStatusLabel === "done";
         const subtaskCurrentStatus = extractSection(part.body, "Current Status", 4);
         const subtaskNotes = extractSection(part.body, "Notes", 4);
 
@@ -607,13 +645,7 @@ export function buildFrontmatter(
   lines.push(`dueDate: ${task.dueDate || ""}`);
   lines.push(`priority: ${task.priority}`);
   lines.push(`priorityMode: ${task.priorityMode}`);
-  lines.push(
-    `tags: ${
-      task.tags && task.tags.length > 0
-        ? task.tags.join(",")
-        : ""
-    }`
-  );
+  lines.push(`tags: ${JSON.stringify(task.tags || [])}`);
   lines.push(`completed: ${task.completed ? "true" : "false"}`);
   lines.push(`displayName: "${yamlEscape(task.displayName)}"`);
   lines.push(`ganttEnabled: ${task.ganttEnabled ? "true" : "false"}`);
