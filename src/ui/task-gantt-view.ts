@@ -1547,6 +1547,8 @@ export class TaskGanttView extends ItemView {
     // helpers (scrollToDate, getVisibleStartDate).
     const dates = buildDates(this.rangeStart, this.rangeDays);
     this.dates = dates;
+    // Read the viewport before rebuilding DOM, not while layout is dirty.
+    const visibleStartDate = this.getVisibleStartDate();
 
     // Build the shared holiday set once per render so the header and every
     // parent row classify dates consistently.
@@ -1595,6 +1597,7 @@ export class TaskGanttView extends ItemView {
     } else {
       this.renderChartFull(parents, dates, headerFingerprint);
     }
+    this.updateFloatingMonth(visibleStartDate);
   }
 
 
@@ -1633,7 +1636,6 @@ export class TaskGanttView extends ItemView {
         "ガント表示対象の親タスクがありません。親タスクの frontmatter / ダッシュボードで ganttEnabled を true にしてください。";
       this.wrapEl.appendChild(empty);
       this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
-      this.updateFloatingMonth();
       return;
     }
 
@@ -1679,9 +1681,6 @@ export class TaskGanttView extends ItemView {
     this.renderParentAddRow();
 
     this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
-
-    // keep the floating month in sync after every chart render.
-    this.updateFloatingMonth();
   }
 
   /**
@@ -1811,9 +1810,8 @@ export class TaskGanttView extends ItemView {
     this.refreshWorkloadSummaryRowIncremental(parents, dates);
     this.refreshDailyTodoRowIncremental();
 
-    // Finish with the same updates as the full-rebuild path.
+    // Finish with the same add row as the full-rebuild path.
     this.renderParentAddRow();
-    this.updateFloatingMonth();
   }
 
 
@@ -4931,8 +4929,7 @@ export class TaskGanttView extends ItemView {
 
 
 
-  private updateFloatingMonth(): void {
-    const startDate = this.getVisibleStartDate();
+  private updateFloatingMonth(startDate = this.getVisibleStartDate()): void {
     const month = moment(startDate, "YYYY-MM-DD").format("YYYY年M月");
     if (month === this.lastFloatingMonth && this.floatingMonthEl.textContent === month) {
       return;
