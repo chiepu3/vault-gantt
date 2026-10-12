@@ -32,24 +32,6 @@ jobs:
       - run: npm run build
       - run: npm run test:e2e
 
-      # Temporary PR-only performance comparison. It reuses the already
-      # installed, verified Obsidian binary and does not run on other branches.
-      - name: Compare PR Gantt performance with base
-        if: github.event_name == 'pull_request' && github.head_ref == 'codex/perf-gantt-range'
-        env:
-          PERF_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PERF_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PERF_RUNS: '3'
-        run: node tools/e2e/compare-perf.mjs
-
-      - name: Upload PR performance comparison
-        if: always() && github.event_name == 'pull_request' && github.head_ref == 'codex/perf-gantt-range'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vault-gantt-perf-500x1-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/vault-gantt-perf-results/
-          if-no-files-found: warn
-
       - name: Upload failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4
