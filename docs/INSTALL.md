@@ -26,6 +26,21 @@ Git と Node.js は、PowerShell から `git`・`node`・`npm` と打って実�
 
 `tools\updater` フォルダーの中のファイルは、フォルダーごと同じ場所に置いたまま使ってください（`Install-VaultGantt.ps1` のほかに `VaultGanttInstaller.Lib.ps1` と `VaultGanttPathSafety.Lib.ps1` が必要です）。
 
+## いちばん簡単な方法
+
+リポジトリを clone（または pull）したフォルダーにある `install.cmd` をダブルクリックするか、PowerShell で次の1行を実行します。
+
+```powershell
+~\vault-gantt\install.cmd
+```
+
+- `main` ブランチをビルドしてインストールします。
+- 初回だけ、Obsidian で使っている Vault の一覧が出るので番号を選びます（Enter で1番）。一覧にない場所は `0` を選んでパスを入力します。プラグインフォルダーがなければ作ります。
+- 選んだ場所はユーザー環境変数 `VAULT_GANTT_DEST` に保存され、2回目以降は何も聞かずにインストール（更新）します。
+- 場所を選び直すときは `~\vault-gantt\install.cmd -Reset`、別のブランチを入れるときは `~\vault-gantt\install.cmd -Branch <ブランチ名>` を実行します。
+
+Git と Node.js が必要なことは下の手順と同じです。細かく指定したい場合は、以下の「インストール手順」を使ってください。
+
 ## インストール手順
 
 ### 1. インストーラーを手に入れる
