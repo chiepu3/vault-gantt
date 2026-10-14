@@ -5,6 +5,7 @@
 このフォルダーには、更新元が異なる2つのWindows用ツールがあります。
 
 - `Install-VaultGantt.ps1`: 公開branchを一覧から選び、そのcommitを取得してビルドした後、指定フォルダーへ配置します。
+- `Quick-Install.ps1`（リポジトリ直下の `install.cmd` から起動）: `Install-VaultGantt.ps1 -Branch main` の短縮版。初回にObsidianのVault一覧から配置先を選ばせ、ユーザー環境変数 `VAULT_GANTT_DEST` に保存して2回目以降は確認なしで実行します。
 - `Update-VaultGantt.ps1`: GitHub Actionsが検証済みcommitから作成したartifactを検証し、dry-run/apply/rollbackします。
 
 両方式とも `main.js` / `manifest.json` / `styles.css` だけを対象にし、branch-build installerはartifact updaterのartifactを使いません。実行用script、対応する `Lib.ps1` と共通ライブラリ `VaultGanttPathSafety.Lib.ps1` は同じフォルダーに置いてください。
