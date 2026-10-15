@@ -4,11 +4,13 @@
 //  1. With a long date range (horizontal scroll) the horizontal scrollbar must
 //     not cover the bottom of the graph (zero label/line, 0.5h and 1h fills).
 //     A short range (no scroll) is checked as the control.
-//  2. Hovering a parent row and then a lower subtask bar opens the rich popup
-//     and the workload popup together; they must not overlap and the rich
-//     popup's progress textarea and buttons must stay uncovered.
-//  3. At a narrow 1188x500 viewport (bar scrolled to ~y=330) both popups stay
-//     inside the viewport and still do not overlap. The measured DOM rects are
+//  2. Hovering a parent row and then a lower subtask bar shows ONE floating
+//     layer at a time: the subtask rich popup (progress textarea and buttons
+//     uncovered); its 作業時間 button swaps it for the workload popup, which
+//     must then be the only popup and stay inside the viewport.
+//  3. At a narrow 1188x500 viewport (bar scrolled to ~y=330) the rich popup and
+//     the workload popup (reached through the button) each stay inside the
+//     viewport and are never shown together. The measured DOM rects are
 //     written as JSON plus a PNG of the synthetic fixture to E2E_EVIDENCE_DIR
 //     (default tools/e2e/artifacts, gitignored) as narrow-<E2E_EVIDENCE_TAG>.*
 //     (tag default "after"; run the same scenario against an older build with
@@ -41,38 +43,37 @@ const NARROW_VIEWPORT = { w: 1188, h: 500 };
 // first hoverable row; the exact {top:260} geometry is pinned in the unit tests.
 const NARROW_BAR_TOP_PX = 330;
 
-/** In-page expression: DOM/paint ordering of the rich and workload popups. */
-const ORDER_PROBE = `(() => {
-  const rich = document.querySelector(".task-gantt-rich-popover.is-subtask");
-  const wl = document.querySelector(".task-gantt-workload-popover.is-visible");
-  if (!rich || !wl) return { rich: !!rich, workload: !!wl };
-  const vis = (e) => { const c = getComputedStyle(e); return c.display !== "none" && c.visibility !== "hidden" && Number(c.opacity) > 0; };
-  const rr = wl.getBoundingClientRect();
-  const topAtWl = document.elementFromPoint((rr.left + rr.right) / 2, (rr.top + rr.bottom) / 2);
-  return {
-    rich: true,
-    workload: true,
-    richVisible: vis(rich),
-    workloadVisible: vis(wl),
-    richBeforeWorkloadInDom: !!(rich.compareDocumentPosition(wl) & Node.DOCUMENT_POSITION_FOLLOWING),
-    sameParent: rich.parentNode === wl.parentNode,
-    richZ: getComputedStyle(rich).zIndex,
-    workloadZ: getComputedStyle(wl).zIndex,
-    workloadOnTopAtItsCenter: !!topAtWl && wl.contains(topAtWl),
-  };
-})()`;
+/** In-page expression: which floating layers are present right now. */
+const LAYER_PROBE = `(() => ({
+  rich: document.querySelectorAll(".task-gantt-rich-popover").length,
+  workload: document.querySelectorAll(".task-gantt-workload-popover").length,
+  menu: document.querySelectorAll(".menu").length,
+}))()`;
 
-function checkOrder(label, o, failures) {
-  if (!o.rich || !o.workload) {
-    failures.push(`${label}: both popups must be present (rich=${o.rich}, workload=${o.workload})`);
-    return;
+/** Exactly one floating layer: the expected kind present, the other absent. */
+async function expectOnly(cdp, label, kind, failures) {
+  const o = await cdp.evaluate(LAYER_PROBE);
+  const other = kind === "rich" ? "workload" : "rich";
+  if (o[kind] !== 1) failures.push(`${label}: expected exactly one ${kind} popup, found ${o[kind]}`);
+  if (o[other] !== 0) failures.push(`${label}: ${other} popup must be closed while the ${kind} popup is open (found ${o[other]})`);
+  return o;
+}
+
+/** Clicks the subtask popover's 作業時間 button: rich popup is replaced by the workload popup. */
+async function openWorkloadFromRich(cdp, label, failures) {
+  const clicked = await cdp.evaluate(`(() => {
+    const b = document.querySelector(".task-gantt-rich-popover.is-subtask .task-gantt-popover-open-workload");
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  if (!clicked) {
+    failures.push(`${label}: rich popup has no 作業時間 button`);
+    return false;
   }
-  if (!o.richVisible) failures.push(`${label}: rich popup is not displayed`);
-  if (!o.workloadVisible) failures.push(`${label}: workload popup is not displayed`);
-  if (!o.richBeforeWorkloadInDom) failures.push(`${label}: DOM order is not rich-then-workload`);
-  if (!o.sameParent) failures.push(`${label}: popups do not share a parent`);
-  if (o.richZ !== o.workloadZ) failures.push(`${label}: z-index differs (rich=${o.richZ}, workload=${o.workloadZ}); order would not follow the DOM`);
-  if (!o.workloadOnTopAtItsCenter) failures.push(`${label}: workload popup is not on top at its own center`);
+  await sleep(300);
+  await expectOnly(cdp, `${label} after 作業時間`, "workload", failures);
+  return true;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -308,6 +309,8 @@ export async function run({ cdp }) {
   // ---- 1. graph vs horizontal scrollbar: long range (scroll) and short (no scroll)
   const longPt = await barPoint(0);
   await hoverOnto(cdp, longPt.x, longPt.y, { settleMs: 400 });
+  await expectOnly(cdp, "long range hover", "rich", failures);
+  await openWorkloadFromRich(cdp, "long range", failures);
   checkGraph("long range (plan)", await cdp.evaluate(MEASURE_GRAPH), true, failures, details);
   await cdp.evaluate(`document.querySelector(".task-gantt-workload-popover-mode-toggle").click()`);
   await sleep(150);
@@ -317,6 +320,8 @@ export async function run({ cdp }) {
   await sleep(500);
   const shortPt = await barPoint(1);
   await hoverOnto(cdp, shortPt.x, shortPt.y, { settleMs: 400 });
+  await expectOnly(cdp, "short range hover", "rich", failures);
+  await openWorkloadFromRich(cdp, "short range", failures);
   checkGraph("short range (plan)", await cdp.evaluate(MEASURE_GRAPH), false, failures, details);
 
   // ---- 2. parent hover then lower subtask bar: popups must not overlap
@@ -330,6 +335,7 @@ export async function run({ cdp }) {
   await hoverOnto(cdp, parentPt.x, parentPt.y, { settleMs: 500 });
   const parentPopup = await cdp.evaluate(`!!document.querySelector(".task-gantt-rich-popover.is-parent")`);
   if (!parentPopup) failures.push("parent rich popup did not open on parent hover");
+  await expectOnly(cdp, "parent hover", "rich", failures);
 
   const lowPt = await cdp.evaluate(`(() => {
     const r = document.querySelectorAll(".task-gantt-bar")[0].getBoundingClientRect();
@@ -340,9 +346,8 @@ export async function run({ cdp }) {
   const layout = await cdp.evaluate(`(() => {
     const rect = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom }; };
     const rich = document.querySelector(".task-gantt-rich-popover.is-subtask");
-    const wl = document.querySelector(".task-gantt-workload-popover.is-visible");
-    if (!rich || !wl) return { rich: !!rich, wl: !!wl };
-    const rr = rect(rich), wr = rect(wl);
+    if (!rich) return { rich: false, parentRich: !!document.querySelector(".task-gantt-rich-popover.is-parent") };
+    const rr = rect(rich);
     const hit = (el) => {
       const r = rect(el);
       const top = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
@@ -351,28 +356,24 @@ export async function run({ cdp }) {
     const ta = rich.querySelector("textarea");
     const btns = [...rich.querySelectorAll("button")];
     return {
-      rich: true, wl: true, rr, wr,
-      overlap: rr.left < wr.right && wr.left < rr.right && rr.top < wr.bottom && wr.top < rr.bottom,
+      rich: true, rr,
       textareaReachable: ta ? hit(ta) : null,
       buttons: btns.map((b) => ({ t: b.textContent, reachable: hit(b) })),
-      inViewport: rr.top >= 0 && rr.bottom <= innerHeight && wr.top >= 0 && wr.bottom <= innerHeight,
+      inViewport: rr.top >= 0 && rr.bottom <= innerHeight,
     };
   })()`);
-  if (!layout.rich || !layout.wl) {
-    failures.push(`both popups must be visible (rich=${layout.rich}, workload=${layout.wl})`);
+  if (!layout.rich) {
+    failures.push(`subtask rich popup must be visible (rich=${layout.rich})`);
   } else {
-    if (layout.overlap) {
-      failures.push(`popups overlap: rich=${JSON.stringify(layout.rr)} workload=${JSON.stringify(layout.wr)}`);
-    }
     if (layout.textareaReachable !== true) failures.push("progress textarea is covered");
     for (const b of layout.buttons) {
       if (!b.reachable) failures.push(`button "${b.t}" is covered`);
     }
     if (!layout.inViewport) failures.push(`popup outside viewport: ${JSON.stringify(layout)}`);
-    details.push(`popups: rich=${JSON.stringify(layout.rr)} workload=${JSON.stringify(layout.wr)} overlap=${layout.overlap}`);
+    details.push(`rich: ${JSON.stringify(layout.rr)}`);
   }
-
-  checkOrder("1188x848", await cdp.evaluate(ORDER_PROBE), failures);
+  // The parent popup must have been replaced, not stacked.
+  await expectOnly(cdp, "subtask hover after parent hover", "rich", failures);
 
   // Repeated hover must keep the placement stable.
   await moveMouse(cdp, 2, 2);
@@ -383,6 +384,13 @@ export async function run({ cdp }) {
   const again = await cdp.evaluate(`(() => { const e = document.querySelector(".task-gantt-rich-popover.is-subtask"); if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
   if (first && again && (Math.abs(again.top - first.top) > 1 || Math.abs(again.left - first.left) > 1)) {
     failures.push(`rich popup moved on repeated hover: ${JSON.stringify(first)} -> ${JSON.stringify(again)}`);
+  }
+
+  // The 作業時間 button swaps the rich popup for the workload popup (no stacking).
+  if (await openWorkloadFromRich(cdp, "1188x848", failures)) {
+    const wl = await cdp.evaluate(`(() => { const b = document.querySelector(".task-gantt-workload-popover").getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, ok: b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight }; })()`);
+    if (!wl.ok) failures.push(`workload popup outside viewport: ${JSON.stringify(wl)}`);
+    details.push(`workload: ${JSON.stringify(wl)}`);
   }
 
   // ---- 3. narrow 1188x500 viewport
@@ -407,7 +415,7 @@ export async function run({ cdp }) {
   await moveMouse(cdp, 2, 2);
   await sleep(300);
   await hoverOnto(cdp, narrowPt.x, narrowPt.y, { settleMs: 600 });
-  const narrow = await cdp.evaluate(`(() => {
+  const narrowProbe = (kind) => `(() => {
     const rect = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height }; };
     const rich = document.querySelector(".task-gantt-rich-popover.is-subtask");
     const wl = document.querySelector(".task-gantt-workload-popover.is-visible");
@@ -426,15 +434,22 @@ export async function run({ cdp }) {
       workloadSide: wl ? wl.dataset.side : null,
       rich: rr,
       workload: wr,
-      overlap: !!(rr && wr && rr.left < wr.right && wr.left < rr.right && rr.top < wr.bottom && wr.top < rr.bottom),
       richInViewport: inside(rr),
       workloadInViewport: inside(wr),
       textareaReachable: ta ? hit(ta) : null,
       buttonsReachable: rich ? [...rich.querySelectorAll("button")].map((b) => ({ text: b.textContent, reachable: hit(b) })) : [],
     };
-  })()`);
-  narrow.order = await cdp.evaluate(ORDER_PROBE);
-  checkOrder("narrow", narrow.order, failures);
+  })()`;
+  const narrow = await cdp.evaluate(narrowProbe("rich"));
+  await expectOnly(cdp, "narrow hover", "rich", failures);
+  const narrowRich = narrow.rich;
+  const narrowButtons = narrow.buttonsReachable;
+  const narrowTextarea = narrow.textareaReachable;
+  await openWorkloadFromRich(cdp, "narrow", failures);
+  const narrowWl = await cdp.evaluate(narrowProbe("workload"));
+  narrow.workload = narrowWl.workload;
+  narrow.workloadSide = narrowWl.workloadSide;
+  narrow.workloadInViewport = narrowWl.workloadInViewport;
   narrow.bar = narrowPt.bar;
   narrow.tag = process.env.E2E_EVIDENCE_TAG || "after";
   const evidenceDir = process.env.E2E_EVIDENCE_DIR
@@ -446,17 +461,16 @@ export async function run({ cdp }) {
   if (narrow.viewport.w !== NARROW_VIEWPORT.w || narrow.viewport.h !== NARROW_VIEWPORT.h) {
     failures.push(`narrow viewport is ${narrow.viewport.w}x${narrow.viewport.h}, expected ${NARROW_VIEWPORT.w}x${NARROW_VIEWPORT.h}`);
   }
-  if (!narrow.rich || !narrow.workload) {
-    failures.push(`narrow: both popups must be visible (rich=${!!narrow.rich}, workload=${!!narrow.workload})`);
+  if (!narrowRich || !narrow.workload) {
+    failures.push(`narrow: both layers must be reachable in turn (rich=${!!narrowRich}, workload=${!!narrow.workload})`);
   } else {
-    if (narrow.overlap) failures.push(`narrow: popups overlap: rich=${JSON.stringify(narrow.rich)} workload=${JSON.stringify(narrow.workload)}`);
-    if (!narrow.richInViewport) failures.push(`narrow: rich popup outside viewport: ${JSON.stringify(narrow.rich)}`);
+    if (!narrow.richInViewport) failures.push(`narrow: rich popup outside viewport: ${JSON.stringify(narrowRich)}`);
     if (!narrow.workloadInViewport) failures.push(`narrow: workload popup outside viewport: ${JSON.stringify(narrow.workload)}`);
-    if (narrow.textareaReachable !== true) failures.push("narrow: progress textarea is covered");
-    for (const b of narrow.buttonsReachable) {
+    if (narrowTextarea !== true) failures.push("narrow: progress textarea is covered");
+    for (const b of narrowButtons) {
       if (!b.reachable) failures.push(`narrow: button "${b.text}" is covered`);
     }
-    details.push(`narrow ${narrow.viewport.w}x${narrow.viewport.h}: side=${narrow.richSide} rich=${JSON.stringify(narrow.rich)} workload=${JSON.stringify(narrow.workload)} overlap=${narrow.overlap}`);
+    details.push(`narrow ${narrow.viewport.w}x${narrow.viewport.h}: side=${narrow.richSide} rich=${JSON.stringify(narrowRich)} workload=${JSON.stringify(narrow.workload)}`);
   }
 
   const errors = cdp.capturedErrors();
