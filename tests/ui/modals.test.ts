@@ -617,6 +617,17 @@ describe("WeeklyWorkScheduleModal", () => {
     expect(byTag(row, "option")).toHaveLength(7);
   });
 
+  it("shows an explanatory empty state only when there are no schedules", () => {
+    const empty = openModal([]).contentEl;
+    expect(byClass(empty, "task-gantt-weekly-work-schedule-empty")).toHaveLength(1);
+    expect(byClass(empty, "task-gantt-weekly-work-schedule-empty")[0].textContent).toContain("定例作業");
+
+    const filled = openModal([
+      { key: "schedule-1", title: "習字", dayOfWeek: 3, minutesPerWeek: 30 },
+    ]).contentEl;
+    expect(byClass(filled, "task-gantt-weekly-work-schedule-empty")).toHaveLength(0);
+  });
+
   it("clicking 追加 calls add with the blank Sunday default", () => {
     const schedules: WeeklyWorkSchedule[] = [];
     const add = vi.fn();
