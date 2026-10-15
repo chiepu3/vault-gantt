@@ -964,7 +964,7 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(
       ".task-gantt-workload-summary-cell",
       "border",
-      "1px solid var(--background-modifier-border)"
+      "1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent)"
     );
     expectDecl(
       ".task-gantt-workload-summary-cell",
@@ -1081,7 +1081,18 @@ describe("part 4 — Gantt structure", () => {
 
   it("parent timeline is positioned and clips overflow", () => {
     expectDecl(".task-gantt-parent-timeline", "position", "relative");
-    expectDecl(".task-gantt-parent-timeline", "overflow", "hidden");
+    // clip (not hidden): no scroll container, so bar titles can stick to the wrap edge.
+    expectDecl(".task-gantt-parent-timeline", "overflow", "clip");
+  });
+
+  it("bar titles stick to the visible left edge past the 320px name column", () => {
+    expectDecl(".task-gantt-bar-title", "position", "sticky");
+    expectDecl(".task-gantt-bar-title", "left", "326px");
+  });
+
+  it("month labels overflow into following cells instead of being clipped", () => {
+    expectDecl(".task-gantt-month-cell.is-month-start", "overflow", "visible");
+    expectDecl(".task-gantt-month-cell.is-month-start", "position", "relative");
   });
 
   it("bg: absolute top:0 bottom:0 z-index:0", () => {
@@ -1164,8 +1175,11 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(".task-gantt-bar-tag-badge", "pointer-events", "none");
     expectDecl(".task-gantt-bar.has-tag-badge", "display", "flex");
     expectDecl(".task-gantt-bar.is-completed .task-gantt-bar-tag-badge", "opacity", ".86");
-    expectDecl(".task-gantt-bar.is-tag-colored-completed", "opacity", ".48");
-    expectDecl(".task-gantt-bar.is-tag-colored-completed", "filter", "saturate(.35) brightness(.96)");
+    // Completed bars wash their background only; the label keeps full opacity.
+    expect(declsFor(".task-gantt-bar.is-tag-colored-completed").has("opacity")).toBe(false);
+    expect(declsFor(".task-gantt-bar.is-completed").has("opacity")).toBe(false);
+    expectDecl(".task-gantt-bar.is-tag-colored-completed", "filter", "saturate(.6)");
+    expectDecl(".task-gantt-bar.is-completed .task-gantt-bar-title", "color", "var(--text-normal)");
   });
 
   it("external-label: absolute + z-index:1", () => {
@@ -1418,7 +1432,9 @@ describe("part 5 — Gantt readability", () => {
   });
 
   it("parent-left colour band follows --vg-tag-accent", () => {
-    expectDecl(".task-gantt-parent-left.has-tag-accent", "border-left", "4px solid var(--vg-tag-accent)");
+    expectDecl(".task-gantt-parent-left.has-tag-accent", "border-left-color", "var(--vg-tag-accent)");
+    // Untagged rows reserve the same 4px so titles align across rows.
+    expectDecl(".task-gantt-parent-left", "border-left", "4px solid transparent");
   });
 
   it("external-label: display:flex + height:22px + nowrap + overflow:hidden", () => {

@@ -224,17 +224,22 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-header { position: sticky; top: 0; z-index: 5; width: max-content; background: var(--background-primary); border-bottom: var(--vg-border); }
 
 .task-gantt-month-row, .task-gantt-day-row, .task-gantt-dow-row { display: flex; margin-left: 320px; }
+/* Thinned-out header cells are empty; keep each row 18px tall so the 54px header-left stays aligned. */
+.task-gantt-month-cell, .task-gantt-day-cell, .task-gantt-dow-cell { min-height: 18px; }
 
 .task-gantt-header-left { position: sticky; left: 0; top: 0; width: 320px; height: 54px; margin-bottom: -54px; z-index: 1; display: flex; align-items: center; gap: var(--vg-space-3); padding: 0 8px; background: var(--background-primary); border-right: var(--vg-border); }
 
 .task-gantt-tag-filter { font-size: var(--vg-font-s); cursor: pointer; margin-left: auto; }
 
 .task-gantt-month-cell { flex: 0 0 auto; text-align: center; overflow: hidden; white-space: nowrap; font-size: var(--vg-font-s); line-height: 18px; text-align: left; padding-left: var(--vg-space-1); font-weight: var(--vg-weight-strong); }
+/* Month labels may be wider than a day column at low zoom: overflow into the next (empty) cells. */
+.task-gantt-month-cell.is-month-start { position: relative; overflow: visible; }
 .task-gantt-day-cell { flex: 0 0 auto; text-align: center; overflow: hidden; white-space: nowrap; font-size: var(--vg-font-s); line-height: 18px; border-right: var(--vg-border-subtle); }
 
 .task-gantt-parent-row { display: flex; border-bottom: var(--vg-border-subtle); width: max-content; }
 
-.task-gantt-parent-timeline { position: relative; isolation: isolate; overflow: hidden; max-height: 100%; flex-shrink: 0; }
+/* overflow: clip (not hidden) keeps the timeline from becoming a scroll container, so bar titles can stick to the wrap's left edge. */
+.task-gantt-parent-timeline { position: relative; isolation: isolate; overflow: clip; max-height: 100%; flex-shrink: 0; }
 
 /* top:0 + bottom:0 stretches the background cell to the full row height.
    The renderer supplies left and width inline. */
@@ -263,7 +268,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-deadline-marker-label { display: inline; color: var(--text-muted); font-size: var(--vg-font-s); }
 .task-gantt-deadline-marker-date { display: inline; color: var(--text-normal); }
 
-.task-gantt-parent-left { position: sticky; left: 0; z-index: 3; overflow: hidden; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 4px 8px; background: var(--background-primary); border-right: var(--vg-border); flex-shrink: 0; }
+.task-gantt-parent-left { position: sticky; left: 0; z-index: 3; border-left: 4px solid transparent; overflow: hidden; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 4px 8px; background: var(--background-primary); border-right: var(--vg-border); flex-shrink: 0; }
 .task-gantt-parent-left.is-drag-over { outline: 2px solid var(--interactive-accent); outline-offset: -2px; background: linear-gradient(hsla(var(--interactive-accent-hsl), 0.12), hsla(var(--interactive-accent-hsl), 0.12)), var(--background-primary); }
 
 .task-gantt-fixed-row { display: flex; width: max-content; }
@@ -277,13 +282,13 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-workload-settings-button:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .task-gantt-workload-settings-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 
-.task-gantt-workload-summary-cell { position: relative; flex-shrink: 0; height: 100%; overflow: hidden; font-size: var(--vg-font-micro); line-height: 1; border: var(--vg-border); background: linear-gradient(to right, rgba(var(--color-green-rgb), 0.22) 0 var(--twb-workload-actual-ratio, 0%), transparent var(--twb-workload-actual-ratio, 0%) 100%) top / 100% 50% no-repeat, linear-gradient(to right, rgba(var(--color-blue-rgb), 0.22) 0 var(--twb-workload-plan-ratio, 0%), transparent var(--twb-workload-plan-ratio, 0%) 100%) bottom / 100% 50% no-repeat, transparent; }
+.task-gantt-workload-summary-cell { position: relative; flex-shrink: 0; height: 100%; overflow: hidden; font-size: var(--vg-font-micro); line-height: 1; border: var(--vg-border-subtle); background: linear-gradient(to right, rgba(var(--color-green-rgb), 0.22) 0 var(--twb-workload-actual-ratio, 0%), transparent var(--twb-workload-actual-ratio, 0%) 100%) top / 100% 50% no-repeat, linear-gradient(to right, rgba(var(--color-blue-rgb), 0.22) 0 var(--twb-workload-plan-ratio, 0%), transparent var(--twb-workload-plan-ratio, 0%) 100%) bottom / 100% 50% no-repeat, transparent; }
 
 .task-gantt-workload-summary-cell.is-non-working { opacity: 0.35; pointer-events: none; }
 
 .task-gantt-workload-summary-cell.is-over-capacity { background: rgba(var(--color-red-rgb), 0.18); }
 .task-gantt-workload-summary-cell.is-actual-over-plan { box-shadow: inset 0 0 0 1px rgba(var(--color-orange-rgb), 0.36); }
-.task-gantt-workload-summary-cell.is-empty { border-color: var(--background-modifier-border); }
+.task-gantt-workload-summary-cell.is-empty { border-color: var(--vg-border-color-subtle); }
 
 .task-gantt-workload-summary-actual { position: absolute; white-space: nowrap; font-weight: var(--vg-weight-strong); pointer-events: none; left: 2px; top: 2px; color: var(--text-normal); }
 .task-gantt-workload-summary-plan { position: absolute; white-space: nowrap; font-weight: var(--vg-weight-strong); pointer-events: none; right: 2px; bottom: 2px; color: var(--text-muted); }
@@ -369,11 +374,15 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-bar:hover { filter: brightness(1.08); box-shadow: var(--vg-shadow-raised); }
 .task-gantt-bar.is-bulk-move-follower:hover { box-shadow: 0 0 0 1px var(--text-muted), var(--vg-shadow-raised); }
-.task-gantt-bar.is-completed { background: var(--text-muted); opacity: .7; }
-.task-gantt-bar.is-tag-colored-completed { opacity: .48; filter: saturate(.35) brightness(.96); }
+/* Completed bars are washed out through their background only, so the label keeps full contrast in both themes. */
+.task-gantt-bar.is-completed { background-color: color-mix(in srgb, var(--text-muted) 38%, var(--background-primary)); }
+.task-gantt-bar.is-tag-colored-completed { background-image: linear-gradient(color-mix(in srgb, var(--background-primary) 55%, transparent), color-mix(in srgb, var(--background-primary) 55%, transparent)); filter: saturate(.6); }
+.task-gantt-bar.is-completed .task-gantt-bar-title { color: var(--text-normal); }
 .task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vg-font-m); line-height: 24px; color: var(--text-on-accent); }
+/* Sticky label: a bar scrolled under the left name column keeps its title start visible (320px column + 6px). */
+.task-gantt-bar-title { position: sticky; left: 326px; width: max-content; }
 .task-gantt-bar.has-tag-badge { display: flex; align-items: center; }
-.task-gantt-bar.has-tag-badge .task-gantt-bar-title { flex: 0 1 calc(100% - 62px); min-width: 0; }
+.task-gantt-bar.has-tag-badge .task-gantt-bar-title { flex: 0 1 auto; min-width: 0; }
 
 /* In-bar tag badge: white pill (vg-chip) with tag-coloured text/border, as before the redesign. */
 .task-gantt-bar-tag-badge { display: inline-flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 46%; margin: 0 7px 0 auto; padding: 0 var(--vg-space-1); height: 16px; overflow: hidden; text-overflow: ellipsis; font-size: var(--vg-font-micro); line-height: 1; pointer-events: none; }
@@ -384,7 +393,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-resize-end { position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; right: 0; }
 
 /* Left colour band from the registry-order primary tag (renderer sets --vg-tag-accent). */
-.task-gantt-parent-left.has-tag-accent { border-left: 4px solid var(--vg-tag-accent); }
+.task-gantt-parent-left.has-tag-accent { border-left-color: var(--vg-tag-accent); }
 .task-gantt-parent-left:hover:not(.is-drag-over) { background: linear-gradient(var(--vg-tint-hover), var(--vg-tint-hover)), var(--background-primary); }
 /* Long titles ellipsize inside the 320px column. */
 .task-gantt-parent-title { font-weight: var(--vg-weight-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -461,6 +470,8 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-daily-todo-input { flex: 1 1 auto; min-width: 0; }
 .task-gantt-daily-todo-more { flex: none; }
 .task-gantt-daily-todo-add { margin-top: var(--vg-space-1); }
+.task-gantt-daily-todo-empty { padding: var(--vg-space-2) 0; color: var(--text-faint); font-size: var(--vg-font-s); }
+.task-gantt-daily-todo-empty.is-hidden { display: none; }
 .task-gantt-daily-row .task-gantt-fixed-bg { cursor: pointer; }
 
 .task-gantt-workload-popover-header {
@@ -630,9 +641,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-popover-current-status { display: block; width: 100%; min-width: 0; min-height: 6em; padding: 4px 6px; resize: vertical; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); }
 .task-gantt-popover-status-select, .task-gantt-popover-due-input { display: block; width: 100%; min-width: 0; min-height: 28px; padding: 4px 6px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); }
 .task-gantt-popover-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--vg-space-3); margin-top: 12px; padding-top: 8px; border-top: var(--vg-border); }
-.task-gantt-popover-open-note { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; }
-.task-gantt-popover-open-note:hover { background: var(--background-modifier-hover); }
-.task-gantt-popover-open-note:focus-visible, .task-gantt-popover-toggle-completed:focus-visible, .task-gantt-popover-status-select:focus-visible, .task-gantt-popover-due-input:focus-visible, .task-gantt-popover-current-value textarea:focus-visible, .task-gantt-popover-current-status:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.task-gantt-popover-open-note, .task-gantt-popover-open-workload { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; }
+.task-gantt-popover-open-note:hover, .task-gantt-popover-open-workload:hover { background: var(--background-modifier-hover); }
+.task-gantt-popover-open-note:focus-visible, .task-gantt-popover-open-workload:focus-visible, .task-gantt-popover-toggle-completed:focus-visible, .task-gantt-popover-status-select:focus-visible, .task-gantt-popover-due-input:focus-visible, .task-gantt-popover-current-value textarea:focus-visible, .task-gantt-popover-current-status:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .task-gantt-popover-toggle-completed:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
 .task-gantt-popover-toggle-completed { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
 

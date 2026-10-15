@@ -45,6 +45,8 @@ import {
   dateFromClientX,
   dateFromPointer,
   dateLabel,
+  headerLabelPlan,
+  isHeaderDayLabelShown,
   diffDays,
   estimateTextWidth,
   getCapacityHours,
@@ -254,7 +256,11 @@ interface DailyTodoPopoverState {
   date: string;
   listEl: HTMLElement;
   rows: DailyTodoPopoverRow[];
+  /** Hint shown while the list has no rows. */
+  emptyEl: HTMLElement;
   outsideHandler: (evt: Event) => void;
+  /** Window-level Escape, so the editor closes even when focus is elsewhere. */
+  keyHandler: (evt: KeyboardEvent) => void;
 }
 
 function isDailyTodoRowDirty(row: DailyTodoPopoverRow): boolean {
@@ -927,6 +933,8 @@ export class TaskGanttView extends ItemView {
   /** last month shown in the floating label (dedupe key). */
   private lastFloatingMonth = "";
   private chartNeedsVisibleRender = false;
+  /** True until the first visible chart has been scrolled to today. */
+  private initialScrollPending = true;
 
 
 
@@ -1347,6 +1355,24 @@ export class TaskGanttView extends ItemView {
       this.renderPreviewDock();
     }
 
+    // A fresh open always starts around today, whatever "today" was when this
+    // view object was constructed (a long-lived instance would otherwise open
+    // on a stale range).
+    this.rangeStart = addDays(todayStr(), -14);
+    this.rangeDays = 90;
+    this.initialScrollPending = true;
+
+    // The Daily ToDo editor and the hover popovers are body-anchored, so they
+    // outlive a tab switch unless closed explicitly.
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf !== this.leaf) {
+          this.closeHoverPopovers();
+          this.closeDailyTodoPopover();
+        }
+      })
+    );
+
     this.wrapEl = document.createElement("div");
     this.wrapEl.classList.add("task-gantt-wrap");
     container.appendChild(this.wrapEl);
@@ -1372,8 +1398,28 @@ export class TaskGanttView extends ItemView {
     // defer the initial scroll to the next animation frame so the
     // freshly built content has layout.
     requestAnimationFrame(() => {
-      this.scrollToDate(todayStr(), INITIAL_SCROLL_OFFSET_PX);
+      this.applyInitialScroll();
     });
+  }
+
+  /**
+   * Scrolls a freshly opened chart so today sits near the left third. A chart
+   * that is not laid out yet (hidden tab) keeps the request pending; onResize
+   * retries once the view becomes visible, so the first visible frame never
+   * shows the raw range start.
+   */
+  private applyInitialScroll(): void {
+    const wrap = this.wrapEl;
+    if (!this.initialScrollPending || wrap === undefined || wrap.offsetParent === null) {
+      return;
+    }
+    const today = todayStr();
+    if (!this.dates.includes(today)) {
+      this.ensureDateInRange(today);
+      this.renderChart();
+    }
+    this.scrollToDate(today, INITIAL_SCROLL_OFFSET_PX);
+    this.initialScrollPending = false;
   }
 
   onResize(): void {
@@ -1384,10 +1430,9 @@ export class TaskGanttView extends ItemView {
     requestAnimationFrame(() => {
       if (this.wrapEl !== wrap || !wrap.isConnected || wrap.offsetParent === null) return;
       if (this.chartNeedsVisibleRender) {
-        const initial = !this.dates.length;
         this.renderChart();
-        if (initial) this.scrollToDate(todayStr(), INITIAL_SCROLL_OFFSET_PX);
       }
+      this.applyInitialScroll();
       this.updateFloatingMonth();
     });
   }
@@ -1434,6 +1479,21 @@ export class TaskGanttView extends ItemView {
     return Promise.resolve();
   }
 
+  /**
+   * Closes every hover-driven popover (rich, workload, day summary). The
+   * Daily ToDo editor is click-driven and has its own lifecycle, so it stays.
+   */
+  private closeHoverPopovers(): void {
+    this.closeRichPopover();
+    this.closeWorkloadPopup();
+    this.closeWorkloadDaySummaryPopover();
+  }
+
+  /** Hover popovers stay closed while the Daily ToDo editor or a context menu is open. */
+  private hoverPopoversBlocked(): boolean {
+    return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined;
+  }
+
   private clearGhostLayer(): void {
     for (const [taskId, { nodes, current }] of this.ghostNodes) {
       this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
@@ -1476,6 +1536,8 @@ export class TaskGanttView extends ItemView {
 
   /** Opens a context menu after closing any prior menu and its native children. */
   private activateContextMenu(menu: Menu): void {
+    // One floating layer at a time: the hover popovers give way to the menu.
+    this.closeHoverPopovers();
     this.activeContextMenu?.hide();
     this.activeContextMenu = menu;
     menu.onHide(() => {
@@ -1993,6 +2055,9 @@ export class TaskGanttView extends ItemView {
     dowRow.classList.add("task-gantt-dow-row");
 
     const widthStyle = `${this.dayWidth}px`;
+    // At narrow day widths the day / weekday labels are thinned out instead
+    // of overlapping (see headerLabelPlan).
+    const labelPlan = headerLabelPlan(this.dayWidth);
 
     dates.forEach((date, index) => {
       // Apply the same shared per-date classes to all three rows.
@@ -2019,6 +2084,9 @@ export class TaskGanttView extends ItemView {
         // the compact "M月" title so the label remains legible at one day's
         // column width instead of being clipped to a few characters.
         monthCell.textContent = monthTitle(date);
+        // The label may be wider than one day column: let it overflow into
+        // the following (empty) month cells instead of being clipped.
+        monthCell.classList.add("is-month-start");
       }
       monthRow.appendChild(monthCell);
 
@@ -2027,7 +2095,12 @@ export class TaskGanttView extends ItemView {
       dayCell.classList.add("task-gantt-day-cell");
       dayCell.style.width = widthStyle;
       applyClasses(dayCell);
-      dayCell.textContent = dateLabel(date).day;
+      const label = dateLabel(date);
+      if (isHeaderDayLabelShown(date, labelPlan, isToday)) {
+        // Thinned-out labels drop the zero padding ("08" -> "8").
+        dayCell.textContent = labelPlan.showAllDays ? label.day : String(Number(label.day));
+      }
+      dayCell.title = `${moment(date, "YYYY-MM-DD").format("M/D")}(${label.dow})`;
       dayRow.appendChild(dayCell);
 
       // Dow cell: short weekday; clicking toggles the holiday
@@ -2036,7 +2109,9 @@ export class TaskGanttView extends ItemView {
       dowCell.classList.add("task-gantt-dow-cell");
       dowCell.style.width = widthStyle;
       applyClasses(dowCell);
-      dowCell.textContent = dateLabel(date).dow;
+      if (labelPlan.showWeekday) {
+        dowCell.textContent = label.dow;
+      }
       dowCell.addEventListener("click", () => {
         void this.toggleHoliday(date);
       });
@@ -2710,7 +2785,7 @@ export class TaskGanttView extends ItemView {
       // match the bar-level workload popup's
       // hover trigger and delayed mouse-leave handoff to the popover.
       cell.addEventListener("mouseenter", () => {
-        if (this.host.settings.ganttFeatureWorkloadEnabled) {
+        if (this.host.settings.ganttFeatureWorkloadEnabled && !this.hoverPopoversBlocked()) {
           this.showWorkloadDaySummaryPopup(date, cell);
         }
       });
@@ -2739,6 +2814,8 @@ export class TaskGanttView extends ItemView {
     if (!this.host.settings.ganttFeatureWorkloadEnabled) {
       return;
     }
+    this.closeRichPopover(); // One popover at a time.
+    this.closeWorkloadPopup();
     this.closeWorkloadDaySummaryPopover(); // Close any open day-summary popover.
 
     const el = document.createElement("div");
@@ -3108,7 +3185,7 @@ export class TaskGanttView extends ItemView {
       });
 
       chip.addEventListener("mouseenter", () => {
-        if (this.host.settings.ganttFeatureWorkloadEnabled) {
+        if (this.host.settings.ganttFeatureWorkloadEnabled && !this.hoverPopoversBlocked()) {
           this.showWorkloadPopupForEvent(placed.event, chip);
         }
       });
@@ -3343,6 +3420,7 @@ export class TaskGanttView extends ItemView {
   }
 
   private createDailyTodoPopover(date: string, anchorEl: HTMLElement): void {
+    this.closeHoverPopovers();
     const el = document.createElement("div");
     el.classList.add("task-gantt-daily-todo-popover", "vg-surface", "vg-popover");
     el.setAttribute("data-date", date);
@@ -3356,11 +3434,16 @@ export class TaskGanttView extends ItemView {
     listEl.classList.add("task-gantt-daily-todo-list");
     el.appendChild(listEl);
 
+    const emptyEl = document.createElement("div");
+    emptyEl.classList.add("task-gantt-daily-todo-empty");
+    emptyEl.textContent = "まだToDoはありません";
+    el.appendChild(emptyEl);
+
     const addButton = document.createElement("button");
     addButton.classList.add("task-gantt-daily-todo-add", "vg-btn-sm");
-    addButton.textContent = "+";
+    addButton.textContent = "+ ToDoを追加";
     addButton.setAttribute("aria-label", "ToDoを追加");
-    addButton.title = "ToDoを追加";
+    addButton.title = "この日にToDoを追加";
     el.appendChild(addButton);
 
     const state: DailyTodoPopoverState = {
@@ -3369,6 +3452,13 @@ export class TaskGanttView extends ItemView {
       date,
       listEl,
       rows: [],
+      emptyEl,
+      keyHandler: (evt: KeyboardEvent): void => {
+        // An Escape that only cancels an IME composition must not close it.
+        if (evt.key === "Escape" && !evt.isComposing) {
+          this.closeDailyTodoPopover();
+        }
+      },
       outsideHandler: (evt: Event): void => {
         const target = evt.target as Node | null;
         if (
@@ -3387,6 +3477,7 @@ export class TaskGanttView extends ItemView {
     for (const item of summary?.items ?? []) {
       this.appendDailyTodoRow(state, { ...item }, false);
     }
+    this.syncDailyTodoEmptyHint(state);
 
     addButton.addEventListener("click", () => {
       // One blank row at a time: reuse it instead of stacking empty rows.
@@ -3408,7 +3499,13 @@ export class TaskGanttView extends ItemView {
 
     document.body.appendChild(el);
     window.addEventListener("mousedown", state.outsideHandler, true);
+    window.addEventListener("keydown", state.keyHandler, true);
     this.positionDailyTodoPopover(anchorEl);
+  }
+
+  /** Shows the 「まだToDoはありません」 hint only while the popover has no rows. */
+  private syncDailyTodoEmptyHint(state: DailyTodoPopoverState): void {
+    state.emptyEl.classList.toggle("is-hidden", state.rows.length > 0);
   }
 
   /**
@@ -3450,6 +3547,7 @@ export class TaskGanttView extends ItemView {
     const row: DailyTodoPopoverRow = { item, rowEl, checkEl, inputEl };
     state.rows.push(row);
     state.listEl.appendChild(rowEl);
+    this.syncDailyTodoEmptyHint(state);
 
     // `change` fires on Enter / blur only, so IME composition is never cut off.
     const save = (): void => {
@@ -3608,6 +3706,7 @@ export class TaskGanttView extends ItemView {
     }
     state.rows.splice(state.rows.indexOf(row), 1);
     row.rowEl.remove();
+    this.syncDailyTodoEmptyHint(state);
     await this.applyDailyTodoModel(state);
   }
 
@@ -3630,6 +3729,7 @@ export class TaskGanttView extends ItemView {
     for (const item of summary?.items ?? []) {
       this.appendDailyTodoRow(state, { ...item }, false);
     }
+    this.syncDailyTodoEmptyHint(state);
     this.rebuildDailyTodoRowKeepingPopover();
   }
 
@@ -3772,6 +3872,8 @@ export class TaskGanttView extends ItemView {
     }
     this.dailyTodoPopoverState = undefined;
     window.removeEventListener("mousedown", state.outsideHandler, true);
+    window.removeEventListener("keydown", state.keyHandler, true);
+    // Dirty rows are committed below, so closing never drops typed text.
     for (const row of [...state.rows]) {
       if (isDailyTodoRowDirty(row)) {
         void this.enqueueDailyTodoTask(() =>
@@ -4613,8 +4715,14 @@ export class TaskGanttView extends ItemView {
       // The bar-level workload graph is a separate popover from the rich
       // popover above. Mouseenter shows it when workload is enabled, and
       // mouseleave starts its independent 160ms hide debounce.
+      // The task popover (opened by mouseover just before) takes precedence:
+      // the chart is then reached from its 「作業時間」 button.
       barEl.addEventListener("mouseenter", () => {
-        if (this.host.settings.ganttFeatureWorkloadEnabled) {
+        if (
+          this.host.settings.ganttFeatureWorkloadEnabled &&
+          this.richPopoverEl === undefined &&
+          !this.hoverPopoversBlocked()
+        ) {
           this.showWorkloadPopupForBar(bar.task, barEl);
         }
       });
@@ -6389,7 +6497,7 @@ export class TaskGanttView extends ItemView {
     anchor: RichPopoverAnchor,
     evt: MouseEvent
   ): void {
-    if (Date.now() < this.richPopoverSuppressUntil) {
+    if (Date.now() < this.richPopoverSuppressUntil || this.hoverPopoversBlocked()) {
       return;
     }
     this.richPopoverPointerOutside = false;
@@ -6412,6 +6520,9 @@ export class TaskGanttView extends ItemView {
     anchor: RichPopoverAnchor,
     evt: MouseEvent
   ): void {
+    // Only one popover at a time: a task popover replaces the workload ones.
+    this.closeWorkloadPopup();
+    this.closeWorkloadDaySummaryPopover();
     const el = document.createElement("div");
     el.classList.add("task-gantt-rich-popover", "vg-surface", "vg-popover");
     if (anchor.kind === "subtask") {
@@ -6741,7 +6852,7 @@ export class TaskGanttView extends ItemView {
     if (!this.host.settings.ganttFeatureWorkloadEnabled) {
       return;
     }
-    this.closeWorkloadPopup(); // always rebuild fresh.
+    this.closeHoverPopovers(); // one popover at a time; always rebuild fresh.
 
     const { dates, graphLeft } = this.computeWorkloadPopupLayout(task, barEl);
     this.buildWorkloadPopup(
@@ -6769,7 +6880,7 @@ export class TaskGanttView extends ItemView {
     if (!this.host.settings.ganttFeatureWorkloadEnabled) {
       return;
     }
-    this.closeWorkloadPopup();
+    this.closeHoverPopovers();
     let graphLeft = 0;
     try {
       const rect = chipEl.getBoundingClientRect();
@@ -7861,9 +7972,52 @@ export class TaskGanttView extends ItemView {
     // Add the popover action buttons.
     const actions = document.createElement("div");
     actions.classList.add("task-gantt-popover-actions");
+    const workloadButton = this.buildWorkloadButton(task);
+    if (workloadButton !== undefined) {
+      actions.appendChild(workloadButton);
+    }
     actions.appendChild(this.buildOpenNoteButton(task));
     actions.appendChild(this.buildCompletedToggleButton(task));
     root.appendChild(actions);
+  }
+
+  /**
+   * 「作業時間」 — swaps the task popover for the bar's workload chart (only
+   * one popover is shown at a time). The chart then closes on an outside
+   * click, scroll or the next hover, like any other hover popover.
+   */
+  private buildWorkloadButton(task: TaskRow): HTMLElement | undefined {
+    if (!this.host.settings.ganttFeatureWorkloadEnabled) {
+      return undefined;
+    }
+    const button = document.createElement("button");
+    button.classList.add("task-gantt-popover-open-workload");
+    button.textContent = "作業時間";
+    button.title = "この期間の作業時間を入力";
+    this.bindRichPopoverInteraction(button);
+    button.addEventListener("click", () => {
+      const barEl = this.richPopoverAnchorEl;
+      if (barEl === undefined) {
+        return;
+      }
+      this.showWorkloadPopupForBar(task, barEl);
+      const popupEl = this.workloadPopoverState?.el;
+      if (popupEl === undefined) {
+        return;
+      }
+      const outside = (evt: Event): void => {
+        const target = evt.target as Node | null;
+        if (this.workloadPopoverState?.el === popupEl && target !== null && isNodeInside(target, popupEl)) {
+          return;
+        }
+        window.removeEventListener("mousedown", outside, true);
+        if (this.workloadPopoverState?.el === popupEl) {
+          this.closeWorkloadPopup();
+        }
+      };
+      window.addEventListener("mousedown", outside, true);
+    });
+    return button;
   }
 
 
