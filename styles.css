@@ -194,7 +194,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 /* Embedded view (task-list code block). Scoped under .task-workbench-embed so Obsidian's
    .markdown-rendered table styles lose on specificity; density matches the Workbench table. */
-.task-workbench-embed { display: flex; flex-direction: column; border: var(--vg-border); border-radius: var(--vg-radius-m); overflow: hidden; }
+.task-workbench-embed { display: flex; flex-direction: column; border: var(--vg-border); border-radius: var(--vg-radius-m); overflow-x: auto; overflow-y: hidden; }
 .task-workbench-embed-titlebar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vg-space-3); padding: var(--vg-space-3); border-bottom: var(--vg-border); background: var(--background-secondary); font-size: var(--vg-font-m); }
 .task-workbench-embed-titlebar label { display: inline-flex; align-items: center; gap: var(--vg-space-1); white-space: nowrap; cursor: pointer; }
 .task-workbench-embed-titlebar .task-workbench-search { min-width: 140px; }
@@ -203,7 +203,12 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-workbench-embed .task-workbench-embed-table { border-collapse: collapse; width: 100%; margin: 0; font-size: var(--vg-font-m); }
 .task-workbench-embed .task-workbench-embed-table th, .task-workbench-embed .task-workbench-embed-table td { font-size: var(--vg-font-m); padding: 2px 6px; text-align: left; vertical-align: middle; border: 0; border-bottom: var(--vg-border); }
 .task-workbench-embed .task-workbench-embed-table thead th { white-space: nowrap; padding-top: 6px; padding-bottom: 6px; font-size: var(--vg-font-s); font-weight: var(--vg-weight-strong); color: var(--text-muted); background: var(--background-secondary); }
-.task-workbench-embed .task-workbench-embed-table td:nth-child(5), .task-workbench-embed .task-workbench-embed-table td:nth-child(6) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.task-workbench-embed .task-workbench-embed-table { table-layout: auto; }
+.task-workbench-embed .task-workbench-embed-table th:nth-child(1), .task-workbench-embed .task-workbench-embed-table td:nth-child(1) { width: 45%; min-width: 8em; overflow-wrap: anywhere; }
+.task-workbench-embed .task-workbench-embed-table th:nth-child(2), .task-workbench-embed .task-workbench-embed-table td:nth-child(2), .task-workbench-embed .task-workbench-embed-table td:nth-child(3), .task-workbench-embed .task-workbench-embed-table td:nth-child(5), .task-workbench-embed .task-workbench-embed-table td:nth-child(7) { white-space: nowrap; }
+.task-workbench-embed .task-workbench-embed-table td:nth-child(5) { font-variant-numeric: tabular-nums; }
+.task-workbench-embed .task-workbench-embed-table td:nth-child(4) { min-width: 5em; }
+.task-workbench-embed .task-workbench-embed-table td:nth-child(6) .vg-tag-chip, .task-workbench-embed .task-workbench-embed-table td:nth-child(6) > * { white-space: nowrap; }
 .task-workbench-embed .task-workbench-embed-table tbody tr:last-child td { border-bottom: 0; }
 .task-workbench-embed .task-workbench-embed-table tbody tr:hover { background: var(--background-modifier-hover); }
 .task-workbench-embed .task-workbench-embed-table tbody tr.twb-due-soon-row { background: var(--vg-tint-warning); }
