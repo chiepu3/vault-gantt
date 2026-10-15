@@ -1076,7 +1076,7 @@ describe("part 4 — Gantt structure", () => {
 
   it("parent reorder drag-over: accent outline highlights the drop target", () => {
     expectDecl(".task-gantt-parent-left.is-drag-over", "outline", "2px solid var(--interactive-accent)");
-    expectDecl(".task-gantt-parent-left.is-drag-over", "background", "hsla(var(--interactive-accent-hsl), 0.12)");
+    expectDecl(".task-gantt-parent-left.is-drag-over", "background", "linear-gradient(hsla(var(--interactive-accent-hsl), 0.12), hsla(var(--interactive-accent-hsl), 0.12)), var(--background-primary)");
   });
 
   it("parent timeline is positioned and clips overflow", () => {
