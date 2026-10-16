@@ -98,6 +98,10 @@ describe("AgentView streams ordered parts", () => {
     expect(deepText(details().children[0])).toBe("考え中…"); expect(details().open).toBe(true);
     part.state = "done"; view.render();
     expect(deepText(details().children[0])).toBe("考えた内容"); expect(details().open).toBe(false);
+    // The reader opens it: that choice survives later renders.
+    details().open = true; for (const listener of details().listeners.toggle ?? []) listener({});
+    session.active.status = "idle"; view.render();
+    expect(details().open).toBe(true);
     await view.onClose(); session.dispose();
   });
   it("truncates long tool output behind もっと見る", async () => {
@@ -149,7 +153,7 @@ describe("AgentView composer", () => {
     const provider = new FakeProvider();
     const { view, session, root } = await open([], provider);
     const input = findAll(root, (el) => el.tagName === "TEXTAREA")[0];
-    expect(input.placeholder).toContain("Shift+Enter");
+    expect(input.title).toBe("Enterで送信、Shift+Enterで改行"); expect(input.placeholder.length).toBeLessThan(16);
     input.value = "こんにちは";
     const fire = (event: ReturnType<typeof key>) => { for (const listener of input.listeners.keydown) listener(event); return event; };
     const shift = fire(key({ shiftKey: true })); expect(shift.preventDefault).not.toHaveBeenCalled();

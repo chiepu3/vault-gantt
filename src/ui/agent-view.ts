@@ -158,7 +158,7 @@ export class AgentView extends ItemView {
     const composer = this.element(root, "div"); composer.className = "vg-ai-content vg-ai-composer";
     this.contextEl = this.element(composer, "div"); this.contextEl.className = "vg-ai-context";
     const box = this.element(composer, "div"); box.className = "vg-ai-composer-box";
-    this.inputEl = this.element(box, "textarea"); this.inputEl.rows = 1; this.inputEl.setAttribute("aria-label", "メッセージ"); this.inputEl.placeholder = "メッセージを入力（Shift+Enterで改行）";
+    this.inputEl = this.element(box, "textarea"); this.inputEl.rows = 1; this.inputEl.setAttribute("aria-label", "メッセージ"); this.inputEl.placeholder = "メッセージを入力…"; this.inputEl.title = "Enterで送信、Shift+Enterで改行";
     this.inputEl.addEventListener("input", () => { this.host.session.active.draft = this.inputEl.value; this.resizeInput(); });
     this.inputEl.addEventListener("keydown", (event) => {
       // Enter sends, Shift+Enter breaks the line. Enter that confirms an IME conversion must not send.
@@ -361,7 +361,9 @@ export class AgentView extends ItemView {
   private detailsRow(key: string, className: string, defaultOpen: boolean): HTMLDetailsElement {
     const details = this.make("details", className);
     details.open = this.openState.get(key) ?? defaultOpen;
-    details.addEventListener("toggle", () => { this.openState.set(key, details.open); });
+    // Only a change the reader makes is remembered; the toggle event of the initial state is not one.
+    let last = details.open;
+    details.addEventListener("toggle", () => { if (details.open !== last) { last = details.open; this.openState.set(key, details.open); } });
     return details;
   }
   private reasoningRow(key: string, part: Extract<ChatPart, { type: "reasoning" }>): HTMLElement {

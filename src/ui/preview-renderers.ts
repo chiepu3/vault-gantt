@@ -318,7 +318,7 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
   schedule: (parent, effect, ctx) => {
     if (same(effect.before, effect.after)) { note(parent, "日程の変更はありません。"); return; }
     renderScheduleTimeline(parent, effect);
-    note(parent, effect.unit === "business-day" ? "日数の数え方: 営業日（休日を除く）" : "日数の数え方: 暦日（休日も数える）");
+    if (effect.unit === "business-day") note(parent, "日数の数え方: 営業日（休日を除く）");
     if (ctx.operationId === "T20") note(parent, "休日を除いた日数を保って移動します。終了日・マーカーは休日の分だけ後ろにずれることがあります。");
     if (!effect.after.start !== !effect.after.end) note(parent, "片方の日付だけが設定されます。両方そろうまでバーは表示されません。", "vg-pv-note is-warn");
   },

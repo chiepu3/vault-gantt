@@ -259,10 +259,10 @@ describe("no internal names on screen", () => {
     const explicit = await f.service.propose("T19", { subtaskId: f.child.id, start: "2026-10-16", end: "2026-10-19" }, f.context);
     expect(text(renderOperationPreviewCard(root(), explicit, {}))).not.toContain("休日を除いた日数を保って移動します");
   });
-  it("shows the day-counting basis in plain words", () => {
+  it("shows the day-counting basis only for business days", () => {
     const business = root(); renderEffect(business, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "business-day" }, {});
     expect(text(business)).toContain("日数の数え方: 営業日（休日を除く）");
     const calendar = root(); renderEffect(calendar, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "calendar-day" }, {});
-    expect(text(calendar)).toContain("日数の数え方: 暦日（休日も数える）");
+    expect(text(calendar)).not.toContain("日数の数え方");
   });
 });
