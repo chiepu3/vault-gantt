@@ -1536,10 +1536,17 @@ export class TaskGanttView extends ItemView {
     if (points.length) nodes.push(...renderPointGhosts(timeline, points, baseDate, dayWidth, top));
     if (layer.isDeleted(taskId)) {
       if (bar) { bar.classList.add("vg-pv-delete-target"); this.previewMarkedBars.add(bar); }
-      const note = document.createElement("span"); note.className = "vg-pv-live-delete";
-      note.textContent = "削除予定"; note.title = "承認すると削除されます（元の行は承認まで変わりません）";
-      note.style.top = Math.max(0, top - 10) + "px"; note.style.left = (bar ? Number.parseFloat(bar.style.left || "0") : 0) + "px";
-      timeline.appendChild(note); nodes.push(note);
+      const barTitle = bar?.querySelector?.(".task-gantt-bar-title") as HTMLElement | null | undefined;
+      if (bar && barTitle) {
+        // The tag lives inside the bar, so it never lands on neighbouring labels.
+        barTitle.textContent = `削除予定 · ${barTitle.textContent ?? ""}`;
+        bar.title = "承認すると削除されます（元の行は承認まで変わりません）";
+      } else {
+        const note = document.createElement("span"); note.className = "vg-pv-live-delete";
+        note.textContent = "削除予定"; note.title = "承認すると削除されます（元の行は承認まで変わりません）";
+        note.style.top = Math.max(0, top - 10) + "px"; note.style.left = (bar ? Number.parseFloat(bar.style.left || "0") : 0) + "px";
+        timeline.appendChild(note); nodes.push(note);
+      }
     }
     if (nodes.length) this.previewNodes.set(taskId, nodes);
   }
@@ -4527,6 +4534,7 @@ export class TaskGanttView extends ItemView {
     });
 
     const renderedIds = new Set(renders.map((item) => item.bar.task.id));
+    const occupied: { id: string; l: number; r: number }[] = renders.map((item) => ({ id: item.bar.task.id, l: item.left, r: item.left + item.width }));
     for (const subtask of parent.subtasks?.values() ?? []) {
       const savedGhost = this.host.ghosts?.entries.get(subtask.id);
       const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(subtask.id);
@@ -4771,6 +4779,7 @@ export class TaskGanttView extends ItemView {
 
 
             timeline.appendChild(workloadLabel);
+            occupied.push({ id: bar.task.id, l: diffDays(baseDate, date) * dayWidth, r: (diffDays(baseDate, date) + 1) * dayWidth });
           }
         }
       }
@@ -4863,6 +4872,18 @@ export class TaskGanttView extends ItemView {
         });
         timeline.appendChild(connector);
         timeline.appendChild(label);
+      }
+    }
+
+    // A ghost label never sits on another task's bar or hour labels: hide it when there is no free room (the band keeps the summary tooltip).
+    if (this.previewLayer?.active) {
+      for (const render of renders) {
+        const label = this.ghostNodes.get(render.bar.task.id)?.nodes.find((node) => node.classList.contains("vg-ai-target-label"));
+        if (!label || label.hidden) continue;
+        const l = Number.parseFloat(label.style.left || "0");
+        const r = l + Math.min(Number.parseFloat(label.style.maxWidth || "240"), (label.textContent ?? "").length * 11 + 8);
+        const hit = occupied.some((box) => box.id !== render.bar.task.id && l < box.r && r > box.l);
+        if (hit) label.hidden = true;
       }
     }
 
