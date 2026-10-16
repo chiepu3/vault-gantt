@@ -1,6 +1,7 @@
 import type { OperationId, OperationInputMap } from "../../contracts/operations";
 import type { PreviewEntry, FieldChange } from "../../contracts/preview";
 import type { EditableSettingKey } from "../../contracts/context";
+import { pickGanttTagColor } from "../../core/constants";
 import { canonical, fail, type TaskSnapshot } from "./runtime";
 export const SETTING_OPERATIONS = {
   S01: "taskFolder", S02: "filenameUsesDatePrefix", S03: "hideCompletedByDefault", S04: "currentStatusRows",
@@ -40,7 +41,7 @@ export function settingsPlan<K extends OperationId>(id: K, input: OperationInput
     const before = settings.ganttTags.find((tag) => tag.key === args.tagKey);
     if (id !== "S22" && id !== "S25" && !before) fail("NOT_FOUND", "実在するtagKeyを取得してください。");
     let targetKey = args.tagKey;
-    if (id === "S22") { targetKey = newKey("tag", settings.ganttTags.map((tag) => tag.key)); settings.ganttTags.push({ key: targetKey, name: args.name, color: args.color ?? "", order: args.order }); }
+    if (id === "S22") { targetKey = newKey("tag", settings.ganttTags.map((tag) => tag.key)); settings.ganttTags.push({ key: targetKey, name: args.name, color: args.color ?? pickGanttTagColor(settings.ganttTags), order: args.order }); }
     if (id === "S23" && args.name.trim()) settings.ganttTags.find((tag) => tag.key === targetKey)!.name = args.name.trim();
     if (id === "S24") settings.ganttTags.find((tag) => tag.key === targetKey)!.color = args.color!.trim();
     if (id === "S26") settings.ganttTags = settings.ganttTags.filter((tag) => tag.key !== targetKey);

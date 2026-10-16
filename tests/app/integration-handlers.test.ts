@@ -55,6 +55,7 @@ describe("settings and integration operation handlers", () => {
     const f = await fixture();
     const created = await integrationPlan("S27", { name: "New Tag", target: { kind: "task", taskId: f.child.id } }, f.snapshot, f.host);
     expect(created.entries).toHaveLength(2); expect(created.keys).toEqual(["ganttTags"]); expect(created.changes[0].patch.tags).toEqual(["リリース", "New Tag"]); validEntries(created);
+    expect(created.entries[0].effects[0]).toMatchObject({ kind: "tag-definition", after: { name: "New Tag", color: "#2563eb" } });
     const reused = await integrationPlan("S27", { name: "tag-1", target: { kind: "task", taskId: f.child.id } }, f.snapshot, f.host);
     expect(reused.keys).toEqual([]); expect(reused.changes[0].patch.tags).toEqual(["リリース"]); validEntries(reused);
     expect(f.settings.ganttTags).toHaveLength(1); expect(f.vault.getModifyCallCount()).toBe(0);

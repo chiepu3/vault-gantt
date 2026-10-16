@@ -9351,7 +9351,7 @@ describe("inline title editing and marker modal", () => {
       expect(h.settings.ganttTags).toContainEqual({
         key: "created",
         name: "created",
-        color: DEFAULT_GANTT_TAG_COLORS[1],
+        color: DEFAULT_GANTT_TAG_COLORS[0],
         order: 1000,
       });
       expect(h.updateTaskItem).toHaveBeenCalledWith(sub, {
@@ -9386,7 +9386,10 @@ describe("inline title editing and marker modal", () => {
       const definitions = tagRegistry(
         ["a", "b", "c", "d", "e", "f", "g", "h"],
         Object.fromEntries(
-          ["a", "b", "c", "d", "e", "f", "g", "h"].map((name) => [name, ""])
+          ["a", "b", "c", "d", "e", "f", "g", "h"].map((name, i) => [
+            name,
+            DEFAULT_GANTT_TAG_COLORS[i],
+          ])
         )
       );
       const { h, bar } = await openBarView(

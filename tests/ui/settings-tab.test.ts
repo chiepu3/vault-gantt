@@ -988,7 +988,7 @@ describe("TaskWorkbenchSettingTab", () => {
     expect(settings.ganttTags).toContainEqual({
       key: "タグ3",
       name: "タグ3",
-      color: "",
+      color: "#2563eb",
       order: 2000,
     });
     expect(saveSettings).toHaveBeenCalledTimes(1);

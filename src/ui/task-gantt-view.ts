@@ -28,7 +28,7 @@ import type {
 // Tag rendering uses the GanttTagDefinition[] registry through
 // findGanttTagDefinition and getPrimaryGanttTagDefinition.
 import {
-  DEFAULT_GANTT_TAG_COLORS,
+  pickGanttTagColor,
   DEFAULT_STATUSES,
 } from "../core/constants";
 import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
@@ -8903,10 +8903,7 @@ export class TaskGanttView extends ItemView {
         const definition = {
           key: name,
           name,
-          color:
-            DEFAULT_GANTT_TAG_COLORS[
-              definitions.length % DEFAULT_GANTT_TAG_COLORS.length
-            ],
+          color: pickGanttTagColor(definitions),
           order: nextOrder,
         };
         const candidateDefinitions = [...definitions, definition];
