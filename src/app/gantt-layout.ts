@@ -660,6 +660,61 @@ export function hasPlannedDates(
   );
 }
 
+export interface LaneWindow {
+  start: string;
+  end: string;
+}
+
+/** Grid (in days) the lane window is snapped to so it changes infrequently. */
+export const LANE_WINDOW_SNAP_DAYS = 7;
+/** Minimum buffer (in days) added on each side of the visible dates. */
+export const LANE_WINDOW_MIN_BUFFER_DAYS = 7;
+
+/**
+ * Buffered date window used to decide which subtasks take part in lane
+ * packing. Visible day indices are [scrollLeft/dayWidth, (scrollLeft +
+ * clientWidth)/dayWidth] (the sticky name column overlays the left edge, so
+ * the timeline x origin is 0 in scroll coordinates). The window is expanded
+ * by one viewport width (min 7 days) per side and snapped outward to a
+ * 7-day grid anchored at `rangeStart`.
+ */
+export function computeLaneWindow(input: {
+  scrollLeft: number;
+  clientWidth: number;
+  dayWidth: number;
+  rangeStart: string;
+}): LaneWindow {
+  const dw = Math.max(1, input.dayWidth);
+  const first = Math.floor(Math.max(0, input.scrollLeft) / dw);
+  const last = Math.ceil((Math.max(0, input.scrollLeft) + Math.max(0, input.clientWidth)) / dw);
+  const buffer = Math.max(LANE_WINDOW_MIN_BUFFER_DAYS, last - first);
+  const step = LANE_WINDOW_SNAP_DAYS;
+  const startIdx = Math.floor((first - buffer) / step) * step;
+  const endIdx = Math.ceil((last + buffer) / step) * step;
+  return {
+    start: addDays(input.rangeStart, startIdx),
+    end: addDays(input.rangeStart, endIdx),
+  };
+}
+
+/**
+ * Keeps only subtasks that have both planned dates and whose
+ * [plannedStartDate, plannedEndDate] intersects [windowStart, windowEnd]
+ * (inclusive). Order is preserved.
+ */
+export function filterSubtasksInWindow(
+  subtasks: TaskRow[],
+  windowStart: string,
+  windowEnd: string
+): TaskRow[] {
+  return subtasks.filter(
+    (task) =>
+      hasPlannedDates(task) &&
+      task.plannedEndDate >= windowStart &&
+      task.plannedStartDate <= windowEnd
+  );
+}
+
 /**
  *
  * Assigns every date-complete subtask a horizontal lane (0 = top) using
