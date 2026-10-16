@@ -232,8 +232,8 @@ const LEDGER = {
   },
   "E01": {
     "purpose": "その他行にイベント追加",
-    "input": "title, date",
-    "constraints": "key生成、空titleは「新しいタスク」。helper自体は日付検証なし",
+    "input": "title, date, plan?{date:hours}, actual?{date:hours}",
+    "constraints": "key生成、空titleは「新しいタスク」。計画・実績時間はE06/E07と同じ形式で追加時に同時指定可（1回の提案で登録）。E06/E07は既存イベント用",
     "undo": "×"
   },
   "E02": {
