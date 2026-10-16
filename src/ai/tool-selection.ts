@@ -22,6 +22,7 @@ export function selectOperationIds(text: string): readonly OperationId[] {
   if (/やり直|redo/i.test(text)) return ["V21"];
   if (/Daily|ToDo|デイリー|日次/i.test(text)) return ["D07", "D03", "D05"];
   if (/マーカー|marker/i.test(text)) return /移動|動か|ずら/.test(text) ? ["M03"] : ["M01"];
+  if (/イベント|event/i.test(text)) return /時間|実績|計画|工数|hours/i.test(text) ? ["E01", "E06", "E07"] : ["E01"];
   if (/実績|作業した/.test(text)) return ["M08"];
   if (/計画.*時間|工数/.test(text)) return ["M07"];
   if (/設定.*完了|完了済み.*隠/.test(text)) return ["S03"];

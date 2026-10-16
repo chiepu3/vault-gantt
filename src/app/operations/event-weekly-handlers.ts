@@ -14,7 +14,14 @@ export function eventWeeklyPlan<K extends OperationId>(id: K, input: OperationIn
     const before = snapshot.settings.ganttEvents.find((event) => event.key === args.eventKey);
     if (id !== "E01" && !before) fail("NOT_FOUND", "実在するeventKeyを取得してください。");
     let key = before?.key;
-    if (id === "E01") key = addGanttEvent(settings, args.title, args.date).key;
+    if (id === "E01") {
+      const created = addGanttEvent(settings, args.title, args.date);
+      key = created.key;
+      const patch: { workloadPlan?: ReturnType<typeof normalizeWorkloadMap>; workloadActual?: ReturnType<typeof normalizeWorkloadMap> } = {};
+      if (args.plan !== undefined) patch.workloadPlan = normalizeWorkloadMap(args.plan);
+      if (args.actual !== undefined) patch.workloadActual = normalizeWorkloadMap(args.actual);
+      if (Object.keys(patch).length) updateGanttEvent(settings, key, patch);
+    }
     if (id === "E02") updateGanttEvent(settings, key!, { title: args.title });
     if (id === "E03") updateGanttEvent(settings, key!, { date: args.date });
     if (id === "E05") deleteGanttEvent(settings, key!);
@@ -27,7 +34,7 @@ export function eventWeeklyPlan<K extends OperationId>(id: K, input: OperationIn
     if (!old || !after) effects.push({ kind: "presence", action: id === "E04" ? "duplicate" : after ? "create" : "delete", before: old ? { ...old } : null, after: after ? { ...after } : null });
     else if (id === "E02" && old.title !== after.title) effects.push({ kind: "fields", fields: [{ field: "title", before: old.title, after: after.title, reason: "requested" }] });
     else if (id === "E03" && old.date !== after.date) effects.push({ kind: "schedule", before: { start: old.date, end: old.date }, after: { start: after.date, end: after.date }, unit: "calendar-day" });
-    if (id === "E06" || id === "E07" || id === "E05" || id === "E04") {
+    if (id === "E01" || id === "E06" || id === "E07" || id === "E05" || id === "E04") {
       const beforeHours = old ? hours(old) : [], afterHours = after ? hours(after) : [];
       const cells = [...new Set([...beforeHours, ...afterHours].map((cell) => cell.date))].sort().map((date) => ({ date, before: beforeHours.find((cell) => cell.date === date) ?? { date, plan: 0, actual: 0 }, after: afterHours.find((cell) => cell.date === date) ?? { date, plan: 0, actual: 0 } })).filter((cell) => canonical(cell.before) !== canonical(cell.after));
       if (cells.length) effects.push({ kind: "workload", cells });

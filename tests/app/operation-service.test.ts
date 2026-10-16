@@ -139,6 +139,27 @@ describe("operation meaning and lifecycle boundaries", () => {
     const remove = await service.propose("E05", { eventKey: "event-1" }, context); expect(remove.entries[0].effects[0]).toMatchObject({ kind: "presence", action: "delete" });
     await service.humanApprovalPort.approve(remove.previewId); expect(settings.ganttEvents).toHaveLength(1);
   });
+  it("E01 registers plan/actual hours in one preview and stores them on the event", async () => {
+    const { service, context, settings } = await runtimeFixture();
+    const input = operationInputSchemas.E01.parse({ title: "会議", date: "2026-10-14", plan: { "2026-10-14": 2 }, actual: { "2026-10-14": 1.5 } });
+    const preview = await service.propose("E01", input, context);
+    expect(preview.entries[0].effects.map((effect) => effect.kind)).toEqual(["presence", "workload"]);
+    expect(preview.entries[0].effects[1]).toMatchObject({ kind: "workload", cells: [{ date: "2026-10-14", after: { plan: 2, actual: 1.5 } }] });
+    await service.humanApprovalPort.approve(preview.previewId);
+    const created = settings.ganttEvents.find((event) => event.title === "会議")!;
+    expect(created.workloadPlan).toEqual({ "2026-10-14": 2 });
+    expect(created.workloadActual).toEqual({ "2026-10-14": 1.5 });
+    const plain = await service.propose("E01", operationInputSchemas.E01.parse({ title: "時間なし", date: "2026-10-14" }), context);
+    expect(plain.entries[0].effects.map((effect) => effect.kind)).toEqual(["presence"]);
+  });
+  it("E01 rejects malformed plan/actual maps", () => {
+    const base = { title: "会議", date: "2026-10-14" };
+    expect(operationInputSchemas.E01.safeParse({ ...base, plan: { "2026-10-14": -1 } }).success).toBe(false);
+    expect(operationInputSchemas.E01.safeParse({ ...base, actual: { "2026-10-14": 25 } }).success).toBe(false);
+    expect(operationInputSchemas.E01.safeParse({ ...base, plan: { tomorrow: 1 } }).success).toBe(false);
+    expect(operationInputSchemas.E01.safeParse({ ...base, plan: [1] }).success).toBe(false);
+    expect(operationInputSchemas.E01.safeParse({ ...base, extra: 1 }).success).toBe(false);
+  });
   it("settings snapshot revisions are usable from the public context port", async () => {
     const { service, context } = await runtimeFixture();
     const result = await service.contextPort.query("settings.get", { sections: ["display"] }, context);
