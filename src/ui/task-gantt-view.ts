@@ -637,6 +637,45 @@ const EVENT_ROW_MIN_HEIGHT_PX = 44;
 const EVENT_ROW_VERTICAL_SLACK_PX = 12;
 const EVENT_ROW_PITCH_PX = 24;
 const EVENT_ROW_CHIP_TOP_PX = 8;
+/** Extra lane height reserved above a chip for its two-line work-time label (20px label + 2px gap below it). */
+const EVENT_ROW_LABEL_BAND_PX = 20;
+/** Gap between the work-time label's bottom edge and its chip's top edge. */
+const EVENT_ROW_LABEL_GAP_PX = 2;
+/** Height of the dual-line work-time label (matches .task-gantt-workload-day-label.is-dual). */
+const EVENT_ROW_LABEL_HEIGHT_PX = 20;
+
+interface EventLaneLayout {
+  /** Per-lane chip top offset (lane top + chip padding + label band when labelled). */
+  chipTops: number[];
+  /** Total row height including slack and the minimum height. */
+  rowHeight: number;
+}
+
+/**
+ * Single source of truth for the event row's vertical geometry. A lane grows
+ * by EVENT_ROW_LABEL_BAND_PX only when it contains a chip with a work-time
+ * label; unlabelled lanes keep the compact EVENT_ROW_PITCH_PX.
+ */
+export function computeEventLaneLayout(
+  laneHasLabel: readonly boolean[]
+): EventLaneLayout {
+  const lanes = Math.max(1, laneHasLabel.length);
+  const chipTops: number[] = [];
+  let laneTop = 0;
+  for (let i = 0; i < lanes; i += 1) {
+    const labelled = laneHasLabel[i] === true;
+    const band = labelled ? EVENT_ROW_LABEL_BAND_PX : 0;
+    chipTops.push(laneTop + EVENT_ROW_CHIP_TOP_PX + band);
+    laneTop += EVENT_ROW_PITCH_PX + band;
+  }
+  return {
+    chipTops,
+    rowHeight: Math.max(
+      EVENT_ROW_MIN_HEIGHT_PX,
+      EVENT_ROW_VERTICAL_SLACK_PX + laneTop
+    ),
+  };
+}
 // the daily-todo row's fixed height.
 const DAILY_TODO_ROW_HEIGHT_PX = 44;
 
@@ -1113,6 +1152,7 @@ export class TaskGanttView extends ItemView {
 
 
   private workloadSummaryRowEl: HTMLElement | undefined = undefined;
+  private ganttHeaderEl: HTMLElement | undefined = undefined;
   /** Fingerprint of the inputs used to compute the current summary values. */
   private workloadSummaryFingerprint: string | undefined = undefined;
   /** Cached per-date totals so full cosmetic rebuilds can reuse aggregation. */
@@ -1595,6 +1635,19 @@ export class TaskGanttView extends ItemView {
     } else {
       this.renderChartFull(parents, dates, headerFingerprint);
     }
+    this.syncStickyHeaderHeight();
+  }
+
+  /**
+   * Publishes the sticky date header's real height as `--vg-header-height`
+   * so the sticky workload row can pin itself directly beneath it without a
+   * hard-coded guess (header height varies with zoom/feature settings).
+   */
+  private syncStickyHeaderHeight(): void {
+    const height = this.ganttHeaderEl?.offsetHeight;
+    if (typeof height === "number" && height > 0) {
+      this.wrapEl.style.setProperty("--vg-header-height", `${height}px`);
+    }
   }
 
 
@@ -2048,6 +2101,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(dowRow);
 
     this.wrapEl.appendChild(header);
+    this.ganttHeaderEl = header;
   }
 
 
@@ -2553,7 +2607,7 @@ export class TaskGanttView extends ItemView {
     dates: string[]
   ): HTMLElement {
     const row = document.createElement("div");
-    row.classList.add("task-gantt-fixed-row");
+    row.classList.add("task-gantt-fixed-row", "task-gantt-workload-fixed-row");
 
     const left = document.createElement("div");
     left.classList.add(
@@ -2970,10 +3024,22 @@ export class TaskGanttView extends ItemView {
       1,
       packedEvents.reduce((max, placed) => Math.max(max, placed.row + 1), 0)
     );
-    const rowHeight = Math.max(
-      EVENT_ROW_MIN_HEIGHT_PX,
-      EVENT_ROW_VERTICAL_SLACK_PX + rows * EVENT_ROW_PITCH_PX
-    );
+    // The label is drawn iff workload is enabled and the event's own day has
+    // a non-zero plan or actual; the same predicate drives lane heights.
+    const eventHasLabel = (event: GanttEvent): boolean => {
+      if (!this.host.settings.ganttFeatureWorkloadEnabled) {
+        return false;
+      }
+      const { plan, actual } = dayValues(event, event.date);
+      return plan !== 0 || actual !== 0;
+    };
+    const laneHasLabel: boolean[] = new Array<boolean>(rows).fill(false);
+    for (const placed of packedEvents) {
+      if (eventHasLabel(placed.event)) {
+        laneHasLabel[placed.row] = true;
+      }
+    }
+    const { chipTops, rowHeight } = computeEventLaneLayout(laneHasLabel);
     const left = document.createElement("div");
     left.classList.add("task-gantt-fixed-left", "task-gantt-event-left");
     left.style.width = `${PARENT_COL_WIDTH}px`;
@@ -3031,7 +3097,7 @@ export class TaskGanttView extends ItemView {
       const chip = document.createElement("div");
       chip.classList.add("task-gantt-event-chip");
       chip.style.left = `${placed.x}px`;
-      const chipTop = EVENT_ROW_CHIP_TOP_PX + placed.row * EVENT_ROW_PITCH_PX;
+      const chipTop = chipTops[placed.row];
       chip.style.top = `${chipTop}px`;
       chip.title = placed.event.title || "新しいタスク";
 
@@ -3046,9 +3112,9 @@ export class TaskGanttView extends ItemView {
       chip.appendChild(label);
 
 
-      if (this.host.settings.ganttFeatureWorkloadEnabled) {
+      if (eventHasLabel(placed.event)) {
         const { plan, actual } = dayValues(placed.event, placed.event.date);
-        if (plan !== 0 || actual !== 0) {
+        {
           const workloadLabel = document.createElement("div");
           workloadLabel.classList.add(
             "task-gantt-workload-day-label",
@@ -3057,7 +3123,9 @@ export class TaskGanttView extends ItemView {
           workloadLabel.style.left = `${
             diffDays(this.rangeStart, placed.event.date) * this.dayWidth
           }px`;
-          workloadLabel.style.top = `${Math.max(0, chipTop - 18)}px`;
+          workloadLabel.style.top = `${
+            chipTop - EVENT_ROW_LABEL_GAP_PX - EVENT_ROW_LABEL_HEIGHT_PX
+          }px`;
           workloadLabel.style.width = `${this.dayWidth}px`;
 
           const actualLabel = document.createElement("span");
@@ -3821,12 +3889,19 @@ export class TaskGanttView extends ItemView {
     const cell = document.createElement("div");
     cell.classList.add("task-gantt-parent-add-cell");
     cell.style.width = `${PARENT_COL_WIDTH}px`;
-    const label = document.createElement("span");
-    label.textContent = "新規親タスク";
-    cell.appendChild(label);
     const button = document.createElement("button");
     button.classList.add("task-gantt-parent-add-button");
-    button.textContent = "+";
+    button.type = "button";
+    button.setAttribute("aria-label", "新規親タスクを追加");
+    button.title = "新規親タスクを追加";
+    const icon = document.createElement("span");
+    icon.classList.add("task-gantt-parent-add-icon");
+    setIcon(icon, "plus");
+    button.appendChild(icon);
+    const text = document.createElement("span");
+    text.classList.add("task-gantt-parent-add-text");
+    text.textContent = "新規親タスクを追加";
+    button.appendChild(text);
     button.addEventListener("click", (evt: MouseEvent) => {
       this.openAddParentMenu(evt);
     });
