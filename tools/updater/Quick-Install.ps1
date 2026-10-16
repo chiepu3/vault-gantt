@@ -129,9 +129,18 @@ function Install-FromRepository {
             }
         }
 
-        & $git pull --ff-only
-        if ($LASTEXITCODE -ne 0) {
-            throw 'git pull --ff-only が失敗しました。ローカルの履歴が origin と分岐しているか、追跡ブランチがありません。手動で解決してから再実行してください。'
+        # 追跡ブランチの設定に頼らず、origin の同名ブランチへ早送りする。
+        $current = (@(& $git rev-parse --abbrev-ref HEAD))[0]
+        Assert-ExitCode 'git rev-parse'
+        & $git rev-parse --verify --quiet "refs/remotes/origin/${current}" | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            & $git merge --ff-only "origin/${current}"
+            if ($LASTEXITCODE -ne 0) {
+                throw "ブランチ ${current} の手元の履歴が origin/${current} と分岐しているため、最新にできませんでした。手元だけのコミットを残すか破棄してから再実行してください（破棄してよければ: git reset --hard origin/${current}）。"
+            }
+            & $git branch --set-upstream-to "origin/${current}" | Out-Null
+        } else {
+            Write-Host "origin に ${current} ブランチがないため、取得はせず手元の内容でビルドします。"
         }
 
         $lock = Join-Path $repoRoot 'package-lock.json'
