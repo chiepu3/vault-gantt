@@ -40,7 +40,7 @@ describe("MCP approval list", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(text(root)).toContain("承認待ち 0件 · 処理済み 1件");
     const card = byClass(root, "vg-pv-card")[0]; expect(card.dataset.state).toBe("success");
-    expect(text(byClass(card, "vg-pv-status")[0])).toBe("適用済み");
+    expect(text(byClass(card, "vg-pv-status")[0])).toBe("保存済み");
   });
   it("shows the failure under the card when approval throws and keeps it pending", async () => {
     const ports = fakePorts([MCP_PREVIEW]); ports.approve.fail = new Error("前提が変わりました");
