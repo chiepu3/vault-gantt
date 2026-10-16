@@ -16,7 +16,7 @@ import { PreviewStore } from "../../src/app/preview-store";
 import moment from "moment";
 import { Menu, Notice } from "obsidian";
 import { SubtaskAddConflictError } from "../../src/app/task-operations";
-import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
+import { TaskGanttView, computeEventLaneLayout, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
 import type { TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import {
   DEFAULT_GANTT_TAG_COLORS,
@@ -2560,6 +2560,42 @@ describe("TaskGanttView", () => {
       ]);
       expect(row.style.height).toBe("60px");
       expect(byClass(row, "task-gantt-event-chip")[1].style.top).toBe("32px");
+    });
+
+    it("reserves a label band only in lanes whose chip shows a work-time label", async () => {
+      const { container } = await openView([], {
+        ganttFeatureWorkloadEnabled: true,
+        ganttEvents: [
+          { key: "e1", title: "会議", date: dateOffset(0) },
+          {
+            key: "e2",
+            title: "レビュー",
+            date: dateOffset(0),
+            workloadPlan: { [dateOffset(0)]: 2 },
+          },
+        ],
+      });
+      const row = byClass(container, "task-gantt-event-row")[0];
+      const chips = byClass(row, "task-gantt-event-chip");
+      // lane0 compact (chip top 8); lane1 labelled: top 24 + 8 + 20 = 52.
+      expect(chips[0].style.top).toBe("8px");
+      expect(chips[1].style.top).toBe("52px");
+      expect(row.style.height).toBe(`${12 + 24 + 44}px`);
+      const labels = byClass(row, "task-gantt-workload-day-label");
+      expect(labels).toHaveLength(1);
+      // label bottom = chip top - 2px; label is 20px tall.
+      expect(labels[0].style.top).toBe("30px");
+    });
+
+    it("computeEventLaneLayout keeps unlabelled lanes compact", () => {
+      expect(computeEventLaneLayout([false])).toEqual({
+        chipTops: [8],
+        rowHeight: 44,
+      });
+      expect(computeEventLaneLayout([true, false])).toEqual({
+        chipTops: [28, 52],
+        rowHeight: 12 + 44 + 24,
+      });
     });
 
     it("adds a default event on an empty timeline contextmenu", async () => {

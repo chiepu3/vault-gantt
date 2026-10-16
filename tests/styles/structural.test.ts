@@ -853,11 +853,11 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(".task-gantt-toolbar", "gap");
   });
 
-  it("header: sticky top:0, max-content width, z-index:5, opaque primary background", () => {
+  it("header: sticky top:0, max-content width, z-index:12, opaque primary background", () => {
     expectDecl(".task-gantt-header", "position", "sticky");
     expectDecl(".task-gantt-header", "top", "0");
     expectDecl(".task-gantt-header", "width", "max-content");
-    expectDecl(".task-gantt-header", "z-index", "5");
+    expectDecl(".task-gantt-header", "z-index", "12");
     expectDecl(".task-gantt-header", "background", "var(--background-primary)");
   });
 
@@ -901,29 +901,21 @@ describe("part 4 — Gantt structure", () => {
     );
   });
 
-  it("workload-row: sticky top:54px", () => {
-    expectDecl(".task-gantt-workload-row", "position", "sticky");
-    expectDecl(".task-gantt-workload-row", "top", "54px");
+  it("workload fixed row: sticky under the header via --vg-header-height, opaque, below header", () => {
+    expectDecl(".task-gantt-workload-fixed-row", "position", "sticky");
+    expectDecl(".task-gantt-workload-fixed-row", "top", "var(--vg-header-height, 55px)");
+    expectDecl(".task-gantt-workload-fixed-row", "z-index", "11");
+    expectDecl(".task-gantt-workload-fixed-row", "background", "var(--background-secondary)");
   });
 
-  it("event-row: sticky top:106px", () => {
-    expectDecl(".task-gantt-event-row", "position", "sticky");
-    expectDecl(".task-gantt-event-row", "top", "106px");
-  });
-
-  it("daily-row: sticky top:150px", () => {
-    expectDecl(".task-gantt-daily-row", "position", "sticky");
-    expectDecl(".task-gantt-daily-row", "top", "150px");
-  });
-
-  it("fixed rows: opaque secondary background + z-index:4", () => {
+  it("fixed row timelines: relative (not sticky) with opaque secondary background", () => {
     for (const selector of [
       ".task-gantt-workload-row",
       ".task-gantt-event-row",
       ".task-gantt-daily-row",
     ]) {
+      expectDecl(selector, "position", "relative");
       expectDecl(selector, "background", "var(--background-secondary)");
-      expectDecl(selector, "z-index", "4");
       expect(rulesFor(selector).length, `${selector} is defined once`).toBe(1);
     }
   });
@@ -935,21 +927,21 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(".task-gantt-fixed-bg", "z-index", "0");
     expectDecl(
       ".task-gantt-fixed-bg.is-weekend",
-      "background",
+      "background-color",
       "color-mix(in srgb, var(--text-muted) 6%, transparent)"
     );
     expectDecl(
       ".task-gantt-fixed-bg.is-holiday",
-      "background",
+      "background-color",
       "rgba(var(--color-red-rgb), 0.12)"
     );
     const fixedTodayBackground = declsFor(".task-gantt-fixed-bg.is-today").get(
-      "background"
+      "background-image"
     );
-    expect(fixedTodayBackground, ".task-gantt-fixed-bg.is-today background").toContain(
+    expect(fixedTodayBackground, ".task-gantt-fixed-bg.is-today background-image").toContain(
       "linear-gradient"
     );
-    expect(fixedTodayBackground, ".task-gantt-fixed-bg.is-today background").toContain(
+    expect(fixedTodayBackground, ".task-gantt-fixed-bg.is-today background-image").toContain(
       "var(--text-error)"
     );
   });
@@ -1263,7 +1255,7 @@ describe("part 4 — Gantt structure", () => {
 describe("part 5 — Gantt readability", () => {
   it("weekend compound gets a hue-neutral gray tint", () => {
     const decls = declsFor(".task-gantt-bg.is-weekend");
-    expect(decls.get("background"), "weekend background").toBe(
+    expect(decls.get("background-color"), "weekend background").toBe(
       "color-mix(in srgb, var(--text-muted) 6%, transparent)"
     );
     // Header-cell compounds must share this rule so they have equal specificity.
@@ -1290,18 +1282,21 @@ describe("part 5 — Gantt readability", () => {
   it("holiday compound gets a red tint", () => {
     expectDecl(
       ".task-gantt-bg.is-holiday",
-      "background",
+      "background-color",
       "rgba(var(--color-red-rgb), 0.12)"
     );
   });
 
-  it("today backgrounds paint a 2px center line, not a full-cell wash", () => {
+  it("today backgrounds paint a 2px left-edge line, not a full-cell wash", () => {
     for (const selector of [
       ".task-gantt-bg.is-today",
       ".task-gantt-fixed-bg.is-today",
     ]) {
       const decls = declsFor(selector);
-      const background = decls.get("background") ?? "";
+      const background = decls.get("background-image") ?? "";
+      expect(decls.has("background"), `${selector} must not reset background-color`).toBe(false);
+      expect(background, `${selector} background`).toContain("to right");
+      expect(background, `${selector} background`).toContain("2px");
       expect(background, `${selector} background`).toContain("linear-gradient");
       expect(background, `${selector} background`).toContain("var(--text-error)");
       // must not use a solid accent background that would obscure the striping.
@@ -1335,7 +1330,7 @@ describe("part 5 — Gantt readability", () => {
       ".task-gantt-dow-cell.is-holiday",
     ]) {
       expect(
-        declsFor(selector).get("background"),
+        declsFor(selector).get("background-color"),
         `${selector} background`
       ).toBe("rgba(var(--color-red-rgb), 0.12)");
     }
@@ -1600,14 +1595,12 @@ describe("part 7 — z-index registry", () => {
       [".task-gantt-deadline-marker", 2],
       [".task-gantt-parent-left", 3],
       [".task-gantt-parent-add-cell", 3],
-      [".task-gantt-workload-row", 4],
-      [".task-gantt-event-row", 4],
-      [".task-gantt-daily-row", 4],
       [".task-gantt-fixed-left", 5],
-      [".task-gantt-header", 5],
       [".task-gantt-bar.is-bulk-move-follower", 7],
       [".task-gantt-bar.is-bulk-move-anchor", 8],
       [".task-gantt-drag-tooltip", 10],
+      [".task-gantt-workload-fixed-row", 11],
+      [".task-gantt-header", 12],
       [".task-gantt-tag-filter-menu", 20],
     ];
     const actual = new Map<string, number>();
@@ -1631,12 +1624,13 @@ describe("part 7 — z-index registry", () => {
       [".task-gantt-bg", ".task-gantt-external-label"],
       [".task-gantt-external-label", ".task-gantt-bar"],
       [".task-gantt-bar", ".task-gantt-parent-left"],
-      [".task-gantt-parent-left", ".task-gantt-workload-row"],
-      [".task-gantt-workload-row", ".task-gantt-fixed-left"],
-      [".task-gantt-header", ".task-gantt-bar.is-bulk-move-follower"],
+      [".task-gantt-parent-left", ".task-gantt-fixed-left"],
+      [".task-gantt-fixed-left", ".task-gantt-bar.is-bulk-move-follower"],
       [".task-gantt-bar.is-bulk-move-follower", ".task-gantt-bar.is-bulk-move-anchor"],
       [".task-gantt-bar.is-bulk-move-anchor", ".task-gantt-drag-tooltip"],
-      [".task-gantt-drag-tooltip", ".task-gantt-tag-filter-menu"],
+      [".task-gantt-drag-tooltip", ".task-gantt-workload-fixed-row"],
+      [".task-gantt-workload-fixed-row", ".task-gantt-header"],
+      [".task-gantt-header", ".task-gantt-tag-filter-menu"],
     ];
     for (const [lower, higher] of chain) {
       const low = actual.get(lower);
@@ -1653,10 +1647,7 @@ describe("part 7 — z-index registry", () => {
     // header content in practice — they occupy disjoint screen regions).
     expect(actual.get(".task-gantt-marker")).toBe(actual.get(".task-gantt-bar"));
     expect(actual.get(".task-gantt-deadline-marker")).toBe(actual.get(".task-gantt-bar"));
-    expect(actual.get(".task-gantt-event-row")).toBe(actual.get(".task-gantt-workload-row"));
-    expect(actual.get(".task-gantt-daily-row")).toBe(actual.get(".task-gantt-workload-row"));
     expect(actual.get(".task-gantt-parent-add-cell")).toBe(actual.get(".task-gantt-parent-left"));
-    expect(actual.get(".task-gantt-fixed-left")).toBe(actual.get(".task-gantt-header"));
     // These local values belong to separate stacking contexts and are
     // excluded from the shared chain.
     expectDecl(".task-workbench-table thead th", "z-index", "1");
@@ -1688,7 +1679,7 @@ describe("design tokens (--vg-*)", () => {
 
   it("every var(--vg-*) reference is defined in the token block", () => {
     // Properties the renderer sets inline per element (not theme tokens).
-    const RUNTIME_VARS = ["--vg-chip-color", "--vg-tag-accent"];
+    const RUNTIME_VARS = ["--vg-chip-color", "--vg-tag-accent", "--vg-header-height"];
     const defined = new Set([...tokenNames, ...RUNTIME_VARS]);
     const used = new Set<string>();
     for (const m of noComments.matchAll(/var\((--vg-[a-z0-9-]+)/g)) used.add(m[1]);
