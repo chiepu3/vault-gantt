@@ -8738,6 +8738,34 @@ describe("inline title editing and marker modal", () => {
       expect(byClass(timeline, "task-gantt-inline-editor")).toHaveLength(1);
     });
 
+    it("dblclick on a short bar's callout label edits the subtask title", async () => {
+      const { timeline, h, sub } = await openBarView({
+        displayName: "Very Long Task Title Here",
+        plannedStartDate: dateOffset(0),
+        plannedEndDate: dateOffset(0),
+      });
+      const label = byClass(timeline, "task-gantt-external-label")[0];
+      expect(label).toBeTruthy();
+      dispatch(label, "dblclick");
+
+      expect(label.style.display).toBe("none");
+      const input = editorInputOf(timeline);
+      expect(input.value).toBe("Very Long Task Title Here");
+      expect(input.style.left).toBe(label.style.left);
+      expect(input.style.top).toBe(label.style.top);
+      expect(input.style.width).toBe("160px");
+
+      input.value = "新しい名前";
+      dispatch(input, "keydown", { key: "Enter" });
+      await flush();
+      expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+      expect(h.updateTaskItem.mock.calls[0][0]).toBe(sub);
+      expect(h.updateTaskItem.mock.calls[0][1]).toEqual({
+        displayName: "新しい名前",
+        title: "新しい名前",
+      });
+    });
+
     it("Enter commits, saves, and re-renders", async () => {
       const { timeline, h, bar, sub } = await openBarView({
         displayName: "元の名前",
