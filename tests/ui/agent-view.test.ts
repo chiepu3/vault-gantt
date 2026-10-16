@@ -126,7 +126,7 @@ describe("independent AgentView", () => {
     await view.onOpen(); const root = view.containerEl as unknown as FakeEl;
     const text = (value: string) => findAll(root, el => el.textContent === value);
     const button = (value: string) => findAll(root, el => el.tagName === "BUTTON" && el.textContent === value)[0];
-    expect(text("変更案")).toHaveLength(1); expect(text("デザイン確認")).toHaveLength(1);
+    expect(text("未承認")).toHaveLength(1); expect(text("デザイン確認")).toHaveLength(1);
     const timeline = findAll(root, el => el.className === "vg-ai-mini-timeline")[0];
     expect(timeline.getAttribute("aria-label")).toContain("2026-10-01 ～ 2026-10-03");
     expect(timeline.getAttribute("aria-label")).toContain("2026-10-04 ～ 2026-10-06");
@@ -138,7 +138,7 @@ describe("independent AgentView", () => {
     const snapshot = structuredClone(proposal);
     view.render(); expect(button("元に戻す").disabled).toBe(true);
     expect(button("元に戻す").title).toContain("履歴の先頭ではない");
-    expect(text("適用済み")).toHaveLength(1); expect(text("保存しました")).toHaveLength(0);
+    expect(text("保存済み")).toHaveLength(1); expect(text("保存しました")).toHaveLength(0);
     canUndo = true; view.render(); expect(button("元に戻す").disabled).toBe(false);
     // A concurrent top-history change must be rechecked even before a UI refresh.
     canUndo = false; for (const listener of button("元に戻す").listeners.click) listener({});

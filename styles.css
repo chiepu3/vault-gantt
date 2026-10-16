@@ -887,6 +887,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-note.is-noop { border-inline-start-style: dashed; }
 .vg-pv-result { margin: 6px 0; font-weight: var(--font-semibold); font-size: var(--font-ui-smaller); }
 .vg-pv-entry { padding: 8px 0; border-top: 1px solid var(--background-modifier-border); }
+.vg-pv-entry:first-child { padding-top: 0; border-top: 0; }
 .vg-pv-entry[data-state="failed"], .vg-pv-entry[data-state="not-attempted"] { border-inline-start: 3px dashed var(--text-faint); padding-inline-start: 8px; }
 .vg-pv-entry[data-state="committed"] { border-inline-start: 3px solid var(--color-green); padding-inline-start: 8px; }
 .vg-pv-entryhead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -901,11 +902,12 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-row { display: grid; grid-template-columns: minmax(4.5em, 24%) minmax(0, 1fr); gap: 2px 8px; padding: 3px 0; }
 .vg-pv-row + .vg-pv-row { border-top: 1px dotted var(--background-modifier-border); }
 .vg-pv-label, .vg-pv-key { color: var(--text-muted); font-size: var(--font-ui-smaller); }
-.vg-pv-values { display: block; min-width: 0; }
+.vg-pv-values { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
 
+.vg-pv-before::after { content: "→"; margin-inline-start: 8px; color: var(--text-faint); font-weight: var(--font-normal); }
 .vg-pv-before { display: flex; gap: 6px; align-items: baseline; min-width: 0; color: var(--text-muted); }
 .vg-pv-after { display: flex; gap: 6px; align-items: baseline; min-width: 0; color: var(--text-normal); font-weight: var(--font-semibold); }
-.vg-pv-side { flex: 0 0 1.4em; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-normal); }
+.vg-pv-side { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .vg-pv-value { min-width: 0; }
 .vg-pv-row.is-removed .vg-pv-after .vg-pv-value, .vg-pv-chip.is-removed { text-decoration: line-through; }
 .task-gantt-container .vg-pv-gname.is-removed { text-decoration: line-through; }
@@ -938,7 +940,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-zoomtrack { display: flex; flex: 1; min-width: 0; overflow: hidden; }
 .vg-pv-zoomcell { flex: 0 0 auto; height: 10px; border-inline-end: 1px solid var(--text-faint); background: var(--background-modifier-hover); }
 .vg-pv-projection { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--background-modifier-border); }
-.vg-pv-hidden { margin-top: 4px; padding: 2px 8px; border-inline-start: 3px dotted var(--text-faint); }
+.vg-pv-hidden { margin-top: 8px; }
 .vg-pv-hidden-title { font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
 .vg-pv-coverage { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: var(--font-ui-smaller); }
 .vg-pv-undo { margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }

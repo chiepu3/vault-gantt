@@ -446,7 +446,6 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
   diagnostic: (parent, effect) => {
     const rows: [string, string][] = [["ログ記録", effect.recording ? "記録する" : "記録しない"], ["保存先", effect.outputPath ?? "未設定"], ["ログ件数", effect.entryCount === undefined ? "不明" : `${effect.entryCount}件`]];
     for (const [key, value] of rows) { const line = h(parent, "div", "vg-pv-kv"); h(line, "span", "vg-pv-key", key); h(line, "span", "vg-pv-kvvalue vg-pv-text", value); }
-    note(parent, "ログ内の秘密情報はここには表示しません。");
   },
   conversation: (parent, effect) => {
     badge(parent, CONVERSATION_ACTIONS[effect.action], "update");
@@ -484,7 +483,8 @@ export function renderEffect(parent: HTMLElement, effect: PreviewEffect, ctx: Re
   section.dataset.kind = effect.kind;
   const title = EFFECT_TITLES[effect.kind] ?? effect.kind;
   section.setAttribute("role", "group"); section.setAttribute("aria-label", title);
-  h(section, "div", "vg-pv-effect-title", title);
+  // A plain field change reads as before → after lines; the heading would only repeat the card.
+  if (effect.kind !== "fields") h(section, "div", "vg-pv-effect-title", title);
   const render = EFFECT_RENDERERS[effect.kind] as Renderer<PreviewEffectKind> | undefined;
   if (render) render(section, effect, ctx);
   else renderGenericEffect(section, effect as unknown as { kind: string } & Record<string, unknown>);

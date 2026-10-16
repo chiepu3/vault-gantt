@@ -193,7 +193,7 @@ describe("workload, order, membership and the rest", () => {
     const send = root(); renderEffect(send, find("external-send"), {});
     expect(text(send)).toContain("送信が成功するまで「適用済み」にはなりません"); expect(text(send)).toContain("https://example.test/api/snapshot"); expect(text(send)).toContain("タイトル"); expect(text(send)).toContain("100 B");
     expect(fmtBytes(2048)).toBe("2 KB");
-    const diagnostic = root(); renderEffect(diagnostic, find("diagnostic"), {}); expect(text(diagnostic)).toContain("記録しない"); expect(text(diagnostic)).toContain("秘密情報はここには表示しません");
+    const diagnostic = root(); renderEffect(diagnostic, find("diagnostic"), {}); expect(text(diagnostic)).toContain("記録しない"); expect(text(diagnostic)).not.toContain("秘密情報");
     const conversation = root(); renderEffect(conversation, { kind: "conversation", action: "configure", before: { model: "a", secretId: "xyz" }, after: { model: "b", secretId: "xyz2" } }, {});
     expect(text(conversation)).toContain("接続設定の変更"); expect(text(conversation)).not.toContain("xyz");
   });

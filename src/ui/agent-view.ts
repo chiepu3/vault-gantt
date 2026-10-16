@@ -434,9 +434,9 @@ export class AgentView extends ItemView {
     const item = this.element(parent, "div"); item.className = "vg-ai-diff";
     const undone = !!proposal.result && this.host.undoStatus?.(proposal.result) === "undone";
     item.dataset.state = proposal.result ? (undone ? "undone" : proposal.result.kind) : "proposal";
-    const outcomes = { success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み", stale: "失効" };
+    const outcomes = { success: "保存済み", partial: "一部保存", failed: "失敗", cancelled: "停止済み", stale: "失効" };
     const status = this.element(item, "span"); status.className = "vg-ai-result-status"; status.setAttribute("role", "status");
-    status.textContent = proposal.result ? (this.host.undoStatus?.(proposal.result) === "undone" ? "元に戻しました" : outcomes[proposal.result.kind]) : "変更案";
+    status.textContent = proposal.result ? (this.host.undoStatus?.(proposal.result) === "undone" ? "元に戻しました" : outcomes[proposal.result.kind]) : "未承認";
     for (const diff of proposal.result?.diffs ?? proposal.plan.diffs) {
       const card = this.element(item, "div"); card.className = "vg-ai-result-task";
       this.element(card, "strong").textContent = diff.name;
@@ -449,7 +449,7 @@ export class AgentView extends ItemView {
       this.element(details, "p").textContent = proposal.result.message;
     }
     const actions = this.element(item, "div"); actions.className = "vg-ai-actions";
-    if (!proposal.consumed) { const confirm = this.button(actions, "確認して実行", () => { void this.host.session.confirm(proposal); }); confirm.classList.add("mod-cta"); confirm.disabled = running; }
+    if (!proposal.consumed) { const confirm = this.button(actions, "承認して保存", () => { void this.host.session.confirm(proposal); }); confirm.classList.add("mod-cta"); confirm.disabled = running; }
     if (proposal.consumed && !proposal.retryPrepared && proposal.result?.kind !== "success" && (!proposal.result || proposal.result.committed < proposal.result.total)) this.button(actions, "再プレビュー", () => { void this.host.session.repreview(proposal); }).disabled = running;
     if (proposal.result?.committed) {
       const result = proposal.result;
