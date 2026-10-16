@@ -1152,7 +1152,7 @@ export class TaskGanttView extends ItemView {
 
 
   private workloadSummaryRowEl: HTMLElement | undefined = undefined;
-  private headerEl: HTMLElement | undefined = undefined;
+  private ganttHeaderEl: HTMLElement | undefined = undefined;
   /** Fingerprint of the inputs used to compute the current summary values. */
   private workloadSummaryFingerprint: string | undefined = undefined;
   /** Cached per-date totals so full cosmetic rebuilds can reuse aggregation. */
@@ -1644,7 +1644,7 @@ export class TaskGanttView extends ItemView {
    * hard-coded guess (header height varies with zoom/feature settings).
    */
   private syncStickyHeaderHeight(): void {
-    const height = this.headerEl?.offsetHeight;
+    const height = this.ganttHeaderEl?.offsetHeight;
     if (typeof height === "number" && height > 0) {
       this.wrapEl.style.setProperty("--vg-header-height", `${height}px`);
     }
@@ -2101,7 +2101,7 @@ export class TaskGanttView extends ItemView {
     header.appendChild(dowRow);
 
     this.wrapEl.appendChild(header);
-    this.headerEl = header;
+    this.ganttHeaderEl = header;
   }
 
 
