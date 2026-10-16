@@ -86,7 +86,12 @@ function Resolve-PublicBranch {
         return $matches[0]
     }
 
-    $choice = Read-Host '番号を選択'
+    $choice = Read-Host '番号を選択（Enter で main）'
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        $mainBranch = @($Branches | Where-Object { $_.Branch -ceq 'main' })
+        if ($mainBranch.Count -eq 1) { return $mainBranch[0] }
+        Stop-Installer '選択番号が不正です。installerを再実行してください。'
+    }
     $index = 0
     if (-not [int]::TryParse($choice, [ref]$index) -or $index -lt 1 -or $index -gt $Branches.Count) {
         Stop-Installer '選択番号が不正です。installerを再実行してください。'
@@ -129,7 +134,7 @@ function Read-InstallerExistingFile {
     param([string]$Path)
     try { return ,([System.IO.File]::ReadAllBytes($Path)) }
     catch {
-        Stop-Installer "既存ファイルを読み込めません: $Path。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)"
+        Stop-Installer "既存ファイルを読み込めません: ${Path}。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)"
     }
 }
 
@@ -387,17 +392,17 @@ function Install-BuiltFiles {
             $target = Join-Path $destination $name
             if (Test-Path -LiteralPath $target) {
                 $item = Get-Item -LiteralPath $target -Force
-                if ($item.PSIsContainer) { Stop-Installer "配置先の$nameがファイルではありません。" }
+                if ($item.PSIsContainer) { Stop-Installer "配置先の${nameがファイルではありません}。" }
                 Assert-InstallerSafeReparsePoint -Item $item
                 $original[$name] = $true
                 # Read the contents to hydrate cloud-only files before any destination writes.
                 $bytes = Read-InstallerExistingFile -Path $target
                 [System.IO.File]::WriteAllBytes((Join-Path $backup $name), $bytes)
                 try { $sourceHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256 -ErrorAction Stop).Hash }
-                catch { Stop-Installer "既存$nameのhashを読み込めません。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)" }
+                catch { Stop-Installer "既存${nameのhashを読み込めません}。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)" }
                 $backupHash = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256 -ErrorAction Stop).Hash
                 $originalHashes[$name] = $sourceHash
-                if ($sourceHash -cne $backupHash) { Stop-Installer "既存$nameのbackup検証に失敗しました。" }
+                if ($sourceHash -cne $backupHash) { Stop-Installer "既存${nameのbackup検証に失敗しました}。" }
             } else { $original[$name] = $false }
         }
 
@@ -406,7 +411,7 @@ function Install-BuiltFiles {
             Copy-Item -LiteralPath (Join-Path $SourceDirectory $name) -Destination (Join-Path $stage $name) -ErrorAction Stop
             $sourceHash = (Get-FileHash -LiteralPath (Join-Path $SourceDirectory $name) -Algorithm SHA256 -ErrorAction Stop).Hash
             $stagedHash = (Get-FileHash -LiteralPath (Join-Path $stage $name) -Algorithm SHA256 -ErrorAction Stop).Hash
-            if ($sourceHash -cne $stagedHash) { Stop-Installer "配置前の$name検証に失敗しました。" }
+            if ($sourceHash -cne $stagedHash) { Stop-Installer "配置前の${name検証に失敗しました}。" }
         }
 
         foreach ($name in 'main.js', 'styles.css', 'manifest.json') {
@@ -420,7 +425,7 @@ function Install-BuiltFiles {
         foreach ($name in $script:InstallerFiles) {
             $expected = (Get-FileHash -LiteralPath (Join-Path $SourceDirectory $name) -Algorithm SHA256 -ErrorAction Stop).Hash
             $actual = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256 -ErrorAction Stop).Hash
-            if ($expected -cne $actual) { throw "配置後の$name検証に失敗しました。" }
+            if ($expected -cne $actual) { throw "配置後の${name検証に失敗しました}。" }
         }
         if (@($script:InstallerFiles | Where-Object { $original[$_] }).Count -gt 0) {
             $preserveBackup = $true

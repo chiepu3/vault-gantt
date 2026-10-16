@@ -204,7 +204,7 @@ function Assert-RunVerified {
     $repo = Get-Prop (Get-Prop $Run 'repository') 'full_name'
     $headRepo = Get-Prop (Get-Prop $Run 'head_repository') 'full_name'
     if ([string]$repo -ine $Repository) { Stop-Updater "run の repository が異なります ($repo)" 2 }
-    if ([string]$headRepo -ine $Repository) { Stop-Updater "run の head repository が異なります（forkは不可: $headRepo）" 2 }
+    if ([string]$headRepo -ine $Repository) { Stop-Updater "run の head repository が異なります（forkは不可: ${headRepo}）" 2 }
     if ((Get-Prop $Run 'head_branch') -cne $ExpectedBranch) { Stop-Updater "run の branch が異なります ($(Get-Prop $Run 'head_branch'), 期待 $ExpectedBranch)" 2 }
     $event = Get-Prop $Run 'event'
     if ($event -ne 'push' -and $event -ne 'workflow_dispatch') { Stop-Updater "run の event が許可外です ($event)" 2 }
@@ -850,7 +850,7 @@ function Invoke-VaultGanttRollback {
         }
     }
     $state = Get-TargetState $plugin
-    Write-Info "rollback対象: $plugin （backup: $bdir）"
+    Write-Info "rollback対象: $plugin （backup: ${bdir}）"
     foreach ($n in $script:PayloadFiles) {
         $b = $meta.files.$n
         $cur = '(なし)'; if ($state[$n].Existed) { $cur = $state[$n].Sha256.Substring(0, 12) }
