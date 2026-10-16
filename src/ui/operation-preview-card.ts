@@ -340,6 +340,8 @@ export interface PreviewCardExtras {
   openGantt?(): Promise<void> | void;
   /** Reverse the history entry the outcome refers to (the ports only inspect history). */
   undoEntry?(entryId: string): Promise<void> | void;
+  /** A re-preview created `to` from `from`; hosts that lay cards out in a flow keep the new one beside the old. */
+  repreviewed?(from: string, to: string): void;
 }
 /** Wires one card to the ports: approve/reject/re-preview/focus/undo, busy flags and errors. */
 export class PreviewCardController {
@@ -369,7 +371,7 @@ export class PreviewCardController {
         onFocus: () => { previewPort.focus(focused ? null : id); if (!focused) void this.extras.openGantt?.(); },
         onApprove: () => { void this.run(id, () => humanApprovalPort.approve(id), "保存できませんでした"); },
         onReject: () => { void this.run(id, () => previewPort.reject(id), "却下できませんでした"); },
-        onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); }, "再プレビューできませんでした"); },
+        onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); this.extras.repreviewed?.(id, next.previewId); }, "再プレビューできませんでした"); },
         onUndo: (this.ports.undoPort || this.extras.undoEntry) ? (entryId) => { void this.run(id, async () => { if (this.ports.undoPort) await this.ports.undoPort.undoEntry(entryId); else await this.extras.undoEntry?.(entryId); }, "元に戻せませんでした"); } : undefined,
         onLoadMore: () => { void this.pager.loadMore(preview, outcome); },
       },

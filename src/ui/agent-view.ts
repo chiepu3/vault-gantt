@@ -1,10 +1,12 @@
 import { ItemView, Menu, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
-import { ChatSession, Proposal } from "../ai/chat-session";
+import { ChatSession, partsOf, type ChatMessage, type ChatPart, type Proposal } from "../ai/chat-session";
+import { toolLabel } from "../ai/tool-labels";
+import type { OperationPreviewV1 } from "../contracts/preview";
 import { completionText, type ChatCompletion } from "../ai/chat-completion";
 import type { OperationResult, TaskDiff } from "../app/operation-registry";
 import type { PreviewUiHostPorts } from "../contracts/ports";
-import { captureFocusKey, PreviewCardController, renderOperationPreviewCard, restoreFocusKey } from "./operation-preview-card";
+import { captureFocusKey, cardState, PreviewCardController, renderOperationPreviewCard, restoreFocusKey } from "./operation-preview-card";
 import { renderScheduleTimeline } from "./schedule-timeline";
 
 export const VIEW_TYPE_AI_CHAT = "vault-gantt-ai-chat";
@@ -88,16 +90,22 @@ export function renderChatText(parent: HTMLElement, text: string): void {
   }
 }
 
-/** One-line turn status under the reply. A created proposal shows as a card, so it gets no line. */
+/** One-line status under a reply, for real failures only (timeout, connection, refused tool, step limit). */
 export function completionLine(completion: ChatCompletion | undefined): string {
-  if (!completion || completion.kind === "proposal-created") return "";
+  if (!completion) return "";
   const text = completionText[completion.kind];
+  if (!text) return "";
   return completion.kind === "connection-error" && completion.httpStatus ? text + "（HTTP " + completion.httpStatus + "）" : text;
 }
-/** The provider also appends the completion sentence to the reply text; drop it so the status line is the only copy. */
-function replyText(text: string, completion: ChatCompletion | undefined): string {
-  const tail = completion ? completionText[completion.kind] : "";
-  return tail && text.endsWith(tail) ? text.slice(0, -tail.length).trimEnd() : text;
+
+/** One keyed child of a container. `sig` changes exactly when the element has to be rebuilt. */
+interface SyncItem { key: string; sig: string; build: () => HTMLElement; update?: (el: HTMLElement) => void }
+interface SyncEntry { el: HTMLElement; sig: string }
+const PREVIEW_CHARS = 1500;
+export function prettyJson(value: unknown): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") { try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; } }
+  try { return JSON.stringify(value, null, 2) ?? String(value); } catch { return String(value); }
 }
 
 export class AgentView extends ItemView {
@@ -118,6 +126,16 @@ export class AgentView extends ItemView {
   private readonly models = new Set<string>();
   private sendEl!: HTMLButtonElement;
   private stopEl!: HTMLButtonElement;
+  /** Rendered children per container, so a re-render only touches what changed. */
+  private readonly stores = new WeakMap<HTMLElement, Map<string, SyncEntry>>();
+  private readonly partsOfShell = new WeakMap<HTMLElement, HTMLElement>();
+  /** Items that already played their entrance; they never animate again. */
+  private readonly seen = new Set<string>();
+  /** Open/closed state the reader chose for a details row, by part key. */
+  private readonly openState = new Map<string, boolean>();
+  private readonly expanded = new Set<string>();
+  private animate = false;
+  private readonly freshShells = new WeakSet<HTMLElement>();
   constructor(leaf: WorkspaceLeaf, private readonly host: AgentViewHost) { super(leaf); }
   getViewType(): string { return VIEW_TYPE_AI_CHAT; }
   getDisplayText(): string { return "AI チャット"; }
@@ -139,13 +157,16 @@ export class AgentView extends ItemView {
     this.messagesEl = this.element(root, "div"); this.messagesEl.className = "vg-ai-messages"; this.messagesEl.setAttribute("role", "log"); this.messagesEl.setAttribute("aria-label", "会話履歴");
     const composer = this.element(root, "div"); composer.className = "vg-ai-content vg-ai-composer";
     this.contextEl = this.element(composer, "div"); this.contextEl.className = "vg-ai-context";
-    this.inputEl = this.element(composer, "textarea"); this.inputEl.rows = 2; this.inputEl.setAttribute("aria-label", "メッセージ"); this.inputEl.placeholder = "タスクについて相談…";
+    const box = this.element(composer, "div"); box.className = "vg-ai-composer-box";
+    this.inputEl = this.element(box, "textarea"); this.inputEl.rows = 1; this.inputEl.setAttribute("aria-label", "メッセージ"); this.inputEl.placeholder = "メッセージを入力（Shift+Enterで改行）";
     this.inputEl.addEventListener("input", () => { this.host.session.active.draft = this.inputEl.value; this.resizeInput(); });
     this.inputEl.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.isComposing) { event.preventDefault(); void this.host.session.send(this.inputEl.value); }
+      // Enter sends, Shift+Enter breaks the line. Enter that confirms an IME conversion must not send.
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault(); void this.host.session.send(this.inputEl.value);
       // Native editor Ctrl-Z is intentionally untouched.
     });
-    const actions = this.element(composer, "div"); actions.className = "vg-ai-composer-actions";
+    const actions = this.element(box, "div"); actions.className = "vg-ai-composer-actions";
     this.modelEl = this.button(actions, "", () => this.openModelMenu()); this.modelEl.className = "clickable-icon vg-ai-model";
     this.modelEl.setAttribute("aria-label", "モデルを選択"); this.modelEl.setAttribute("aria-haspopup", "menu"); this.modelEl.setAttribute("aria-expanded", "false");
     this.modelLabelEl = this.element(this.modelEl, "span"); this.modelLabelEl.className = "vg-ai-model-label";
@@ -153,19 +174,20 @@ export class AgentView extends ItemView {
     this.modelEl.addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); this.openModelMenu(); }
     });
-    this.sendEl = this.button(actions, "送信 ↑", () => { void this.host.session.send(this.inputEl.value); }); this.sendEl.className = "vg-ai-send"; this.sendEl.title = "送信（Ctrl / ⌘ + Enter）";
-    this.stopEl = this.button(actions, "停止 ■", () => this.host.session.stop()); this.stopEl.className = "vg-ai-stop";
-    this.unsubscribe = this.host.session.subscribe(() => {
-      if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40);
-    });
+    this.sendEl = this.button(actions, "", () => { void this.host.session.send(this.inputEl.value); });
+    this.sendEl.className = "vg-ai-send"; this.sendEl.title = "送信（Enter）"; this.sendEl.setAttribute("aria-label", "送信（Enter）"); setIcon(this.sendEl, "send-horizontal");
+    this.stopEl = this.button(actions, "", () => this.host.session.stop());
+    this.stopEl.className = "vg-ai-stop"; this.stopEl.title = "停止"; this.stopEl.setAttribute("aria-label", "停止"); setIcon(this.stopEl, "square");
+    this.unsubscribe = this.host.session.subscribe(() => this.schedule());
     const ports = this.host.previewPorts;
     if (ports) {
-      const rerender = () => { if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40); };
-      this.cards = new PreviewCardController(ports, { openGantt: () => this.host.openGantt(), undoEntry: this.host.undoEntry }, rerender);
-      this.unsubscribePreviews = [ports.previewPort.subscribe(rerender), ports.historyPort.subscribe(rerender)];
+      this.cards = new PreviewCardController(ports, { openGantt: () => this.host.openGantt(), undoEntry: this.host.undoEntry, repreviewed: (from, to) => this.host.session.attachPreview(from, to) }, () => this.schedule());
+      this.unsubscribePreviews = [ports.previewPort.subscribe(() => this.schedule()), ports.historyPort.subscribe(() => this.schedule())];
     }
     this.render();
   }
+  /** Streaming bursts coalesce into one light render. */
+  private schedule(): void { if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.render(); }, 40); }
   async onClose(): Promise<void> {
     this.unregisterState?.(); this.unregisterState = undefined;
     this.releasePreviewFocus();
@@ -181,11 +203,16 @@ export class AgentView extends ItemView {
   render(): void {
     if (!this.messagesEl) return;
     const session = this.host.session; const conversation = session.active;
-    if (this.lastConversationId !== conversation.id) { if (this.lastConversationId !== undefined) this.releasePreviewFocus(conversation.id); this.lastConversationId = conversation.id; }
-    const names = { idle: "待機中", running: "実行中", preview: "確認待ち", failed: "失敗", cancelled: "停止済み" };
-    this.statusEl.textContent = session.connected ? names[conversation.status] : "未接続";
+    // A restored or freshly opened conversation appears at once; only new items slide in.
+    const switched = this.lastConversationId !== conversation.id;
+    if (switched) {
+      if (this.lastConversationId !== undefined) this.releasePreviewFocus(conversation.id);
+      this.lastConversationId = conversation.id; this.messagesEl.empty(); this.stores.delete(this.messagesEl);
+    }
+    this.animate = !switched;
+    this.statusEl.textContent = session.connected ? "" : "未接続";
     this.statusEl.dataset.state = session.connected ? conversation.status : "disconnected";
-    this.statusEl.title = (session.connected ? "接続設定あり" : "未接続") + " · " + names[conversation.status] + (conversation.error ? " — " + conversation.error : "");
+    this.statusEl.hidden = session.connected;
     this.historyEl.empty();
     for (const item of session.conversations) {
       const button = this.button(this.historyEl, item.title, () => { session.select(item.id); this.historyEl.parentElement?.removeAttribute("open"); });
@@ -194,7 +221,6 @@ export class AgentView extends ItemView {
     const selected = this.host.selectedTask?.();
     this.contextEl.hidden = !selected;
     this.contextEl.textContent = selected ? "選択中: " + selected : "";
-    this.contextEl.title = "選択表示は自動送信されません。対象タスクはメッセージで指定してください。";
     if (this.inputEl.value !== conversation.draft) { this.inputEl.value = conversation.draft; this.resizeInput(); }
     const running = conversation.status === "running";
     this.sendEl.disabled = running || !session.connected; this.sendEl.hidden = running; this.stopEl.hidden = !running;
@@ -207,51 +233,186 @@ export class AgentView extends ItemView {
     if (running) this.modelMenu?.hide();
     const stickToBottom = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight < 64;
     const focusKey = captureFocusKey();
-    this.messagesEl.empty();
+    const cid = conversation.id;
+    const items: SyncItem[] = [];
     if (session.config.connectionError) {
-      const error = this.element(this.messagesEl, "p"); error.className = "vg-ai-error"; error.textContent = session.config.connectionError;
+      const text = session.config.connectionError;
+      items.push({ key: cid + "/connection-error", sig: text, build: () => { const error = this.make("p", "vg-ai-error"); error.textContent = text; return error; } });
     }
     if (!conversation.messages.length) {
-      const empty = this.element(this.messagesEl, "div"); empty.className = "vg-ai-empty";
-      const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");
-      this.element(empty, "strong").textContent = "AIチャット";
-      this.element(empty, "p").textContent = "タスクの検索や変更ができます。変更は「確認して実行」を押すと保存されます。";
-      if (!session.connected) this.element(empty, "p").textContent = "歯車ボタンから設定画面を開き、接続先とモデルを設定してください。";
+      items.push({ key: cid + "/empty", sig: String(session.connected), build: () => {
+        const empty = this.make("div", "vg-ai-empty");
+        const emptyIcon = this.element(empty, "div"); emptyIcon.className = "vg-ai-empty-icon"; emptyIcon.setAttribute("aria-hidden", "true"); setIcon(emptyIcon, "messages-square");
+        this.element(empty, "strong").textContent = "AIチャット";
+        this.element(empty, "p").textContent = session.connected ? "タスクの質問や、変更の相談ができます。" : "歯車ボタンから設定画面を開き、接続先とモデルを設定してください。";
+        return empty;
+      } });
     }
+    const known = new Set<string>();
+    for (const message of conversation.messages) for (const part of partsOf(message)) if (part.type === "proposal") known.add(part.previewId);
+    const orphans = this.orphanPreviews(cid, known);
+    const lastAssistant = conversation.messages.length - 1;
     for (const [index, message] of conversation.messages.entries()) {
-      const item = this.element(this.messagesEl, "section"); item.className = "vg-ai-message vg-ai-" + message.role;
-      this.element(item, "strong").textContent = message.role === "user" ? "あなた" : "AI";
-      if (running && message.role === "assistant" && index === conversation.messages.length - 1) item.dataset.streaming = "true";
-      const body = this.element(item, "div"); body.className = "vg-ai-message-body";
-      const line = completionLine(message.completion);
-      const shown = replyText(message.text, message.completion);
-      if (shown || !line) renderChatText(body, shown || (running ? "応答中…" : message.proposals.length ? "変更案を作成しました。" : "変更案はありません。"));
-      for (const proposal of message.proposals) this.renderProposal(item, proposal, running);
-      if (line && !running && message.completion) {
-        const note = this.element(item, "p"); note.className = "vg-ai-completion"; note.dataset.kind = message.completion.kind; note.setAttribute("role", "status"); note.textContent = line;
-      }
-      if (message.role === "assistant" && index === conversation.messages.length - 1) {
-        this.renderToolStatus(item);
-        if (["failed", "cancelled"].includes(conversation.status)) {
-          if (!message.completion) { const error = this.element(item, "p"); error.className = "vg-ai-error"; error.textContent = conversation.error; }
-          this.button(item, "応答を再試行", () => { void session.retry(); }).disabled = running || !session.connected;
-        }
-      }
+      const last = index === lastAssistant && message.role === "assistant";
+      items.push({
+        key: cid + "/m" + index, sig: message.role,
+        build: () => this.messageShell(message.role),
+        update: (shell) => {
+          if (last && running) shell.dataset.streaming = "true"; else delete shell.dataset.streaming;
+          // Parts of a message that is sliding in as a whole do not animate on their own.
+          const outer = this.animate; if (shell.classList.contains("vg-ai-enter") && this.freshShells.delete(shell)) this.animate = false;
+          this.sync(this.partsOfShell.get(shell)!, this.partItems(cid, index, message, last, running, last ? orphans : []));
+          this.animate = outer;
+        },
+      });
     }
-    this.renderPreviewCards(conversation.id);
+    // Cards of this conversation with no reply to sit in (not expected in practice) still show up.
+    if (!conversation.messages.some((message) => message.role === "assistant")) for (const preview of orphans) items.push(this.proposalItem(cid + "/orphan:" + preview.previewId, undefined, preview.previewId, running));
+    this.sync(this.messagesEl, items);
+    if (this.cards) this.cards.pager.prune(new Set(this.host.previewPorts!.previewPort.list().map((preview) => preview.previewId)));
     restoreFocusKey(this.messagesEl, focusKey);
     if (stickToBottom) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
-  /** Operation previews raised by this conversation, in creation order. */
-  private renderPreviewCards(conversationId: string): void {
-    const controller = this.cards; const ports = this.host.previewPorts;
-    if (!controller || !ports) return;
-    const previews = ports.previewPort.list().filter((preview) => preview.origin.kind === "chat" && preview.origin.conversationId === conversationId)
+  /** Previews of this conversation that no message part points to yet (e.g. a re-preview started from a card). */
+  private orphanPreviews(conversationId: string, known: Set<string>): OperationPreviewV1[] {
+    const ports = this.host.previewPorts; if (!ports || !this.cards) return [];
+    return ports.previewPort.list().filter((preview) => preview.origin.kind === "chat" && preview.origin.conversationId === conversationId && !known.has(preview.previewId))
       .slice().sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    controller.pager.prune(new Set(ports.previewPort.list().map((preview) => preview.previewId)));
-    if (!previews.length) return;
-    const section = this.element(this.messagesEl, "section"); section.className = "vg-pv-chat-previews"; section.setAttribute("aria-label", "変更案");
-    for (const preview of previews) renderOperationPreviewCard(section, preview, controller.optionsFor(preview));
+  }
+  // eslint-disable-next-line no-undef
+  private make<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] { const element = document.createElement(tag); element.className = className; return element; }
+  private messageShell(role: ChatMessage["role"]): HTMLElement {
+    const shell = this.make("section", "vg-ai-message vg-ai-" + role);
+    if (role === "user") {
+      const bubble = this.element(shell, "div"); bubble.className = "vg-ai-bubble"; this.partsOfShell.set(shell, bubble);
+      return shell;
+    }
+    const avatar = this.element(shell, "div"); avatar.className = "vg-ai-avatar"; avatar.setAttribute("aria-hidden", "true"); setIcon(avatar, "sparkles");
+    const column = this.element(shell, "div"); column.className = "vg-ai-column";
+    this.element(column, "strong").className = "vg-ai-name"; column.children[0].textContent = "AI";
+    const parts = this.element(column, "div"); parts.className = "vg-ai-parts"; this.partsOfShell.set(shell, parts);
+    return shell;
+  }
+  /** Reconciles `container` with `items`: unchanged items keep their element (open details, scroll, selection), changed ones are rebuilt in place. */
+  private sync(container: HTMLElement, items: SyncItem[]): void {
+    let store = this.stores.get(container);
+    if (!store) { store = new Map(); this.stores.set(container, store); }
+    const wanted = new Set(items.map((item) => item.key));
+    for (const [key, entry] of store) if (!wanted.has(key)) { entry.el.remove(); store.delete(key); }
+    let previous: HTMLElement | null = null;
+    for (const item of items) {
+      let entry = store.get(item.key);
+      if (!entry || entry.sig !== item.sig) {
+        const el = item.build();
+        if (this.animate && !this.seen.has(item.key)) { el.classList.add("vg-ai-enter"); this.freshShells.add(el); }
+        this.seen.add(item.key);
+        if (entry) { const old = entry.el; container.insertBefore(el, old); old.remove(); }
+        entry = { el, sig: item.sig }; store.set(item.key, entry);
+      }
+      const expected: HTMLElement | null = previous ? previous.nextSibling as HTMLElement | null : (container.children[0] as HTMLElement | undefined) ?? null;
+      if (entry.el !== expected || entry.el.parentNode !== container) container.insertBefore(entry.el, expected);
+      item.update?.(entry.el);
+      previous = entry.el;
+    }
+    if (this.seen.size > 5000) this.seen.clear();
+  }
+  private partItems(cid: string, index: number, message: ChatMessage, last: boolean, running: boolean, orphans: OperationPreviewV1[]): SyncItem[] {
+    const prefix = cid + "/m" + index + "/";
+    const items: SyncItem[] = [];
+    const parts = partsOf(message);
+    for (const part of parts) {
+      const key = prefix + part.id;
+      if (part.type === "text") items.push({ key, sig: part.text, build: () => { const body = this.make("div", "vg-ai-text"); renderChatText(body, part.text); return body; } });
+      else if (part.type === "reasoning") items.push({ key, sig: part.state + part.text, build: () => this.reasoningRow(key, part) });
+      else if (part.type === "tool") items.push({ key, sig: [part.state, part.input !== undefined, part.output !== undefined, part.error ?? ""].join("|"), build: () => this.toolRow(key, part) });
+      else items.push(this.proposalItem(key, message, part.previewId, running));
+    }
+    for (const preview of orphans) items.push(this.proposalItem(prefix + "orphan:" + preview.previewId, message, preview.previewId, running));
+    if (message.role === "assistant" && last && running) {
+      const tail = parts.at(-1);
+      const waiting = !tail || !(tail.type === "text" || (tail.type === "reasoning" && tail.state === "streaming") || (tail.type === "tool" && tail.state === "running"));
+      if (waiting) items.push({ key: prefix + "typing", sig: "", build: () => {
+        const typing = this.make("div", "vg-ai-typing"); typing.setAttribute("role", "status"); typing.setAttribute("aria-label", "応答を待っています");
+        for (let dot = 0; dot < 3; dot++) this.element(typing, "span");
+        return typing;
+      } });
+    }
+    const line = completionLine(message.completion);
+    if (line && !running && message.completion) items.push({ key: prefix + "completion", sig: line, build: () => {
+      const note = this.make("p", "vg-ai-completion"); note.dataset.kind = message.completion!.kind; note.setAttribute("role", "status"); note.textContent = line; return note;
+    } });
+    const status = this.host.session.active.status;
+    if (message.role === "assistant" && last && ["failed", "cancelled"].includes(status)) {
+      const completed = !!message.completion;
+      const error = this.host.session.active.error;
+      items.push({ key: prefix + "failure", sig: [completed, error, running, this.host.session.connected].join("|"), build: () => {
+        const box = this.make("div", "vg-ai-failure");
+        if (!completed) { const text = this.element(box, "p"); text.className = "vg-ai-error"; text.textContent = error; }
+        this.button(box, "応答を再試行", () => { void this.host.session.retry(); }).disabled = running || !this.host.session.connected;
+        return box;
+      } });
+    }
+    return items;
+  }
+  private statusMark(parent: HTMLElement, state: "running" | "done" | "error"): void {
+    const mark = this.element(parent, "span"); mark.className = "vg-ai-mark is-" + state; mark.setAttribute("aria-hidden", "true");
+    if (state === "done") setIcon(mark, "check"); else if (state === "error") setIcon(mark, "x");
+  }
+  private detailsRow(key: string, className: string, defaultOpen: boolean): HTMLDetailsElement {
+    const details = this.make("details", className);
+    details.open = this.openState.get(key) ?? defaultOpen;
+    details.addEventListener("toggle", () => { this.openState.set(key, details.open); });
+    return details;
+  }
+  private reasoningRow(key: string, part: Extract<ChatPart, { type: "reasoning" }>): HTMLElement {
+    const streaming = part.state === "streaming";
+    const details = this.detailsRow(key, "vg-ai-reasoning", streaming);
+    details.dataset.state = part.state;
+    const summary = this.element(details, "summary");
+    this.statusMark(summary, streaming ? "running" : "done");
+    this.element(summary, "span").textContent = streaming ? "考え中…" : "考えた内容";
+    const body = this.element(details, "div"); body.className = "vg-ai-reasoning-body"; body.textContent = part.text;
+    if (streaming) body.scrollTop = body.scrollHeight;
+    return details;
+  }
+  private toolRow(key: string, part: Extract<ChatPart, { type: "tool" }>): HTMLElement {
+    const details = this.detailsRow(key, "vg-ai-tool", false);
+    details.dataset.state = part.state;
+    const label = toolLabel(part.name);
+    const summary = this.element(details, "summary"); summary.setAttribute("aria-label", label + (part.state === "running" ? "（実行中）" : part.state === "error" ? "（失敗）" : "（完了）"));
+    this.statusMark(summary, part.state);
+    this.element(summary, "span").textContent = label;
+    const sections: [string, unknown][] = [["入力", part.input], ["出力", part.error !== undefined ? part.error : part.output]];
+    for (const [title, value] of sections) {
+      if (value === undefined) continue;
+      const text = prettyJson(value);
+      const block = this.element(details, "div"); block.className = "vg-ai-io";
+      this.element(block, "div").textContent = title;
+      const pre = this.element(block, "pre"); pre.className = "vg-ai-json";
+      const id = key + ":" + title;
+      const clipped = text.length > PREVIEW_CHARS && !this.expanded.has(id);
+      pre.textContent = clipped ? text.slice(0, PREVIEW_CHARS) + "…" : text;
+      if (clipped) {
+        const more = this.button(block, "もっと見る", () => { this.expanded.add(id); pre.textContent = text; more.remove(); });
+        more.className = "vg-ai-more";
+      }
+    }
+    return details;
+  }
+  private proposalItem(key: string, message: ChatMessage | undefined, previewId: string, running: boolean): SyncItem {
+    const ports = this.host.previewPorts;
+    const preview = this.cards && ports ? ports.previewPort.inspect(previewId) : undefined;
+    if (preview && this.cards) {
+      const options = this.cards.optionsFor(preview);
+      const sig = JSON.stringify([preview, { ...options, handlers: undefined, now: undefined }, cardState(preview, options.outcome, options.undoState, options.now ?? Date.now())]);
+      return { key, sig, build: () => { const slot = this.make("div", "vg-ai-card-slot"); renderOperationPreviewCard(slot, preview, options); return slot; } };
+    }
+    const proposal = message?.proposals.find((item) => item.plan.previewId === previewId);
+    const undoStatus = proposal?.result ? this.host.undoStatus?.(proposal.result) : undefined;
+    const canUndo = proposal?.result ? this.host.canUndo(proposal.result) : false;
+    return { key, sig: JSON.stringify([!!proposal, proposal?.result, proposal?.consumed, proposal?.retryPrepared, running, undoStatus, canUndo, proposal?.plan.diffs]), build: () => {
+      const slot = this.make("div", "vg-ai-card-slot"); if (proposal) this.renderProposal(slot, proposal, running); return slot;
+    } };
   }
   private openModelMenu(): void {
     if (this.modelEl.disabled || this.host.session.active.status === "running") return;
@@ -267,19 +428,7 @@ export class AgentView extends ItemView {
     const rect = this.modelEl.getBoundingClientRect();
     menu.showAtPosition({ x: rect.left, y: rect.bottom });
   }
-  private resizeInput(): void { this.inputEl.style.height = "auto"; this.inputEl.style.height = Math.max(56, Math.min(160, this.inputEl.scrollHeight)) + "px"; }
-  private renderToolStatus(parent: HTMLElement): void {
-    const tools: string[] = [];
-    for (const message of this.host.session.active.context) {
-      if (message.role !== "tool" || !Array.isArray(message.content)) continue;
-      for (const part of message.content) if (part.type === "tool-result") tools.push(part.toolName);
-    }
-    if (!tools.length) return;
-    const details = this.element(parent, "details"); details.className = "vg-ai-tools";
-    this.element(details, "summary").textContent = "✓ ツール履歴 · " + tools.length + "件";
-    const names: Record<string, string> = { search: "タスク検索", get: "タスク取得", update: "変更案の作成", "schedule-batch": "日程変更案の作成" };
-    for (const tool of tools) this.element(details, "div").textContent = names[tool] ?? tool;
-  }
+  private resizeInput(): void { this.inputEl.style.height = "auto"; this.inputEl.style.height = Math.max(40, Math.min(160, this.inputEl.scrollHeight)) + "px"; }
   private renderProposal(parent: HTMLElement, proposal: Proposal, running: boolean): void {
     if (this.cards && this.host.previewPorts?.previewPort.inspect(proposal.plan.previewId)) return;
     const item = this.element(parent, "div"); item.className = "vg-ai-diff";
