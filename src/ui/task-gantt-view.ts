@@ -1644,8 +1644,10 @@ export class TaskGanttView extends ItemView {
    * hard-coded guess (header height varies with zoom/feature settings).
    */
   private syncStickyHeaderHeight(): void {
-    const height = this.ganttHeaderEl?.offsetHeight;
-    if (typeof height === "number" && height > 0) {
+    // offsetHeight rounds; at fractional zoom/DPI that can leave a hairline
+    // gap. Flooring the real height tucks the row just under the header instead.
+    const height = this.ganttHeaderEl ? Math.floor(this.ganttHeaderEl.getBoundingClientRect().height) : 0;
+    if (height > 0) {
       this.wrapEl.style.setProperty("--vg-header-height", `${height}px`);
     }
   }
@@ -4714,6 +4716,16 @@ export class TaskGanttView extends ItemView {
           markerRowCounts[bar.lane],
           barTagColor
         );
+        // A short bar shows its title in this callout, so the callout is
+        // where users double-click to rename it (same edit as the bar).
+        label.addEventListener("dblclick", () => {
+          this.startInlineEdit({
+            hostEl: label,
+            initialValue: bar.task.displayName || bar.task.title,
+            onCommit: (value) => this.saveSubtaskTitleEdit(bar.task, value),
+            width: Math.max(label.offsetWidth + 32, 160),
+          });
+        });
         timeline.appendChild(connector);
         timeline.appendChild(label);
       }
@@ -8229,6 +8241,8 @@ export class TaskGanttView extends ItemView {
     hostEl: HTMLElement;
     initialValue: string;
     onCommit: (value: string) => Promise<void>;
+    /** Editor width in px for hosts without an inline width (auto-sized callouts). */
+    width?: number;
   }): void {
     const { hostEl, initialValue, onCommit } = options;
 
@@ -8269,6 +8283,8 @@ export class TaskGanttView extends ItemView {
     input.style.top = hostTop;
     if (hostEl.style.width) {
       input.style.width = hostEl.style.width;
+    } else if (options.width !== undefined) {
+      input.style.width = `${options.width}px`;
     }
     if (hostEl.style.height) {
       input.style.height = hostEl.style.height;
