@@ -2,6 +2,7 @@ import type { OperationInputMap } from "../../contracts/operations";
 import { operationInputSchemas } from "../../contracts/operations";
 import type { OperationPreviewV1, PreviewEntry, PreviewEffect } from "../../contracts/preview";
 import type { TaskWorkbenchSettings } from "../../core/types";
+import { pickGanttTagColor } from "../../core/constants";
 import { buildFullNote, parseTaskFile } from "../../core/note-format";
 import { applyPatchToParent } from "../../core/task-patch";
 import { normalizeHolidayDates, shouldRefreshNationalHolidays } from "../holiday-service";
@@ -86,7 +87,7 @@ export async function integrationPlan<K extends IntegrationId>(id: K, input: Ope
     let definition = settings.ganttTags.find((tag) => tag.name.toLocaleLowerCase() === args.name.toLocaleLowerCase() || tag.key === args.name);
     if (!definition) {
       let index = 1; while (settings.ganttTags.some((tag) => tag.key === `tag-${index}`)) index++;
-      definition = { key: `tag-${index}`, name: args.name, color: "", order: Math.max(0, ...settings.ganttTags.map((tag) => tag.order)) + 1000 };
+      definition = { key: `tag-${index}`, name: args.name, color: pickGanttTagColor(settings.ganttTags), order: Math.max(0, ...settings.ganttTags.map((tag) => tag.order)) + 1000 };
       settings.ganttTags.push(definition); plan.keys = ["ganttTags"];
       plan.entries.push({ entity: { kind: "tag-definition", tagKey: definition.key }, displayName: definition.name, effects: [{ kind: "tag-definition", before: null, after: definition, affectedCount: 1 }] });
     }

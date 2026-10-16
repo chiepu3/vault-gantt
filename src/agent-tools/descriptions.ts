@@ -473,7 +473,7 @@ const LEDGER = {
   "S22": {
     "purpose": "タグ定義追加",
     "input": "name, color?, order",
-    "constraints": "設定UIはタグN・空色、Ganttは指定名・既定色、keyを生成/再利用",
+    "constraints": "設定UIはタグN、Ganttは指定名、keyを生成/再利用。color省略時はパレットから自動割当、空文字は色なし",
     "undo": "×"
   },
   "S23": {
