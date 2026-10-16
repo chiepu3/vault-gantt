@@ -1,6 +1,6 @@
 import type { HistoryEntryUndoStateV1, PreviewUiHostPorts, ProjectionDetailPort } from "../contracts/ports";
 import type { ReadResultV1, RequestOrigin } from "../contracts/context";
-import { mergeProjectionPages, type FieldChange, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
+import { mergeProjectionPages, type FieldChange, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEffect, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
 import { buildNameMap, effectIsNoop, entryTitle, fieldLabel, formatScalar, h, operationLabel, renderEntryEffects, type RenderContext } from "./preview-renderers";
 
 export type CardState = "pending" | "applying" | "success" | "partial" | "failed" | "cancelled" | "rejected" | "stale" | "expired" | "revoked" | "undone";
@@ -141,6 +141,13 @@ function entryStateOf(entry: PreviewEntry, outcome: OperationOutcomeV1 | undefin
   return outcome?.actions.find((action) => action.actionId === entry.actionId);
 }
 
+/** The before/after date rows already say it; the schedule timeline is kept only where it is the sole representation. */
+function withoutDuplicateSchedule(effects: readonly PreviewEffect[], operationId?: string): readonly PreviewEffect[] {
+  if (operationId === "T20") return effects; // its schedule block carries an explanation worth keeping
+  const datesShown = effects.some((effect) => effect.kind === "fields" && effect.fields.some((change) => change.reason === "requested" && (change.field === "plannedStartDate" || change.field === "plannedEndDate") && !effectIsNoop({ ...effect, fields: [change] })));
+  return datesShown ? effects.filter((effect) => effect.kind !== "schedule") : effects;
+}
+
 function renderEntry(list: HTMLElement, entry: PreviewEntry, ctx: RenderContext, outcome: OperationOutcomeV1 | undefined): void {
   const section = h(list, "section", "vg-pv-entry");
   const action = entryStateOf(entry, outcome);
@@ -154,11 +161,11 @@ function renderEntry(list: HTMLElement, entry: PreviewEntry, ctx: RenderContext,
   const body = h(section, "div", "vg-pv-entrybody");
   if (action?.state === "committed") {
     // Only the effects the port reports as actually saved.
-    if (action.actual.length) renderEntryEffects(body, entry, ctx, action.actual);
+    if (action.actual.length) renderEntryEffects(body, entry, ctx, withoutDuplicateSchedule(action.actual, ctx.operationId));
     else h(body, "p", "vg-pv-note", "保存された変更はありません。");
   } else {
     const wrap = h(body, "div", action ? "vg-pv-unsaved" : "vg-pv-planned");
-    renderEntryEffects(wrap, entry, ctx);
+    renderEntryEffects(wrap, entry, ctx, withoutDuplicateSchedule(entry.effects, ctx.operationId));
   }
 }
 

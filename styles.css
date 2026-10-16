@@ -719,7 +719,6 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-avatar svg { width: 14px; height: 14px; }
 .vg-ai-column { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .vg-ai-name { line-height: 26px; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
-.vg-ai-card-slot { margin-inline-start: -36px; }
 .vg-ai-parts { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .vg-ai-text p, .vg-ai-text div { margin: 0 0 6px; white-space: pre-wrap; }
 .vg-ai-text > :last-child { margin-bottom: 0; }
@@ -946,8 +945,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-hidden-title { font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
 .vg-pv-coverage { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: var(--font-ui-smaller); }
 .vg-pv-undo { margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
-.vg-pv-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.vg-pv-button { font-size: var(--font-ui-small); }
+.vg-pv-actions { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 10px; }
+.vg-pv-actions .vg-pv-button { height: 26px; padding: 0 4px; font-size: 12px; white-space: nowrap; }
+.vg-ai-card-slot .vg-pv-card { padding: 10px 8px 10px 10px; }
 .vg-pv-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .vg-pv-button[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--interactive-accent); }
 .vg-pv-rest { margin-top: 6px; }
