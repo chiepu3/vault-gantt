@@ -2,7 +2,8 @@
 param(
     [string]$Branch,
     [string]$Vault,
-    [switch]$Reset
+    [switch]$Reset,
+    [switch]$NoCache
 )
 
 # Install-VaultGantt.ps1 の短縮版。配置先を初回だけ聞いて、ユーザー環境変数に覚えておく。
@@ -69,7 +70,7 @@ try {
     }
 
     Write-Host "インストール先: $destination"
-    & (Join-Path $PSScriptRoot 'Install-VaultGantt.ps1') -Branch $Branch -DestinationPath $destination
+    & (Join-Path $PSScriptRoot 'Install-VaultGantt.ps1') -Branch $Branch -DestinationPath $destination -NoCache:$NoCache
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     if ($destination -ne $saved) {

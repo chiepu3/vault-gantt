@@ -242,6 +242,76 @@ function Restore-InstallerFile {
     Move-InstallerFile -SourcePath $RestorePath -TargetPath $TargetPath -Replace (Test-Path -LiteralPath $TargetPath)
 }
 
+function Get-InstallerBytesHash {
+    param([byte[]]$Bytes)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash($Bytes) } finally { $sha.Dispose() }
+    return [System.BitConverter]::ToString($hash).Replace('-', '')
+}
+
+function Get-InstallerDependencyCache {
+    param([string]$Repository, [string]$NodePath, [string]$CacheRoot)
+    # Any problem here only disables the cache; the install itself still proceeds with npm ci.
+    try {
+        $lockPath = Join-Path $Repository 'package-lock.json'
+        if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { return $null }
+        if (-not $CacheRoot) {
+            $base = $env:LOCALAPPDATA
+            if (-not $base) { $base = [System.IO.Path]::GetTempPath() }
+            $CacheRoot = Join-Path $base 'vault-gantt-installer\node_modules-cache'
+        }
+        $root = Get-InstallerNormalizedPath $CacheRoot
+        Assert-InstallerNoReparseChain $root -Strict
+        if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Path $root -Force -ErrorAction Stop | Out-Null }
+        $nodeVersion = ((Invoke-NativeStrict -FilePath $NodePath -Arguments @('--version') -Operation 'node --version' -CaptureOutput) -join '').Trim()
+        $lockBytes = [System.IO.File]::ReadAllBytes($lockPath)
+        $versionBytes = [System.Text.Encoding]::UTF8.GetBytes("`nnode:" + $nodeVersion)
+        $combined = New-Object byte[] ($lockBytes.Length + $versionBytes.Length)
+        [System.Buffer]::BlockCopy($lockBytes, 0, $combined, 0, $lockBytes.Length)
+        [System.Buffer]::BlockCopy($versionBytes, 0, $combined, $lockBytes.Length, $versionBytes.Length)
+        $key = (Get-InstallerBytesHash -Bytes $combined).ToLowerInvariant()
+        # The cache root is persistent, but cleanup helpers only delete inside registered roots.
+        $script:InstallerOwnedDirectories[$root] = $true
+        $keyDirectory = Join-Path $root $key
+        return [pscustomobject]@{ Root = $root; Key = $key; KeyDirectory = $keyDirectory; Entry = (Join-Path $keyDirectory 'node_modules') }
+    } catch {
+        Write-Warning -Message "依存パッケージのキャッシュを使用できません: $($_.Exception.Message)" -WarningAction Continue
+        return $null
+    }
+}
+
+function Restore-InstallerCachedModules {
+    param($Cache, [string]$Repository)
+    $target = Join-Path $Repository 'node_modules'
+    try {
+        if (-not (Test-Path -LiteralPath $Cache.Entry -PathType Container)) { return $false }
+        [System.IO.Directory]::Move($Cache.Entry, $target)
+        return $true
+    } catch {
+        Write-Warning -Message "キャッシュの再利用に失敗したため通常のインストールを行います: $($_.Exception.Message)" -WarningAction Continue
+        if (Test-Path -LiteralPath $target) { Remove-InstallerPath -Path $target -OwnedRoot (Split-Path -Parent $Repository) }
+        Remove-InstallerPath -Path $Cache.KeyDirectory -OwnedRoot $Cache.Root
+        return $false
+    }
+}
+
+function Save-InstallerCachedModules {
+    param($Cache, [string]$Repository)
+    $source = Join-Path $Repository 'node_modules'
+    try {
+        if (-not (Test-Path -LiteralPath $source -PathType Container)) { return }
+        Remove-InstallerPath -Path $Cache.KeyDirectory -OwnedRoot $Cache.Root
+        New-Item -ItemType Directory -Path $Cache.KeyDirectory -Force -ErrorAction Stop | Out-Null
+        [System.IO.Directory]::Move($source, $Cache.Entry)
+        foreach ($stale in @(Get-ChildItem -LiteralPath $Cache.Root -Force -ErrorAction Stop)) {
+            if ($stale.Name -cne $Cache.Key) { Remove-InstallerPath -Path $stale.FullName -OwnedRoot $Cache.Root }
+        }
+    } catch {
+        Write-Warning -Message "依存パッケージのキャッシュ保存に失敗しました: $($_.Exception.Message)" -WarningAction Continue
+        Remove-InstallerPath -Path $Cache.KeyDirectory -OwnedRoot $Cache.Root
+    }
+}
+
 function Remove-InstallerTree {
     param([string]$Path, [switch]$EmptyDirectoryOnly)
     # PS 5.1 Remove-Item cannot reliably enumerate deep node_modules paths.
@@ -398,8 +468,8 @@ function Install-BuiltFiles {
                 # Read the contents to hydrate cloud-only files before any destination writes.
                 $bytes = Read-InstallerExistingFile -Path $target
                 [System.IO.File]::WriteAllBytes((Join-Path $backup $name), $bytes)
-                try { $sourceHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256 -ErrorAction Stop).Hash }
-                catch { Stop-Installer "既存${name}のhashを読み込めません。OneDriveでこのフォルダを『このデバイス上に常に保持する』にしてから再実行してください。$($_.Exception.Message)" }
+                # Hash the bytes already read: reopening a OneDrive-held file can fail right after hydration.
+                $sourceHash = Get-InstallerBytesHash -Bytes $bytes
                 $backupHash = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256 -ErrorAction Stop).Hash
                 $originalHashes[$name] = $sourceHash
                 if ($sourceHash -cne $backupHash) { Stop-Installer "既存${name}のbackup検証に失敗しました。" }
@@ -480,7 +550,7 @@ function Install-BuiltFiles {
 }
 
 function Invoke-VaultGanttInstaller {
-    param([string]$Branch, [string]$DestinationPath, [string]$WorkRoot)
+    param([string]$Branch, [string]$DestinationPath, [string]$WorkRoot, [switch]$NoCache, [string]$CacheRoot)
     $tools = Get-InstallerToolPaths
     Assert-InstallerPreflight -ToolPaths $tools
     $branches = @(Get-PublicBranches -GitPath $tools.Git)
@@ -496,6 +566,7 @@ function Invoke-VaultGanttInstaller {
     if (Test-Path -LiteralPath $WorkRoot) { Stop-Installer "作業フォルダーが既に存在します: $WorkRoot" }
     New-InstallerOwnedDirectory -Path $WorkRoot
     $preserveWorkRoot = $false
+    $cache = $null
     try {
         $repository = Join-Path $WorkRoot 'repository'
         New-Item -ItemType Directory -Path $repository | Out-Null
@@ -507,8 +578,24 @@ function Invoke-VaultGanttInstaller {
         if ($head -cne $selected.Sha) { Stop-Installer "checkoutしたcommitが選択時のSHAと一致しません (expected=$($selected.Sha), actual=$head)" }
 
         Write-Host "branch $($selected.Branch) / commit $($selected.Sha) を固定しました。"
-        Invoke-NativeStrict -FilePath $tools.Npm -Arguments @('ci') -WorkingDirectory $repository -Operation 'npm ci' | Out-Null
-        Invoke-NativeStrict -FilePath $tools.Npm -Arguments @('run', 'build') -WorkingDirectory $repository -Operation 'npm run build' | Out-Null
+        $cache = $null
+        $usedCache = $false
+        if (-not $NoCache) { $cache = Get-InstallerDependencyCache -Repository $repository -NodePath $tools.Node -CacheRoot $CacheRoot }
+        if ($cache -and (Restore-InstallerCachedModules -Cache $cache -Repository $repository)) {
+            $usedCache = $true
+            Write-Host '依存パッケージをキャッシュから再利用します。'
+        } else {
+            Write-Host '依存パッケージをインストールしています（初回や更新時は数分かかります）…'
+            Invoke-NativeStrict -FilePath $tools.Npm -Arguments @('ci', '--no-audit', '--no-fund', '--prefer-offline') -WorkingDirectory $repository -Operation 'npm ci' | Out-Null
+        }
+        try {
+            Invoke-NativeStrict -FilePath $tools.Npm -Arguments @('run', 'build') -WorkingDirectory $repository -Operation 'npm run build' | Out-Null
+        } catch {
+            # Never keep a cache entry that just failed a build; the next run starts from a clean npm ci.
+            if ($cache -and $usedCache) { Remove-InstallerPath -Path $cache.KeyDirectory -OwnedRoot $cache.Root }
+            throw
+        }
+        if ($cache) { Save-InstallerCachedModules -Cache $cache -Repository $repository }
         $version = Assert-BuiltFiles -SourceDirectory $repository
         $backupPath = Install-BuiltFiles -SourceDirectory $repository -DestinationPath $destination -WorkDirectory $WorkRoot
         Write-Host "配置が完了しました: $destination (version $version)"
@@ -521,6 +608,7 @@ function Invoke-VaultGanttInstaller {
         if ($_.Exception.Data.Contains('PreserveWorkRoot')) { $preserveWorkRoot = [bool]$_.Exception.Data['PreserveWorkRoot'] }
         throw
     } finally {
+        if ($cache) { $script:InstallerOwnedDirectories.Remove($cache.Root) }
         if ($preserveWorkRoot) { Write-Host "作業フォルダーを保持しています: $WorkRoot" }
         else { Remove-InstallerPath -Path $WorkRoot -OwnedRoot $WorkRoot }
     }

@@ -125,6 +125,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-VaultGantt.ps1
 | --- | --- |
 | `-DestinationPath` | プラグインフォルダー（`<Vault>\.obsidian\plugins\vault-gantt`）。省略すると実行中に入力を求められます。 |
 | `-Branch` | インストールするブランチ名。省略すると番号で選びます。 |
+| `-NoCache` | 依存パッケージのキャッシュを使わず、毎回 `npm ci` をやり直します（キャッシュも更新しません）。 |
+
+### 依存パッケージのキャッシュ
+
+ビルドに必要な依存パッケージ（`node_modules`）は `%LOCALAPPDATA%\vault-gantt-installer\node_modules-cache` に保存され、2回目以降のインストールで再利用されます。
+
+- 初回は依存パッケージの取得に数分かかります。依存関係（`package-lock.json`）や Node.js のバージョンが変わった回も同様です。
+- キャッシュは1世代だけ残ります。不要になったら、このフォルダーを削除しても問題ありません。
+- 再利用で問題が出たときは `-NoCache` を付けて実行してください。
 
 `-DestinationPath` について:
 
