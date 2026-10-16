@@ -911,7 +911,6 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-side { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .vg-pv-value { min-width: 0; }
 .vg-pv-row.is-removed .vg-pv-after .vg-pv-value, .vg-pv-chip.is-removed { text-decoration: line-through; }
-.task-gantt-container .vg-pv-gname.is-removed { text-decoration: line-through; }
 .vg-pv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-text.is-multiline { display: block; max-height: 8em; overflow: auto; padding: 2px 6px; border-inline-start: 2px solid var(--background-modifier-border); }
 .vg-pv-muted { color: var(--text-muted); font-size: var(--font-ui-smaller); }
@@ -952,9 +951,6 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-button[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--interactive-accent); }
 .vg-pv-rest { margin-top: 6px; }
 .vg-pv-readlist { margin: 4px 0; padding-inline-start: 1.4em; }
-.vg-pv-panel { margin-top: 8px; padding: 6px 8px; border: 1px dashed var(--background-modifier-border-hover); border-radius: var(--radius-s); }
-.vg-pv-panel-title { font-weight: var(--font-semibold); }
-.vg-pv-unplaced, .vg-pv-statediff, .vg-pv-ordered { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--background-modifier-border); }
 .vg-pv-chat-previews { display: block; }
 .vg-pv-chat-previews > .vg-pv-card:first-child { margin-top: 0; }
 
@@ -964,34 +960,6 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-approval-list { display: block; max-width: 760px; }
 .vg-pv-group-title { margin: 16px 0 0; font-size: var(--font-ui-small); font-weight: var(--font-semibold); color: var(--text-muted); }
 .vg-pv-empty { margin-top: 24px; padding: 16px; border: 1px dashed var(--background-modifier-border-hover); border-radius: var(--radius-m); color: var(--text-muted); text-align: center; }
-
-/* Gantt preview region: sits above the chart, never inside live rows. */
-.task-gantt-container .vg-pv-dockhost { flex: 0 0 auto; max-height: 45%; overflow: auto; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
-.task-gantt-container .vg-pv-dockhost[hidden] { display: none; }
-.task-gantt-container .vg-pv-dock { padding: 8px 12px; font-size: var(--font-ui-small); }
-.task-gantt-container .vg-pv-dock[data-state="success"] .vg-pv-status { border-color: var(--color-green); background: color-mix(in srgb, var(--color-green) 16%, transparent); }
-.task-gantt-container .vg-pv-dock[data-state="partial"] .vg-pv-status, .task-gantt-container .vg-pv-dock[data-state="applying"] .vg-pv-status { border-color: var(--color-orange); background: color-mix(in srgb, var(--color-orange) 16%, transparent); }
-.task-gantt-container .vg-pv-dock[data-state="stale"] .vg-pv-status, .task-gantt-container .vg-pv-dock[data-state="expired"] .vg-pv-status { border-style: dashed; border-color: var(--text-faint); background: var(--background-modifier-hover); }
-.task-gantt-container .vg-pv-dockhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
-.task-gantt-container .vg-pv-dockhead .vg-pv-button { margin-inline-start: auto; }
-.task-gantt-container .vg-pv-gantt { margin-top: 6px; padding: 6px 8px; border-radius: var(--radius-s); background: var(--background-primary); }
-.task-gantt-container .vg-pv-gruler { display: flex; justify-content: space-between; padding-inline-start: 38%; color: var(--text-muted); font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; }
-.task-gantt-container .vg-pv-gparent { margin-top: 6px; }
-.task-gantt-container .vg-pv-gparent-title { display: flex; align-items: center; gap: 6px; }
-.task-gantt-container .vg-pv-grow { display: grid; grid-template-columns: 38% minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; border-top: 1px dotted var(--background-modifier-border); }
-.task-gantt-container .vg-pv-grow[data-state="context"] { opacity: 0.6; }
-.task-gantt-container .vg-pv-glabel { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.task-gantt-container .vg-pv-gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-gantt-container .vg-pv-gtrack { position: relative; min-width: 0; overflow: hidden; }
-.task-gantt-container .vg-pv-glane { position: relative; height: 12px; }
-.task-gantt-container .vg-pv-glane.is-points { height: 16px; }
-.task-gantt-container .vg-pv-gbar { position: absolute; top: 1px; height: 9px; min-width: 6px; border-radius: var(--radius-s); background: var(--interactive-accent); }
-.task-gantt-container .vg-pv-glane.is-before .vg-pv-gbar { border: 1px dashed var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); }
-.task-gantt-container .vg-pv-gbar.is-removed { background: repeating-linear-gradient(135deg, transparent 0, transparent 3px, var(--text-faint) 3px, var(--text-faint) 4px); border: 1px dashed var(--text-error); }
-.task-gantt-container .vg-pv-gtick { position: absolute; top: 0; height: 11px; min-width: 4px; border-inline-start: 3px solid var(--interactive-accent); }
-.task-gantt-container .vg-pv-gnote { position: relative; margin-inline-start: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
-.task-gantt-container .vg-pv-gpoint { position: absolute; top: 0; width: 12px; font-size: var(--font-ui-small); line-height: 14px; text-align: center; }
-.task-gantt-container .vg-pv-gpoint.is-before { opacity: 0.6; text-decoration: underline dashed; }
 
 /* Live chart: deadline / marker ghosts and delete labels share the schedule-ghost lane. */
 .task-gantt-container .vg-pv-live-point { position: absolute; width: 12px; height: 12px; font-size: var(--font-ui-smaller); line-height: 12px; text-align: center; color: var(--text-normal); pointer-events: auto; z-index: 2; }
@@ -1038,3 +1006,31 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 /* Destructive text button: normal button, warning-coloured label only. */
 button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(--text-error); }
+
+/* Preview highlights: the focused preview's changes marked on the real chart. Live rows keep their geometry. */
+.task-gantt-container .vg-hl-legend { display: inline-flex; align-items: center; gap: 4px; }
+.task-gantt-container .vg-hl-legend-close { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; box-shadow: none; color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1; cursor: pointer; }
+.task-gantt-container .vg-hl-legend-close:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.task-gantt-container .vg-hl-legend-close:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.task-gantt-container .task-gantt-bar.vg-hl-bar.is-changed, .task-gantt-container .task-gantt-bar.vg-hl-bar.is-created { outline: 2px solid var(--interactive-accent); outline-offset: 1px; box-shadow: 0 0 0 5px color-mix(in srgb, var(--interactive-accent) 26%, transparent), 0 0 14px color-mix(in srgb, var(--interactive-accent) 45%, transparent); }
+.task-gantt-container .task-gantt-bar.vg-hl-bar.is-deleted .task-gantt-bar-title { padding: 0 4px; border-radius: var(--radius-s); background: var(--background-primary); color: var(--text-normal); text-decoration: line-through; }
+.task-gantt-container .task-gantt-parent-left.vg-hl-row { background: color-mix(in srgb, var(--interactive-accent) 11%, var(--background-primary)); box-shadow: inset 4px 0 0 var(--interactive-accent); }
+.task-gantt-container .task-gantt-parent-left.vg-hl-row.is-deleted { text-decoration: line-through; }
+.task-gantt-container .task-gantt-workload-day-label.vg-hl-cell { pointer-events: auto; border-radius: var(--radius-s); background: color-mix(in srgb, var(--interactive-accent) 24%, transparent); box-shadow: 0 0 0 1.5px var(--interactive-accent); z-index: 4; }
+.task-gantt-container .task-gantt-workload-day-label.vg-hl-cell.is-deleted { background: transparent; box-shadow: 0 0 0 1px var(--text-faint); text-decoration: line-through; opacity: 0.7; }
+.task-gantt-container .task-gantt-workload-summary-cell.vg-hl-cell { z-index: 2; box-shadow: inset 0 0 0 2px var(--interactive-accent), inset 0 0 12px color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
+.task-gantt-container .task-gantt-daily-chip.vg-hl-chip { z-index: 6; outline: 2px solid var(--interactive-accent); outline-offset: 1px; background: color-mix(in srgb, var(--interactive-accent) 24%, var(--background-primary)); box-shadow: 0 0 10px color-mix(in srgb, var(--interactive-accent) 45%, transparent); }
+.task-gantt-container .task-gantt-daily-chip.vg-hl-chip.is-deleted { outline-style: dashed; outline-color: var(--text-faint); background: transparent; box-shadow: none; opacity: 0.6; text-decoration: line-through; }
+.task-gantt-container .task-gantt-event-chip.vg-hl-event { z-index: 6; outline: 2px solid var(--interactive-accent); outline-offset: 1px; box-shadow: 0 0 10px color-mix(in srgb, var(--interactive-accent) 45%, transparent); }
+.task-gantt-container .task-gantt-event-chip.vg-hl-event.is-phantom { outline-style: dashed; background: color-mix(in srgb, var(--interactive-accent) 16%, var(--background-primary)); }
+.task-gantt-container .task-gantt-event-chip.vg-hl-event.is-deleted { outline-style: dashed; outline-color: var(--text-faint); box-shadow: none; opacity: 0.6; text-decoration: line-through; }
+.task-gantt-container .task-gantt-marker.vg-hl-marker .task-gantt-marker-pin { color: var(--interactive-accent); text-shadow: 0 0 6px var(--interactive-accent); }
+.task-gantt-container .task-gantt-marker.vg-hl-marker .task-gantt-marker-label { border-radius: var(--radius-s); background: color-mix(in srgb, var(--interactive-accent) 22%, transparent); box-shadow: 0 0 0 1.5px var(--interactive-accent); }
+.task-gantt-container .vg-hl-point { color: var(--interactive-accent); text-shadow: 0 0 6px var(--interactive-accent); }
+.task-gantt-container .vg-hl-phantom { position: absolute; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 0 8px; overflow: hidden; border-radius: var(--radius-s); color: var(--text-normal); font-size: var(--font-ui-smaller); white-space: nowrap; }
+.task-gantt-container .vg-hl-phantom.is-created { border: 2px solid var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 22%, var(--background-primary)); box-shadow: 0 0 12px color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
+.task-gantt-container .vg-hl-phantom.is-deleted { border: 1px dashed var(--text-faint); background: repeating-linear-gradient(135deg, transparent 0, transparent 4px, var(--background-modifier-border) 4px, var(--background-modifier-border) 6px); opacity: 0.8; }
+.task-gantt-container .vg-hl-phantom.is-deleted .vg-hl-phantom-name { text-decoration: line-through; }
+.task-gantt-container .vg-hl-phantom-mark { flex: none; padding: 0 5px; border-radius: var(--radius-l); background: var(--interactive-accent); color: var(--text-on-accent); font-weight: var(--font-semibold); }
+.task-gantt-container .vg-hl-phantom.is-deleted .vg-hl-phantom-mark { background: var(--background-modifier-border-hover); color: var(--text-normal); }
+.task-gantt-container .vg-hl-phantom-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

@@ -112,7 +112,7 @@ try {
   await cdp.waitForExpression(`!!document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="approve"]')})`, { timeoutMs: 10000, label: "chat approval card" });
   await shot(cdp, "01-chat-proposal");
   await cdp.evaluate(`document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="focus"]')}).click()`);
-  await cdp.waitForExpression(`!!document.querySelector(".vg-pv-dockhost:not([hidden])")`, { timeoutMs: 10000, label: "Gantt preview dock" });
+  await cdp.waitForExpression(`!!document.querySelector(".vg-hl-bar, .vg-hl-phantom, .vg-hl-row")`, { timeoutMs: 10000, label: "Gantt preview highlight" });
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].openAIChat("tab")`);
   await cdp.evaluate(`document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="approve"]')}).click()`);
   await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(initial.previewId)})?.status === "success"`, { timeoutMs: 10000, label: "chat approval save" });
@@ -145,7 +145,7 @@ try {
     const createCard = `[data-preview-id="${created}"]`;
     await cdp.waitForExpression(`!!document.querySelector(${JSON.stringify(createCard + ' button[data-action="focus"]')})`, { timeoutMs: 10000, label: "creation card" });
     await cdp.evaluate(`document.querySelector(${JSON.stringify(createCard + ' button[data-action="focus"]')}).click()`);
-    await cdp.waitForExpression(`!!document.querySelector(".vg-pv-dockhost:not([hidden])")`, { timeoutMs: 10000, label: "creation Gantt preview" });
+    await cdp.waitForExpression(`!!document.querySelector(".vg-hl-bar, .vg-hl-phantom, .vg-hl-row")`, { timeoutMs: 10000, label: "creation Gantt preview" });
     await cdp.waitForExpression(`app.workspace.getActiveViewOfType ? app.workspace.activeLeaf?.view?.getViewType() === 'task-gantt-view' : false`, { timeoutMs: 10000, label: "visible Gantt tab" });
     for (const theme of ["moonstone", "obsidian"]) {
       await setTheme(cdp, theme);

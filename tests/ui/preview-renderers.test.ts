@@ -10,7 +10,6 @@ import { OPERATION_IDS } from "../../src/contracts/operations";
 import { runtimeFixture } from "../app/operation-runtime-fixture";
 import { cardTitle, renderOperationPreviewCard } from "../../src/ui/operation-preview-card";
 import { OPERATION_LABELS, entryTitle, fieldLabel, operationLabel } from "../../src/ui/preview-renderers";
-import { renderNonGanttPanel } from "../../src/ui/preview-panels";
 import { ENTITY_FIELDS } from "../../src/contracts/preview";
 import { createFakeDocument, makeFakeEl, byClass, deepText, findAll, type FakeEl } from "../stubs/fake-dom";
 
@@ -243,7 +242,6 @@ describe("no internal names on screen", () => {
     for (const key of EDITABLE_SETTING_KEYS) {
       const preview = { ...PREVIEW_FIXTURES.settings, projection: null, entries: [{ actionId: "a", entity: { kind: "setting", key }, displayName: key, effects: [{ kind: "settings", fields: [{ field: key, before: null, after: null, reason: "requested" }, { field: key, before: true, after: false, reason: "derived" }] }] }] } as any;
       const card = renderOperationPreviewCard(root(), preview, {}); outputs.push(text(card));
-      const panel = root(); renderNonGanttPanel(panel, preview); outputs.push(text(panel));
       expect(text(card), key).not.toContain(key);
     }
     for (const kind of ["task", "marker", "event", "weekly", "daily-todo", "daily-file", "tag-definition", "source", "setting", "view", "conversation", "integration"]) {
