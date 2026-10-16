@@ -702,39 +702,90 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-history button { display: block; width: 100%; text-align: start; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
 .vg-ai-history button[aria-current="true"] { border-inline-start: 3px solid var(--interactive-accent); }
 
-/* Message log: user = soft accent bubble on the right, assistant = plain text. */
-.vg-ai-messages { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; padding: 16px; overscroll-behavior: contain; }
+/* Message log: user = soft accent bubble on the right, assistant = small avatar + flowing text, tool rows and cards in the flow. */
+.vg-ai-messages { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 22px; overflow-y: auto; padding: 20px 16px 12px; overscroll-behavior: contain; }
 .vg-ai-messages > * { width: 100%; max-width: 760px; margin-inline: auto; flex-shrink: 0; }
 .vg-ai-empty { display: flex; flex-direction: column; align-items: center; margin-block: auto; padding: 24px 8px; text-align: center; line-height: 1.6; color: var(--text-muted); font-size: var(--font-ui-small); }
 .vg-ai-empty strong { color: var(--text-normal); font-size: var(--font-ui-large); font-weight: var(--font-semibold); }
 .vg-ai-empty p { max-width: 32em; margin: 6px 0 0; }
 .vg-ai-empty-icon { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-bottom: 12px; border-radius: var(--radius-l); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); color: var(--interactive-accent); }
 .vg-ai-empty-icon svg { width: 22px; height: 22px; }
-.vg-ai-message { line-height: 1.6; font-size: var(--font-ui-medium); overflow-wrap: anywhere; }
-/* Role labels stay for assistive tech; position and shape carry the hierarchy visually. */
-.vg-ai-message > strong { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.vg-ai-user { width: fit-content; max-width: min(85%, 640px); margin-inline: auto 0; padding: 8px 12px; border-radius: var(--radius-l) var(--radius-l) var(--radius-s) var(--radius-l); background: color-mix(in srgb, var(--interactive-accent) 14%, var(--background-primary)); color: var(--text-normal); }
-.vg-ai-assistant { padding: 0; }
-.vg-ai-message-body p, .vg-ai-message-body div { margin: 0 0 6px; white-space: pre-wrap; }
-.vg-ai-message-body > :last-child { margin-bottom: 0; }
-.vg-ai-message-body > .vg-ai-li { padding-inline-start: 1.1em; text-indent: -1.1em; }
-.vg-ai-message-body .vg-ai-heading { font-weight: var(--font-semibold); }
-.vg-ai-message-body .vg-ai-quote { padding-inline-start: 10px; border-inline-start: 3px solid var(--background-modifier-border); color: var(--text-muted); }
-.vg-ai-message-body .vg-ai-codeblock { margin: 0 0 6px; padding: 8px 10px; overflow-x: auto; border-radius: var(--radius-s); background: var(--background-modifier-hover); white-space: pre; font-size: var(--font-ui-smaller); }
-.vg-ai-message-body .vg-ai-codeblock code { padding: 0; background: transparent; font-size: inherit; }
-.vg-ai-message-body hr { margin: 8px 0; border: 0; border-top: 1px solid var(--background-modifier-border); }
-.vg-ai-message-body .vg-ai-table-wrap { max-width: 100%; margin: 0 0 6px; overflow-x: auto; white-space: normal; }
-.vg-ai-message-body table { border-collapse: collapse; font-size: var(--font-ui-smaller); }
-.vg-ai-message-body td { padding: 3px 8px; border: 1px solid var(--background-modifier-border); text-align: start; vertical-align: top; white-space: normal; }
-.vg-ai-message-body th { padding: 3px 8px; border: 1px solid var(--background-modifier-border); text-align: start; vertical-align: top; white-space: normal; background: var(--background-secondary); font-weight: var(--font-semibold); }
-.vg-ai-message-body code { padding: 1px 5px; border-radius: var(--radius-s); background: var(--background-modifier-hover); font-size: .9em; }
-.vg-ai-message[data-streaming="true"] .vg-ai-message-body > :last-child::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-inline-start: 6px; border-radius: 50%; background: var(--interactive-accent); vertical-align: middle; }
-.vg-ai-tools { margin-top: 10px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
-.vg-ai-tools summary { cursor: pointer; }
-.vg-ai-tools > div { padding: 3px 12px; }
+.vg-ai-message { display: flex; align-items: flex-start; gap: 10px; line-height: 1.65; font-size: var(--font-ui-medium); overflow-wrap: anywhere; }
+.vg-ai-user { justify-content: flex-end; }
+.vg-ai-bubble { min-width: 0; max-width: min(88%, 640px); padding: 8px 14px; border-radius: 18px 18px 4px 18px; background: color-mix(in srgb, var(--interactive-accent) 13%, var(--background-primary)); border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, transparent); color: var(--text-normal); }
+.vg-ai-bubble .vg-ai-text > :last-child { margin-bottom: 0; }
+.vg-ai-avatar { display: flex; align-items: center; justify-content: center; flex: 0 0 26px; width: 26px; height: 26px; border-radius: 50%; background: color-mix(in srgb, var(--interactive-accent) 16%, var(--background-primary)); color: var(--interactive-accent); }
+.vg-ai-avatar svg { width: 14px; height: 14px; }
+.vg-ai-column { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vg-ai-name { line-height: 26px; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
+.vg-ai-parts { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vg-ai-text p, .vg-ai-text div { margin: 0 0 6px; white-space: pre-wrap; }
+.vg-ai-text > :last-child { margin-bottom: 0; }
+.vg-ai-text > .vg-ai-li { padding-inline-start: 1.1em; text-indent: -1.1em; }
+.vg-ai-text .vg-ai-heading { font-weight: var(--font-semibold); }
+.vg-ai-text .vg-ai-quote { padding-inline-start: 10px; border-inline-start: 3px solid var(--background-modifier-border); color: var(--text-muted); }
+.vg-ai-text .vg-ai-codeblock { margin: 0 0 6px; padding: 8px 10px; overflow-x: auto; border-radius: var(--radius-s); background: var(--background-modifier-hover); white-space: pre; font-size: var(--font-ui-smaller); }
+.vg-ai-text .vg-ai-codeblock code { padding: 0; background: transparent; font-size: inherit; }
+.vg-ai-text hr { margin: 8px 0; border: 0; border-top: 1px solid var(--background-modifier-border); }
+.vg-ai-text .vg-ai-table-wrap { max-width: 100%; margin: 0 0 6px; overflow-x: auto; white-space: normal; }
+.vg-ai-text table { border-collapse: collapse; font-size: var(--font-ui-smaller); }
+.vg-ai-text td { padding: 3px 8px; border: 1px solid var(--background-modifier-border); text-align: start; vertical-align: top; white-space: normal; }
+.vg-ai-text th { padding: 3px 8px; border: 1px solid var(--background-modifier-border); text-align: start; vertical-align: top; white-space: normal; background: var(--background-secondary); font-weight: var(--font-semibold); }
+.vg-ai-text code { padding: 1px 5px; border-radius: var(--radius-s); background: var(--background-modifier-hover); font-size: .9em; }
+.vg-ai-message[data-streaming="true"] .vg-ai-parts > .vg-ai-text:last-child > :last-child::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-inline-start: 6px; border-radius: 50%; background: var(--interactive-accent); vertical-align: middle; }
+
+/* Tool calls and reasoning: one small collapsible row each, in the place they happened. */
+.vg-ai-tool, .vg-ai-reasoning { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; overflow: hidden; }
+.vg-ai-tool > summary, .vg-ai-reasoning > summary { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 3px 10px; cursor: pointer; list-style: none; user-select: none; }
+.vg-ai-tool > summary::-webkit-details-marker, .vg-ai-reasoning > summary::-webkit-details-marker { display: none; }
+.vg-ai-tool > summary::after, .vg-ai-reasoning > summary::after { content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-inline-start: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+.vg-ai-tool[open] > summary::after, .vg-ai-reasoning[open] > summary::after { transform: rotate(-135deg); }
+.vg-ai-tool > summary:hover, .vg-ai-reasoning > summary:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.vg-ai-tool > summary:focus-visible, .vg-ai-reasoning > summary:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
+.vg-ai-mark { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; border-radius: 50%; }
+.vg-ai-mark svg { width: 13px; height: 13px; }
+.vg-ai-mark.is-running { flex-basis: 12px; width: 12px; height: 12px; margin: 2px; border: 2px solid color-mix(in srgb, var(--interactive-accent) 25%, transparent); border-top-color: var(--interactive-accent); }
+.vg-ai-mark.is-done { color: var(--color-green); }
+.vg-ai-mark.is-error { color: var(--text-error); }
+.vg-ai-tool[data-state="error"] { border-color: color-mix(in srgb, var(--text-error) 40%, var(--background-modifier-border)); }
+.vg-ai-io { padding: 0 10px 8px; }
+.vg-ai-io > div { margin-top: 6px; font-weight: var(--font-semibold); }
+.vg-ai-json { margin: 2px 0 0; padding: 6px 8px; max-height: 12em; overflow: auto; border-radius: var(--radius-s); background: var(--background-primary); color: var(--text-normal); font-size: var(--font-ui-smaller); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.vg-ai-chat .vg-ai-more { height: auto; margin-top: 4px; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--text-accent); font-size: var(--font-ui-smaller); cursor: pointer; }
+.vg-ai-chat .vg-ai-more:hover { text-decoration: underline; }
+.vg-ai-reasoning-body { margin: 0 10px 8px; padding: 2px 0 2px 10px; max-height: 10em; overflow: auto; border-inline-start: 2px solid var(--background-modifier-border-hover); white-space: pre-wrap; overflow-wrap: anywhere; }
+.vg-ai-typing { display: flex; align-items: center; gap: 5px; height: 24px; }
+.vg-ai-typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.vg-ai-failure { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vg-ai-failure .vg-ai-error { margin: 0; }
 .vg-ai-error { margin: 8px 0; padding: 6px 10px; border-inline-start: 3px solid var(--text-error); border-radius: var(--radius-s); background: color-mix(in srgb, var(--text-error) 10%, transparent); color: var(--text-normal); font-size: var(--font-ui-small); }
-.vg-ai-completion { margin: 8px 0 0; padding: 2px 0 2px 8px; border-inline-start: 2px solid var(--background-modifier-border); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; }
+.vg-ai-completion { margin: 0; padding: 2px 0 2px 8px; border-inline-start: 2px solid var(--background-modifier-border); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; }
 .vg-ai-completion[data-kind="tool-refused"], .vg-ai-completion[data-kind="timeout"], .vg-ai-completion[data-kind="step-limit"], .vg-ai-completion[data-kind="connection-error"] { border-inline-start-color: var(--color-orange); }
+
+/* vg-motion:start (the structural test treats this region as the only place for at-rules and animation) */
+@keyframes vg-ai-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes vg-ai-spin { to { transform: rotate(360deg); } }
+@keyframes vg-ai-bounce { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-4px); } }
+@keyframes vg-ai-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes vg-ai-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+.vg-ai-enter { animation: vg-ai-in 0.24s ease-out both; }
+.vg-ai-mark.is-running { animation: vg-ai-spin 0.8s linear infinite; }
+.vg-ai-typing span { animation: vg-ai-bounce 1.2s ease-in-out infinite; }
+.vg-ai-typing span:nth-child(2) { animation-delay: 0.15s; }
+.vg-ai-typing span:nth-child(3) { animation-delay: 0.3s; }
+.vg-ai-reasoning[data-state="streaming"] > summary > span:last-of-type { background: linear-gradient(90deg, var(--text-muted) 30%, var(--text-normal) 50%, var(--text-muted) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: vg-ai-shimmer 1.8s linear infinite; }
+.vg-ai-message[data-streaming="true"] .vg-ai-parts > .vg-ai-text:last-child > :last-child::after { animation: vg-ai-pulse 1s ease-in-out infinite; }
+.vg-ai-tool > summary, .vg-ai-reasoning > summary, .vg-ai-composer-box, .vg-ai-composer-actions .vg-ai-send, .vg-ai-composer-actions .vg-ai-stop { transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease; }
+.vg-ai-tool > summary::after, .vg-ai-reasoning > summary::after { transition: transform 0.15s ease; }
+.vg-ai-composer-actions .vg-ai-send:not(:disabled):active, .vg-ai-composer-actions .vg-ai-stop:not(:disabled):active { transform: scale(0.92); }
+@media (prefers-reduced-motion: reduce) {
+  .vg-ai-enter, .vg-ai-typing span, .vg-ai-reasoning[data-state="streaming"] > summary > span:last-of-type, .vg-ai-message[data-streaming="true"] .vg-ai-parts > .vg-ai-text:last-child > :last-child::after { animation: none; }
+  .vg-ai-mark.is-running { animation-duration: 2.4s; }
+  .vg-ai-typing span { opacity: 0.7; }
+  .vg-ai-tool > summary, .vg-ai-reasoning > summary, .vg-ai-composer-box, .vg-ai-composer-actions .vg-ai-send, .vg-ai-composer-actions .vg-ai-stop, .vg-ai-tool > summary::after, .vg-ai-reasoning > summary::after { transition: none; }
+  .vg-ai-composer-actions .vg-ai-send:not(:disabled):active, .vg-ai-composer-actions .vg-ai-stop:not(:disabled):active { transform: none; }
+}
+/* vg-motion:end */
 
 /* Proposal / result card */
 .vg-ai-diff { margin-top: 12px; padding: 12px; border: 1px solid var(--background-modifier-border); border-inline-start: 3px solid var(--interactive-accent); border-radius: var(--radius-m); background: var(--background-secondary); }
@@ -756,10 +807,11 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-actions button { font-size: var(--font-ui-small); }
 
 /* Composer */
-.vg-ai-composer { flex-shrink: 0; margin-block: 0 12px; padding: 8px 8px 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-l); background: var(--background-primary); box-shadow: var(--shadow-s); }
-.vg-ai-composer:focus-within { border-color: var(--interactive-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 25%, transparent); }
-.vg-ai-context { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px; padding: 1px 8px; border-radius: var(--radius-l); background: var(--background-modifier-hover); color: var(--text-muted); font-size: var(--font-ui-smaller); }
-.vg-ai-composer textarea { display: block; min-height: 56px; max-height: 160px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 4px 0 8px; font-size: var(--font-ui-medium); line-height: 1.5; }
+.vg-ai-composer { flex-shrink: 0; margin-block: 0 12px; }
+.vg-ai-composer-box { padding: 8px 8px 8px 14px; border: 1px solid var(--background-modifier-border); border-radius: 16px; background: var(--background-primary); box-shadow: var(--shadow-s); }
+.vg-ai-composer-box:focus-within { border-color: var(--interactive-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 25%, transparent); }
+.vg-ai-context { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; padding: 1px 8px; border-radius: var(--radius-l); background: var(--background-modifier-hover); color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.vg-ai-composer textarea { display: block; min-height: 40px; max-height: 160px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 4px 0 6px; font-size: var(--font-ui-medium); line-height: 1.5; }
 .vg-ai-composer textarea::placeholder { color: var(--text-muted); opacity: 1; }
 .vg-ai-composer textarea:focus { box-shadow: none; }
 .vg-ai-context[hidden] { display: none; }
@@ -770,10 +822,14 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-model-chevron { display: flex; flex-shrink: 0; }
 .vg-ai-model-chevron svg { width: 14px; height: 14px; }
 .vg-ai-composer-actions button { height: 28px; font-size: var(--font-ui-small); }
-.vg-ai-send, .vg-ai-stop { flex-shrink: 0; padding: 0 12px; border-radius: var(--radius-s); }
+.vg-ai-composer-actions .vg-ai-send, .vg-ai-composer-actions .vg-ai-stop { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }
+.vg-ai-send svg, .vg-ai-stop svg { width: 16px; height: 16px; }
+.vg-ai-stop svg { fill: currentColor; }
 .vg-ai-composer-actions button[hidden] { display: none; }
-.vg-ai-composer-actions .vg-ai-send:not(:disabled), .vg-ai-composer-actions .vg-ai-stop:not(:disabled) { background: var(--interactive-accent); color: var(--text-on-accent); }
+.vg-ai-composer-actions .vg-ai-send:not(:disabled), .vg-ai-composer-actions .vg-ai-stop:not(:disabled) { background: var(--interactive-accent); color: var(--text-on-accent); cursor: pointer; }
 .vg-ai-composer-actions .vg-ai-send:not(:disabled):hover, .vg-ai-composer-actions .vg-ai-stop:not(:disabled):hover { background: var(--interactive-accent-hover); }
+.vg-ai-composer-actions .vg-ai-send:disabled { background: var(--background-modifier-hover); color: var(--text-faint); cursor: not-allowed; }
+.vg-ai-composer-actions .vg-ai-send:focus-visible, .vg-ai-composer-actions .vg-ai-stop:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 
 /* Mini before/after timeline inside the result card: dashed = before, solid = after. */
 .vg-ai-mini-timeline { margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-s); background: var(--background-primary); }
@@ -806,6 +862,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-points .vg-ai-mini-row { height: 20px; }
 .vg-ai-mini-before .vg-pv-point { opacity: 0.7; }
 .vg-pv-card { display: block; margin-top: 12px; padding: 12px; border: 1px solid var(--background-modifier-border); border-inline-start: 4px solid var(--interactive-accent); border-radius: var(--radius-m); background: var(--background-secondary); color: var(--text-normal); font-size: var(--font-ui-small); line-height: 1.5; overflow-wrap: anywhere; }
+.vg-ai-card-slot > .vg-pv-card { margin-top: 0; }
 .vg-pv-card[data-focused="true"] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 35%, transparent); }
 .vg-pv-card[data-state="success"] { border-inline-start-color: var(--color-green); }
 .vg-pv-card[data-state="partial"], .vg-pv-card[data-state="applying"] { border-inline-start-color: var(--color-orange); }
