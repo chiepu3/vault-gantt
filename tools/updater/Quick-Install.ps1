@@ -3,7 +3,8 @@ param(
     [string]$Branch,
     [string]$Vault,
     [switch]$Reset,
-    [switch]$NoCache
+    [switch]$NoCache,
+    [switch]$NoMenu
 )
 
 # このリポジトリで git pull → 必要なときだけ npm ci → npm run build → 3ファイルを配置する高速インストーラー。
@@ -117,6 +118,44 @@ function Install-FromRepository {
         Write-Host '最新の状態を取得しています（git fetch / pull）...'
         & $git fetch origin --prune
         Assert-ExitCode 'git fetch'
+
+        if (-not $Branch -and -not $NoMenu) {
+            $currentName = (@(& $git rev-parse --abbrev-ref HEAD))[0]
+            Assert-ExitCode 'git rev-parse'
+            $rows = @(& $git for-each-ref --sort=-committerdate '--format=%(refname:short)|%(committerdate:short)|%(subject)' refs/remotes/origin)
+            Assert-ExitCode 'git for-each-ref'
+            $items = New-Object System.Collections.ArrayList
+            foreach ($row in $rows) {
+                $parts = ([string]$row).Split([char[]]'|', 3)
+                if ($parts.Count -lt 3) { continue }
+                if ($parts[0] -eq 'origin' -or $parts[0] -eq 'origin/HEAD' -or -not $parts[0].StartsWith('origin/')) { continue }
+                [void]$items.Add([pscustomobject]@{ Name = $parts[0].Substring(7); Date = $parts[1]; Subject = $parts[2] })
+            }
+            $ordered = New-Object System.Collections.ArrayList
+            foreach ($it in $items) { if ($it.Name -eq 'main') { [void]$ordered.Add($it) } }
+            foreach ($it in $items) { if ($it.Name -ne 'main') { [void]$ordered.Add($it) } }
+            $menuItems = @($ordered | Select-Object -First 15)
+            if ($menuItems.Count -gt 0) {
+                Write-Host ''
+                for ($i = 0; $i -lt $menuItems.Count; $i++) {
+                    $m = $menuItems[$i]
+                    $subj = $m.Subject
+                    if ($subj.Length -gt 50) { $subj = $subj.Substring(0, 50) }
+                    $mark = ''
+                    if ($m.Name -eq $currentName) { $mark = ' ← 現在' }
+                    Write-Host ("  {0}. {1}  ({2})  {3}{4}" -f ($i + 1), $m.Name, $m.Date, $subj, $mark)
+                }
+                $answer = Read-Host 'ブランチ番号を選択（Enter で 1 = main）'
+                $num = 1
+                if ($answer -and $answer.Trim()) {
+                    if (-not [int]::TryParse($answer.Trim(), [ref]$num) -or $num -lt 1 -or $num -gt $menuItems.Count) {
+                        throw "ブランチ番号が正しくありません: ${answer}（1〜$($menuItems.Count) の番号を入力してください）"
+                    }
+                }
+                $Branch = $menuItems[$num - 1].Name
+                if ($Branch -eq $currentName) { $Branch = $null }
+            }
+        }
 
         if ($Branch) {
             & $git show-ref --verify --quiet "refs/heads/$Branch"
