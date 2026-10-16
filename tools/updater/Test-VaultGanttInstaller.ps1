@@ -38,7 +38,6 @@ $script:NativeMove = ${function:Move-InstallerFile}
 $script:LockManifestPath = $null
 $script:ManifestLock = $null
 $script:MenuChoice = '2'
-$script:TestLockContent = $null
 
 function Read-Host { param([string]$Prompt); return $script:MenuChoice }
 function Get-InstallerToolPaths { return @{ Git = 'git'; Node = 'node'; Npm = 'npm' } }
@@ -53,14 +52,6 @@ function Invoke-NativeStrict {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`trefs/heads/main",
             "$($script:SelectedSha)`trefs/heads/release/windows"
         )
-    }
-    if ($Operation -eq 'git checkout' -and $script:TestLockContent) {
-        [System.IO.File]::WriteAllText((Join-Path $WorkingDirectory 'package-lock.json'), $script:TestLockContent)
-    }
-    if ($Operation -eq 'npm ci' -and $script:TestLockContent) {
-        $modules = Join-Path $WorkingDirectory 'node_modules\pkg'
-        New-Item -ItemType Directory -Path $modules -Force | Out-Null
-        [System.IO.File]::WriteAllText((Join-Path $modules 'index.js'), 'module')
     }
     if ($Operation -eq 'git fetch') { $script:FetchedSha = $Arguments[-1] }
     if ($FilePath -eq 'git' -and $Arguments -contains 'rev-parse') { return @($script:FetchedSha) }
@@ -371,21 +362,6 @@ Check 'interactive selection resolves the numbered public branch' {
     Assert-True ($selected.Branch -ceq 'release/windows') 'number 2 did not select release/windows'
 }
 
-Check 'empty selection (Enter) resolves main' {
-    $branches = @(
-        [pscustomobject]@{ Branch = 'release/windows'; Sha = ('b' * 40) },
-        [pscustomobject]@{ Branch = 'main'; Sha = ('a' * 40) }
-    )
-    $script:MenuChoice = ''
-    try {
-        $selected = Resolve-PublicBranch -Branches $branches
-        Assert-True ($selected.Branch -ceq 'main') 'Enter did not select main'
-        $threw = $false
-        try { Resolve-PublicBranch -Branches @($branches[0]) | Out-Null } catch { $threw = $true }
-        Assert-True $threw 'Enter without main in the list was accepted'
-    } finally { $script:MenuChoice = '2' }
-}
-
 Check 'branch input must match an advertised branch exactly' {
     $destination = New-TestDestination $root 'branch-injection'
     $before = Get-Hashes $destination
@@ -397,34 +373,6 @@ Check 'branch input must match an advertised branch exactly' {
     Assert-True (@($script:Calls | Where-Object { $_.Operation -eq 'git fetch' }).Count -eq 0) 'fetch ran for an unlisted branch'
     $after = Get-Hashes $destination
     foreach ($name in $before.Keys) { Assert-True ($before[$name] -ceq $after[$name]) "$name changed" }
-}
-
-Check 'in-memory hash matches Get-FileHash uppercase output' {
-    $file = Join-Path $root 'hash-sample.bin'
-    [System.IO.File]::WriteAllBytes($file, [byte[]](0..255))
-    $bytes = [System.IO.File]::ReadAllBytes($file)
-    Assert-True ((Get-InstallerBytesHash -Bytes $bytes) -ceq (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash) 'hash mismatch'
-}
-
-Check 'node_modules cache is written once, reused next run, and bypassed by -NoCache' {
-    $script:TestLockContent = '{"lockfileVersion":3}'
-    try {
-        $cacheRoot = Join-Path $root 'dep-cache'
-        $destination = New-TestDestination $root 'cache-dest'
-        Reset-Mock
-        Invoke-VaultGanttInstaller -Branch main -DestinationPath $destination -WorkRoot (Join-Path $root 'cache-work1') -CacheRoot $cacheRoot 6>&1 | Out-Null
-        Assert-True (@($script:Calls | Where-Object { $_.Operation -eq 'npm ci' }).Count -eq 1) 'first run did not npm ci'
-        $entries = @(Get-ChildItem -LiteralPath $cacheRoot -Directory)
-        Assert-True ($entries.Count -eq 1 -and (Test-Path -LiteralPath (Join-Path $entries[0].FullName 'node_modules\pkg\index.js'))) 'cache entry missing'
-        Reset-Mock
-        Invoke-VaultGanttInstaller -Branch main -DestinationPath $destination -WorkRoot (Join-Path $root 'cache-work2') -CacheRoot $cacheRoot 6>&1 | Out-Null
-        Assert-True (@($script:Calls | Where-Object { $_.Operation -eq 'npm ci' }).Count -eq 0) 'second run did not reuse cache'
-        Assert-True (@($script:Calls | Where-Object { $_.Operation -eq 'npm run build' }).Count -eq 1) 'second run did not build'
-        Assert-True (@(Get-ChildItem -LiteralPath $cacheRoot -Directory).Count -eq 1) 'cache was not restored after reuse'
-        Reset-Mock
-        Invoke-VaultGanttInstaller -Branch main -DestinationPath $destination -WorkRoot (Join-Path $root 'cache-work3') -CacheRoot $cacheRoot -NoCache 6>&1 | Out-Null
-        Assert-True (@($script:Calls | Where-Object { $_.Operation -eq 'npm ci' }).Count -eq 1) '-NoCache did not npm ci'
-    } finally { $script:TestLockContent = $null }
 }
 
 Check 'fetch pins the selected public branch SHA and successful build replaces only 3 files' {
