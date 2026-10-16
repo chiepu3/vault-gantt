@@ -1390,10 +1390,9 @@ describe("part 5 — Gantt readability", () => {
   });
 
 
-  it("parent-title: nowrap + ellipsis + bold", () => {
-    expectDecl(".task-gantt-parent-title", "white-space", "nowrap");
-    expectDecl(".task-gantt-parent-title", "overflow", "hidden");
-    expectDecl(".task-gantt-parent-title", "text-overflow", "ellipsis");
+  it("parent-title: wrapping + overflow-wrap anywhere + bold", () => {
+    expectDecl(".task-gantt-parent-title", "white-space", "normal");
+    expectDecl(".task-gantt-parent-title", "overflow-wrap", "anywhere");
     expectDecl(".task-gantt-parent-title", "font-weight", "600");
   });
 
