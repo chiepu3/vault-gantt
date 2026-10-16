@@ -1644,8 +1644,10 @@ export class TaskGanttView extends ItemView {
    * hard-coded guess (header height varies with zoom/feature settings).
    */
   private syncStickyHeaderHeight(): void {
-    const height = this.ganttHeaderEl?.offsetHeight;
-    if (typeof height === "number" && height > 0) {
+    // offsetHeight rounds; at fractional zoom/DPI that can leave a hairline
+    // gap. Flooring the real height tucks the row just under the header instead.
+    const height = this.ganttHeaderEl ? Math.floor(this.ganttHeaderEl.getBoundingClientRect().height) : 0;
+    if (height > 0) {
       this.wrapEl.style.setProperty("--vg-header-height", `${height}px`);
     }
   }
