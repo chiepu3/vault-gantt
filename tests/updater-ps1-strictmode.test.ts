@@ -10,7 +10,8 @@ describe('tools/updater PowerShell scripts', () => {
     const hits: string[] = [];
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.ps1'))) {
       readFileSync(join(dir, file), 'utf8').split('\n').forEach((line, i) => {
-        if (/\$[A-Za-z_]\w*[\u0080-\uFFFF]/.test(line)) hits.push(`${file}:${i + 1}: ${line.trim()}`);
+        // Also catches a brace that swallowed the text: `${name\u691C\u8A3C}`.
+        if (/\$\{?[A-Za-z_]\w*[\u0080-\uFFFF]/.test(line)) hits.push(`${file}:${i + 1}: ${line.trim()}`);
       });
     }
     expect(hits).toEqual([]);
