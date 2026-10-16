@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Branch = 'main',
+    [string]$Branch,
     [string]$Vault,
     [switch]$Reset
 )

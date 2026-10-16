@@ -362,6 +362,21 @@ Check 'interactive selection resolves the numbered public branch' {
     Assert-True ($selected.Branch -ceq 'release/windows') 'number 2 did not select release/windows'
 }
 
+Check 'empty selection (Enter) resolves main' {
+    $branches = @(
+        [pscustomobject]@{ Branch = 'release/windows'; Sha = ('b' * 40) },
+        [pscustomobject]@{ Branch = 'main'; Sha = ('a' * 40) }
+    )
+    $script:MenuChoice = ''
+    try {
+        $selected = Resolve-PublicBranch -Branches $branches
+        Assert-True ($selected.Branch -ceq 'main') 'Enter did not select main'
+        $threw = $false
+        try { Resolve-PublicBranch -Branches @($branches[0]) | Out-Null } catch { $threw = $true }
+        Assert-True $threw 'Enter without main in the list was accepted'
+    } finally { $script:MenuChoice = '2' }
+}
+
 Check 'branch input must match an advertised branch exactly' {
     $destination = New-TestDestination $root 'branch-injection'
     $before = Get-Hashes $destination

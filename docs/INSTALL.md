@@ -34,10 +34,10 @@ Git と Node.js は、PowerShell から `git`・`node`・`npm` と打って実�
 ~\vault-gantt\install.cmd
 ```
 
-- `main` ブランチをビルドしてインストールします。
+- 公開ブランチの一覧が番号付きで出るので、番号を選びます（Enter だけなら `main`）。選んだブランチをビルドしてインストールします。
 - 初回だけ、Obsidian で使っている Vault の一覧が出るので番号を選びます（Enter で1番）。一覧にない場所は `0` を選んでパスを入力します。プラグインフォルダーがなければ作ります。
 - 選んだ場所はユーザー環境変数 `VAULT_GANTT_DEST` に保存され、2回目以降は何も聞かずにインストール（更新）します。
-- 場所を選び直すときは `~\vault-gantt\install.cmd -Reset`、別のブランチを入れるときは `~\vault-gantt\install.cmd -Branch <ブランチ名>` を実行します。
+- 場所を選び直すときは `~\vault-gantt\install.cmd -Reset`、ブランチを指定して一覧を省略するときは `~\vault-gantt\install.cmd -Branch <ブランチ名>` を実行します。
 
 Git と Node.js が必要なことは下の手順と同じです。細かく指定したい場合は、以下の「インストール手順」を使ってください。
 
@@ -96,10 +96,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-VaultGantt.ps1
 公開ブランチ一覧:
 1. main [xxxxxxxxxxxx]
 ...
-番号を選択:
+番号を選択（Enter で main）:
 ```
 
-使いたいブランチの番号を入力して Enter を押します。通常の利用では `main` を選びます。
+使いたいブランチの番号を入力して Enter を押します。何も入力せず Enter だけを押すと `main` が選ばれます。通常の利用では `main` で問題ありません。
 
 番号を選ばずに最初から指定したい場合は、`-Branch` を付けます。ブランチ名は公開一覧にあるものと完全に同じにしてください（一覧は表示されます）。
 
