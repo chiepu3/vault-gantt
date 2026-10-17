@@ -4,7 +4,9 @@
  * copy, same layout as tools/updater/Quick-Install.ps1) and reloads the plugin. No git or node needed on the PC.
  */
 
-export const UPDATE_SITE_BASE = "https://chiepu3.github.io/vault-gantt";
+declare const __VG_UPDATE_SITE__: string;
+/** Overridable at build time (`define`) so e2e tests can point the updater at a local server. */
+export const UPDATE_SITE_BASE = typeof __VG_UPDATE_SITE__ === "undefined" ? "https://chiepu3.github.io/vault-gantt" : __VG_UPDATE_SITE__;
 export const PLUGIN_FILES = ["main.js", "manifest.json", "styles.css"] as const;
 export const BACKUP_DIR = ".backup";
 
