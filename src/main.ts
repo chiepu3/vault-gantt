@@ -939,11 +939,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
     for (const viewType of [VIEW_TYPE_TASK_WORKBENCH, VIEW_TYPE_TASK_GANTT]) {
       for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
         const view = leaf.view as unknown as
-          | { render?: () => Promise<void> }
+          | { render?: (opts?: { fromHost?: boolean }) => Promise<void> }
           | null
           | undefined;
         if (typeof view?.render === "function") {
-          renders.push(view.render());
+          renders.push(view.render({ fromHost: true }));
         }
       }
     }
