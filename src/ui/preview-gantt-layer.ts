@@ -1,14 +1,12 @@
-import { diffDays } from "../app/gantt-layout";
 import type { ScheduleGhost } from "../app/schedule-ghost";
+import type { GanttEvent } from "../core/types";
 import type { PreviewPort } from "../contracts/ports";
 import {
-  mergeProjectionPages, type GanttChildStateV1, type GanttParentStateV1, type GanttProjectionV1, type GanttStateV1,
+  mergeProjectionPages, type GanttChildStateV1, type GanttParentStateV1, type GanttProjectionV1,
   type OperationOutcomeV1, type OperationPreviewV1, type ProjectionPageV1,
 } from "../contracts/preview";
 import type { PointGhost } from "./ghost-layer";
-import { originLabel, STATE_LABELS, cardState } from "./operation-preview-card";
-import { renderNonGanttPanel } from "./preview-panels";
-import { buildNameMap, entityKindLabel, entryTitle, fieldLabel, fmtDate, formatScalar, h, renderAggregates, renderEffect } from "./preview-renderers";
+import { deriveHighlights, type CellChange, type DailyChange, type EventChange, type Highlights, type HlState, type PhantomBar, type TotalsChange } from "./preview-highlights";
 import { periodText } from "./schedule-summary";
 
 export interface PointChange extends PointGhost { readonly taskId: string }
@@ -92,14 +90,17 @@ export class PreviewGanttLayer {
   private pages: ProjectionPageV1[] = [];
   private merged: GanttProjectionV1 | null = null;
   private derived?: Overlay;
+  private marks?: Highlights;
+  private readonly seen = new Set<string>();
   private loading = false;
   private loadError = "";
   constructor(private readonly port: PreviewPort) {
+    for (const preview of port.list?.() ?? []) this.seen.add(preview.previewId);
     this.unsubscribe = port.subscribe(() => this.refresh());
     this.refresh(false);
   }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
-  dispose(): void { this.unsubscribe?.(); this.unsubscribe = undefined; this.listeners.clear(); this.source = undefined; this.derived = undefined; this.merged = null; this.pages = []; }
+  dispose(): void { this.unsubscribe?.(); this.unsubscribe = undefined; this.listeners.clear(); this.source = undefined; this.derived = undefined; this.marks = undefined; this.merged = null; this.pages = []; }
   get active(): boolean { return !!this.source; }
   get overlay(): Overlay | undefined { return this.derived; }
   get projection(): GanttProjectionV1 | null { return this.merged; }
@@ -117,11 +118,47 @@ export class PreviewGanttLayer {
   get ghostMode(): "saved" | "proposed" { return this.source?.kind === "actual" ? "saved" : "proposed"; }
   legend(): { text: string; title: string } | undefined {
     const source = this.source; if (!source) return undefined;
-    const label = originLabel(source.preview.origin);
     return source.kind === "actual"
-      ? { text: `保存結果 · ${label} · 上: 前（破線） / 下: 後（実線）`, title: "変更前は破線、変更後は実線。◀ ▶は表示範囲外。詳細はカードで確認できます。" }
-      : { text: `変更案 · ${label} · 実線: 現在 / 破線: 変更案（後）`, title: "バーは現在の状態です。破線の帯が承認後の位置で、まだ保存されていません。◀ ▶は表示範囲外。詳細はカードで確認できます。" };
+      ? { text: "保存した変更を表示中", title: "保存された変更を強調しています。破線の帯は変更前の位置です。" }
+      : { text: "変更案を表示中", title: "変更される場所を強調しています。破線の帯は変更案の位置で、まだ保存されていません。" };
   }
+  /** Changed things on the real chart. Undefined when nothing is focused or the preview has no Gantt impact. */
+  get highlights(): Highlights | undefined { return this.marks; }
+  rowState(id: string): HlState | undefined { return this.marks?.rows.get(id); }
+  workloadChanges(entityKey: string): ReadonlyMap<string, CellChange> | undefined { return this.marks?.workload.get(entityKey); }
+  totalsChange(date: string): TotalsChange | undefined { return this.marks?.totals.get(date); }
+  dailyChange(date: string): DailyChange | undefined { return this.marks?.daily.get(date); }
+  get dailyChanges(): ReadonlyMap<string, DailyChange> { return this.marks?.daily ?? new Map(); }
+  get eventChanges(): ReadonlyMap<string, EventChange> { return this.marks?.events ?? new Map(); }
+  /**
+   * Created rows that the live chart cannot show yet (proposal) and deleted rows it no longer shows (saved).
+   * Rows that exist on the chart are marked in place instead.
+   */
+  phantomBars(parentId: string): readonly PhantomBar[] {
+    const wanted = this.ghostMode === "proposed" ? "created" : "deleted";
+    return (this.marks?.phantoms.get(parentId) ?? []).filter((bar) => bar.state === wanted);
+  }
+  /**
+   * Event chips the live row cannot show: a proposed new/moved event at its new date, or (after saving) a deleted/moved
+   * event at its old date. Live chips are marked in place instead.
+   */
+  phantomEvents(): readonly { event: GanttEvent; state: HlState }[] {
+    const proposed = this.ghostMode === "proposed"; const result: { event: GanttEvent; state: HlState }[] = [];
+    for (const change of this.marks?.events.values() ?? []) {
+      const side = proposed ? change.after : change.before; if (!side) continue;
+      const moved = change.state === "changed" && change.before?.date !== change.after?.date;
+      if (change.state === "changed" && !moved) continue;
+      if (proposed ? change.state === "deleted" : change.state === "created") continue;
+      const plan: Record<string, number> = {}; const actual: Record<string, number> = {};
+      for (const cell of proposed ? change.afterHours : change.beforeHours) { if (cell.plan) plan[cell.date] = cell.plan; if (cell.actual) actual[cell.date] = cell.actual; }
+      result.push({ event: { key: `pv:${change.key}`, title: side.title, date: side.date, workloadPlan: plan, workloadActual: actual }, state: proposed ? (change.state === "created" ? "created" : "changed") : "deleted" });
+    }
+    return result;
+  }
+  /** Where the first change is, so the Gantt can scroll to it. */
+  focusTarget(): { taskId?: string; date?: string } { return { taskId: this.marks?.firstTaskId, date: this.marks?.firstDate }; }
+  /** Changes whenever the highlighted content changes; used to invalidate cached fixed rows. */
+  get markKey(): string { return this.marks ? `pv:${this.source?.key}:${this.merged?.coverage.includedCount ?? 0}` : ""; }
   private resolve(): LayerSource | undefined {
     const id = this.port.focusedPreviewId(); if (!id) return undefined;
     const preview = this.port.inspect(id); if (!preview) return undefined;
@@ -132,17 +169,18 @@ export class PreviewGanttLayer {
     return { key, preview, outcome, kind: outcome ? "actual" : "planned", projection };
   }
   refresh(notify = true): void {
+    this.focusNewChatPreview();
     const next = this.resolve();
     const changed = next?.key !== this.source?.key;
     this.source = next;
     if (changed) {
       this.pages = []; this.loadError = ""; this.loading = false;
       this.merged = next?.projection ?? null;
-      this.derived = this.merged ? deriveOverlay(this.merged) : undefined;
+      this.recompute();
       if (next?.projection) this.pages = [{ schemaVersion: 1, previewId: next.preview.previewId, vaultInstanceId: next.preview.vaultInstanceId, projectionKind: next.kind, requestCursor: null, projection: next.projection }];
     }
-    // The preview may be present but have no Gantt impact: the dock still explains that.
     if (notify) for (const listener of this.listeners) listener();
+    if (changed && this.merged?.coverage.nextCursor) void this.loadAll();
   }
   /** Fetch the next page through the port. Stale cursors discard every page so nothing is mixed. */
   async loadMore(): Promise<void> {
@@ -154,10 +192,10 @@ export class PreviewGanttLayer {
       if (this.source?.key !== source.key) return;
       if (result.status === "error") {
         this.loadError = result.error.nextAction;
-        if (result.error.code === "CURSOR_STALE" || result.error.code === "PLAN_EXPIRED") { this.pages = this.pages.slice(0, 1); this.merged = this.pages[0]?.projection ?? null; this.derived = this.merged ? deriveOverlay(this.merged) : undefined; }
+        if (result.error.code === "CURSOR_STALE" || result.error.code === "PLAN_EXPIRED") { this.pages = this.pages.slice(0, 1); this.merged = this.pages[0]?.projection ?? null; this.recompute(); }
       } else {
         const pages = [...this.pages, result.page];
-        this.merged = mergeProjectionPages(pages); this.pages = pages; this.derived = deriveOverlay(this.merged);
+        this.merged = mergeProjectionPages(pages); this.pages = pages; this.recompute();
       }
     } catch (error) {
       this.loadError = error instanceof Error ? error.message : "続きを取得できませんでした";
@@ -165,199 +203,28 @@ export class PreviewGanttLayer {
       this.loading = false; this.notify();
     }
   }
+  /** The dedicated preview region is gone, so further projection pages are fetched without a button. */
+  private async loadAll(): Promise<void> {
+    const key = this.source?.key;
+    for (let page = 0; page < 20 && this.source?.key === key && this.merged?.coverage.nextCursor && !this.loadError; page += 1) await this.loadMore();
+  }
+  private recompute(): void {
+    this.derived = this.merged ? deriveOverlay(this.merged) : undefined;
+    this.marks = this.merged && this.derived ? deriveHighlights(this.merged, this.derived) : undefined;
+  }
+  /** A chat proposal created while the Gantt is open is shown right away, unless the person is looking at something else. */
+  private focusNewChatPreview(): void {
+    if (!this.port.list) return;
+    let newest: OperationPreviewV1 | undefined;
+    for (const preview of this.port.list()) {
+      if (this.seen.has(preview.previewId)) continue;
+      this.seen.add(preview.previewId);
+      if (preview.status === "pending" && preview.origin.kind === "chat" && preview.projection) newest = preview;
+    }
+    if (!newest) return;
+    const focused = this.port.focusedPreviewId(); const current = focused ? this.port.inspect(focused) : undefined;
+    if (!current || current.origin.kind === "chat") this.port.focus(newest.previewId);
+  }
   private notify(): void { for (const listener of this.listeners) listener(); }
   close(): void { this.port.focus(null); }
-
-  /** A separate preview region: after-state rows, created/deleted rows, daily totals and panels. */
-  renderDock(parent: HTMLElement): HTMLElement | undefined {
-    const source = this.source; if (!source) return undefined;
-    const { preview, outcome } = source; const projection = this.merged;
-    const savedEntries = outcome ? outcome.actions.filter((action) => action.state === "committed").flatMap((action) => {
-      const entry = preview.entries.find((entry) => entry.actionId === action.actionId);
-      return entry ? [{ ...entry, effects: action.actual }] : [];
-    }) : preview.entries;
-    const renderedPreview = { ...preview, entries: savedEntries };
-    const renderPanels = () => {
-      renderNonGanttPanel(dock, renderedPreview, projection);
-      if (outcome) {
-        const unsaved = preview.entries.filter((entry) => !outcome.actions.some((action) => action.actionId === entry.actionId && action.state === "committed"));
-        if (unsaved.length) {
-          const section = h(dock, "section", "vg-pv-unsaved"); section.setAttribute("aria-label", "未保存の変更案");
-          h(section, "strong", "vg-pv-subtitle", `未保存の変更案（${unsaved.length}件）`);
-          h(section, "p", "vg-pv-note", "以下は変更案の内容です。保存されていません。");
-          for (const entry of unsaved) { h(section, "div", "vg-pv-muted", entryTitle(entry)); for (const effect of entry.effects) renderEffect(section, effect, { entity: entry.entity, projection: null }); }
-        }
-      }
-    };
-    const dock = h(parent, "section", "vg-pv-dock"); dock.setAttribute("role", "region");
-    dock.setAttribute("aria-label", source.kind === "actual" ? "保存結果のGantt確認" : "変更案のGantt確認");
-    const head = h(dock, "div", "vg-pv-dockhead");
-    const state = cardState(preview, outcome, undefined, Date.now());
-    dock.dataset.state = state;
-    h(head, "span", "vg-pv-status", STATE_LABELS[state]).setAttribute("role", "status");
-    h(head, "strong", "vg-pv-title", source.kind === "actual" ? "保存された内容" : "変更案の確認");
-    h(head, "span", "vg-pv-origin", "要求元: " + originLabel(preview.origin)).dataset.origin = preview.origin.kind;
-    const close = h(head, "button", "vg-pv-button", "閉じる") as HTMLButtonElement; close.type = "button"; close.title = "Gantt確認を終了します（変更案は残ります）";
-    close.addEventListener("click", () => this.close());
-    if (!projection) { h(dock, "p", "vg-pv-note", source.kind === "actual" ? "保存された内容はGanttの表示に影響しません。" : "この変更案はGanttの表示に影響しません。"); renderPanels(); return dock; }
-    const overlay = this.derived ?? deriveOverlay(projection);
-    const hidden = projection.visibility.filter((item) => item.state !== "visible");
-    const summary = h(dock, "div", "vg-pv-muted", `対象 ${projection.coverage.targetCount}件 · 表示 ${projection.visibility.length - hidden.length}件 · 表示されない ${hidden.length}件`);
-    summary.setAttribute("aria-live", "polite");
-    for (const item of hidden.slice(0, 6)) {
-      const names = buildNameMap(projection);
-      const id = item.entity.kind === "task" ? item.entity.taskId : item.entity.kind === "marker" ? item.entity.taskId : "";
-      const line = h(dock, "div", "vg-pv-hidden"); line.dataset.state = item.state;
-      h(line, "span", "vg-pv-hidden-title", { filtered: "絞り込みで非表示", "feature-disabled": "機能オフで非表示", unscheduled: "日程未設定", "outside-range": "表示範囲外", visible: "" }[item.state]);
-      h(line, "span", "vg-pv-muted", ` ${id ? (names.get(id) ?? "名前を取得できない項目") : entityKindLabel(item.entity.kind)}: ${item.reason}`);
-    }
-    if (hidden.length > 6) h(dock, "div", "vg-pv-muted", `ほか ${hidden.length - 6}件は詳細で確認できます。`);
-    if (projection.coverage.truncated) {
-      const more = h(dock, "div", "vg-pv-coverage");
-      h(more, "span", "", `一部だけ表示しています: 全${projection.coverage.targetCount}件中${projection.coverage.includedCount}件`);
-      const next = h(more, "button", "vg-pv-button", this.loading ? "取得中…" : "続きを取得") as HTMLButtonElement; next.type = "button"; next.disabled = this.loading; next.dataset.action = "load-more";
-      next.addEventListener("click", () => { void this.loadMore(); });
-    }
-    if (this.loadError) h(dock, "p", "vg-pv-note is-error", this.loadError).setAttribute("role", "alert");
-    renderRows(dock, overlay);
-    if (overlay.unplaced.length) {
-      const list = h(dock, "div", "vg-pv-unplaced"); list.setAttribute("aria-label", "未配置の作成予定");
-      h(list, "div", "vg-pv-subtitle", `未配置（作成予定 ${overlay.unplaced.length}件）`);
-      for (const item of overlay.unplaced) h(list, "div", "vg-pv-muted", `${item.name}: ${item.reason}`);
-    }
-    for (const entry of savedEntries) for (const effect of entry.effects) if (effect.kind === "order") {
-      const section = h(dock, "div", "vg-pv-ordered"); h(section, "p", "vg-pv-note", outcome ? "保存された並び順です。" : "仮の並び順です。元の行順とスクロール位置は承認するまで変わりません。");
-      renderEffect(section, effect, { entity: entry.entity, projection, names: buildNameMap(projection) });
-    }
-    renderStateDiffs(dock, projection);
-    renderPanels();
-    return dock;
-  }
-}
-
-function span(overlay: Overlay): { min: string; days: number } | undefined {
-  const dates: string[] = [];
-  for (const parent of overlay.parents) for (const child of parent.children) {
-    for (const state of [child.before, child.after]) if (state) { dates.push(...[state.period.start, state.period.end, state.due].filter((d): d is string => !!d)); for (const marker of state.markers) dates.push(marker.date); }
-  }
-  dates.sort();
-  return dates.length ? { min: dates[0], days: diffDays(dates[0], dates[dates.length - 1]) + 1 } : undefined;
-}
-function place(axis: { min: string; days: number }, start: string, end = start): { left: string; width: string } {
-  return { left: (diffDays(axis.min, start) / axis.days) * 100 + "%", width: ((diffDays(start, end) + 1) / axis.days) * 100 + "%" };
-}
-const ROW_LABELS: Record<RowState, string> = { created: "追加", deleted: "削除", changed: "変更", context: "変更なし" };
-
-function renderRows(dock: HTMLElement, full: Overlay): void {
-  // Parents whose snapshot did not change (e.g. a settings-only plan) have nothing to place.
-  const overlay: Overlay = { ...full, parents: full.parents.filter((parent) => parent.state !== "context") };
-  if (!overlay.parents.length) return;
-  const axis = span(overlay);
-  const region = h(dock, "div", "vg-pv-gantt"); region.setAttribute("role", "group"); region.setAttribute("aria-label", "変更後の配置（前: 破線 / 後: 実線）");
-  if (axis) {
-    const ruler = h(region, "div", "vg-pv-gruler");
-    h(ruler, "span", "", fmtDate(axis.min).replace(/^\d{4}-/, "")); h(ruler, "span", "vg-pv-muted", `${axis.days}日分`);
-    const lastDay = new Date(Date.parse(axis.min + "T00:00:00Z") + (axis.days - 1) * 86400000).toISOString().slice(0, 10);
-    h(ruler, "span", "", fmtDate(lastDay).replace(/^\d{4}-/, ""));
-  }
-  let shown = 0; const limit = 40;
-  for (const parent of overlay.parents) {
-    const group = h(region, "div", "vg-pv-gparent"); group.dataset.state = parent.state;
-    const title = h(group, "div", "vg-pv-gparent-title");
-    h(title, "span", "vg-pv-badge", ROW_LABELS[parent.state]).dataset.kind = parent.state;
-    h(title, "strong", parent.state === "deleted" ? "is-removed" : "", parent.name);
-    for (const note of parent.notes) h(group, "div", "vg-pv-muted", note);
-    for (const child of parent.children) {
-      if (child.state === "context" && shown >= 5) continue;
-      if (shown >= limit) { continue; }
-      shown++;
-      renderChildRow(group, child, axis);
-    }
-  }
-  const total = overlay.parents.reduce((sum, parent) => sum + parent.children.length, 0);
-  if (total > shown) h(region, "div", "vg-pv-muted", `ほか ${total - shown}件の行は省略しています（変更のない行を含みます）。`);
-}
-
-function renderChildRow(group: HTMLElement, child: ChildDiff, axis: { min: string; days: number } | undefined): void {
-  const row = h(group, "div", "vg-pv-grow"); row.dataset.state = child.state;
-  const label = h(row, "div", "vg-pv-glabel");
-  h(label, "span", "vg-pv-badge", ROW_LABELS[child.state]).dataset.kind = child.state;
-  h(label, "span", child.state === "deleted" ? "vg-pv-gname is-removed" : "vg-pv-gname", child.name);
-  const track = h(row, "div", "vg-pv-gtrack");
-  const summary = [`前: ${child.before ? periodText(child.before.period) : "なし"}`, `後: ${child.after ? periodText(child.after.period) : "なし"}`].join(" → ");
-  row.setAttribute("aria-label", `${child.name}（${ROW_LABELS[child.state]}）${summary}`); row.title = summary;
-  if (!axis) return;
-  for (const [side, state] of [["before", child.before], ["after", child.after]] as const) {
-    if (!state || (child.state === "context" && side === "before")) continue;
-    const lane = h(track, "div", `vg-pv-glane is-${side}`);
-    const { start, end } = state.period;
-    if (start && end) { const bar = h(lane, "span", "vg-pv-gbar"); Object.assign(bar.style, place(axis, start, end)); if (child.state === "deleted") bar.classList.add("is-removed"); }
-    else if (start || end) { const tick = h(lane, "span", "vg-pv-gtick"); Object.assign(tick.style, place(axis, (start ?? end) as string)); h(lane, "span", "vg-pv-gnote", start ? "終了日未設定" : "開始日未設定"); }
-    else h(lane, "span", "vg-pv-gnote", side === "before" && child.state === "created" ? "" : "日程なし");
-  }
-  const points = h(track, "div", "vg-pv-glane is-points");
-  const draw = (glyph: string, date: string | null, side: "before" | "after", title: string): void => {
-    if (!date) return; const node = h(points, "span", `vg-pv-gpoint is-${side}`, glyph); Object.assign(node.style, { left: place(axis, date).left }); node.title = title; node.setAttribute("aria-label", title);
-  };
-  for (const point of child.points) {
-    const glyph = point.kind === "deadline" ? "⚑" : "◆"; const noun = point.kind === "deadline" ? "期限" : "マーカー";
-    const title = `${noun}「${point.label}」 前 ${point.before ?? "なし"} → 後 ${point.after ?? "なし"}`;
-    draw(glyph, point.before, "before", title + "（前）"); draw(glyph, point.after, "after", title + "（後）");
-  }
-}
-
-/** Daily chips, tag definitions, weekly work, holidays and fixed-row settings, as before -> after text. */
-function renderStateDiffs(dock: HTMLElement, projection: GanttProjectionV1): void {
-  const { before, after } = projection;
-  const sections: [string, string[]][] = [];
-  sections.push(["日別のToDo", dailyLines(before, after)]);
-  sections.push(["定例作業", weeklyLines(before, after)]);
-  sections.push(["タグ定義", tagLines(before, after)]);
-  sections.push(["休日", calendarLines(before, after)]);
-  sections.push(["表示の設定", settingLines(before, after)]);
-  const visible = sections.filter(([, lines]) => lines.length);
-  if (!visible.length && !projection.affectedDates.length) return;
-  const box = h(dock, "div", "vg-pv-statediff"); box.setAttribute("role", "group"); box.setAttribute("aria-label", "ほかの表示の変化");
-  renderAggregatesIfChanged(box, projection);
-  for (const [title, lines] of visible) {
-    h(box, "div", "vg-pv-subtitle", title);
-    for (const line of lines.slice(0, 12)) h(box, "div", "vg-pv-line", line);
-    if (lines.length > 12) h(box, "div", "vg-pv-muted", `ほか ${lines.length - 12}件`);
-  }
-  if (!box.children.length) box.remove();
-}
-function renderAggregatesIfChanged(box: HTMLElement, projection: GanttProjectionV1): void {
-  const changed = projection.affectedDates.some((date) => !same(projection.before.aggregates.find((a) => a.date === date), projection.after.aggregates.find((a) => a.date === date)));
-  if (changed) renderAggregates(box, projection);
-}
-function dailyLines(before: GanttStateV1, after: GanttStateV1): string[] {
-  const dates = [...new Set([...before.daily, ...after.daily].map((day) => day.date))].sort();
-  const text = (day?: { totalCount: number; completedCount: number }) => day ? `${day.totalCount}件（完了${day.totalCount ? Math.round(day.completedCount / day.totalCount * 100) : 0}%）` : "なし";
-  return dates.flatMap((date) => {
-    const oldDay = before.daily.find((day) => day.date === date); const newDay = after.daily.find((day) => day.date === date);
-    return same(oldDay, newDay) ? [] : [`${fmtDate(date).replace(/^\d{4}-/, "")}: ${text(oldDay)} → ${text(newDay)}`];
-  });
-}
-function weeklyLines(before: GanttStateV1, after: GanttStateV1): string[] {
-  const keys = [...new Set([...before.weekly, ...after.weekly].map((item) => item.key))];
-  const text = (item?: { title: string; dayOfWeek: number; minutesPerWeek: number }) => item ? `${item.title}（毎週${"日月火水木金土"[item.dayOfWeek]}曜・${item.minutesPerWeek}分）` : "なし";
-  return keys.flatMap((key) => { const oldItem = before.weekly.find((i) => i.key === key); const newItem = after.weekly.find((i) => i.key === key); return same(oldItem, newItem) ? [] : [`${text(oldItem)} → ${text(newItem)}`]; });
-}
-function tagLines(before: GanttStateV1, after: GanttStateV1): string[] {
-  const keys = [...new Set([...before.tagDefinitions, ...after.tagDefinitions].map((item) => item.key))];
-  const text = (item?: { name: string; color: string }) => item ? `${item.name}（色 ${item.color}）` : "なし";
-  return keys.flatMap((key) => { const oldItem = before.tagDefinitions.find((i) => i.key === key); const newItem = after.tagDefinitions.find((i) => i.key === key); return same(oldItem, newItem) ? [] : [`${text(oldItem)} → ${text(newItem)}`]; });
-}
-function calendarLines(before: GanttStateV1, after: GanttStateV1): string[] {
-  const lines: string[] = []; const names = { manual: "手動の休日", special: "特別休日", national: "祝日" } as const;
-  for (const source of ["manual", "special", "national"] as const) {
-    const added = after.calendar[source].filter((date) => !before.calendar[source].includes(date)); const removed = before.calendar[source].filter((date) => !after.calendar[source].includes(date));
-    if (added.length) lines.push(`${names[source]}を追加: ${added.join("、")}`);
-    if (removed.length) lines.push(`${names[source]}を削除: ${removed.join("、")}`);
-  }
-  return lines;
-}
-function settingLines(before: GanttStateV1, after: GanttStateV1): string[] {
-  const left = before.settings as Record<string, unknown>; const right = after.settings as Record<string, unknown>;
-  return [...new Set([...Object.keys(left), ...Object.keys(right)])].filter((key) => !same(left[key], right[key]) && key !== "ganttTags").map((key) => `${fieldLabel(key)}: ${formatScalar(key, left[key])} → ${formatScalar(key, right[key])}`);
 }

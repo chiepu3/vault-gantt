@@ -21,7 +21,7 @@ export const OPERATION_EXAMPLES = {
   T28: { changes: [{ ...task, patch: { plannedStartDate: DATE, plannedEndDate: "2026-10-15" } }] }, T29: { ...task, patch: { notes: "メモ", tags: [] } }, T30: { force: true },
   M01: { ...child, title: "確認", date: DATE, tags: [] }, M02: { ...markerTarget, patch: { title: "最終確認" } }, M03: { ...markerTarget, date: "2026-10-14" },
   M04: markerTarget, M05: { ...markerTarget, tags: ["リリース"] }, M06: { ...child, markers: [] }, M07: { ...child, workloadPlan: { [DATE]: 1.3 } }, M08: { ...child, workloadActual: { [DATE]: 0 } },
-  E01: { title: "イベント", date: DATE }, E02: { ...event, title: "変更名" }, E03: { ...event, date: DATE }, E04: event, E05: event,
+  E01: { title: "イベント", date: DATE, plan: { [DATE]: 2 }, actual: { [DATE]: 1 } }, E02: { ...event, title: "変更名" }, E03: { ...event, date: DATE }, E04: event, E05: event,
   E06: { ...event, plan: { [DATE]: 2 } }, E07: { ...event, actual: { [DATE]: 1 } },
   W01: { title: "定例", dayOfWeek: 2, minutesPerWeek: 45 }, W02: { scheduleKey: "weekly-1", patch: { minutesPerWeek: 60 } }, W03: { scheduleKey: "weekly-1" },
   D01: { dateRange: { from: DATE, to: DATE }, sourceKeys: ["main"] }, D02: { date: DATE }, D03: { date: DATE, text: "確認", completed: false },

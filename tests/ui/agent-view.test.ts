@@ -26,7 +26,7 @@ describe("independent AgentView", () => {
     await view.onOpen();
     const root = view.containerEl as unknown as FakeEl;
     expect(findAll(root, (el) => el.textContent === reason)).toHaveLength(1);
-    expect(findAll(root, (el) => el.textContent === "送信 ↑")[0].disabled).toBe(true);
+    expect(findAll(root, (el) => el.getAttribute("aria-label") === "送信（Enter）")[0].disabled).toBe(true);
     await session.send("テスト");
     expect(session.active.error).toBe(reason);
     expect(provider.requests).toHaveLength(0);
@@ -87,19 +87,22 @@ describe("independent AgentView", () => {
     }
     expect(findAll(root, (el) => el.getAttribute("aria-label") === "新しい会話")).toHaveLength(1);
     expect(findAll(root, (el) => el.textContent.startsWith("選択中: 合成タスク"))).toHaveLength(1);
-    expect(button("送信 ↑").hidden).toBe(false); expect(button("停止 ■").hidden).toBe(true);
+    const send = findAll(root, (el) => el.getAttribute("aria-label") === "送信（Enter）")[0]; const stop = findAll(root, (el) => el.getAttribute("aria-label") === "停止")[0];
+    expect(send.tagName).toBe("BUTTON"); expect(send.title).toBe("送信（Enter）"); expect(send.children[0].tagName).toBe("SVG"); expect(send.children[0].getAttribute("data-icon")).toBe("send-horizontal");
+    expect(stop.children[0].getAttribute("data-icon")).toBe("square"); expect(send.textContent).toBe("");
+    expect((send as any).hidden).toBe(false); expect((stop as any).hidden).toBe(true);
     expect(button("応答を再試行")).toBeUndefined();
     session.active.messages = [{ role: "assistant", text: "**確認**しました", proposals: [] }];
     session.active.status = "running"; view.render();
-    expect(button("送信 ↑").hidden).toBe(true); expect(button("停止 ■").hidden).toBe(false);
+    expect((send as any).hidden).toBe(true); expect((stop as any).hidden).toBe(false);
     session.active.status = "failed"; session.active.error = "合成エラー"; view.render();
-    expect(button("応答を再試行").parentNode.className).toBe("vg-ai-message vg-ai-assistant");
+    expect(button("応答を再試行").parentNode.classList.contains("vg-ai-failure")).toBe(true);
     session.active.status = "idle";
     const result = { kind: "success" as const, committed: 1, total: 1, results: [], undoLabel: "synthetic-history", message: "合成保存", diffs: [{ taskId: "fake", name: "合成タスク", fields: [{ field: "notes", before: "旧", after: "新" }] }] };
     session.active.messages[0].proposals = [{ operation: "update", input: {}, consumed: true, plan: { previewId: "fake", operation: "update", summary: "合成", count: 1, diffs: result.diffs }, result }];
-    session.active.context = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "fake", toolName: "search", output: { type: "text", value: "not rendered" } }] }];
+    session.active.messages[0].parts = [{ type: "text", id: "t", text: "**確認**しました" }, { type: "tool", id: "c1", name: "tasks_search", input: { name: "A" }, output: { items: [] }, state: "done" }, { type: "proposal", id: "proposal:fake", previewId: "fake" }];
     view.render();
-    expect(findAll(root, (el) => el.textContent === "タスク検索")).toHaveLength(1);
+    expect(findAll(root, (el) => el.tagName === "SUMMARY" && deepText(el) === "タスクを検索")).toHaveLength(1);
     expect(findAll(root, (el) => el.textContent === "メモ: 旧 → 新")).toHaveLength(1);
     for (const listener of button("元に戻す").listeners.click) listener({});
     expect(undo).toHaveBeenCalledWith(result);
@@ -123,7 +126,7 @@ describe("independent AgentView", () => {
     await view.onOpen(); const root = view.containerEl as unknown as FakeEl;
     const text = (value: string) => findAll(root, el => el.textContent === value);
     const button = (value: string) => findAll(root, el => el.tagName === "BUTTON" && el.textContent === value)[0];
-    expect(text("変更案")).toHaveLength(1); expect(text("デザイン確認")).toHaveLength(1);
+    expect(text("未承認")).toHaveLength(1); expect(text("デザイン確認")).toHaveLength(1);
     const timeline = findAll(root, el => el.className === "vg-ai-mini-timeline")[0];
     expect(timeline.getAttribute("aria-label")).toContain("2026-10-01 ～ 2026-10-03");
     expect(timeline.getAttribute("aria-label")).toContain("2026-10-04 ～ 2026-10-06");
@@ -135,7 +138,7 @@ describe("independent AgentView", () => {
     const snapshot = structuredClone(proposal);
     view.render(); expect(button("元に戻す").disabled).toBe(true);
     expect(button("元に戻す").title).toContain("履歴の先頭ではない");
-    expect(text("適用済み")).toHaveLength(1); expect(text("保存しました")).toHaveLength(0);
+    expect(text("保存済み")).toHaveLength(1); expect(text("保存しました")).toHaveLength(0);
     canUndo = true; view.render(); expect(button("元に戻す").disabled).toBe(false);
     // A concurrent top-history change must be rechecked even before a UI refresh.
     canUndo = false; for (const listener of button("元に戻す").listeners.click) listener({});
@@ -213,12 +216,16 @@ describe("AgentView operation preview cards", () => {
   });
   it("keeps keyboard focus on the same button across re-renders", async () => {
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-09T03:05:00Z"));
-    const { root, view, session } = await open([CREATE_PREVIEW]);
+    const { root, view, session, ports } = await open([CREATE_PREVIEW]);
     const reject = findAll(root, (el) => el.dataset?.action === "reject")[0];
     (document as any).activeElement = reject;
     view.render();
     const again = findAll(root, (el) => el.dataset?.action === "reject")[0];
-    expect(again).not.toBe(reject); expect(again.focused).toBe(true);
+    // An unchanged card keeps its element; a card that has to be rebuilt gets focus back on the same control.
+    expect(again).toBe(reject); expect(again.focused).toBe(true);
+    ports.previewPort.focused = "create-fixture"; view.render();
+    const rebuilt = findAll(root, (el) => el.dataset?.action === "reject")[0];
+    expect(rebuilt).not.toBe(reject); expect(rebuilt.focused).toBe(true);
     await view.onClose(); session.dispose();
   });
   it("approves through the human port and re-renders with the saved result", async () => {
@@ -248,13 +255,12 @@ describe("AgentView operation preview cards", () => {
 });
 
 describe("AgentView turn completion line", () => {
-  async function turn(completion: ChatCompletion | undefined, text = "回答です。", appendSentence = false) {
+  async function turn(completion: ChatCompletion | undefined, text = "回答です。") {
     vi.stubGlobal("document", createFakeDocument());
     const vault = new FakeVault();
     const registry = new OperationRegistry({ settings: { ...DEFAULT_SETTINGS }, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
     const provider = new FakeProvider(async function* () {
       yield { type: "text", text };
-      if (completion && appendSentence) yield { type: "text", text: "\n\n" + completionText[completion.kind] };
       if (completion) yield { type: "completion", completion };
     });
     const session = new ChatSession(vault, registry, provider);
@@ -266,9 +272,9 @@ describe("AgentView turn completion line", () => {
     return { view, session, root, lines: findAll(root, (el) => el.classList.contains("vg-ai-completion")) };
   }
   const base = { proposalIds: [], toolErrors: 0 };
-  for (const kind of ["no-proposal", "tool-refused", "timeout", "step-limit"] as const) {
+  for (const kind of ["tool-refused", "timeout", "step-limit"] as const) {
     it(kind + " shows one quiet status line under the reply", async () => {
-      const { lines, root, view, session } = await turn({ kind, ...base }, "回答です。", true);
+      const { lines, root, view, session } = await turn({ kind, ...base }, "回答です。");
       expect(lines).toHaveLength(1);
       expect(lines[0].textContent).toBe(completionText[kind]);
       expect(deepText(root).split(completionText[kind])).toHaveLength(2);
@@ -293,10 +299,15 @@ describe("AgentView turn completion line", () => {
     expect(lines[0].textContent).toBe(completionText.cancelled);
     await view.onClose(); session.dispose();
   });
-  it("proposal-created adds no line (the card is the signal) and hides the duplicated sentence", async () => {
-    const { lines, root, view, session } = await turn({ kind: "proposal-created", proposalIds: ["p"], toolErrors: 0 }, "回答です。", true);
-    expect(lines).toHaveLength(0);
-    expect(deepText(root)).not.toContain(completionText["proposal-created"]);
+  it("proposal-created and no-proposal add no fixed sentence (the card and the model's own reply say it)", async () => {
+    for (const kind of ["proposal-created", "no-proposal"] as const) {
+      const { lines, root, view, session } = await turn({ kind, proposalIds: kind === "proposal-created" ? ["p"] : [], toolErrors: 0 }, "回答です。");
+      expect(lines).toHaveLength(0);
+      expect(deepText(root)).toContain("回答です。");
+      expect(deepText(root)).not.toMatch(/変更案(を作成しました|は作成していません)|保存も行っていません/);
+      await view.onClose(); session.dispose();
+    }
+    const { view, session } = await turn(undefined);
     await view.onClose(); session.dispose();
   });
   it("never shows internal kind names", async () => {

@@ -3,14 +3,12 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { BOUNDARY_OUTCOMES, D02_EMPTY_FILE_PREVIEW, CREATE_PREVIEW, DATE, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
 import { deriveOverlay, PreviewGanttLayer } from "../../src/ui/preview-gantt-layer";
 import { renderPointGhosts, renderGhost } from "../../src/ui/ghost-layer";
-import { renderNonGanttPanel, panelEffects } from "../../src/ui/preview-panels";
-import { createFakeDocument, makeFakeEl, byClass, byTag, deepText, dispatch, type FakeEl } from "../stubs/fake-dom";
+import { deriveHighlights, displayedHours, eventWorkloadKey, hoursChangeText } from "../../src/ui/preview-highlights";
+import { createFakeDocument, makeFakeEl, byClass } from "../stubs/fake-dom";
 import { FakePreviewPort } from "./preview-fakes";
 
 beforeEach(() => { vi.stubGlobal("document", createFakeDocument()); });
 afterEach(() => vi.unstubAllGlobals());
-const text = (el: unknown) => deepText(el as FakeEl);
-const host = () => makeFakeEl("div") as unknown as HTMLElement & FakeEl;
 
 describe("deriveOverlay (presentation diff of the projector's snapshots)", () => {
   it("turns a moved period into a ghost and keeps one-sided dates as empty strings, not 0-day bars", () => {
@@ -48,33 +46,86 @@ describe("deriveOverlay (presentation diff of the projector's snapshots)", () =>
   });
 });
 
-describe("PreviewGanttLayer", () => {
-  it.each([null, SETTINGS_PREVIEW.projection])("separates unsaved settings and renders committed actual values only, with projection %s", (projection) => {
-    const preview = { ...SETTINGS_PREVIEW, entries: [
-      { actionId: "saved", entity: { kind: "setting", key: "currentStatusRows" }, displayName: "表示行数", effects: [{ kind: "settings", fields: [{ field: "currentStatusRows", before: 5, after: 99, reason: "requested" }] }] },
-      { actionId: "failed", entity: { kind: "setting", key: "taskFolder" }, displayName: "保存先", effects: [{ kind: "settings", fields: [{ field: "taskFolder", before: "tasks", after: "UNSAVED-FOLDER", reason: "requested" }] }] },
-    ] } as any;
-    const outcome = { ...PARTIAL_OUTCOME, previewId: preview.previewId, actualProjection: projection, actions: [
-      { actionId: "saved", state: "committed", actual: [{ kind: "settings", fields: [{ field: "currentStatusRows", before: 5, after: 7, reason: "normalized" }] }] },
-      { actionId: "failed", state: "failed", actual: [], errorCode: "SAVE_FAILED" },
-    ] } as any;
-    const port = new FakePreviewPort([preview]); port.outcomes.set(preview.previewId, outcome);
-    const layer = new PreviewGanttLayer(port); port.focus(preview.previewId);
-    const dock = host(); layer.renderDock(dock);
-    expect(byClass(byClass(dock, "vg-pv-panel")[0], "vg-pv-value").map(text)).toEqual(["5", "7"]);
-    expect(text(byClass(dock, "vg-pv-panel")[0])).not.toContain("UNSAVED-FOLDER");
-    expect(text(dock)).not.toContain("99");
-    const unsaved = byClass(dock, "vg-pv-unsaved")[0];
-    expect(unsaved.getAttribute("aria-label")).toBe("未保存の変更案");
-    expect(text(unsaved)).toContain("保存されていません"); expect(text(unsaved)).toContain("UNSAVED-FOLDER"); layer.dispose();
+describe("deriveHighlights (what the real chart marks)", () => {
+  const PARENT = "tasks/2026/10/リリース.md";
+  const withState = (mutate: (projection: any) => void): any => { const projection = structuredClone(WORKLOAD_PREVIEW.projection!) as any; mutate(projection); return projection; };
+  const highlights = (projection: any) => deriveHighlights(projection, deriveOverlay(projection));
+  it("marks changed rows and the parent that holds them, with created and deleted rows told apart", () => {
+    const changed = highlights(OUTSIDE_RANGE_PREVIEW.projection!);
+    expect(changed.rows.get(`${PARENT}::review`)).toBe("changed"); expect(changed.rows.get(PARENT)).toBe("changed");
+    expect(highlights(CREATE_PREVIEW.projection!).rows.get(`${PARENT}::new`)).toBe("created");
+    expect(highlights(DELETE_PREVIEW.projection!).rows.get(`${PARENT}::review`)).toBe("deleted");
+    expect(highlights(CREATE_PREVIEW.projection!).rows.has(`${PARENT}::review`)).toBe(false);
   });
+  it("lists changed plan/actual cells per task and date, and the day totals of the workload row", () => {
+    const marks = highlights(WORKLOAD_PREVIEW.projection!);
+    const cell = marks.workload.get(`${PARENT}::review`)!.get(DATE)!;
+    expect(cell.before).toEqual({ plan: 1.5, actual: 1 }); expect(cell.after).toEqual({ plan: 2, actual: 1 });
+    expect(hoursChangeText(cell.before, cell.after)).toBe("計画 1.5h → 2h");
+    expect(hoursChangeText({ plan: 0, actual: 0 }, { plan: 3, actual: 1 })).toBe("計画 0h → 3h / 実績 0h → 1h");
+    expect(marks.totals.get(DATE)).toEqual({ date: DATE, before: { plan: 1.5, actual: 1 }, after: { plan: 2, actual: 1 } });
+    expect(displayedHours(cell)).toEqual({ hours: { plan: 2, actual: 1 }, removed: false });
+    const emptied = { date: DATE, before: { plan: 2, actual: 1 }, after: { plan: 0, actual: 0 } };
+    expect(displayedHours(emptied)).toEqual({ hours: { plan: 2, actual: 1 }, removed: true });
+  });
+  it("marks a changed Daily ToDo day with the item lines and a day that gains or loses all items", () => {
+    const projection = withState((p) => {
+      p.after.daily = [{ date: DATE, totalCount: 2, completedCount: 1, items: [{ path: "d.md", sourceKey: "main", text: "確認", completed: true, line: 1, itemFingerprint: "a", revision: "r" }, { path: "d.md", sourceKey: "main", text: "新規", completed: false, line: 2, itemFingerprint: "b", revision: "r" }] }];
+      p.before.daily = [{ date: DATE, totalCount: 1, completedCount: 0, items: [{ path: "d.md", sourceKey: "main", text: "確認", completed: false, line: 1, itemFingerprint: "a", revision: "r" }] }];
+      p.after.daily.push({ date: "2026-10-20", totalCount: 1, completedCount: 0 });
+      p.before.daily.push({ date: "2026-10-21", totalCount: 2, completedCount: 0 });
+    });
+    const marks = highlights(projection);
+    expect(marks.daily.get(DATE)).toMatchObject({ state: "changed", before: { total: 1, completed: 0 }, after: { total: 2, completed: 1 }, lines: ["☑ 確認", "＋ 新規"] });
+    expect(marks.daily.get("2026-10-20")!.state).toBe("created"); expect(marks.daily.get("2026-10-21")!.state).toBe("deleted");
+    expect(highlights(WORKLOAD_PREVIEW.projection!).daily.size).toBe(0);
+  });
+  it("marks created, moved and deleted events and the hours on them", () => {
+    const projection = withState((p) => {
+      p.before.events = [{ key: "e-moved", title: "会議", date: DATE, hours: [] }, { key: "e-gone", title: "削除", date: DATE, hours: [] }, { key: "e-hours", title: "作業", date: DATE, hours: [{ date: DATE, plan: 1, actual: 0 }] }];
+      p.after.events = [{ key: "e-moved", title: "会議", date: "2026-10-16", hours: [] }, { key: "e-new", title: "追加", date: "2026-10-17", hours: [{ date: "2026-10-17", plan: 2, actual: 0 }] }, { key: "e-hours", title: "作業", date: DATE, hours: [{ date: DATE, plan: 3, actual: 0 }] }];
+    });
+    const marks = highlights(projection);
+    expect([...marks.events.values()].map((event) => [event.key, event.state])).toEqual([["e-moved", "changed"], ["e-gone", "deleted"], ["e-hours", "changed"], ["e-new", "created"]]);
+    expect(marks.workload.get(eventWorkloadKey("e-hours"))!.get(DATE)!.after.plan).toBe(3);
+    expect(marks.workload.get(eventWorkloadKey("e-new"))!.get("2026-10-17")).toBeTruthy();
+  });
+  it("places created rows (proposal) or deleted rows (saved) as preview-only bars, never rows the chart already holds", () => {
+    const port = new FakePreviewPort([CREATE_PREVIEW, DELETE_PREVIEW]); const layer = new PreviewGanttLayer(port);
+    port.focus("create-fixture");
+    expect(layer.phantomBars(PARENT)).toEqual([{ id: `${PARENT}::new`, name: "新しい子", start: expect.any(String), end: expect.any(String), state: "created" }]);
+    port.focus("delete-fixture"); expect(layer.phantomBars(PARENT)).toEqual([]);
+    port.outcomes.set("delete-fixture", { previewId: "delete-fixture", status: "success", actions: [], actualProjection: DELETE_PREVIEW.projection } as any); port.emit();
+    expect(layer.ghostMode).toBe("saved"); expect(layer.phantomBars(PARENT).map((bar) => bar.state)).toEqual(["deleted"]);
+    layer.dispose();
+  });
+  it("shows a proposed new or moved event at its new date, and after saving a removed or moved one at its old date", () => {
+    const projection = withState((p) => {
+      p.before.events = [{ key: "m", title: "移動", date: DATE, hours: [] }, { key: "d", title: "削除", date: DATE, hours: [] }];
+      p.after.events = [{ key: "m", title: "移動", date: "2026-10-16", hours: [] }, { key: "n", title: "新規", date: "2026-10-17", hours: [] }];
+    });
+    const preview = { ...WORKLOAD_PREVIEW, previewId: "events", projection } as any;
+    const port = new FakePreviewPort([preview]); const layer = new PreviewGanttLayer(port); port.focus("events");
+    expect(layer.phantomEvents().map((item) => [item.event.title, item.event.date, item.state])).toEqual([["移動", "2026-10-16", "changed"], ["新規", "2026-10-17", "created"]]);
+    port.outcomes.set("events", { previewId: "events", status: "success", actions: [], actualProjection: projection } as any); port.emit();
+    expect(layer.phantomEvents().map((item) => [item.event.title, item.event.date, item.state])).toEqual([["移動", DATE, "deleted"], ["削除", DATE, "deleted"]]);
+    layer.dispose();
+  });
+  it("tells where to scroll: the first changed row and the earliest changed date", () => {
+    const marks = highlights(OUTSIDE_RANGE_PREVIEW.projection!);
+    expect(marks.firstTaskId).toBe(`${PARENT}::review`); expect(marks.firstDate).toBe(DATE);
+  });
+});
+
+describe("PreviewGanttLayer", () => {
   it("projects only the focused preview, as a proposal; nothing without focus", () => {
     const port = new FakePreviewPort([OUTSIDE_RANGE_PREVIEW, CREATE_PREVIEW]);
     const layer = new PreviewGanttLayer(port); const onChange = vi.fn(); layer.subscribe(onChange);
-    expect(layer.active).toBe(false); expect(layer.fingerprint("tasks/2026/10/リリース.md")).toBe("");
+    expect(layer.active).toBe(false); expect(layer.fingerprint("tasks/2026/10/リリース.md")).toBe(""); expect(layer.highlights).toBeUndefined(); expect(layer.markKey).toBe("");
     port.focus("outside-fixture");
     expect(layer.active).toBe(true); expect(layer.ghostMode).toBe("proposed"); expect(layer.scheduleGhost("tasks/2026/10/リリース.md::review")).toBeTruthy();
-    expect(layer.legend()!.text).toBe("変更案 · チャット · 実線: 現在 / 破線: 変更案（後）");
+    expect(layer.legend()!.text).toBe("変更案を表示中"); expect(layer.legend()!.title).not.toContain("表示範囲外");
+    expect(layer.rowState("tasks/2026/10/リリース.md::review")).toBe("changed"); expect(layer.markKey).toContain("outside-fixture");
     const fingerprint = layer.fingerprint("tasks/2026/10/リリース.md"); expect(fingerprint).toContain("outside-fixture");
     expect(layer.fingerprint("tasks/other.md")).toBe("");
     port.focus("create-fixture");
@@ -86,79 +137,42 @@ describe("PreviewGanttLayer", () => {
   it("uses the actual projection after saving and treats a null one as no Gantt impact", () => {
     const port = new FakePreviewPort([PARTIAL_PREVIEW]); port.outcomes.set(PARTIAL_PREVIEW.previewId, PARTIAL_OUTCOME);
     const layer = new PreviewGanttLayer(port); port.focus(PARTIAL_PREVIEW.previewId);
-    expect(layer.ghostMode).toBe("saved"); expect(layer.projection!.targets).toHaveLength(1); expect(layer.legend()!.text).toContain("保存結果");
+    expect(layer.ghostMode).toBe("saved"); expect(layer.projection!.targets).toHaveLength(1); expect(layer.legend()!.text).toBe("保存した変更を表示中");
     const none = { ...PARTIAL_OUTCOME, actualProjection: null } as any; port.outcomes.set(PARTIAL_PREVIEW.previewId, none); port.emit();
-    expect(layer.projection).toBeNull(); const dock = host(); layer.renderDock(dock);
-    expect(text(dock)).toContain("保存された内容はGanttの表示に影響しません");
+    expect(layer.projection).toBeNull(); expect(layer.highlights).toBeUndefined(); expect(layer.active).toBe(true);
   });
-  it("renders the preview region with legend, origin, hidden reasons and the close button", () => {
-    const port = new FakePreviewPort([{ ...ONE_SIDED_PREVIEW, origin: MCP_PREVIEW.origin }]); const layer = new PreviewGanttLayer(port); port.focus("one-sided-fixture");
-    const dock = host(); const region = layer.renderDock(dock) as unknown as FakeEl;
-    expect(region.getAttribute("aria-label")).toBe("変更案のGantt確認");
-    expect(text(region)).toContain("要求元: MCP · ローカルMCPクライアント"); expect(text(region)).toContain("日程未設定"); expect(text(region)).toContain("開始日が未設定のためbarを描画できない");
-    expect(text(region)).toContain("開始日未設定");
-    expect(byClass(region, "vg-pv-gbar")).toHaveLength(1);
-    dispatch(byTag(region, "button").find((el) => text(el) === "閉じる")!, "click"); expect(port.focused).toBeNull();
+  it("closing the highlight only moves the focus", () => {
+    const port = new FakePreviewPort([ONE_SIDED_PREVIEW]); const layer = new PreviewGanttLayer(port); port.focus("one-sided-fixture");
+    layer.close(); expect(port.focused).toBeNull(); expect(port.rejected).toEqual([]);
   });
-  it("shows created and deleted rows with labels, strikethrough and hatch classes", () => {
-    const port = new FakePreviewPort([CREATE_PREVIEW, DELETE_PREVIEW]); const layer = new PreviewGanttLayer(port);
-    port.focus("create-fixture"); let dock = host(); layer.renderDock(dock);
-    expect(byClass(dock, "vg-pv-grow").map((row) => row.dataset.state)).toEqual(["context", "created"]); expect(text(dock)).toContain("新しい子");
-    port.focus("delete-fixture"); dock = host(); layer.renderDock(dock);
-    const row = byClass(dock, "vg-pv-grow")[0]; expect(row.dataset.state).toBe("deleted");
-    expect(byClass(row, "vg-pv-gname")[0].classList.contains("is-removed")).toBe(true); expect(byClass(row, "vg-pv-gbar")[0].classList.contains("is-removed")).toBe(true);
-    expect(text(dock)).toContain("削除");
-  });
-  it("shows daily totals with the over-capacity warning for workload changes and plain panels for settings", () => {
-    const port = new FakePreviewPort([PARTIAL_PREVIEW, SETTINGS_PREVIEW, WORKLOAD_PREVIEW]); const layer = new PreviewGanttLayer(port);
-    port.focus("partial-fixture"); let dock = host(); layer.renderDock(dock);
-    expect(text(dock)).toContain("上限超過"); expect(text(dock)).toContain("予定 3.5h → 18h"); expect(text(dock)).toContain("絞り込みで非表示");
-    port.focus("settings-fixture"); dock = host(); layer.renderDock(dock);
-    expect(text(dock)).toContain("Ganttに表示されない変更"); expect(text(dock)).toContain("設定の変更"); expect(text(dock)).toContain("機能オフで非表示");
-    expect(text(dock)).toContain("作業時間を表示: オン → オフ");
-    expect(byClass(dock, "vg-pv-grow")).toHaveLength(0);
-    port.focus("workload-fixture"); dock = host(); layer.renderDock(dock);
-    expect(text(dock)).toContain("予定 1.5h → 2h");
-  });
-  it("fetches further pages through the port, merges them and recomputes the overlay", async () => {
+  it("fetches further pages by itself, merges them and recomputes the highlights", async () => {
     const first = PROJECTION_PAGE_FIXTURES[0].projection;
     const port = new FakePreviewPort([{ ...PARTIAL_PREVIEW, status: "pending", projection: first }]);
     port.pageResults = [{ status: "success", page: PROJECTION_PAGE_FIXTURES[1] }];
     const layer = new PreviewGanttLayer(port); port.focus("partial-fixture");
-    let dock = host(); layer.renderDock(dock); expect(text(dock)).toContain("全3件中2件");
-    dispatch(byClass(dock, "vg-pv-coverage")[0].children.find((el) => el.dataset.action === "load-more")!, "click");
     await vi.waitFor(() => expect(layer.projection!.coverage.truncated).toBe(false));
     expect(port.pageRequests[0]).toEqual({ previewId: "partial-fixture", cursor: "projection-page-2", projectionKind: "planned" });
-    dock = host(); layer.renderDock(dock); expect(text(dock)).not.toContain("一部だけ表示");
   });
-  it("on a stale cursor falls back to the first page and reports the port's instruction", async () => {
+  it("on a stale cursor falls back to the first page and stops fetching", async () => {
     const first = PROJECTION_PAGE_FIXTURES[0].projection;
     const port = new FakePreviewPort([{ ...PARTIAL_PREVIEW, status: "pending", projection: first }]);
     port.pageResults = [{ status: "error", error: PROJECTION_STALE_ERROR as any }];
-    const layer = new PreviewGanttLayer(port); port.focus("partial-fixture"); await layer.loadMore();
-    const dock = host(); layer.renderDock(dock);
-    expect(text(byClass(dock, "is-error")[0])).toBe(PROJECTION_STALE_ERROR.nextAction); expect(layer.projection!.coverage.truncated).toBe(true);
+    const layer = new PreviewGanttLayer(port); port.focus("partial-fixture");
+    await vi.waitFor(() => expect(port.pageRequests).toHaveLength(1)); await Promise.resolve();
+    expect(layer.projection!.coverage.truncated).toBe(true); expect(port.pageRequests).toHaveLength(1);
   });
   it("never writes to the preview port beyond focus, and releases everything on dispose", () => {
     const port = new FakePreviewPort([CREATE_PREVIEW]); const layer = new PreviewGanttLayer(port); port.focus("create-fixture"); layer.dispose();
-    expect(port.rejected).toEqual([]); expect(port.reprevied).toEqual([]); expect(layer.active).toBe(false);
+    expect(port.rejected).toEqual([]); expect(port.reprevied).toEqual([]); expect(layer.active).toBe(false); expect(layer.highlights).toBeUndefined();
     port.focus(null); expect(layer.active).toBe(false);
   });
-});
-
-describe("panels", () => {
-  it("lists only effects without a Gantt shape and omits the panel otherwise", () => {
-    expect(panelEffects(SETTINGS_PREVIEW)).toHaveLength(1); expect(panelEffects(MARKER_PREVIEW)).toHaveLength(0);
-    expect(renderNonGanttPanel(host(), MARKER_PREVIEW)).toBeUndefined();
-  });
-  it("renders sync, diagnostic and chat control panels with an explanation, not bars", () => {
-    const base = { ...SETTINGS_PREVIEW, projection: null };
-    const withEffect = (effect: any) => ({ ...base, entries: [{ ...base.entries[0], entity: { kind: "integration", targetId: "sync" }, effects: [effect] }] });
-    const panelFor = (effect: any) => host() && (() => { const parent = host(); renderNonGanttPanel(parent, withEffect(effect) as any); return text(parent); })();
-    expect(panelFor({ kind: "external-send", destination: "https://example.test", payloadDigest: "d", taskCount: 2, fieldsSent: ["title"], bytes: 2048 })).toContain("同期の状態");
-    expect(panelFor({ kind: "diagnostic", recording: true, outputPath: "log.txt", entryCount: 3 })).toContain("時間軸には何も表示されません");
-    expect(panelFor({ kind: "conversation", action: "send", before: null, after: { messageCount: 3 } })).toContain("チャットの状態");
-    expect(panelFor({ kind: "view", before: { sortKey: "dueDate" }, after: { sortKey: "name" }, affectedIds: [] })).toContain("表示の変更");
+  it("focuses a newly created chat proposal, but not old ones, other origins, or when something else is focused", () => {
+    const old = { ...OUTSIDE_RANGE_PREVIEW, previewId: "old" } as any; const port = new FakePreviewPort([old]); const layer = new PreviewGanttLayer(port);
+    expect(port.focused).toBeNull();
+    port.set({ ...CREATE_PREVIEW, previewId: "fresh", status: "pending" } as any); expect(port.focused).toBe("fresh");
+    port.set({ ...MCP_PREVIEW, previewId: "from-mcp", status: "pending" } as any); expect(port.focused).toBe("fresh");
+    port.focus("from-mcp"); port.set({ ...CREATE_PREVIEW, previewId: "later", status: "pending" } as any); expect(port.focused).toBe("from-mcp");
+    layer.dispose();
   });
 });
 
@@ -194,28 +208,12 @@ describe("live chart ghosts", () => {
     const far = timeline(); renderGhost(far, { ...ghost, after: { start: "2026-12-01", end: "2026-12-02" } }, "2026-10-01", 20, 10, undefined, "proposed");
     expect(byClass(far, "vg-ai-ghost")[0].textContent).toBe("前は範囲外 ▶".replace("前", "案"));
   });
-  it("a boundary outcome set renders without throwing for the dock", () => {
+  it("derives highlights for every boundary outcome without throwing", () => {
     for (const [name, outcome] of Object.entries(BOUNDARY_OUTCOMES)) {
       const preview = { oneSided: ONE_SIDED_PREVIEW, filtered: FILTERED_PREVIEW, featureDisabled: SETTINGS_PREVIEW, outsideRange: OUTSIDE_RANGE_PREVIEW, partial: PARTIAL_PREVIEW, emptyDailyFile: D02_EMPTY_FILE_PREVIEW }[name as "partial"];
       const port = new FakePreviewPort([preview]); port.outcomes.set(preview.previewId, outcome); const layer = new PreviewGanttLayer(port); port.focus(preview.previewId);
-      expect(() => layer.renderDock(host()), name).not.toThrow();
+      expect(() => { layer.phantomBars("x"); layer.phantomEvents(); layer.focusTarget(); layer.legend(); }, name).not.toThrow();
     }
-  });
-  it("does not show internal names, raw kinds or raw ids in the dock", () => {
-    const ALLOWED_LATIN = /^(AI|Gantt|Daily|ToDo|Notes|MCP|OpenAI|Vault|KB|MB|URL|ID|px|h|B|x)$/;
-    const latinWords = (value: string): string[] => (value.replace(/\S*[/:.#]\S*/g, "").match(/[A-Za-z][A-Za-z0-9_]*/g) ?? []).filter((word) => word.length > 1 && !ALLOWED_LATIN.test(word));
-    const forbidden = ["setting:", "task:", "marker:", "ganttOrder", "Gantt順", "ganttFeatureWorkloadEnabled", "tasks/2026/10/"];
-    const previews = [SETTINGS_PREVIEW, MARKER_PREVIEW, CREATE_PREVIEW, DELETE_PREVIEW, WORKLOAD_PREVIEW, PARTIAL_PREVIEW, FILTERED_PREVIEW, OUTSIDE_RANGE_PREVIEW];
-    for (const preview of previews) {
-      const port = new FakePreviewPort([preview]); const layer = new PreviewGanttLayer(port); port.focus(preview.previewId);
-      const dock = host(); layer.renderDock(dock); const shown = text(dock);
-      for (const word of forbidden) expect(shown, `${preview.previewId}: ${word}`).not.toContain(word);
-      // Hour units are stripped because the fake DOM text has no separators; "OFF" and "viewport" come from the fixture's projector-supplied reason text, not from this layer.
-      expect(latinWords(shown.replace(/\d+(\.\d+)?h/g, "")).filter((word) => !["OFF", "viewport"].includes(word)), preview.previewId).toEqual([]);
-    }
-    const settingsPort = new FakePreviewPort([SETTINGS_PREVIEW]); const settingsLayer = new PreviewGanttLayer(settingsPort); settingsPort.focus("settings-fixture");
-    const settingsDock = host(); settingsLayer.renderDock(settingsDock);
-    expect(text(settingsDock)).toContain("設定: "); expect(text(settingsDock)).not.toMatch(/setting/i);
   });
   it("describes parent changes in plain Japanese without raw order numbers", () => {
     const projection = structuredClone(CREATE_PREVIEW.projection!) as any;

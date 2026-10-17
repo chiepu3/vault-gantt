@@ -34,10 +34,12 @@ Git と Node.js は、PowerShell から `git`・`node`・`npm` と打って実�
 ~\vault-gantt\install.cmd
 ```
 
-- `main` ブランチをビルドしてインストールします。
+- `install.cmd` があるリポジトリで `git pull --ff-only` → `npm run build` を行い、`main.js` / `manifest.json` / `styles.css` を Vault にコピーします。`package-lock.json` が変わっていなければ `npm ci` は省略するので、2回目以降はすぐ終わります（`-NoCache` を付けると毎回 `npm ci` します）。
+- 追跡ファイルに未コミットの変更があると、作業を守るため何もせず止まります。
+- 上書き前の3ファイルは配置先の `.backup` フォルダーに1世代だけ残ります。
 - 初回だけ、Obsidian で使っている Vault の一覧が出るので番号を選びます（Enter で1番）。一覧にない場所は `0` を選んでパスを入力します。プラグインフォルダーがなければ作ります。
 - 選んだ場所はユーザー環境変数 `VAULT_GANTT_DEST` に保存され、2回目以降は何も聞かずにインストール（更新）します。
-- 場所を選び直すときは `~\vault-gantt\install.cmd -Reset`、別のブランチを入れるときは `~\vault-gantt\install.cmd -Branch <ブランチ名>` を実行します。
+- 場所を選び直すときは `~\vault-gantt\install.cmd -Reset`、ブランチは、引数なしで `install.cmd` を実行するとブランチ一覧（最大15件、`main` が1番）が番号付きで表示されるので選びます（Enter で1番）。`-Branch <ブランチ名>` を付けると一覧を出さずそのブランチへ切り替え、`-NoMenu` を付けると一覧を出さず現在のブランチのまま実行します。
 
 Git と Node.js が必要なことは下の手順と同じです。細かく指定したい場合は、以下の「インストール手順」を使ってください。
 
