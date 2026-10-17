@@ -1479,6 +1479,8 @@ export class TaskGanttView extends ItemView {
     }
     this.scrollToDate(today, INITIAL_SCROLL_OFFSET_PX);
     this.initialScrollPending = false;
+    // A change shown right as the view opens wins over the jump to today.
+    if (this.previewLayer?.active) this.revealPreview();
   }
 
   onResize(): void {
@@ -1601,7 +1603,8 @@ export class TaskGanttView extends ItemView {
     const { taskId, date } = layer.focusTarget();
     if (date) {
       if (!this.dates.includes(date)) { this.rangeStart = addDays(date, -14); this.rangeDays = Math.max(this.rangeDays, 90); this.renderChart(); }
-      this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX);
+      // The first changed day lands clear of the sticky name column.
+      this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX + 180);
     }
     const row = taskId ? this._ganttRowCache?.rowEls.get(taskId.split("::")[0]) : undefined;
     if (!row?.getBoundingClientRect) return;
