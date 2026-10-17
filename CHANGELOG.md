@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.5.1 (2026-10-17)
+
+### 高速化
+
+- ガントの描画ノード削減とAI適用時の再読込を省略 ([#55](https://github.com/chiepu3/vault-gantt/pull/55))
+
 ## v0.5.0 (2026-10-17)
 
 ### 新機能
