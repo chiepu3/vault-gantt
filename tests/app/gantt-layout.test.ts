@@ -31,6 +31,8 @@ import {
   hasAnySelectedGanttTag,
   hasPlannedDates,
   packSubtasksIntoLanes,
+  filterSubtasksInWindow,
+  computeLaneWindow,
   layoutMarkers,
   layoutFloatingEvents,
   layoutExternalBarLabels,
@@ -1659,5 +1661,71 @@ describe("computeRowFingerprint", () => {
       makeSubtask("sub-b", { title: "Sub B" }),
     ]);
     expect(computeRowFingerprint(row)).not.toBe(baselineRow);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// filterSubtasksInWindow / computeLaneWindow
+// ---------------------------------------------------------------------------
+
+describe("filterSubtasksInWindow", () => {
+  const sub = (key: string, s?: string, e?: string) =>
+    makeSubtask(key, { plannedStartDate: s, plannedEndDate: e });
+
+  it("keeps subtasks intersecting the window (inclusive) and drops the rest", () => {
+    const a = sub("a", "2026-01-01", "2026-01-09");
+    const b = sub("b", "2026-01-01", "2026-01-10");
+    const c = sub("c", "2026-01-15", "2026-01-20");
+    const d = sub("d", "2026-01-20", "2026-01-25");
+    const e = sub("e", "2026-01-21", "2026-01-25");
+    const spanning = sub("s", "2025-12-01", "2026-03-01");
+    const out = filterSubtasksInWindow([a, b, c, d, e, spanning], "2026-01-10", "2026-01-20");
+    expect(out.map((t) => t.key)).toEqual(["b", "c", "d", "s"]);
+  });
+
+  it("drops subtasks without both planned dates", () => {
+    const out = filterSubtasksInWindow(
+      [sub("x", "2026-01-10", undefined), sub("y", undefined, "2026-01-10")],
+      "2026-01-01",
+      "2026-02-01"
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("leaves lane packing at the 1-lane minimum when nothing is in window", () => {
+    const only = sub("a", "2026-01-01", "2026-01-05");
+    const filtered = filterSubtasksInWindow([only], "2026-06-01", "2026-06-30");
+    expect(packSubtasksIntoLanes(filtered)).toEqual({ bars: [], laneCount: 1 });
+  });
+
+  it("shrinks lane count when overlapping early bars leave the window", () => {
+    const early = [1, 2, 3, 4].map((i) => sub(`e${i}`, "2026-01-01", "2026-01-20"));
+    const late = sub("late", "2026-04-01", "2026-04-10");
+    const all = [...early, late];
+    expect(packSubtasksIntoLanes(all).laneCount).toBe(4);
+    const win = filterSubtasksInWindow(all, "2026-03-20", "2026-04-30");
+    expect(packSubtasksIntoLanes(win).laneCount).toBe(1);
+  });
+});
+
+describe("computeLaneWindow", () => {
+  it("buffers one viewport per side and snaps to a 7-day grid", () => {
+    const w = computeLaneWindow({ scrollLeft: 30 * 20, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    // first=30, last=80, buffer=50 -> start idx floor(-20/7)*7=-21, end ceil(130/7)*7=133
+    expect(w.start).toBe(addDays("2026-01-01", -21));
+    expect(w.end).toBe(addDays("2026-01-01", 133));
+  });
+
+  it("uses at least a 7 day buffer on tiny viewports", () => {
+    const w = computeLaneWindow({ scrollLeft: 0, clientWidth: 20, dayWidth: 20, rangeStart: "2026-01-01" });
+    expect(w.start <= addDays("2026-01-01", -7)).toBe(true);
+    expect(w.end >= addDays("2026-01-01", 8)).toBe(true);
+  });
+
+  it("is stable for small scroll movements inside one grid cell", () => {
+    const a = computeLaneWindow({ scrollLeft: 400, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    const b = computeLaneWindow({ scrollLeft: 410, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    expect(a).toEqual(b);
   });
 });

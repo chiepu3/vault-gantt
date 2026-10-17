@@ -212,6 +212,8 @@ export interface TaskWorkbenchSettings {
   // Rendering/Integration
   ganttFeatureSyncEnabled: boolean;
   incrementalGanttRender: boolean;
+  /** Pack parent-row lanes using only subtasks near the visible dates. */
+  compactRowsToViewport: boolean;
   agentToolsEnabled: boolean;
 }
 

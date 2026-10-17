@@ -146,6 +146,10 @@ function makeParent(overrides: Record<string, unknown> = {}): TaskRow {
     ganttEnabled: false,
     subtasks: new Map<string, TaskRow>(),
     ...overrides,
+    // Unique file.path per id: row caches are keyed by path.
+    ...(typeof overrides.id === "string" && overrides.file === undefined
+      ? { file: { path: overrides.id } }
+      : {}),
   } as unknown as TaskRow;
 }
 
