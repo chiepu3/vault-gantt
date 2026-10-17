@@ -111,16 +111,18 @@ const taskCommon = {
   tags: tagNamesSchema.optional(), content: z.object({ currentStatus: z.string(), notes: z.string(), createdAt: dateOnlySchema.nullable(), updatedAt: dateOnlySchema.nullable() }).strict().optional(),
 };
 /** Missing group = not fetched; null = fetched but unset; [] = fetched, zero items. */
+/** Always explicit when the workload group is requested: zeros mean "nothing recorded", never "not fetched". */
+export const hoursTotalSchema = z.object({ plan: z.number().finite().nonnegative(), actual: z.number().finite().nonnegative(), planDays: countSchema, actualDays: countSchema }).strict();
 export const compactTaskSchema = z.discriminatedUnion("kind", [
   z.object({ ...taskCommon, kind: z.literal("parent"), parentId: z.null(),
     due: dateOnlySchema.nullable().optional(),
     gantt: z.object({ enabled: z.boolean(), order: z.number().finite() }).strict().optional(),
     derived: z.object({ period: periodSchema, progress: z.number().min(0).max(1), effectivePriority: z.number().min(0).max(5) }).strict().optional(),
-    children: z.array(idSchema).optional(),
+    children: z.array(idSchema).optional(), hoursTotal: hoursTotalSchema.optional(),
   }).strict(),
   z.object({ ...taskCommon, kind: z.literal("subtask"), parentId: idSchema,
     schedule: z.object({ start: dateOnlySchema.nullable(), end: dateOnlySchema.nullable(), due: dateOnlySchema.nullable() }).strict().optional(),
-    markers: z.array(markerStateSchema).optional(), hours: z.array(hoursCellSchema).optional(),
+    markers: z.array(markerStateSchema).optional(), hours: z.array(hoursCellSchema).optional(), hoursTotal: hoursTotalSchema.optional(),
   }).strict(),
 ]);
 export type CompactTaskV1 = DeepReadonly<z.infer<typeof compactTaskSchema>>;
@@ -144,7 +146,7 @@ export const taskReadSchema = z.object({
       schedule: item.kind === "parent" ? ["due", "gantt"] : ["schedule"], priority: ["priority"],
       tags: ["tags"], content: ["content"], derived: item.kind === "parent" ? ["derived"] : [],
       children: item.kind === "parent" ? ["children"] : [], markers: item.kind === "subtask" ? ["markers"] : [],
-      workload: item.kind === "subtask" ? ["hours"] : [],
+      workload: item.kind === "subtask" ? ["hours", "hoursTotal"] : ["hoursTotal"],
     };
     for (const group of taskFieldGroupSchema.options) {
       for (const key of fields[group] ?? []) {

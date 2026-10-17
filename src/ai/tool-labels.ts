@@ -5,6 +5,8 @@ const LABELS: Record<string, string> = {
   context_read: "情報を取得",
   operations_describe: "操作の詳細を確認",
   operations_propose: "変更案を作成",
+  worklog_candidates: "日報の対象を照合",
+  worklog_propose: "実績の変更案を作成",
   search: "タスクを検索",
   get: "タスクを取得",
   update: "変更案を作成",

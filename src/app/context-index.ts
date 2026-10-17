@@ -2,6 +2,7 @@ import { contextQueryInputSchemas, contextQueryOutputSchemas, publicSettingsSche
 import type { ContextReadPort } from "../contracts/ports";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { parseTaskFile } from "../core/note-format";
+import { matchScore } from "../core/fuzzy-match";
 import { todayStr, getEffectivePriority, buildFileRevision } from "../core/utils";
 import type { VaultAdapter } from "./task-operations";
 import { canonical, contentRevision, fail, flatten, findTask, OperationFailure, type TaskSnapshot } from "./operations/runtime";
@@ -11,6 +12,13 @@ import { addDays } from "./gantt-layout";
 import { getDailyTodoSourceForPath, extractDateFromDailyPath } from "./daily-todo-service";
 import { DailyReadHandler } from "./operations/daily-handlers";
 const DEFAULT_FIELDS: readonly TaskFieldGroup[] = ["identity", "status", "schedule", "priority", "tags"];
+function hoursTotal(row: TaskRow) {
+  const rows = row.kind === "parent" ? [...row.subtasks?.values() ?? []] : [row];
+  const sum = (maps: (Record<string, number> | undefined)[]) => maps.reduce((total, map) => total + Object.values(map ?? {}).reduce((a, b) => a + b, 0), 0);
+  const days = (maps: (Record<string, number> | undefined)[]) => new Set(maps.flatMap((map) => Object.entries(map ?? {}).filter(([, value]) => value > 0).map(([date]) => date))).size;
+  const plans = rows.map((child) => child.workloadPlan), actuals = rows.map((child) => child.workloadActual);
+  return { plan: sum(plans), actual: sum(actuals), planDays: days(plans), actualDays: days(actuals) };
+}
 export function compactTask(row: TaskRow, snapshot: TaskSnapshot, fields: readonly TaskFieldGroup[]): CompactTaskV1 {
   const common = { id: row.id, name: row.displayName || row.title, revision: snapshot.revisions.get(row.file.path)!,
     ...(fields.includes("status") ? { status: row.statusLabel, completed: row.completed } : {}),
@@ -22,10 +30,11 @@ export function compactTask(row: TaskRow, snapshot: TaskSnapshot, fields: readon
     ...(fields.includes("schedule") ? { due: row.dueDate || null, gantt: { enabled: row.ganttEnabled, order: row.ganttOrder ?? 999999 } } : {}),
     ...(fields.includes("derived") ? { derived: { period: period(row), progress: progress(row), effectivePriority: getEffectivePriority(row, snapshot.settings.autoPriorityEnabled) } } : {}),
     ...(fields.includes("children") ? { children: [...row.subtasks?.values() ?? []].map((child) => child.id) } : {}),
+    ...(fields.includes("workload") ? { hoursTotal: hoursTotal(row) } : {}),
   } : { ...common, kind: "subtask", parentId: row.file.path,
     ...(fields.includes("schedule") ? { schedule: { start: row.plannedStartDate || null, end: row.plannedEndDate || null, due: row.dueDate || null } } : {}),
     ...(fields.includes("markers") ? { markers: (row.ganttMarkers ?? []).map((marker) => ({ ...marker, tags: [...marker.tags ?? []] })) } : {}),
-    ...(fields.includes("workload") ? { hours: hours(row) } : {}),
+    ...(fields.includes("workload") ? { hours: hours(row), hoursTotal: hoursTotal(row) } : {}),
   };
 }
 interface Cursor { binding: string; revision: string; offset: number }
@@ -116,17 +125,29 @@ export class ContextIndex implements ContextReadPort {
       if (id === "tasks.search") {
         const args = parsed.data as ReturnType<typeof contextQueryInputSchemas["tasks.search"]["parse"]>;
         const fields = [...new Set<TaskFieldGroup>(["identity", ...args.fields ?? DEFAULT_FIELDS])];
-        const rows = flatten(snapshot.parents).filter((row) => {
+        const scores = new Map<TaskRow, number>();
+        const matches = (row: TaskRow, level: number) => {
           const parent = row.kind === "parent" ? row : snapshot.parents.find((parent) => parent.id === row.file.path)!;
           const text = `${row.displayName} ${row.title} ${row.currentStatus} ${row.notes}`.toLowerCase();
-          return (!args.name || `${row.displayName} ${row.title}`.toLowerCase().includes(args.name.toLowerCase())) && (!args.text || text.includes(args.text.toLowerCase()))
+          if (args.name) {
+            // The parent name also counts so "親の名前 子の名前" style queries resolve; scoring is lenient on spaces/width/case.
+            const score = matchScore(args.name, [`${row.displayName} ${row.title}`, row.kind === "subtask" ? `${parent.displayName} ${row.displayName}` : ""]);
+            if (score < level) return false;
+            scores.set(row, score);
+          }
+          return (!args.text || text.includes(args.text.toLowerCase()))
             && (!args.kind || row.kind === args.kind) && (!args.parentId || row.kind === "subtask" && row.file.path === args.parentId)
             && (!args.statuses || args.statuses.includes(row.statusLabel)) && (!args.tags || args.tags.every((tag) => row.tags.includes(tag)))
             && (!args.dueRange || !!row.dueDate && row.dueDate >= args.dueRange.from && row.dueDate <= args.dueRange.to)
             && (!args.plannedRange || !!row.plannedStartDate && !!row.plannedEndDate && row.plannedStartDate <= args.plannedRange.to && row.plannedEndDate >= args.plannedRange.from)
             && (args.placed === undefined || row.kind === "subtask" && (!!row.plannedStartDate && !!row.plannedEndDate) === args.placed)
             && (args.gantt === undefined || parent.ganttEnabled === args.gantt);
-        });
+        };
+        const all = flatten(snapshot.parents);
+        // Strict (substring / all tokens) first; only when nothing matches, fall back to near misses sharing any token.
+        let rows = all.filter((row) => matches(row, 2));
+        if (!rows.length && args.name) { scores.clear(); rows = all.filter((row) => matches(row, 1)); }
+        if (args.name) rows = rows.map((row, index) => ({ row, index })).sort((a, b) => (scores.get(b.row) ?? 0) - (scores.get(a.row) ?? 0) || a.index - b.index).map((entry) => entry.row);
         data = this.page(rows, snapshot, fields, args.limit, args.cursor, binding);
       } else if (id === "tasks.get-many") {
         const args = parsed.data as ContextQueryMap["tasks.get-many"];

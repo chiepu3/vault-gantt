@@ -103,6 +103,7 @@
 | T28 | 複数タスクの日付一括設定 | changes[{taskId,schedule,expectedRevision?}] | 開始・終了は子、期限は親子。最大100件。Bulk-Moveの意味は持たない | ○、保存分 | ○ schedule-batch | C+G後 |
 | T29 | 1タスクの複合フィールド更新 | taskId, patch, expectedRevision? | strict19キー、種別検証、正規化、暗黙の更新日・priority変化、round trip照合 | ○ | ○ update | C、日付ならG後 |
 | T30 | 全管理タスクの自動優先度再計算 | force?、設定・今日 | 起動時/設定ONで呼ぶ。auto対象のみ、日単位で抑制、force可、専用コマンドなし。registry外の全ノート再構築 | ×、履歴記録なし | × | × |
+| T31 | 日報の実績時間をまとめて登録 | date, entries[{subtaskId\|parentId+newSubtaskName\|eventKey\|eventTitle, hours}] | 1回の承認で既存子の実績・親の下の新規子（date単日の予定付き）・既存/新規イベントの実績を保存。dateの実績のみ置換し他日は保持。hoursは0.5刻み、同一対象は合算 | イベントを含まなければ○ | × | C |
 
 ### 3.2 マーカー・タスク作業時間（M01〜M08、8種類）
 

@@ -13,17 +13,17 @@ import { FakeVault } from "../app/fake-vault";
 import { INPUT_FIXTURES, PREVIEW_FIXTURES, READ_FIXTURES } from "./fixtures";
 
 describe("P0 operation ledger", () => {
-  it("matches all 123 design ledger IDs with no duplicates or gaps", () => {
+  it("matches all 124 design ledger IDs with no duplicates or gaps", () => {
     const design = readFileSync(new URL("../../docs/ai/DESIGN.md", import.meta.url), "utf8");
     const ledgerSection = design.slice(design.indexOf("### 3.1"), design.indexOf("### 3.8"));
     const ledger = [...ledgerSection.matchAll(/^\| ([TMEWDSVQ]\d{2}) \|/gm)].map((match) => match[1]);
-    expect(OPERATION_IDS).toHaveLength(123);
-    expect(new Set(OPERATION_IDS).size).toBe(123);
+    expect(OPERATION_IDS).toHaveLength(124);
+    expect(new Set(OPERATION_IDS).size).toBe(124);
     expect(OPERATION_IDS).toEqual(ledger);
     expect(Object.keys(operationInputSchemas)).toEqual(OPERATION_IDS);
     expect(Object.keys(operationOutputSchemas)).toEqual(OPERATION_IDS);
     expect(Object.keys(OPERATION_CONTRACTS)).toEqual(OPERATION_IDS);
-    expect(operationIdSchema.safeParse("T31").success).toBe(false);
+    expect(operationIdSchema.safeParse("T32").success).toBe(false);
   });
   it.each(OPERATION_IDS)("%s has a valid example, JSON input schema, classification and effect mapping", (id) => {
     expect(operationInputSchemas[id].safeParse(INPUT_FIXTURES[id]).success).toBe(true);

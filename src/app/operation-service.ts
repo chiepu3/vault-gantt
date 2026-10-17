@@ -31,6 +31,7 @@ import { DailyReadHandler, dailyPlan, dailyProjection, executeDailyPlan, type Da
 import { viewRequest, diagnosticRequest, historyPlan, executeHistoryPlan, diagnosticPlan, executeDiagnosticPlan, type HistoryPlan, type DiagnosticPlan, type ViewRequestId } from "./operations/view-handlers";
 import { controlRequest, type ControlId } from "./operations/control-handlers";
 import { integrationPlan, executeExternalSend, INTEGRATION_OPERATION_IDS, type IntegrationPlan, type IntegrationPlanHost, type IntegrationId } from "./operations/integration-handlers";
+import { worklogPlan } from "./operations/worklog-handlers";
 import { priorityPlan } from "./operations/priority-handlers";
 import type { ChatSession } from "../ai/chat-session";
 import type { Logger } from "../core/logger";
@@ -187,6 +188,11 @@ export class OperationService implements OperationServicePort {
       afterParents = historyPlanData.afterParents; entries = assignEntries(historyPlanData.entries);
     } else if (id === "V23") {
       diagnostic = diagnosticPlan(parsed as OperationInputMap["V23"], this.host.logger!); entries = assignEntries(diagnostic.entries);
+    } else if (id === "T31") {
+      const virtual: VaultAdapter = { getFiles: () => vault.getFiles(), getFileByPath: (path) => vault.getFileByPath(path), read: (file) => vault.read(file), create: async (path) => ({ path }), modify: async () => undefined };
+      const plan = await worklogPlan(parsed as OperationInputMap["T31"], snapshot, virtual);
+      afterParents = plan.afterParents; afterSettings = plan.afterSettings; settingKeys = plan.settingKeys; entries = assignEntries(plan.entries);
+      for (const [path, content] of plan.createdContents) createdContents.set(path, content);
     } else if (id === "T30" || id === "S05") {
       const plan = priorityPlan(id, parsed as OperationInputMap["T30"] | OperationInputMap["S05"], snapshot);
       afterParents = plan.parents; afterSettings = plan.settings; settingKeys = plan.keys; entries = assignEntries(plan.entries);

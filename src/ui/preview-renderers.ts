@@ -508,14 +508,14 @@ export function renderEntryEffects(parent: HTMLElement, entry: PreviewEntry, ctx
   for (const effect of real) renderEffect(parent, effect, context);
 }
 
-/** Plain Japanese names for all 123 operations. The catalog's own purpose text mixes in UI jargon and is not shown. */
+/** Plain Japanese names for all operations. The catalog's own purpose text mixes in UI jargon and is not shown. */
 export const OPERATION_LABELS: Record<string, string> = {
   T01: "タスクを検索", T02: "タスクを取得", T03: "親タスクを作成", T04: "子タスクを作成", T05: "Gantt用の親タスクを作成", T06: "指定日に子タスクを作成",
   T07: "名前を変更", T08: "状態を変更", T09: "完了・未完了を切り替え", T10: "現在の状況を更新", T11: "メモを更新", T12: "作成日を変更", T13: "期限を変更",
   T14: "優先度を手動で設定", T15: "優先度を自動に戻す", T16: "タグを変更", T17: "Ganttへの表示を切り替え", T18: "親タスクの並び順を変更",
   T19: "予定の開始日・終了日を設定", T20: "予定をまとめて移動", T21: "予定の開始日を変更", T22: "予定の終了日を変更", T23: "未配置の子タスクを日付に配置",
   T24: "子タスクをGanttから外す", T25: "親の子タスクをまとめて移動", T26: "子タスクを削除", T27: "複数タスクをまとめて更新", T28: "複数タスクの日程をまとめて設定",
-  T29: "タスクの項目をまとめて更新", T30: "全タスクの優先度を再計算",
+  T29: "タスクの項目をまとめて更新", T30: "全タスクの優先度を再計算", T31: "日報の実績時間をまとめて登録",
   M01: "マーカーを追加", M02: "マーカーの名前・日付を変更", M03: "マーカーの日付を移動", M04: "マーカーを削除", M05: "マーカーのタグを変更", M06: "マーカーをまとめて置き換え",
   M07: "予定時間を設定", M08: "実績時間を設定",
   E01: "イベントを追加", E02: "イベント名を変更", E03: "イベントを別の日へ移動", E04: "イベントを複製", E05: "イベントを削除", E06: "イベントの予定時間を設定", E07: "イベントの実績時間を設定",

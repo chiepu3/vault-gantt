@@ -3,7 +3,7 @@ import type { TaskChange, TaskSnapshot } from "./runtime";
 import { checkRevision, findTask, flatten, fail } from "./runtime";
 import { calculateAutoPriority } from "../../core/utils";
 
-export const TASK_OPERATION_IDS = ["T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T26", "T27", "T28", "T29", "T30"] as const;
+export const TASK_OPERATION_IDS = ["T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T26", "T27", "T28", "T29", "T30", "T31"] as const;
 export function taskChanges<K extends OperationId>(id: K, input: OperationInputMap[K], snapshot: TaskSnapshot): TaskChange[] {
   if (id === "T27" || id === "T28") return structuredClone((input as OperationInputMap["T27"]).changes) as TaskChange[];
   if (id === "T29") return [structuredClone(input as OperationInputMap["T29"]) as TaskChange];

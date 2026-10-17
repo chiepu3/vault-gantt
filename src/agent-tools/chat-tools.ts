@@ -6,6 +6,7 @@ import { operationInputSchemas, operationRequestDenial, type WriteOperationId, t
 import type { ChatEvent } from "../ai/chat-session";
 import { selectOperationIds } from "../ai/tool-selection";
 import { fullDescription } from "./descriptions";
+import { worklogTools } from "./worklog-tools";
 import { parseObject, inputError, validatedTool } from "./validated-tool";
 
 const object = z.record(z.string(), z.unknown());
@@ -17,7 +18,7 @@ export function chatTools(service: OperationService, context: RequestContext, te
   const queryIds = Object.keys(contextQueryInputSchemas).filter((id) => !["tasks.search", "tasks.get-many"].includes(id)) as [ContextQueryId, ...ContextQueryId[]];
   const tools: ToolSet = {};
   if (context.capabilities.includes("read")) {
-    tools.tasks_search = validatedTool("タスク候補を名前の部分一致で検索する唯一の入口。親名と子名を別々に検索し、parentIdで所属を確認する。kind省略は親子両方。fieldsで必要情報を一度に取得: identity/status/schedule/derived/priority/tags/content/markers/workload/children。名前はname、本文はtext。旧queryはnameの互換引数。曖昧な同名は確認し、IDを作らない。", contextQueryInputSchemas["tasks.search"], (input) => service.contextPort.query("tasks.search", input, context), (value) => {
+    tools.tasks_search = validatedTool("タスク候補を名前の部分一致で検索する唯一の入口。親名と子名を別々に検索し、parentIdで所属を確認する。kind省略は親子両方。fieldsで必要情報を一度に取得: identity/status/schedule/derived/priority/tags/content/markers/workload/children。名前はname、本文はtext。旧queryはnameの互換引数。曖昧な同名は確認し、IDを作らない。", contextQueryInputSchemas["tasks.search"], async (input) => withSearchHint(await service.contextPort.query("tasks.search", input, context), input), (value) => {
       const parsed = parseObject(value);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "query" in parsed && !("name" in parsed) && !("text" in parsed)) {
         const { query, ...rest } = parsed as Record<string, unknown>; return { ...rest, name: query };
@@ -59,6 +60,7 @@ export function chatTools(service: OperationService, context: RequestContext, te
       }
       return emit(await service.propose(id as WriteOperationId, parsed.data as OperationInputMap[WriteOperationId], context), input);
     }, normalizeEnvelope);
+  if (context.capabilities.includes("propose")) Object.assign(tools, worklogTools(service, context, emit));
   async function emit(preview: import("../contracts/preview").OperationPreviewV1, input: unknown) {
     if (context.signal?.aborted) { service.discard(preview.previewId); return { status: "error", error: { code: "CANCELLED" } }; }
     proposed({ type: "plan", plan: service.legacyPlan(preview), preview, operationId: preview.operationId as WriteOperationId, operation: "update-batch", input });
@@ -66,6 +68,14 @@ export function chatTools(service: OperationService, context: RequestContext, te
     return { status: "proposal-created", previewId: preview.previewId, operationId: preview.operationId, entries: preview.entries, warnings: preview.warnings, saved: false, nextAction: "利用者がカードを確認して承認するまで保存されません。" };
   }
   return tools;
+}
+/** Tells the model what to do next when a search comes back empty or cut short, so it does not guess or give up. */
+function withSearchHint(response: Awaited<ReturnType<OperationService["contextPort"]["query"]>>, input: { name?: string; text?: string }) {
+  if (response.status !== "success" || response.result.data.kind !== "tasks") return response;
+  const data = response.result.data;
+  if (!data.items.length) return { ...response, hint: input.name ? "0件です。名前の一部・数字だけ・別の表記で一度だけ再検索してください。親(プロジェクト)名はkind:\"parent\"で確認できます。見つからなければ推測で進めず利用者に確認します。" : "0件です。条件を緩めて再検索してください。" };
+  if (data.truncated) return { ...response, hint: `全${data.totalMatched}件中${data.returned}件のみ返しました。nameを具体的にするかcursorで続きを取得してください。` };
+  return response;
 }
 function normalizeEnvelope(value: unknown): unknown {
   const parsed = parseObject(value);

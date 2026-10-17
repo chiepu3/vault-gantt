@@ -12,12 +12,12 @@ import { PARENT_ID } from "../contracts/fixtures";
 
 const capabilities: Capability[] = ["read", "propose", "ui", "external", "diagnostic", "chat-control"];
 describe("P3 merged operation wiring", () => {
-  it("123 operations are implemented with connected ports; disconnected ports are hidden", async () => {
+  it("124 operations are implemented with connected ports; disconnected ports are hidden", async () => {
     let ui: ViewStateService, session: ChatSession;
     const f = await runtimeFixture({ get ui() { return ui; }, get chatSession() { return session; } });
     ui = new ViewStateService(f.service.previewPort); session = new ChatSession({}, f.service, { connected: () => true, async *stream() { yield { type: "text", text: "fixture" }; } });
-    expect(f.service.describe().filter((row) => row.available)).toHaveLength(123);
-    expect(f.service.describe().filter((row) => row.available && row.capabilities.every((capability) => f.context.capabilities.includes(capability)))).toHaveLength(91);
+    expect(f.service.describe().filter((row) => row.available)).toHaveLength(124);
+    expect(f.service.describe().filter((row) => row.available && row.capabilities.every((capability) => f.context.capabilities.includes(capability)))).toHaveLength(92);
     const bare = await runtimeFixture({ ui: undefined, chatSession: undefined, logger: undefined, integration: undefined, sendExternal: undefined });
     for (const id of ["V01", "V22", "V23", "Q01", "Q04", "S08", "S21", "S35"]) expect(bare.service.describe().find((row) => row.id === id)?.available).toBe(false);
     session.dispose(); f.service.dispose(); bare.service.dispose();
