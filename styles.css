@@ -251,6 +251,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 /* top:0 + bottom:0 stretches the background cell to the full row height.
    The renderer supplies left and width inline. */
 .task-gantt-bg { position: absolute; top: 0; bottom: 0; z-index: 0; }
+.task-gantt-bg-hit { position: absolute; top: 0; bottom: 0; left: 0; right: 0; z-index: 0; }
 
 .task-gantt-bar { position: absolute; z-index: 2; cursor: grab; background: var(--interactive-accent); background-clip: padding-box; border: 1px solid color-mix(in srgb, var(--text-on-accent) 22%, transparent); border-radius: var(--vg-radius-m); box-shadow: var(--vg-shadow-flat); }
 .task-gantt-bar:active { cursor: grabbing; }

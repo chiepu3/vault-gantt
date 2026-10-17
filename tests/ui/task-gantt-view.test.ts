@@ -480,6 +480,29 @@ function leftOf(row: FakeEl): FakeEl {
   return byClass(row, "task-gantt-parent-left")[0];
 }
 
+/**
+ * Per-day background cells exist only for weekend / holiday / today; plain days
+ * are served by one hit layer. bgAt returns a stand-in whose contextmenu goes
+ * through that layer at the given day index, or the real cell for class checks.
+ */
+function bgAt(timeline: FakeEl, index: number): FakeEl {
+  const hit = byClass(timeline, "task-gantt-bg-hit")[0];
+  return {
+    listeners: {
+      contextmenu: [
+        (evt: Record<string, unknown>) => {
+          for (const cb of hit.listeners.contextmenu ?? []) cb({ ...evt, offsetX: index * 28 + 1 });
+        },
+      ],
+    },
+  } as unknown as FakeEl;
+}
+
+/** The styled background cell of a day, or undefined for a plain day. */
+function styledBgAt(timeline: FakeEl, index: number): FakeEl | undefined {
+  return byClass(timeline, "task-gantt-bg").find((el) => el.style.left === `${index * 28}px`);
+}
+
 function timelineOf(row: FakeEl): FakeEl {
   return byClass(row, "task-gantt-parent-timeline")[0];
 }
@@ -820,7 +843,7 @@ describe("TaskGanttView", () => {
         const index = datesOf(view).indexOf(date);
         const cells = [
           rowOf(wrapOf(container), "task-gantt-day-row").children[index],
-          byClass(timelineOf(parentRows(container)[0]), "task-gantt-bg")[index],
+          styledBgAt(timelineOf(parentRows(container)[0]), index) ?? rowOf(wrapOf(container), "task-gantt-day-row").children[index],
         ];
         for (const cell of cells) {
           expect(cell.classList.contains("is-weekend")).toBe(expected.isWeekend);
@@ -1544,27 +1567,28 @@ describe("TaskGanttView", () => {
       const dates = datesOf(view);
       const base = baseDateOf(view);
       const bgs = byClass(timeline, "task-gantt-bg");
-      expect(bgs).toHaveLength(dates.length); // 90
+      // Only weekend / holiday / today days get a cell.
+      const styledCount = dates.filter((d) => {
+        const c = (view as any).dateClasses(d);
+        return c.isWeekend || c.isHoliday || c.isToday;
+      }).length;
+      expect(bgs).toHaveLength(styledCount);
+      expect(bgs.length).toBeLessThan(dates.length);
 
       // Position: index × dayWidth (dayWidth = 28).
-      expect(bgs[0].style.left).toBe("0px");
-      expect(bgs[1].style.left).toBe("28px");
-      expect(bgs[0].style.width).toBe("28px");
-
-      // Today cell carries is-today.
       const todayIndex = dates.indexOf(todayStr());
       expect(todayIndex).toBe(diffDays(base, todayStr()));
-      expect(bgs[todayIndex].classList.contains("is-today")).toBe(true);
+      expect(styledBgAt(timeline, todayIndex)!.style.left).toBe(`${todayIndex * 28}px`);
+      expect(styledBgAt(timeline, todayIndex)!.style.width).toBe("28px");
+      expect(styledBgAt(timeline, todayIndex)!.classList.contains("is-today")).toBe(true);
 
-      // A weekend cell carries is-weekend.
       const saturdayIndex = dates.findIndex(
         (d) => moment(d, "YYYY-MM-DD").day() === 6
       );
-      expect(bgs[saturdayIndex].classList.contains("is-weekend")).toBe(true);
+      expect(styledBgAt(timeline, saturdayIndex)!.classList.contains("is-weekend")).toBe(true);
 
-      // The manual holiday carries is-holiday.
       expect(
-        bgs[dates.indexOf(holiday)].classList.contains("is-holiday")
+        styledBgAt(timeline, dates.indexOf(holiday))!.classList.contains("is-holiday")
       ).toBe(true);
     });
 
@@ -4621,7 +4645,7 @@ describe("TaskGanttView", () => {
     }
 
     function firstBgOf(timeline: FakeEl): FakeEl {
-      return byClass(timeline, "task-gantt-bg")[0];
+      return bgAt(timeline, 0);
     }
 
     /** A 6-day subtask bar (comfortably wide for move-zone offsetX values). */
@@ -5166,7 +5190,7 @@ describe("TaskGanttView", () => {
       // whose start is on/after today is "late", so it becomes the anchor
       // and every subtask from its sorted index onward (just itself here)
       // is the target set for the bulk move.
-      const bg = byClass(timeline, "task-gantt-bg")[14];
+      const bg = bgAt(timeline, 14);
       dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
       dispatch(menuItemWithText("これ以降を纏めて移動"), "click");
       dispatch(winEl, "pointermove", { clientX: 128, clientY: 50 }); // +1 day
@@ -5214,7 +5238,7 @@ describe("TaskGanttView", () => {
       ]);
       const { container } = await openView([parent]);
       const timeline = timelineOf(parentRows(container)[0]);
-      const bg = byClass(timeline, "task-gantt-bg")[14]; // today
+      const bg = bgAt(timeline, 14); // today
       dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
       dispatch(menuItemWithText("これ以降を纏めて移動"), "click");
 
@@ -5255,7 +5279,7 @@ describe("TaskGanttView", () => {
       ]);
       const { container, h } = await openView([parent]);
       const timeline = timelineOf(parentRows(container)[0]);
-      const bg = byClass(timeline, "task-gantt-bg")[14];
+      const bg = bgAt(timeline, 14);
       dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
       dispatch(menuItemWithText("これ以降を纏めて移動"), "click");
       dispatch(winEl, "pointermove", { clientX: 128, clientY: 50 });
@@ -6032,7 +6056,7 @@ describe("rich popover behavior", () => {
     expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
     expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
 
-    const bg = byClass(timeline, "task-gantt-bg")[14];
+    const bg = bgAt(timeline, 14);
     dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
     dispatch(menuItemWithText("これ以降を纏めて移動"), "click");
     dispatch(winEl, "pointermove", { clientX: 128, clientY: 50 });
@@ -6066,7 +6090,7 @@ describe("rich popover behavior", () => {
     expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
     h.confirmWorkloadShift.mockResolvedValueOnce(false);
 
-    const bg = byClass(timeline, "task-gantt-bg")[14];
+    const bg = bgAt(timeline, 14);
     dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
     dispatch(menuItemWithText("これ以降を纏めて移動"), "click");
     dispatch(winEl, "pointermove", { clientX: 128, clientY: 50 });
@@ -6107,7 +6131,7 @@ describe("rich popover behavior", () => {
     // task-specific start date. findBulkMoveAnchor accepts a pivot date at or
     // before the subtask start, and dates[0] satisfies that for every visible
     // task. This keeps the test independent of the runner's date and timezone.
-    const bg = byClass(timeline, "task-gantt-bg")[0];
+    const bg = bgAt(timeline, 0);
     dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
     dispatch(menuItemWithText("これ以降を纏めて移動"), "click");
     dispatch(winEl, "pointerup", { clientX: 100 });
@@ -9974,9 +9998,6 @@ describe("empty-cell menu and Bulk-Move", () => {
     return { view, container, timeline, h, parent };
   }
 
-  function bgAt(timeline: FakeEl, index: number): FakeEl {
-    return byClass(timeline, "task-gantt-bg")[index];
-  }
 
 
 

@@ -297,7 +297,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
       restartSync: () => this.startGanttSyncTimer(false),
       requestApproval: async (previewId) => { await this.uiPort.requestApproval(previewId); },
-      invalidate: async () => { this.scheduleGhosts.clear(); this.taskCache.clear(); await this.refreshOpenViews(); },
+      invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   }
   readonly operationService = this.createOperationService();

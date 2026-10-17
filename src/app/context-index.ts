@@ -34,6 +34,7 @@ export class ContextIndex implements ContextReadPort {
   private readonly snapshots = new Map<string, TaskSnapshot>();
   private readonly cursors = new Map<string, Cursor>();
   private readonly dailyReader = new DailyReadHandler();
+  private readonly fileBytes = new Map<string, { stat: string; content: string; revision: string }>();
   private counter = 0;
   constructor(private readonly vaultFactory: () => VaultAdapter, private readonly settings: () => TaskWorkbenchSettings, readonly vaultInstanceId: string) {}
   async snapshot(): Promise<TaskSnapshot> {
@@ -44,8 +45,13 @@ export class ContextIndex implements ContextReadPort {
     const root = settings.taskFolder.replace(/\/$/, "");
     for (const file of vault.getFiles().filter((file) => file.path.endsWith(".md") && (file.path.startsWith(root + "/") || getDailyTodoSourceForPath(file.path, settings))).sort((a, b) => a.path.localeCompare(b.path))) {
       try {
-        const content = await vault.read(file), revision = await contentRevision(content);
-        contents.set(file.path, content); revisions.set(file.path, revision); statRevisions.set(file.path, buildFileRevision(file as TaskRow["file"]));
+        // Unchanged files (same mtime:size) reuse their previous bytes and hash, so a snapshot after
+        // one edit rereads one file instead of the whole vault. Files without stat are always reread.
+        const stat = buildFileRevision(file as TaskRow["file"]), seen = (file as TaskRow["file"]).stat ? this.fileBytes.get(file.path) : undefined;
+        let content: string, revision: string;
+        if (seen?.stat === stat) ({ content, revision } = seen);
+        else { content = await vault.read(file); revision = await contentRevision(content); this.fileBytes.set(file.path, { stat, content, revision }); }
+        contents.set(file.path, content); revisions.set(file.path, revision); statRevisions.set(file.path, stat);
         // Daily bytes participate in conflict checks, but are never task models.
         if (!file.path.startsWith(root + "/") || getDailyTodoSourceForPath(file.path, settings) && /^\d{4}-\d{2}-\d{2}$/.test(extractDateFromDailyPath(file.path, settings))) { this.parsed.delete(file.path); continue; }
         const parseRevision = revision + ":" + today;
@@ -58,6 +64,7 @@ export class ContextIndex implements ContextReadPort {
       } catch { parseFailures.push(file.path); this.parsed.delete(file.path); }
     }
     for (const path of this.parsed.keys()) if (!contents.has(path)) this.parsed.delete(path);
+    for (const path of this.fileBytes.keys()) if (!contents.has(path)) this.fileBytes.delete(path);
     const settingsRevision = await contentRevision(settings), calendarRevision = await contentRevision([...holidaySet(settings)].sort());
     const revision = await contentRevision({ files: [...revisions], settingsRevision, today, timezone, parseFailures });
     const snapshot = { parents, contents, revisions, statRevisions, settings, revision, settingsRevision, calendarRevision, today, timezone, parseFailures };

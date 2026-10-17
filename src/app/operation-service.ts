@@ -52,7 +52,8 @@ export interface OperationServiceHost {
   sendExternal?(destination: string, body: string): Promise<void>;
   restartSync?(): void;
   requestApproval?(previewId: string): Promise<void>;
-  invalidate(): void | Promise<void>;
+  /** `paths`: only these task files changed (no settings); omit to drop every cached task. */
+  invalidate(paths?: readonly string[]): void | Promise<void>;
 }
 export class OperationService implements OperationServicePort {
   readonly catalog = new OperationCatalog();
@@ -434,7 +435,7 @@ export class OperationService implements OperationServicePort {
       const actualEntries = stored.preview.entries.filter((entry) => committed.has(entry.actionId)).map((entry) => ({ ...entry, effects: actualEffects.get(entry.actionId) ?? entry.effects }));
       const outcome: OperationOutcomeV1 = { previewId: id, status, actions: stored.preview.entries.map((entry) => ({ actionId: entry.actionId, state: committed.has(entry.actionId) ? "committed" : failed.has(entry.actionId) ? "failed" : "not-attempted", actual: committed.has(entry.actionId) ? actualEffects.get(entry.actionId) ?? entry.effects : [], ...(committed.has(entry.actionId) ? {} : { errorCode: errorCode ?? "NOT_ATTEMPTED" }) })),
         ...(history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action))) ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
-      if (committed.size && !this.disposed) { try { await this.host.invalidate(); } catch { /* Saved bytes remain authoritative. */ } }
+      if (committed.size && !this.disposed) { try { await this.host.invalidate(stored.settingKeys.length || stored.daily || stored.history || stored.diagnostic ? undefined : stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).map((write) => write.path)); } catch { /* Saved bytes remain authoritative. */ } }
       const validated = validatePreviewOutcome(stored.preview, outcome);
       if (!this.disposed) {
         // An external change while applying cannot clear an outcome that
