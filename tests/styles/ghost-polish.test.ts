@@ -31,7 +31,7 @@ describe("scoped Ghost and result-card presentation", () => {
     expect(rule(".vg-ai-model-label")).toContain("text-overflow: ellipsis");
     expect(rule(".vg-ai-mini-before .vg-ai-mini-bar")).toContain("dashed");
     expect(rule(".vg-ai-mini-after .vg-ai-mini-bar")).toContain("var(--interactive-accent)");
-    expect(rule(".task-gantt-container .task-gantt-version-info")).toContain("display: none");
+    expect(rule(".task-gantt-container .task-gantt-version-info")).not.toContain("display: none");
     expect(css).not.toMatch(/!\s*important/i);
   });
   it("scopes Gantt-only preview selectors to the Gantt container", () => {

@@ -1,5 +1,5 @@
 import type { McpSettings } from "../mcp/server";
-/* global __VG_VERSION__, __VG_COMMIT__, __VG_BUILT_AT__ */
+import { getBuildInfo } from "../build-info";
 import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
 import type { App, Plugin, ColorComponent, TextComponent, DropdownComponent } from "obsidian";
@@ -452,12 +452,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     this.renderAiSettings(containerEl.createDiv({ cls: "vg-settings-ai" }));
     this.renderMcpSettings(containerEl);
-    const version =
-      typeof __VG_VERSION__ === "undefined" ? "unknown" : __VG_VERSION__;
-    const commit =
-      typeof __VG_COMMIT__ === "undefined" ? "unknown" : __VG_COMMIT__;
-    const builtAt =
-      typeof __VG_BUILT_AT__ === "undefined" ? "unknown" : __VG_BUILT_AT__;
+    const { version, commit, builtAt } = getBuildInfo();
     containerEl.createDiv({
       cls: "setting-item-description",
       text: `Vault Gantt v${version} (${commit}; built ${builtAt})`,

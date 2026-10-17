@@ -1303,36 +1303,13 @@ describe("TaskGanttView", () => {
       expect(h.redoLastAction).toHaveBeenCalledTimes(1);
     });
 
-    it("バージョン情報は releaseNotes を含む「※ v[version]: [notes]」形式で読み取り専用表示される", async () => {
+    it("バージョン情報は「v[version]」形式で読み取り専用表示される（ビルド定数なし時はコミット非表示）", async () => {
       const { container } = await openView([]);
       const info = byClass(container, "task-gantt-version-info")[0];
       expect(info).toBeTruthy();
-      // Default harness manifest: version 1.2.3 / releaseNotes 「テストリリースノート」.
-      expect(info.textContent).toBe("※ v1.2.3: テストリリースノート");
-      // Read-only: not a <button>, has no click listener wired.
+      // Default harness manifest: version 1.2.3; no build constants under vitest.
+      expect(info.textContent).toBe("v1.2.3");
       expect(info.tagName).not.toBe("BUTTON");
-    });
-
-    it("releaseNotes が無い場合は description にフォールバックする", async () => {
-      const h = makeHostHarness([]);
-      h.host.manifest = { version: "2.0.0", description: "説明文" };
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-
-      const info = byClass(container, "task-gantt-version-info")[0];
-      expect(info.textContent).toBe("※ v2.0.0: 説明文");
-    });
-
-    it("releaseNotes も description も無い場合は空文字列になる", async () => {
-      const h = makeHostHarness([]);
-      h.host.manifest = { version: "3.0.0" };
-      const view = new TaskGanttView({} as any, h.host);
-      const container = (view as any).containerEl as FakeEl;
-      await view.onOpen();
-
-      const info = byClass(container, "task-gantt-version-info")[0];
-      expect(info.textContent).toBe("※ v3.0.0: ");
     });
   });
 
