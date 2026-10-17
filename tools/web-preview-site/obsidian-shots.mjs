@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
+import http from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -92,6 +93,31 @@ function seedVault(vault, buildFullNote) {
   fs.writeFileSync(path.join(vault, "README.md"), "# Vault Gantt サンプル\n\n実機のObsidianで撮影したスクリーンショット用のサンプルVaultです。\n");
 }
 
+// 2a. Scripted fake OpenAI-compatible server: the SAME scenario script the browser preview uses (tools/web-preview/shell/fake-llm.ts,
+// bundled for node with the target's esbuild), so the real-Obsidian AI chat shows an actual conversation without any model or network.
+async function startFakeLlm(scratch) {
+  const esbuild = createRequire(path.join(app, "package.json"))("esbuild");
+  const outfile = path.join(scratch, "fake-llm.cjs");
+  await esbuild.build({ entryPoints: [path.join(tools, "tools/web-preview/shell/fake-llm.ts")], bundle: true, platform: "node", format: "cjs", outfile, logLevel: "silent" });
+  const { script } = createRequire(outfile)(outfile);
+  const server = http.createServer((req, res) => {
+    // Obsidian calls from app://obsidian.md, so answer the CORS preflight like a real local server.
+    res.setHeader("access-control-allow-origin", "*"); res.setHeader("access-control-allow-headers", "*"); res.setHeader("access-control-allow-methods", "POST, GET, OPTIONS");
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (req.method === "GET" && req.url?.endsWith("/models")) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ object: "list", data: [{ id: "sample-model", object: "model" }] })); return; }
+    if (req.method !== "POST" || !req.url?.endsWith("/chat/completions")) { res.writeHead(404); res.end(); return; }
+    let body = "";
+    req.on("data", (d) => { body += d; });
+    req.on("end", async () => {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      try { await script(JSON.parse(body), (s) => { if (!res.destroyed) res.write(s); }); } catch (e) { console.error("[fake-llm]", e.message); }
+      res.write("data: [DONE]\n\n"); res.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { port: server.address().port, close: () => server.close() };
+}
+
 // 2. Obsidian launch (user or root)
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 const freePort = (start) => new Promise((resolve, reject) => {
@@ -130,16 +156,18 @@ for (const f of ["main.js", "styles.css", "manifest.json"]) fs.copyFileSync(path
 seedVault(vault, await loadBuildFullNote(root));
 fs.writeFileSync(path.join(vault, ".obsidian/community-plugins.json"), JSON.stringify(["vault-gantt"]));
 fs.writeFileSync(path.join(vault, ".obsidian/app.json"), JSON.stringify({ promptDelete: false }));
+let fakeLlm = null;
+try { fakeLlm = await startFakeLlm(root); } catch (e) { notes.push("台本AIサーバーを用意できませんでした: " + String(e.message).split("\n")[0].slice(0, 160)); }
 const holidays = []; // offline: no holiday fetch
 fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({
   taskFolder: "tasks", autoPriorityEnabled: true, ganttZoom: 28, ganttNationalHolidays: holidays, ganttNationalHolidaysUpdatedAt: ISO(new Date()),
   ganttTags: [["dev", "開発", "#2563eb"], ["design", "デザイン", "#7c3aed"], ["ops", "運用", "#12883e"], ["research", "調査", "#b16105"]].map(([key, name, color], order) => ({ key, name, color, order })),
-  ai: { preset: "custom", baseUrl: "http://127.0.0.1:9/v1", model: "sample-model", useApiKey: false },
+  ai: { preset: "custom", baseUrl: `http://127.0.0.1:${fakeLlm?.port ?? 9}/v1`, model: "sample-model", useApiKey: false },
 }));
 
 let rt;
-const finish = async (code) => { try { rt?.kill(); } catch { /* ignore */ } try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ } process.exit(code); };
-const hardStop = setTimeout(() => { console.error("[shots] overall timeout"); notes.push("全体のタイムアウト"); writeGallery(); finish(shots.length ? 0 : 1); }, Number(args.timeout || 170) * 1000);
+const finish = async (code) => { try { rt?.kill(); } catch { /* ignore */ } try { fakeLlm?.close(); } catch { /* ignore */ } try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ } process.exit(code); };
+const hardStop = setTimeout(() => { console.error("[shots] overall timeout"); notes.push("全体のタイムアウト"); writeGallery(); finish(shots.length ? 0 : 1); }, Number(args.timeout || 215) * 1000);
 hardStop.unref?.();
 
 function writeGallery() {
@@ -194,14 +222,22 @@ try {
     { id: "gantt", name: "ガントチャート", open: `app.plugins.plugins['vault-gantt'].navigation.activateGanttView()`, ready: `app.workspace.getLeavesOfType('task-gantt-view').length > 0 && document.querySelectorAll('.workspace-leaf-content[data-type="task-gantt-view"] *').length > 20`, wait: 1500 },
     { id: "workbench", name: "ワークベンチ", open: `app.plugins.plugins['vault-gantt'].navigation.activateView()`, ready: `app.workspace.getLeavesOfType('task-workbench-view').length > 0 && document.querySelectorAll('.workspace-leaf-content[data-type="task-workbench-view"] *').length > 20`, wait: 1500 },
     { id: "settings", name: "設定タブ", open: `(async () => { app.setting.open(); await new Promise(r => setTimeout(r, 400));  app.setting.openTabById('vault-gantt'); await new Promise(r => setTimeout(r, 300)); app.setting.activeTab?.display?.(); return [typeof app.setting, !!document.querySelector('.modal-container'), document.body.className].join('|'); })()`, popout: /^Settings|設定/, ready: `!!document.querySelector('.vertical-tab-content .setting-item')`, wait: 800 },
-    { id: "ai-chat", name: "AIチャット", open: `(async () => { await app.plugins.plugins['vault-gantt'].openAIChat('tab'); await new Promise(r => setTimeout(r, 500)); const i = document.querySelector('.vg-ai-composer textarea'); if (i) { i.value = 'デザイン確認を3日後ろへずらして。'; i.dispatchEvent(new Event('input', { bubbles: true })); } })()`, ready: `app.workspace.getLeavesOfType('vault-gantt-ai-chat').length > 0 && !!document.querySelector('.vg-ai-chat')`, wait: 800 },
+    // A real conversation against the scripted fake server: send, wait for the turn to finish (and the proposal card where the branch has one).
+    { id: "ai-chat", name: "AIチャット", open: `(async () => { const p = app.plugins.plugins['vault-gantt']; await p.openAIChat('tab'); await new Promise(r => setTimeout(r, 500)); try { await p.chatSession?.newConversation?.(); } catch {}
+        const t = Date.now(); while (Date.now() - t < 10000 && (!document.querySelector('.vg-ai-send') || document.querySelector('.vg-ai-send').disabled)) await new Promise(r => setTimeout(r, 200));
+        const i = document.querySelector('.vg-ai-composer textarea'); if (!i) return 'no composer'; i.value = 'デザイン確認を3日後ろへずらして'; i.dispatchEvent(new Event('input', { bubbles: true })); await new Promise(r => setTimeout(r, 200)); document.querySelector('.vg-ai-send')?.click(); return 'sent'; })()`,
+      ready: `!!document.querySelector('.vg-ai-assistant') && !document.querySelector('.vg-ai-message[data-streaming=true]') && !!document.querySelector('.vg-ai-send') && !document.querySelector('.vg-ai-send').hidden && !document.querySelector('.vg-ai-send').disabled`, readyTimeout: 45000,
+      after: `(async () => { const t = Date.now(); while (Date.now() - t < 4000 && !document.querySelector('.vg-pv-card')) await new Promise(r => setTimeout(r, 200)); await new Promise(r => setTimeout(r, 600)); const m = document.querySelector('.vg-ai-messages'); if (m) m.scrollTop = m.scrollHeight; return !!document.querySelector('.vg-pv-card'); })()`, wait: 600 },
+    // The Gantt while the proposal is pending (only where the card has a "Ganttで確認" button); runs right after ai-chat without closing it.
+    { id: "gantt-proposal", name: "ガント(変更案の確認中)", keep: true, open: `(async () => { const b = document.querySelector('.vg-pv-card [data-action=focus]'); if (!b) throw new Error('この版にはGanttで確認ボタンがありません'); if (b.getAttribute('aria-pressed') === 'true') b.click(); /* already focused by the new proposal: toggle off ... */ b.click(); /* ... and on, which also opens the Gantt */ await new Promise(r => setTimeout(r, 1500)); if (!app.workspace.getLeavesOfType('task-gantt-view').length) await app.plugins.plugins['vault-gantt'].navigation.activateGanttView(); const l = app.workspace.getLeavesOfType('task-gantt-view')[0]; if (l) app.workspace.setActiveLeaf(l, { focus: true }); })()`,
+      ready: `app.workspace.getLeavesOfType('task-gantt-view').length > 0 && !!document.querySelector('.workspace-leaf.mod-active .workspace-leaf-content[data-type="task-gantt-view"]') && document.querySelectorAll('.workspace-leaf-content[data-type="task-gantt-view"] *').length > 20`, wait: 1800 },
   ];
   for (const theme of ["light", "dark"]) {
     try { await closeAll(); await setTheme(theme === "dark"); } catch (e) { notes.push(`${theme}: テーマ切替に失敗 (${e.message})`); continue; }
     for (const v of VIEWS) {
       const file = `${v.id}-${theme}.png`;
       try {
-        await closeAll(); await sleep(300);
+        if (!v.keep) { await closeAll(); await sleep(300); }
         const opened = await Promise.race([cdp.evaluate(v.open), sleep(20000).then(() => { throw new Error("open timeout"); })]);
         if (process.env.VG_SHOTS_DEBUG) console.error('open ->', opened);
         let target = cdp, popup = null;
@@ -215,7 +251,8 @@ try {
         }
         try {
           await target.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: W / 2, y: H / 2 }).catch(() => {}); // drop stale hover tooltips
-          await target.waitForExpression(v.ready, { timeoutMs: 15000, label: v.id });
+          await target.waitForExpression(v.ready, { timeoutMs: v.readyTimeout ?? 15000, label: v.id });
+          if (v.after) await target.evaluate(v.after).catch(() => {});
           await sleep(v.wait);
           await target.evaluate("document.activeElement?.blur?.(); document.querySelectorAll('.tooltip').forEach((e) => e.remove())");
           await target.screenshot(path.join(out, file));
@@ -225,7 +262,7 @@ try {
       } catch (e) {
         notes.push(`${v.name} (${theme}) をスキップ: ${String(e.message).split("\n")[0].slice(0, 160)}`);
         console.error(`[shots] ${v.id}/${theme} skipped: ${e.message}`);
-        if (process.env.VG_SHOTS_DEBUG) console.error(await cdp.evaluate("(document.querySelector('.modal-container')?.outerHTML ?? 'no modal').slice(0, 1500)").catch(() => "?"));
+        if (process.env.VG_SHOTS_DEBUG) console.error(await cdp.evaluate("JSON.stringify([app.workspace.getLeavesOfType('task-gantt-view').length, document.querySelectorAll('.workspace-leaf-content[data-type=\"task-gantt-view\"] *').length, !!document.querySelector('.workspace-leaf.mod-active .workspace-leaf-content[data-type=\"task-gantt-view\"]'), app.workspace.activeLeaf?.view?.getViewType?.()])").catch(() => "?"));
       }
     }
   }

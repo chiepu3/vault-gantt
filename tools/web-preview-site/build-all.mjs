@@ -1,10 +1,13 @@
 // Builds every target in a targets file into <out>/b/<slug>/. One failure never aborts the rest.
 // Usage: node build-all.mjs --targets targets.json --tools <toolsCheckout> --work apps --out site
 //        [--shots]   also capture real-Obsidian screenshots into <out>/b/<slug>/shots/ (needs Xvfb + Obsidian, see obsidian-shots.mjs)
+//        [--prev <dir>]   a previous site (e.g. a clone of gh-pages): a target whose sha, tools version (toolsHash) and UTC build day are unchanged
+//                         is copied from <dir>/b/<slug>/ (preview AND shots) instead of rebuilt. Missing/invalid <dir> = rebuild everything.
 //        [--repo-url <git url or path>]   (default https://github.com/$GITHUB_REPOSITORY.git)
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync, readdirSync, statSync } from "node:fs";
+import { resolve, join, relative } from "node:path";
 import { parseArgs, escapeHtml } from "./common.mjs";
 
 const args = parseArgs(process.argv.slice(2), { work: "apps", out: "site" });
@@ -29,13 +32,52 @@ function errorPage(t, log) {
 <h1>ビルドに失敗しました</h1><p>ブランチ: <b>${escapeHtml(t.branch)}</b> (${escapeHtml(t.sha.slice(0, 7))})</p><pre>${escapeHtml(log)}</pre></html>`;
 }
 
+// Version of everything that shapes a target's output besides its commit: the preview shell/shim, the screenshot script and what it runs on.
+// Any change invalidates every cached target. The UTC day is part of the key too, because the sample data's dates are relative to "today".
+function hashTools() {
+  const files = [];
+  const walk = (d) => { for (const n of readdirSync(d).sort()) { if (n === "node_modules" || n === ".git") continue; const p = join(d, n); if (statSync(p).isDirectory()) walk(p); else files.push(p); } };
+  walk(join(tools, "tools/web-preview"));
+  for (const f of ["web-preview-site/obsidian-shots.mjs", "web-preview-site/build-all.mjs", "web-preview-site/common.mjs", "e2e/obsidian-runtime.mjs", "e2e/ci-install-obsidian.sh"]) if (existsSync(join(tools, "tools", f))) files.push(join(tools, "tools", f));
+  const h = createHash("sha256");
+  for (const f of files) h.update(relative(tools, f)).update("\0").update(readFileSync(f)).update("\0");
+  return h.digest("hex").slice(0, 16);
+}
+plan.toolsHash = hashTools();
+plan.builtDay = new Date().toISOString().slice(0, 10);
+plan.shotsEnabled = !!args.shots;
+let prev = null;
+if (args.prev) {
+  try { prev = { dir: resolve(args.prev), plan: JSON.parse(readFileSync(join(resolve(args.prev), "targets.json"), "utf8")) }; } catch (e) { console.log(`no usable --prev (${e.code || e.message}); building everything`); }
+  if (prev && (prev.plan.toolsHash !== plan.toolsHash || prev.plan.builtDay !== plan.builtDay)) {
+    console.log(`--prev is from another tools version or day (${prev.plan.toolsHash}/${prev.plan.builtDay} vs ${plan.toolsHash}/${plan.builtDay}); building everything`);
+    prev = null;
+  }
+}
+function reusable(t) {
+  const p = prev?.plan.targets?.find((x) => x.slug === t.slug && x.branch === t.branch);
+  if (!p || p.sha !== t.sha || p.status !== "success" || (args.shots && p.shots !== true)) return null;
+  const src = join(prev.dir, "b", t.slug);
+  return existsSync(join(src, "index.html")) && (!args.shots || existsSync(join(src, "shots", "index.html"))) ? { src, shots: p.shots } : null;
+}
+
 // package-lock hash -> directory holding an installed node_modules
 const installed = new Map();
-const { createHash } = await import("node:crypto");
 
 for (const t of plan.targets) {
   const dest = join(out, "b", t.slug);
   const app = join(work, t.slug);
+  const hit = reusable(t);
+  if (hit) {
+    try {
+      rmSync(dest, { recursive: true, force: true });
+      cpSync(hit.src, dest, { recursive: true });
+      t.status = "success";
+      if (args.shots) t.shots = true;
+      console.log(`[${t.branch}] reused from --prev (${t.sha.slice(0, 7)})`);
+      continue;
+    } catch (e) { console.error(`[${t.branch}] reuse failed, rebuilding: ${e.message}`); rmSync(dest, { recursive: true, force: true }); }
+  }
   let log = "";
   const step = (name, r) => { log += r.log + "\n"; if (!r.ok) throw new Error(`${name} failed`); };
   try {
@@ -63,7 +105,7 @@ for (const t of plan.targets) {
       try {
         step("app build", run("npm", ["run", "build"], app));
         const r = spawnSync("node", [join(tools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", tools, "--label", t.branch],
-          { cwd: app, encoding: "utf8", timeout: 190000, killSignal: "SIGKILL", maxBuffer: 16 << 20 });
+          { cwd: app, encoding: "utf8", timeout: 240000, killSignal: "SIGKILL", maxBuffer: 16 << 20 });
         log += `obsidian-shots: status ${r.status}\n${r.stdout || ""}${r.stderr || ""}\n`;
         console.log(`[${t.branch}] obsidian-shots exit ${r.status}\n${tail(`${r.stdout || ""}${r.stderr || ""}`, 25)}`);
         t.shots = r.status === 0 && existsSync(join(shotsDir, "index.html"));

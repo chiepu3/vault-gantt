@@ -82,13 +82,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb fonts-noto-cjk
       - name: Install Obsidian (sandbox-enabled)
         run: bash tools-src/tools/e2e/ci-install-obsidian.sh
+      # The previously published site (public repo: no token needed). build-all copies every target whose commit, tools version and UTC day
+      # are unchanged from it (preview + screenshots) instead of rebuilding, which keeps the 30-minute runs cheap and the gh-pages tree
+      # byte-identical (publish.sh then skips the push). A missing gh-pages branch just means "build everything".
+      - name: Fetch previous site (cache)
+        run: |
+          git clone -q --depth 1 --branch gh-pages --single-branch "https://github.com/${GITHUB_REPOSITORY}.git" prev-site || echo "no previous gh-pages; building everything"
+          rm -rf prev-site/.git
       - name: Build every target (failures are isolated per target)
         env:
           TARGETS_JSON: ${{ needs.plan.outputs.targets }}
         run: |
           printf '%s' "$TARGETS_JSON" > targets.json
           node tools-src/tools/web-preview-site/build-all.mjs \
-            --targets targets.json --tools tools-src --work apps --out site --shots
+            --targets targets.json --tools tools-src --work apps --out site --shots --prev prev-site
       - name: Render index
         run: node tools-src/tools/web-preview-site/render-index.mjs --targets site/targets.json --out site
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -150,7 +150,8 @@ const SCENARIOS: Array<{ re: RegExp; run: Scenario }> = [
   } },
 ];
 
-async function script(request: any, out: (s: string) => void): Promise<void> {
+/** Streams the scripted reply for one chat-completions request body as SSE text pieces (also bundled for node by tools/web-preview-site/obsidian-shots.mjs). */
+export async function script(request: any, out: (s: string) => void): Promise<void> {
   const messages: any[] = request.messages ?? [];
   const lastUser = messages.map((m) => m.role).lastIndexOf("user");
   const after = messages.slice(lastUser + 1);
