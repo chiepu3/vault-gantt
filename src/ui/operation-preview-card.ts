@@ -366,7 +366,8 @@ export class PreviewCardController {
       projection: this.pager.projectionFor(preview, outcome), loadingMore: this.pager.loading(id),
       loadError: this.pager.error(id), actionError: this.errors.get(id),
       handlers: {
-        onFocus: () => { previewPort.focus(focused ? null : id); if (!focused) void this.extras.openGantt?.(); },
+        // Always shows the change on the Gantt and scrolls to it; the Gantt's own button turns the highlight off.
+        onFocus: () => { if (!focused) previewPort.focus(id); void this.extras.openGantt?.(); },
         onApprove: () => { void this.run(id, () => humanApprovalPort.approve(id), "保存できませんでした"); },
         onReject: () => { void this.run(id, () => previewPort.reject(id), "却下できませんでした"); },
         onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); this.extras.repreviewed?.(id, next.previewId); }, "再プレビューできませんでした"); },

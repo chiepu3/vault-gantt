@@ -1589,6 +1589,9 @@ export class TaskGanttView extends ItemView {
     nodes?.forEach((node) => { if (typeof node.animate === "function") node.animate([{ opacity: 0.2 }], { duration: 400, easing: "ease-out" }); });
   }
 
+  /** "Ganttで確認" pressed again: bring the first changed row and date back into view. */
+  revealPreview(): void { this.scrolledToPreviewId = undefined; this.revealPreviewTarget(); }
+
   /** Scrolls the real chart to the first changed row/date once per newly focused preview. */
   private revealPreviewTarget(): void {
     const layer = this.previewLayer;

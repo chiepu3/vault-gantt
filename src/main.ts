@@ -586,7 +586,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
         const folder = this.settings.taskFolder.replace(/\/+$/, "");
         return file && file.path.startsWith(folder + "/") && file.extension === "md" ? file.basename : undefined;
       },
-      openGantt: () => this.navigation.activateGanttView(),
+      openGantt: async () => {
+        await this.navigation.activateGanttView();
+        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT)) (leaf.view as TaskGanttView).revealPreview?.();
+      },
       canUndo: (result) => !!result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel,
       undoStatus: (result) => {
         if (result.undoLabel && this.historyManager.peekUndoLabel() === result.undoLabel) return "available";

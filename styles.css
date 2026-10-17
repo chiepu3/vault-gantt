@@ -970,7 +970,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-actions .vg-pv-button { height: 26px; padding: 0 4px; font-size: 12px; white-space: nowrap; }
 .vg-ai-card-slot .vg-pv-card { padding: 10px 8px 10px 10px; }
 .vg-pv-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
-.vg-pv-button[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--interactive-accent); }
+.vg-pv-button[aria-pressed="true"] { border-color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, var(--interactive-normal)); color: var(--text-normal); box-shadow: none; }
 .vg-pv-rest { margin-top: 6px; }
 .vg-pv-readlist { margin: 4px 0; padding-inline-start: 1.4em; }
 .vg-pv-chat-previews { display: block; }
