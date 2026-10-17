@@ -50,6 +50,70 @@ export function normalizeAiSettings(raw: unknown): AiConnectionSettings {
   return result;
 }
 
+/** One saved connection. `id` is stable (it names the secret-storage entry); `addedModels` are the models the user picked for the chat. */
+export interface AiProfile extends AiConnectionSettings {
+  id: string;
+  name: string;
+  addedModels: string[];
+}
+
+/** Everything under `ai` in data.json. */
+export interface AiStore {
+  activeId: string;
+  profiles: AiProfile[];
+}
+
+/** Fields the settings screen may change on a profile (the key and its origin go through dedicated calls). */
+export type AiSettingsPatch = Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">> & { name?: string; addedModels?: string[] };
+
+export const DEFAULT_PROFILE_ID = "default";
+
+/** The first profile keeps the pre-profile secret id, so an existing key survives the upgrade. */
+export function aiSecretId(profileId?: string): string {
+  return !profileId || profileId === DEFAULT_PROFILE_ID ? AI_SECRET_ID : `${AI_SECRET_ID}-${profileId}`;
+}
+
+export function uniqueStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))];
+}
+
+export function normalizeAiProfile(raw: unknown, fallbackId: string): AiProfile {
+  const base = normalizeAiSettings(raw);
+  const value = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const id = typeof value.id === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(value.id) ? value.id : fallbackId;
+  const name = typeof value.name === "string" && value.name.trim() ? value.name.trim() : AI_PRESET_LABELS[base.preset];
+  // A store written before models could be added has only `model`; keep it selectable.
+  const addedModels = Array.isArray(value.addedModels) ? uniqueStrings(value.addedModels) : base.model ? [base.model] : [];
+  return { ...base, id, name, addedModels };
+}
+
+export function defaultAiStore(): AiStore {
+  return { activeId: DEFAULT_PROFILE_ID, profiles: [normalizeAiProfile({}, DEFAULT_PROFILE_ID)] };
+}
+
+/** Accepts the current `{ activeId, profiles }` shape and the older flat connection object. */
+export function normalizeAiStore(raw: unknown): AiStore {
+  const rawProfiles = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { profiles?: unknown }).profiles : undefined;
+  if (!Array.isArray(rawProfiles)) return { activeId: DEFAULT_PROFILE_ID, profiles: [normalizeAiProfile(raw, DEFAULT_PROFILE_ID)] };
+  const profiles: AiProfile[] = [];
+  const seen = new Set<string>();
+  rawProfiles.forEach((item, index) => {
+    const profile = normalizeAiProfile(item, index === 0 ? DEFAULT_PROFILE_ID : `p${index + 1}`);
+    if (seen.has(profile.id)) profile.id = newAiProfileId(seen);
+    seen.add(profile.id);
+    profiles.push(profile);
+  });
+  if (!profiles.length) return defaultAiStore();
+  const activeId = (raw as { activeId?: unknown }).activeId;
+  return { activeId: profiles.some((profile) => profile.id === activeId) ? (activeId as string) : profiles[0].id, profiles };
+}
+
+export function newAiProfileId(existing: Iterable<string>): string {
+  const used = new Set(existing);
+  for (let n = used.size + 1; ; n++) if (!used.has(`p${n}`)) return `p${n}`;
+}
+
 export function normalizeBaseUrl(url: string): string { return url.trim().replace(/\/+$/, ""); }
 
 /** Only a validated origin can be stored or shown; credentials and paths never appear in messages. */
@@ -66,9 +130,9 @@ export function aiKeyOriginError(settings: Pick<AiConnectionSettings, "baseUrl" 
     : "保存済みのキーの接続先を確認できません。この接続先で使うにはキーを入れ直してください。";
 }
 
-export function toConnectionConfig(settings: AiConnectionSettings): ConnectionConfig {
+export function toConnectionConfig(settings: AiConnectionSettings & { id?: string }): ConnectionConfig {
   const connectionError = aiKeyOriginError(settings);
-  return { provider: "openai-compatible", endpoint: normalizeBaseUrl(settings.baseUrl), model: settings.model.trim(), auth: settings.useApiKey ? "secret" : "none", secretId: settings.useApiKey ? AI_SECRET_ID : "", ...(connectionError ? { connectionError } : {}) };
+  return { provider: "openai-compatible", endpoint: normalizeBaseUrl(settings.baseUrl), model: settings.model.trim(), auth: settings.useApiKey ? "secret" : "none", secretId: settings.useApiKey ? aiSecretId(settings.id) : "", ...(connectionError ? { connectionError } : {}) };
 }
 
 export type ModelListResult = { ok: true; models: string[] } | { ok: false; reason: string };

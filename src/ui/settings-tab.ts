@@ -4,7 +4,7 @@ import { Notice, PluginSettingTab, Setting, moment } from "obsidian";
 
 import type { App, Plugin, ColorComponent, TextComponent, DropdownComponent } from "obsidian";
 
-import { AI_PRESET_LABELS, AI_PRESET_URLS, aiKeyOriginError, connectionOrigin, type AiConnectionSettings, type AiPreset, type ModelListResult } from "../ai/connection-settings";
+import { AI_PRESET_LABELS, AI_PRESET_URLS, aiKeyOriginError, connectionOrigin, type AiPreset, type AiProfile, type AiSettingsPatch, type ModelListResult } from "../ai/connection-settings";
 
 import type {
   DailyTodoSourceConfig,
@@ -29,8 +29,12 @@ export interface SettingsTabHost {
   generateMcpToken?(regenerate?: boolean): Promise<void>;
   copyMcpToken?(): Promise<void>;
   /** AI chat connection. Optional so hosts without AI chat (and tests) skip the section. */
-  getAiSettings?(): AiConnectionSettings;
-  updateAiSettings?(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>): Promise<void>;
+  getAiSettings?(): AiProfile;
+  updateAiSettings?(patch: AiSettingsPatch): Promise<void>;
+  listAiProfiles?(): { activeId: string; profiles: Array<Pick<AiProfile, "id" | "name" | "preset" | "baseUrl">> };
+  addAiProfile?(): Promise<string>;
+  selectAiProfile?(id: string): Promise<void>;
+  deleteAiProfile?(id: string): Promise<void>;
   hasAiApiKey?(): boolean;
   setAiApiKey?(key: string): Promise<void>;
   clearAiApiKey?(): Promise<void>;
@@ -168,9 +172,27 @@ export function ensureGanttTagDefinitions(
 
 
 
-interface AiModelRow { setting: Setting; mode: "dropdown" | "text"; input?: TextComponent; refetch?: { setDisabled(disabled: boolean): unknown } }
+type SettingsTabId = "general" | "gantt" | "tags" | "daily" | "ai" | "integration";
+const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTabId; label: string }> = [
+  { id: "general", label: "基本" },
+  { id: "gantt", label: "Gantt" },
+  { id: "tags", label: "タグ" },
+  { id: "daily", label: "Daily ToDo" },
+  { id: "ai", label: "AI チャット" },
+  { id: "integration", label: "連携" },
+];
+
+/** Most rows the available-model list draws at once; the search box narrows the rest. */
+const AI_MODEL_LIST_LIMIT = 50;
+
+/** Case-insensitive match of every whitespace-separated word against the model id. */
+export function filterAiModels(models: readonly string[], query: string): string[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length ? models.filter((id) => words.every((word) => id.toLowerCase().includes(word))) : [...models];
+}
 
 export class TaskWorkbenchSettingTab extends PluginSettingTab {
+  private activeTab: SettingsTabId = "general";
   constructor(
     app: App,
     private readonly hostPlugin: SettingsTabHost & Plugin
@@ -184,11 +206,37 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName("Task Workbench").setHeading();
 
-    // section 1, 基本設定
-    new Setting(containerEl).setName("基本設定").setHeading();
+    const nav = containerEl.createDiv({ cls: "vg-settings-tabs" });
+    nav.setAttribute("role", "tablist");
+    const panels = new Map<SettingsTabId, HTMLElement>();
+    const buttons = new Map<SettingsTabId, HTMLElement>();
+    const showTab = (id: SettingsTabId): void => {
+      this.activeTab = id;
+      for (const [key, panel] of panels) panel.toggleClass("is-active", key === id);
+      for (const [key, button] of buttons) {
+        button.toggleClass("is-active", key === id);
+        button.setAttribute("aria-selected", String(key === id));
+      }
+    };
+    for (const tab of SETTINGS_TABS) {
+      const button = nav.createEl("button", { cls: "vg-settings-tab", text: tab.label });
+      button.setAttribute("role", "tab");
+      button.addEventListener("click", () => showTab(tab.id));
+      buttons.set(tab.id, button);
+    }
+    const panelFor = (id: SettingsTabId): HTMLElement => {
+      const panel = containerEl.createDiv({ cls: "vg-settings-panel" });
+      panel.setAttribute("role", "tabpanel");
+      panels.set(id, panel);
+      return panel;
+    };
+
+    // tab 1, 基本
+    const general = panelFor("general");
+    new Setting(general).setName("基本設定").setHeading();
 
 
-    new Setting(containerEl)
+    new Setting(general)
       .setName("タスクフォルダ")
       .setDesc("例: tasks")
       .addText((text) =>
@@ -202,7 +250,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
 
-    new Setting(containerEl)
+    new Setting(general)
       .setName("ファイル名に日付を付ける")
       .setDesc("tasks/yyyy/mm/yyyy-mm-dd タイトル.md のように作成")
       .addToggle((toggle) =>
@@ -215,7 +263,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
 
-    new Setting(containerEl)
+    new Setting(general)
       .setName("完了を既定で隠す")
       .addToggle((toggle) =>
         toggle
@@ -227,7 +275,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
 
-    new Setting(containerEl)
+    new Setting(general)
       .setName("現在の進捗の行数")
       .addText((text) => {
         text.inputEl.type = "number";
@@ -248,7 +296,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       });
 
     // save first, then launch the existing force-update path.
-    new Setting(containerEl)
+    new Setting(general)
       .setName("期限にもとづく優先度の自動設定")
       .setDesc(
         "オンの場合、期限切れ・当日を★★★★★、3日以内を★★★★、7日以内を★★★、14日以内を★★、それ以降を★として、起動時などに1日単位で更新します。手動設定は上書きしません。"
@@ -264,10 +312,10 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
     // section 2, Task Gantt 休日
-    new Setting(containerEl).setName("休日").setHeading();
+    new Setting(general).setName("休日").setHeading();
 
 
-    new Setting(containerEl)
+    new Setting(general)
       .setName("内閣府の祝日")
       .setDesc(
         `内閣府のCSVを最大30日ごとに取得します。最終更新: ${this.hostPlugin.settings.ganttNationalHolidaysUpdatedAt || "未取得"}`
@@ -281,7 +329,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
 
-    new Setting(containerEl)
+    new Setting(general)
       .setName("今年度の特別休暇")
       .setDesc(
         "1行に1日、YYYY-MM-DD または YYYY/M/D で入力します。公式祝日と特別休暇は曜日クリックでは解除できません。"
@@ -301,71 +349,73 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
           });
       });
 
-    // section 3, Task Gantt 機能の有効化
-    new Setting(containerEl)
+    // tab 2, Gantt
+    const gantt = panelFor("gantt");
+    new Setting(gantt)
       .setName("機能の有効化")
       .setHeading();
 
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "Daily ToDoを表示",
       "オンの場合、Daily ToDo 行と編集用popover機能を有効にします。OFFにすると関連UIを表示しません。",
       "ganttFeatureDailyTodoEnabled"
     );
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "作業時間を表示",
       "オンの場合、作業時間集計・実績/想定ラベル・編集popover・日別内訳popover機能を有効にします。OFFにすると関連UIを表示しません。",
       "ganttFeatureWorkloadEnabled"
     );
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "その他 行を表示",
       "オンの場合、「その他」行の簡易ToDo/イベント追加・移動機能を有効にします。OFFにすると関連UIを表示しません。",
       "ganttFeatureEventsEnabled"
     );
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "同期機能",
       "OFFにすると、Gantt の同期系ボタンを隠します。既存データは削除しません。",
       "ganttFeatureSyncEnabled"
     );
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "タグ機能",
       "OFFにすると、タグの右クリックメニュー、タグ色、タグフィルター、タグ表示を無効にします。タグ定義と既存タグは保持します。",
       "ganttFeatureTagsEnabled"
     );
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "Gantt差分描画を有効化",
       "オンの場合、変更されたタスク行のみを再描画します。大量のタスクがある場合にパフォーマンスが向上します。OFFにすると毎回フル再描画します。",
       "incrementalGanttRender"
     );
     this.addImmediateToggle(
-      containerEl,
+      gantt,
       "親タスクの高さを表示中の期間に合わせて詰める",
       "オンの場合、表示中の期間（前後に余白あり）にあるサブタスクだけで親タスクの高さを決めます。長期間のタスクで、過去や未来に重なりが多くても今見ている範囲が縦に間延びしません。OFFにすると全期間で高さを決めます。",
       "compactRowsToViewport"
     );
 
-    // section 4, Task Gantt タグ (display toggles only).
-    new Setting(containerEl).setName("タグ").setHeading();
+    // tab 3, タグ
+    const tags = panelFor("tags");
+    new Setting(tags).setName("タグ").setHeading();
     this.addImmediateToggle(
-      containerEl,
+      tags,
       "サブタスク上にタグ名を表示",
       "オンの場合、サブタスク bar の中に優先タグ名を小さく表示します。",
       "ganttShowTagsOnBars"
     );
     this.addImmediateToggle(
-      containerEl,
+      tags,
       "親タスクのタグ名を子タスクにも表示",
       "オンの場合、親タスク由来のタグ色で塗った子タスクにも、親タグ名を小さく表示します。OFFでも色の継承は行います。",
       "ganttShowParentTagsOnChildBars",
       true
     );
     this.addImmediateToggle(
-      containerEl,
+      tags,
       "親タスク列にタグ名を表示",
       "オンの場合、親タスク名の下にタグ名を小さく表示します。",
       "ganttShowTagsOnParents"
@@ -374,26 +424,33 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     // The wrapper is retained so tag operations can redraw only this portion
     // of the settings screen; the other sections keep their existing DOM.
-    const tagListContainer = containerEl.createDiv({
+    const tagListContainer = tags.createDiv({
       cls: "task-workbench-gantt-tag-list",
     });
     this.renderTagList(tagListContainer);
 
 
+    // tab 4, Daily ToDo
+    const daily = panelFor("daily");
     // Configure the Daily ToDo sources. Visibility is controlled by the
     // feature toggle above; this list determines which sources are included.
-    new Setting(containerEl).setName("Daily ToDo").setHeading();
-    const dailyTodoSourceListContainer = containerEl.createDiv({
+    new Setting(daily).setName("Daily ToDo").setHeading();
+    const dailyTodoSourceListContainer = daily.createDiv({
       cls: "task-workbench-daily-todo-source-list",
     });
     this.renderDailyTodoSourceList(dailyTodoSourceListContainer);
 
 
-    // section 6, Task Gantt 外部同期
-    new Setting(containerEl).setName("外部同期").setHeading();
+    // tab 5, AI チャット
+    const ai = panelFor("ai");
+    this.renderAiSettings(ai.createDiv({ cls: "vg-settings-ai" }));
+
+    const integration = panelFor("integration");
+    // tab 6, 連携 (AI is built first so the tab order below stays AI, 連携)
+    new Setting(integration).setName("外部同期").setHeading();
 
 
-    new Setting(containerEl)
+    new Setting(integration)
       .setName("Gantt サーバー同期")
       .setDesc("オンにすると、設定したサーバーURLへ読み取り専用Gantt snapshotを定期同期します。")
       .addToggle((toggle) =>
@@ -407,7 +464,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
 
-    new Setting(containerEl)
+    new Setting(integration)
       .setName("Gantt サーバー URL")
       .setDesc("例: http://localhost:8787 。/api/snapshot は自動で補います。")
       .addText((text) =>
@@ -422,7 +479,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
 
-    new Setting(containerEl)
+    new Setting(integration)
       .setName("Gantt 同期間隔（分）")
       .setDesc("変更がない場合は送信を省略します。最小値は1です。")
       .addText((text) => {
@@ -445,7 +502,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     // intentionally fire-and-forget, so timer/manual sync can
     // overlap exactly as the existing Gantt sync path permits.
-    new Setting(containerEl)
+    new Setting(integration)
       .setName("今すぐ同期")
       .setDesc("現在のGantt snapshotをすぐにサーバーへ送信します。")
       .addButton((button) =>
@@ -456,8 +513,8 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
           })
       );
 
-    this.renderAiSettings(containerEl.createDiv({ cls: "vg-settings-ai" }));
-    this.renderMcpSettings(containerEl);
+    this.renderMcpSettings(integration);
+    showTab(this.activeTab);
     const { version, commit, builtAt } = getBuildInfo();
     containerEl.createDiv({
       cls: "setting-item-description",
@@ -494,16 +551,18 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
  *
  * Render only the tag-definition portion of the settings tab.
  */
+  /** Models the connection reports (not necessarily added). */
   private aiModels: string[] = [];
   private aiModelNote = "";
-  private aiTestNote = "";
   private aiLoading = false;
   private aiKeyVisible = false;
   private aiFetchSeq = 0;
+  private aiSearch = "";
   private aiEl: HTMLElement | null = null;
-  private aiModelHost: HTMLElement | null = null;
-  private aiModelRow: AiModelRow | null = null;
-  private aiTestSetting: Setting | null = null;
+  private aiAddedHost: HTMLElement | null = null;
+  private aiAvailHost: HTMLElement | null = null;
+  private aiAvailSetting: Setting | null = null;
+  private aiRefetch: { setDisabled(disabled: boolean): unknown } | null = null;
   private aiOriginSetting: Setting | null = null;
   private aiUrlHelp = "";
 
@@ -513,7 +572,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     this.aiEl = containerEl;
     this.aiModels = [];
     this.aiModelNote = "";
-    this.aiTestNote = "";
+    this.aiSearch = "";
     this.aiKeyVisible = false;
     this.drawAiSettings();
     void this.refreshAiModels();
@@ -530,19 +589,18 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       this.aiModels = [];
       this.aiModelNote = originError;
       this.aiLoading = false;
-      this.drawAiModelPart();
+      this.drawAiAvailable();
       return { ok: false, reason: originError };
     }
     if (settings.useApiKey && !host.hasAiApiKey?.()) {
       this.aiModels = [];
-      this.aiModelNote = "APIキーを登録すると、モデルの一覧を取得できます。";
+      this.aiModelNote = "APIキーを登録すると、利用できるモデルの一覧を取得できます。";
       this.aiLoading = false;
-      this.drawAiModelPart();
+      this.drawAiAvailable();
       return null;
     }
     this.aiLoading = true;
-    // Only the status text changes here: the field the user may be typing in stays.
-    this.updateAiModelStatus();
+    this.updateAiAvailStatus();
     const result = await host.fetchAiModels();
     if (seq !== this.aiFetchSeq) return result;
     this.aiLoading = false;
@@ -551,87 +609,26 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       this.aiModelNote = "";
     } else {
       this.aiModels = [];
-      this.aiModelNote = `一覧を取得できませんでした。${result.reason}モデルIDは直接入力できます。`;
+      this.aiModelNote = `一覧を取得できませんでした。${result.reason}下の欄からモデルIDを直接追加できます。`;
     }
-    this.drawAiModelPart();
+    this.drawAiAvailable();
     return result;
   }
 
-  private aiModelDesc(): string {
+  private aiAvailDesc(): string {
     return this.aiLoading
       ? "モデルの一覧を取得しています…"
       : this.aiModels.length
-        ? `接続先から${this.aiModels.length}件のモデルを取得しました。`
-        : this.aiModelNote || "「再取得」で接続先からモデルの一覧を取得します。";
+        ? `接続先から${this.aiModels.length}件取得しました。使いたいモデルを「追加」してください。`
+        : this.aiModelNote || "「再取得」で接続先から利用できるモデルの一覧を取得します。";
   }
 
-  private updateAiModelStatus(): void {
-    this.aiModelRow?.setting.setDesc(this.aiModelDesc());
-    this.aiModelRow?.refetch?.setDisabled(this.aiLoading);
+  private updateAiAvailStatus(): void {
+    this.aiAvailSetting?.setDesc(this.aiAvailDesc());
+    this.aiRefetch?.setDisabled(this.aiLoading);
   }
 
-  private setAiTestNote(note: string): void {
-    this.aiTestNote = note;
-    this.aiTestSetting?.setDesc(this.aiTestNote || "接続先とAPIキーが使えるかを確認します。");
-  }
-
-  /**
-   * Redraws the model row only. A manual model field that has focus is kept (the
-   * list is applied when it loses focus); other fields are never touched.
-   */
-  private drawAiModelPart(): void {
-    const hostEl = this.aiModelHost;
-    const settings = this.hostPlugin.getAiSettings?.();
-    if (!hostEl || !settings) return;
-    const mode = this.aiModels.length ? "dropdown" : "text";
-    const row = this.aiModelRow;
-    if (row?.mode === "text") {
-      const inputEl = row.input?.inputEl as (HTMLInputElement | undefined);
-      const focused = !!inputEl && inputEl.ownerDocument?.activeElement === inputEl;
-      if (mode === "text" || focused) { this.updateAiModelStatus(); return; }
-    }
-    hostEl.replaceChildren();
-    const modelSetting = new Setting(hostEl).setName("モデル");
-    const created: AiModelRow = { setting: modelSetting, mode };
-    this.aiModelRow = created;
-    modelSetting.setDesc(this.aiModelDesc());
-    if (mode === "dropdown") {
-      const options: Record<string, string> = {};
-      if (!settings.model) options[""] = "選択してください";
-      else if (!this.aiModels.includes(settings.model)) options[settings.model] = `${settings.model}（一覧にありません）`;
-      for (const id of this.aiModels) options[id] = id;
-      modelSetting.addDropdown((dropdown) =>
-        dropdown.addOptions(options).setValue(settings.model).onChange(async (value: string) => {
-          await this.changeAiSettings({ model: value }, false);
-        })
-      );
-    } else {
-      modelSetting.addText((text) => {
-        created.input = text;
-        text.inputEl.addEventListener("focusout", () => {
-          if (this.aiModels.length && this.aiModelRow === created) this.drawAiModelPart();
-        });
-        return text
-          .setValue(settings.model)
-          .setPlaceholder("モデルID")
-          .onChange(async (value: string) => {
-            await this.changeAiSettings({ model: value.trim() }, false);
-          });
-      });
-    }
-    modelSetting.addButton((button) => {
-      created.refetch = button;
-      return button
-        .setButtonText("再取得")
-        .setDisabled(this.aiLoading)
-        .onClick(() => {
-          this.setAiTestNote("");
-          void this.refreshAiModels();
-        });
-    });
-  }
-
-  private async changeAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>, refetch: boolean): Promise<void> {
+  private async changeAiSettings(patch: AiSettingsPatch, refetch: boolean): Promise<boolean> {
     try {
       await this.hostPlugin.updateAiSettings?.(patch);
       const settings = this.hostPlugin.getAiSettings?.();
@@ -642,19 +639,17 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
         this.aiLoading = false;
         this.aiModels = [];
         this.aiModelNote = originError;
-        this.drawAiModelPart();
+        this.drawAiAvailable();
       }
     } catch {
       new Notice("AI接続設定を保存できませんでした。");
-      return;
+      return false;
     }
-    if (refetch) {
-      this.setAiTestNote("");
-      await this.refreshAiModels();
-    }
+    if (refetch) await this.refreshAiModels();
+    return true;
   }
 
-  private aiUrlDescription(settings: AiConnectionSettings): string {
+  private aiUrlDescription(settings: AiProfile): string {
     const description = aiKeyOriginError(settings) ?? this.aiUrlHelp;
     const origin = connectionOrigin(settings.baseUrl);
     if (settings.useApiKey && origin) {
@@ -664,6 +659,18 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       }
     }
     return description;
+  }
+
+  /** Switches to another profile (or a new one) and redraws the whole AI tab. */
+  private async switchAiProfile(action: () => Promise<unknown>, failure: string): Promise<void> {
+    try { await action(); } catch { new Notice(failure); return; }
+    this.aiModels = [];
+    this.aiModelNote = "";
+    this.aiSearch = "";
+    ++this.aiFetchSeq;
+    this.aiLoading = false;
+    this.drawAiSettings();
+    void this.refreshAiModels();
   }
 
   private drawAiSettings(): void {
@@ -678,8 +685,41 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       "OpenAI互換のAPIに接続します。メッセージを送ると、会話の内容と必要なタスク情報が接続先へ送られます。"
     );
 
+    // --- 接続プロファイル
+    new Setting(el).setName("接続プロファイル").setHeading();
+    const profiles = host.listAiProfiles?.();
+    if (profiles) {
+      const labels: Record<string, string> = {};
+      for (const profile of profiles.profiles) labels[profile.id] = profile.name;
+      new Setting(el)
+        .setName("使用する接続")
+        .setDesc("接続先・APIキー・追加したモデルは接続ごとに保存されます。")
+        .addDropdown((dropdown) =>
+          dropdown.addOptions(labels).setValue(profiles.activeId).onChange((id: string) =>
+            this.switchAiProfile(() => host.selectAiProfile!(id), "接続を切り替えられませんでした。"))
+        )
+        .addButton((button) =>
+          button.setButtonText("追加").onClick(() =>
+            this.switchAiProfile(() => host.addAiProfile!(), "接続を追加できませんでした。"))
+        )
+        .addButton((button) =>
+          button.setButtonText("削除").setDisabled(profiles.profiles.length <= 1).onClick(() =>
+            this.switchAiProfile(() => host.deleteAiProfile!(settings.id), "接続を削除できませんでした。"))
+        );
+      new Setting(el)
+        .setName("接続の名前")
+        .addText((text) => {
+          text.inputEl.addEventListener("change", () => this.drawAiSettings());
+          return text.setValue(settings.name).setPlaceholder("接続の名前").onChange(async (value: string) => {
+            if (value.trim()) await this.changeAiSettings({ name: value.trim() }, false);
+          });
+        });
+    }
+
+    // --- 接続先
+    new Setting(el).setName("接続先").setHeading();
     new Setting(el)
-      .setName("接続先")
+      .setName("サービス")
       .setDesc("OpenRouter、ローカルで動かしているLLM、その他のOpenAI互換APIから選びます。")
       .addDropdown((dropdown) =>
         dropdown
@@ -689,11 +729,10 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
             const preset = value as AiPreset;
             this.aiModels = [];
             this.aiModelNote = "";
-            this.aiTestNote = "";
             await this.changeAiSettings(
               preset === "custom"
-                ? { preset, model: "" }
-                : { preset, baseUrl: AI_PRESET_URLS[preset], useApiKey: preset === "openrouter", model: "" },
+                ? { preset, model: "", addedModels: [] }
+                : { preset, baseUrl: AI_PRESET_URLS[preset], useApiKey: preset === "openrouter", model: "", addedModels: [] },
               false
             );
             this.drawAiSettings();
@@ -712,10 +751,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       .setDesc(this.aiUrlDescription(settings))
       .addText((text) => {
         text.inputEl.disabled = settings.preset === "openrouter";
-        text.inputEl.addEventListener("change", () => {
-          this.setAiTestNote("");
-          void this.refreshAiModels();
-        });
+        text.inputEl.addEventListener("change", () => void this.refreshAiModels());
         return text
           .setValue(settings.baseUrl)
           .setPlaceholder("https://example.com/v1")
@@ -738,24 +774,124 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     if (settings.useApiKey) this.drawAiKeySetting(el);
 
-    this.aiModelHost = el.createDiv();
-    this.aiModelRow = null;
-    this.drawAiModelPart();
-
-    this.aiTestSetting = new Setting(el)
+    new Setting(el)
       .setName("接続テスト")
-      .setDesc(this.aiTestNote || "接続先とAPIキーが使えるかを確認します。")
+      .setDesc("接続先とAPIキーが使えるかを確認します。結果は通知で表示します。")
       .addButton((button) =>
         button.setButtonText("接続テスト").onClick(async () => {
           const result = await this.refreshAiModels();
           const model = host.getAiSettings?.().model ?? "";
-          this.setAiTestNote(!result
-            ? "APIキーを登録してから試してください。"
-            : result.ok
-              ? `接続できました。モデルは${result.models.length}件あります。${model && !result.models.includes(model) ? "選択中のモデルは一覧にありません。" : ""}`
-              : `接続できませんでした。${result.reason}`);
+          if (!result) new Notice("APIキーを登録してから試してください。", 6000);
+          else if (result.ok) new Notice(`接続できました。利用できるモデルは${result.models.length}件です。${model && !result.models.includes(model) ? "\n使用中のモデルは一覧にありません。" : ""}`, 5000);
+          else new Notice(`接続できませんでした。${result.reason}`, 10000);
         })
       );
+
+    // --- モデル
+    new Setting(el).setName("モデル").setHeading();
+    this.aiAddedHost = el.createDiv({ cls: "vg-ai-added-models" });
+    this.aiAvailHost = el.createDiv({ cls: "vg-ai-available-models" });
+    this.aiAvailSetting = null;
+    this.drawAiAdded();
+    this.drawAiAvailable();
+  }
+
+  /** The models the user picked: only these appear in the chat's model menu. */
+  private drawAiAdded(): void {
+    const hostEl = this.aiAddedHost;
+    const settings = this.hostPlugin.getAiSettings?.();
+    if (!hostEl || !settings) return;
+    hostEl.replaceChildren();
+    new Setting(hostEl)
+      .setName("追加したモデル")
+      .setDesc(settings.addedModels.length
+        ? "チャットで選べるモデルです。「使用」で既定のモデルを切り替えます。"
+        : "まだありません。下の「利用できるモデル」から追加するか、モデルIDを直接追加してください。");
+    for (const id of settings.addedModels) {
+      const current = id === settings.model;
+      const row = new Setting(hostEl).setName(id);
+      row.settingEl.addClass("vg-ai-model-row");
+      if (current) row.settingEl.addClass("is-current");
+      row
+        .addButton((button) => button.setButtonText(current ? "使用中" : "使用").setCta().setDisabled(current).onClick(async () => {
+          if (await this.changeAiSettings({ model: id }, false)) this.drawAiAdded();
+        }))
+        .addButton((button) => button.setButtonText("削除").onClick(async () => {
+          const fresh = this.hostPlugin.getAiSettings?.();
+          const next = (fresh?.addedModels ?? []).filter((added) => added !== id);
+          const patch: AiSettingsPatch = { addedModels: next };
+          if (fresh?.model === id) patch.model = next[0] ?? "";
+          if (await this.changeAiSettings(patch, false)) { this.drawAiAdded(); this.drawAiAvailableList(); }
+        }));
+    }
+  }
+
+  /** The connection's full model list with a search box; adding copies a model into 追加したモデル. */
+  private drawAiAvailable(): void {
+    const hostEl = this.aiAvailHost;
+    if (!hostEl) return;
+    hostEl.replaceChildren();
+    const setting = new Setting(hostEl).setName("利用できるモデル").setDesc(this.aiAvailDesc());
+    this.aiAvailSetting = setting;
+    setting.addText((text) => {
+      text.inputEl.type = "search";
+      text.inputEl.addEventListener("input", () => { this.aiSearch = text.getValue(); this.drawAiAvailableList(); });
+      return text.setValue(this.aiSearch).setPlaceholder("モデルを検索");
+    });
+    setting.addButton((button) => {
+      this.aiRefetch = button;
+      return button.setButtonText("再取得").setDisabled(this.aiLoading).onClick(() => void this.refreshAiModels());
+    });
+    this.aiListEl = hostEl.createDiv({ cls: "vg-ai-model-list" });
+    this.drawAiAvailableList();
+
+    let manual = "";
+    new Setting(hostEl)
+      .setName("モデルIDを直接追加")
+      .setDesc("一覧に出ないモデルや、一覧を取得できない接続先で使います。")
+      .addText((text) => text.setPlaceholder("例: openai/gpt-4o").onChange((value: string) => { manual = value.trim(); }))
+      .addButton((button) => button.setButtonText("追加").onClick(async () => {
+        if (!manual) { new Notice("モデルIDを入力してください"); return; }
+        if (await this.addAiModel(manual)) this.drawAiAvailable();
+      }));
+  }
+
+  private aiListEl: HTMLElement | null = null;
+
+  /** Redraws only the rows, so the search box keeps focus while typing. */
+  private drawAiAvailableList(): void {
+    const listEl = this.aiListEl;
+    const settings = this.hostPlugin.getAiSettings?.();
+    if (!listEl || !settings) return;
+    listEl.replaceChildren();
+    if (!this.aiModels.length) return;
+    const matches = filterAiModels(this.aiModels, this.aiSearch);
+    if (!matches.length) {
+      listEl.createDiv({ cls: "setting-item-description vg-ai-model-empty", text: "一致するモデルがありません。" });
+      return;
+    }
+    for (const id of matches.slice(0, AI_MODEL_LIST_LIMIT)) {
+      const added = settings.addedModels.includes(id);
+      const row = new Setting(listEl).setName(id);
+      row.settingEl.addClass("vg-ai-model-row");
+      row.addButton((button) => button.setButtonText(added ? "追加済み" : "追加").setDisabled(added).onClick(async () => {
+        if (await this.addAiModel(id)) this.drawAiAvailableList();
+      }));
+    }
+    if (matches.length > AI_MODEL_LIST_LIMIT) {
+      listEl.createDiv({ cls: "setting-item-description vg-ai-model-empty", text: `ほか${matches.length - AI_MODEL_LIST_LIMIT}件あります。検索で絞り込んでください。` });
+    }
+  }
+
+  /** Adds a model to the profile; the first one added also becomes the model in use. */
+  private async addAiModel(id: string): Promise<boolean> {
+    const settings = this.hostPlugin.getAiSettings?.();
+    if (!settings || settings.addedModels.includes(id)) return true;
+    const patch: AiSettingsPatch = { addedModels: [...settings.addedModels, id] };
+    if (!settings.model) patch.model = id;
+    const ok = await this.changeAiSettings(patch, false);
+    if (ok) this.drawAiAdded();
+    return ok;
   }
 
   private drawAiKeySetting(el: HTMLElement): void {
@@ -796,7 +932,6 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
             return;
           }
           new Notice("APIキーを保存しました");
-          this.aiTestNote = "";
           this.drawAiSettings();
           await this.refreshAiModels();
         })
@@ -810,7 +945,6 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
             return;
           }
           new Notice("APIキーを削除しました");
-          this.aiTestNote = "";
           this.drawAiSettings();
           await this.refreshAiModels();
         })

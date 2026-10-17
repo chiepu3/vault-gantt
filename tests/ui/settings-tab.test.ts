@@ -39,9 +39,19 @@ const {
       return child;
     }
 
+    createEl(_tag: string, options?: { cls?: string; text?: string }): FakeElement {
+      return this.createDiv(options);
+    }
+
     createSpan(): FakeSpan {
       return new FakeSpan();
     }
+
+    setAttribute(): void {}
+
+    addEventListener(): void {}
+
+    toggleClass(): void {}
   }
 
   class FakeToggle {
@@ -202,7 +212,7 @@ const {
     colorPickers: FakeColorPicker[] = [];
     controlEl = new FakeElement();
     descEl = { style: { whiteSpace: "" } };
-    settingEl = { classList: { add: vi.fn() } };
+    settingEl = { classList: { add: vi.fn() }, addClass: vi.fn() };
 
     constructor(public containerEl: unknown) {
       RecordingSetting.all.push(this);
@@ -294,6 +304,7 @@ import {
   ensureGanttTagDefinitions,
   TaskWorkbenchSettingTab,
   normalizeSpecialHolidays,
+  filterAiModels,
 } from "../../src/ui/settings-tab";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { moment } from "obsidian";
@@ -995,17 +1006,41 @@ describe("TaskWorkbenchSettingTab", () => {
     expect(saveSettings).toHaveBeenCalledTimes(1);
   });
 
+  it("filterAiModels matches every word, ignoring case", () => {
+    const models = ["openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-sonnet"];
+    expect(filterAiModels(models, "")).toEqual(models);
+    expect(filterAiModels(models, "  GPT mini ")).toEqual(["openai/gpt-4o-mini"]);
+    expect(filterAiModels(models, "claude")).toEqual(["anthropic/claude-sonnet"]);
+    expect(filterAiModels(models, "nothing")).toEqual([]);
+  });
+
+  it("builds one tab button per feature group and a panel for each", () => {
+    tab.display();
+    const container = (tab as any).containerEl;
+    const nav = container.children.find((child: any) => child.cls === "vg-settings-tabs");
+    expect(nav.children.map((button: any) => button.text)).toEqual(["基本", "Gantt", "タグ", "Daily ToDo", "AI チャット", "連携"]);
+    expect(container.children.filter((child: any) => child.cls === "vg-settings-panel")).toHaveLength(6);
+  });
+
   describe("AI チャット接続", () => {
     const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
     let ai: any;
+    let profiles: Array<{ id: string; name: string }>;
+    let activeId: string;
     let fetchAiModels: Mock;
     beforeEach(() => {
-      ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
+      ai = { id: "default", name: "OpenRouter", preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true, addedModels: [] };
+      profiles = [{ id: "default", name: "OpenRouter" }];
+      activeId = "default";
       let registered = false;
-      fetchAiModels = vi.fn().mockResolvedValue({ ok: true, models: ["a/one", "b/two"] });
+      fetchAiModels = vi.fn().mockResolvedValue({ ok: true, models: ["a/one", "b/two", "c/three-mini"] });
       Object.assign(hostPlugin, {
-        getAiSettings: () => ({ ...ai }),
+        getAiSettings: () => ({ ...ai, addedModels: [...ai.addedModels] }),
         updateAiSettings: vi.fn(async (patch: any) => { ai = { ...ai, ...patch }; }),
+        listAiProfiles: () => ({ activeId, profiles: profiles.map((p) => ({ ...p, preset: "openrouter", baseUrl: "" })) }),
+        addAiProfile: vi.fn(async () => { profiles.push({ id: "p2", name: "接続 2" }); activeId = "p2"; ai = { ...ai, id: "p2", name: "接続 2", model: "", addedModels: [] }; return "p2"; }),
+        selectAiProfile: vi.fn(async (id: string) => { activeId = id; }),
+        deleteAiProfile: vi.fn(async (id: string) => { profiles = profiles.filter((p) => p.id !== id); activeId = profiles[0].id; }),
         hasAiApiKey: () => registered,
         setAiApiKey: vi.fn(async () => { registered = true; }),
         clearAiApiKey: vi.fn(async () => { registered = false; }),
@@ -1017,6 +1052,8 @@ describe("TaskWorkbenchSettingTab", () => {
       (tab as any).app = { vault: { configDir: ".obsidian" } };
     });
     const last = (name: string) => [...RecordingSetting.all].reverse().find((setting) => setting.name === name)!;
+    const lastNotice = () => noticeMock.mock.calls[noticeMock.mock.calls.length - 1]?.[0] as string;
+    const modelRows = () => RecordingSetting.all.filter((setting) => setting.settingEl.addClass.mock.calls.some(([cls]: string[]) => cls === "vg-ai-model-row"));
 
     it.each([
       ["http://192.168.1.20:1234/v1", true, true],
@@ -1058,21 +1095,21 @@ describe("TaskWorkbenchSettingTab", () => {
       expect(last("接続先URL").desc).not.toContain(text);
     });
 
-    it("shows only the plain connection settings and names the key location", async () => {
+    it("lists the connection, key, model and test settings and names the key location", async () => {
       tab.display();
       await flush();
       const names = RecordingSetting.all.map((setting) => setting.name);
-      for (const name of ["AI チャット", "接続先", "接続先URL", "APIキーを使う", "APIキー", "モデル", "接続テスト"]) expect(names).toContain(name);
+      for (const name of ["AI チャット", "使用する接続", "サービス", "接続先URL", "APIキーを使う", "APIキー", "接続テスト", "追加したモデル", "利用できるモデル", "モデルIDを直接追加"]) expect(names).toContain(name);
       expect(names.join()).not.toMatch(/認証|秘密ID|プロバイダー/);
       expect(last("APIキー").desc).toContain(".obsidian/plugins/vault-gantt/data.json");
       expect(last("APIキー").desc).toContain("未登録");
     });
 
-    it("does not fetch models until a key is registered, then offers the fetched list", async () => {
+    it("does not fetch models until a key is registered, then lists them as available but not added", async () => {
       tab.display();
       await flush();
       expect(fetchAiModels).not.toHaveBeenCalled();
-      expect(last("モデル").desc).toContain("APIキーを登録");
+      expect(last("利用できるモデル").desc).toContain("APIキーを登録");
       await last("APIキー").buttons.find((b) => b.text === "保存")!.handler!();
       expect(hostPlugin.setAiApiKey).not.toHaveBeenCalled(); // empty input is refused
       last("APIキー").texts[0].setValue("sk-synthetic-secret");
@@ -1080,159 +1117,191 @@ describe("TaskWorkbenchSettingTab", () => {
       await flush();
       expect(hostPlugin.setAiApiKey).toHaveBeenCalledWith("sk-synthetic-secret");
       expect(fetchAiModels).toHaveBeenCalledTimes(1);
-      const model = last("モデル");
-      expect(Object.keys(model.dropdowns[0].options)).toEqual(["", "a/one", "b/two"]);
-      await model.dropdowns[0].handler!("b/two");
-      expect(ai.model).toBe("b/two");
+      expect(last("利用できるモデル").desc).toContain("3件");
+      expect(modelRows().map((row) => row.name)).toEqual(["a/one", "b/two", "c/three-mini"]);
+      expect(last("追加したモデル").desc).toContain("まだありません");
+      // fetched models are not added until the user adds them
+      expect(ai.addedModels).toEqual([]);
       // the key is never rendered back into any label or description
       expect(JSON.stringify(RecordingSetting.all.map((s) => [s.name, s.desc, s.texts.map((t) => t.placeholder)]))).not.toContain("sk-synthetic-secret");
     });
 
-    it("falls back to a manual model field when the list cannot be fetched", async () => {
-      ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "my-model", useApiKey: false };
+    describe("モデルの追加と検索", () => {
+      beforeEach(() => { hostPlugin.hasAiApiKey = () => true; });
+      const availableRows = () => modelRows().filter((row) => row.buttons.some((button) => button.text === "追加" || button.text === "追加済み"));
+      const addedRows = () => modelRows().filter((row) => row.buttons.some((button) => button.text === "削除"));
+
+      it("adds a fetched model, makes the first one the active model and marks it added", async () => {
+        tab.display(); await flush();
+        await availableRows().find((row) => row.name === "b/two")!.buttons[0].handler!();
+        expect(ai.addedModels).toEqual(["b/two"]);
+        expect(ai.model).toBe("b/two");
+        await availableRows().find((row) => row.name === "a/one")!.buttons[0].handler!();
+        expect(ai.addedModels).toEqual(["b/two", "a/one"]);
+        expect(ai.model).toBe("b/two");
+        expect(availableRows().slice(-3).map((row) => [row.name, row.buttons[0].text])).toEqual([["a/one", "追加済み"], ["b/two", "追加済み"], ["c/three-mini", "追加"]]);
+      });
+
+      it("switches the model in use among the added ones and removes one", async () => {
+        ai = { ...ai, model: "b/two", addedModels: ["b/two", "a/one"] };
+        tab.display(); await flush();
+        const rows = addedRows();
+        expect(rows.map((row) => [row.name, row.buttons[0].text])).toEqual([["b/two", "使用中"], ["a/one", "使用"]]);
+        await rows[1].buttons[0].handler!();
+        expect(ai.model).toBe("a/one");
+        await addedRows().find((row) => row.name === "a/one")!.buttons[1].handler!();
+        expect(ai.addedModels).toEqual(["b/two"]);
+        expect(ai.model).toBe("b/two");
+      });
+
+      it("filters the available list by every typed word", async () => {
+        tab.display(); await flush();
+        const search = last("利用できるモデル").texts[0];
+        search.value = "THREE mini";
+        search.inputEl.listeners.input();
+        const rows = availableRows();
+        expect(rows[rows.length - 1].name).toBe("c/three-mini");
+        expect(rows.filter((row) => row.name.includes("one") || row.name.includes("two"))).toHaveLength(2); // earlier draw only
+        const before = RecordingSetting.all.length;
+        search.value = "zzz";
+        search.inputEl.listeners.input();
+        expect(RecordingSetting.all.length).toBe(before); // no matching rows drawn
+      });
+
+      it("adds a model ID typed by hand", async () => {
+        tab.display(); await flush();
+        await last("モデルIDを直接追加").buttons[0].handler!();
+        expect(lastNotice()).toBe("モデルIDを入力してください");
+        await last("モデルIDを直接追加").texts[0].handler!("  my/model  ");
+        await last("モデルIDを直接追加").buttons[0].handler!();
+        expect(ai.addedModels).toEqual(["my/model"]);
+        expect(ai.model).toBe("my/model");
+      });
+
+      it("limits how many available rows are drawn at once", async () => {
+        fetchAiModels.mockResolvedValue({ ok: true, models: Array.from({ length: 80 }, (_, i) => `m/${i}`) });
+        tab.display(); await flush();
+        expect(availableRows()).toHaveLength(50);
+        expect(RecordingSetting.all.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("keeps the manual-add field when the list cannot be fetched", async () => {
+      ai = { ...ai, preset: "local", baseUrl: "http://localhost:1234/v1", model: "my-model", useApiKey: false, addedModels: ["my-model"] };
       fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
       tab.display();
       await flush();
-      const model = last("モデル");
-      expect(model.dropdowns).toHaveLength(0);
-      expect(model.texts[0].value).toBe("my-model");
-      expect(model.desc).toContain("一覧を取得できませんでした");
-      expect(model.desc).toContain("直接入力");
+      expect(last("利用できるモデル").desc).toContain("一覧を取得できませんでした");
+      expect(last("利用できるモデル").desc).toContain("直接追加");
+      expect(last("追加したモデル").desc).toContain("チャットで選べる");
       expect(RecordingSetting.all.map((s) => s.name)).not.toContain("APIキー");
-      await model.texts[0].handler!("typed-model");
-      expect(ai.model).toBe("typed-model");
     });
 
-    it("keeps a saved model visible when it is not in the fetched list", async () => {
-      ai = { ...ai, model: "gone/model" };
-      tab.display();
-      hostPlugin.hasAiApiKey = () => true;
-      await (tab as any).refreshAiModels();
-      expect(Object.keys(last("モデル").dropdowns[0].options)).toContain("gone/model");
-    });
-
-    it("switching the preset applies its URL and key default", async () => {
+    it("switching the preset applies its URL and key default and clears the added models", async () => {
+      ai = { ...ai, addedModels: ["a/one"], model: "a/one" };
       tab.display();
       await flush();
-      await last("接続先").dropdowns[0].handler!("local");
-      expect(ai).toMatchObject({ preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false, model: "" });
-      await last("接続先").dropdowns[0].handler!("custom");
+      await last("サービス").dropdowns[0].handler!("local");
+      expect(ai).toMatchObject({ preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false, model: "", addedModels: [] });
+      await last("サービス").dropdowns[0].handler!("custom");
       expect(ai).toMatchObject({ preset: "custom", baseUrl: "http://localhost:1234/v1" });
     });
+
     it("shows the saved origin warning after a custom URL edit and stops model fetching until the key is replaced", async () => {
       ai = { ...ai, model: "a/one", apiKeyOrigin: "https://openrouter.ai" };
       hostPlugin.hasAiApiKey = () => true;
       hostPlugin.setAiApiKey = vi.fn(async () => { ai.apiKeyOrigin = new URL(ai.baseUrl).origin; });
       tab.display(); await flush();
-      await last("接続先").dropdowns[0].handler!("custom"); await flush();
+      await last("サービス").dropdowns[0].handler!("custom"); await flush();
       fetchAiModels.mockClear();
       const field = last("接続先URL").texts[0];
       await field.handler!("https://other.example/v1");
       field.inputEl.listeners.change(); await flush();
       const reason = "保存済みのキーは https://openrouter.ai 用です。この接続先で使うにはキーを入れ直してください。";
       expect(RecordingSetting.all.some((row) => row.desc === reason)).toBe(true);
-      expect(last("モデル").desc).toBe(reason);
+      expect(last("利用できるモデル").desc).toBe(reason);
       expect(fetchAiModels).not.toHaveBeenCalled();
       await last("接続テスト").buttons[0].handler!();
-      expect(last("接続テスト").desc).toContain(reason);
+      expect(lastNotice()).toContain(reason);
       expect(fetchAiModels).not.toHaveBeenCalled();
       last("APIキー").texts[0].setValue("sk-synthetic-replacement");
       await last("APIキー").buttons.find((button) => button.text === "保存")!.handler!();
       expect(ai.apiKeyOrigin).toBe("https://other.example");
-      expect(last("モデル").desc).not.toContain(reason);
+      expect(last("利用できるモデル").desc).not.toContain(reason);
       expect(fetchAiModels).toHaveBeenCalledOnce();
     });
 
-    describe("取得の開始・完了で入力中の欄を作り直さない", () => {
-      const count = (name: string) => RecordingSetting.all.filter((setting) => setting.name === name).length;
-      function deferredFetch() {
-        let resolve!: (value: any) => void;
-        fetchAiModels.mockImplementation(() => new Promise((done) => { resolve = done; }));
-        return (value: any) => resolve(value);
-      }
-
-      it("keeps the manual model field when the fetch fails", async () => {
-        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
-        const finish = deferredFetch();
-        tab.display();
-        await flush();
-        const row = last("モデル");
-        const field = row.texts[0];
-        field.value = "typing-in-progress";
-        const settingsBefore = RecordingSetting.all.length;
-        finish({ ok: false, reason: "接続できませんでした。" });
-        await flush();
-        expect(RecordingSetting.all.length).toBe(settingsBefore);
-        expect(last("モデル")).toBe(row);
-        expect(last("モデル").texts[0]).toBe(field);
-        expect(field.value).toBe("typing-in-progress");
-        expect(row.desc).toContain("一覧を取得できませんでした");
-      });
-
-      it("applies a successful list after the focused manual field loses focus", async () => {
-        ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
-        const finish = deferredFetch();
-        tab.display();
-        await flush();
-        const row = last("モデル");
-        const inputEl: any = row.texts[0].inputEl;
-        inputEl.ownerDocument = { activeElement: inputEl };
-        finish({ ok: true, models: ["a/one"] });
-        await flush();
-        expect(count("モデル")).toBe(1);
-        expect(row.dropdowns).toHaveLength(0);
-        expect(row.desc).toContain("1件");
-        inputEl.ownerDocument = { activeElement: null };
-        inputEl.listeners.focusout();
-        expect(last("モデル").dropdowns).toHaveLength(1);
-      });
-
-      it("keeps an unsaved API key typed before the fetch completes", async () => {
-        ai = { preset: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "", useApiKey: true };
-        hostPlugin.hasAiApiKey = () => true;
-        const finish = deferredFetch();
-        tab.display();
-        await flush();
-        const keyRow = last("APIキー");
-        keyRow.texts[0].setValue("sk-typed-not-saved");
-        finish({ ok: true, models: ["a/one", "b/two"] });
-        await flush();
-        expect(count("APIキー")).toBe(1);
-        expect(last("APIキー")).toBe(keyRow);
-        expect(keyRow.texts[0].value).toBe("sk-typed-not-saved");
-        expect(last("モデル").dropdowns).toHaveLength(1);
-      });
-
-      it("does not destroy the model field when the URL field blurs into it", async () => {
-        ai = { preset: "custom", baseUrl: "http://localhost:1234/v1", model: "", useApiKey: false };
-        fetchAiModels.mockResolvedValue({ ok: false, reason: "接続できませんでした。" });
-        tab.display();
-        await flush();
-        const row = last("モデル");
-        const field = row.texts[0];
-        const urlRow = last("接続先URL");
-        const finish = deferredFetch();
-        (urlRow.texts[0].inputEl as any).listeners.change();
-        expect(row.desc).toContain("取得しています");
-        field.value = "clicked-and-typing";
-        finish({ ok: false, reason: "接続できませんでした。" });
-        await flush();
-        expect(count("モデル")).toBe(1);
-        expect(last("モデル").texts[0]).toBe(field);
-        expect(field.value).toBe("clicked-and-typing");
-      });
-    });
-
-    it("reports the connection test result in the section", async () => {
-      ai = { preset: "local", baseUrl: "http://localhost:1234/v1", model: "x", useApiKey: false };
+    it("keeps an unsaved API key typed before the fetch completes", async () => {
+      hostPlugin.hasAiApiKey = () => true;
+      let finish!: (value: any) => void;
+      fetchAiModels.mockImplementation(() => new Promise((done) => { finish = done; }));
       tab.display();
       await flush();
+      const keyRow = last("APIキー");
+      keyRow.texts[0].setValue("sk-typed-not-saved");
+      finish({ ok: true, models: ["a/one", "b/two"] });
+      await flush();
+      expect(last("APIキー")).toBe(keyRow);
+      expect(keyRow.texts[0].value).toBe("sk-typed-not-saved");
+      expect(last("利用できるモデル").desc).toContain("2件");
+    });
+
+    it("reports the connection test result as a notice", async () => {
+      ai = { ...ai, preset: "local", baseUrl: "http://localhost:1234/v1", model: "x", useApiKey: false };
+      tab.display();
+      await flush();
+      noticeMock.mockClear();
       await last("接続テスト").buttons[0].handler!();
-      expect(last("接続テスト").desc).toContain("接続できました");
-      expect(last("接続テスト").desc).toContain("一覧にありません");
+      expect(lastNotice()).toContain("接続できました");
+      expect(lastNotice()).toContain("一覧にありません");
       fetchAiModels.mockResolvedValue({ ok: false, reason: "APIキーが受け付けられませんでした（HTTP 401）。" });
       await last("接続テスト").buttons[0].handler!();
-      expect(last("接続テスト").desc).toContain("HTTP 401");
+      expect(lastNotice()).toContain("HTTP 401");
+      expect(last("接続テスト").desc).not.toContain("HTTP 401");
+    });
+
+    describe("接続プロファイル", () => {
+      it("offers every saved connection and the add / delete buttons", async () => {
+        profiles.push({ id: "p2", name: "ローカル" });
+        tab.display(); await flush();
+        const row = last("使用する接続");
+        expect(row.dropdowns[0].options).toEqual({ default: "OpenRouter", p2: "ローカル" });
+        expect(row.dropdowns[0].value).toBe("default");
+        expect(row.buttons.map((button) => [button.text, button.disabled])).toEqual([["追加", false], ["削除", false]]);
+      });
+
+      it("cannot delete the only connection", async () => {
+        tab.display(); await flush();
+        expect(last("使用する接続").buttons[1].disabled).toBe(true);
+      });
+
+      it("adds, switches and deletes connections, redrawing the tab each time", async () => {
+        tab.display(); await flush();
+        await last("使用する接続").buttons[0].handler!(); await flush();
+        expect(hostPlugin.addAiProfile).toHaveBeenCalledOnce();
+        expect(last("使用する接続").dropdowns[0].value).toBe("p2");
+        expect(last("接続の名前").texts[0].value).toBe("接続 2");
+        await last("使用する接続").dropdowns[0].handler!("default"); await flush();
+        expect(hostPlugin.selectAiProfile).toHaveBeenCalledWith("default");
+        await last("使用する接続").buttons[1].handler!(); await flush();
+        expect(hostPlugin.deleteAiProfile).toHaveBeenCalledWith("p2");
+        expect(last("使用する接続").dropdowns[0].value).toBe("default");
+      });
+
+      it("renames the active connection and ignores an empty name", async () => {
+        tab.display(); await flush();
+        await last("接続の名前").texts[0].handler!("  仕事用  ");
+        expect(ai.name).toBe("仕事用");
+        await last("接続の名前").texts[0].handler!("   ");
+        expect(ai.name).toBe("仕事用");
+      });
+
+      it("shows a notice when a profile operation fails", async () => {
+        hostPlugin.addAiProfile.mockRejectedValueOnce(new Error("x"));
+        tab.display(); await flush();
+        await last("使用する接続").buttons[0].handler!();
+        expect(lastNotice()).toBe("接続を追加できませんでした。");
+      });
     });
   });
 });

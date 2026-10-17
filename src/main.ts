@@ -72,7 +72,7 @@ import { OperationRegistry } from "./app/operation-registry";
 import { ScheduleGhostStore } from "./app/schedule-ghost";
 import { ChatSession } from "./ai/chat-session";
 import { SdkChatProvider } from "./ai/sdk-provider";
-import { AI_SECRET_ID, aiKeyOriginError, connectionOrigin, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig, type AiConnectionSettings, type ModelListResult } from "./ai/connection-settings";
+import { aiKeyOriginError, aiSecretId, connectionOrigin, defaultAiStore, listModels, newAiProfileId, normalizeAiProfile, normalizeAiSettings, normalizeAiStore, toConnectionConfig, uniqueStrings, type AiProfile, type AiSettingsPatch, type AiStore, type ModelListResult } from "./ai/connection-settings";
 import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
 import { NavigationService as ObsidianNavigationService } from "./app/navigation-service";
 import { ToolAdapter } from "./agent-tools/tool-adapter";
@@ -285,7 +285,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private settingsPersistence?: SettingsPersistence;
   private settingsWriter(): SettingsPersistence {
     return this.settingsPersistence ??= new SettingsPersistence({ settings: () => this.settings,
-      coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData({ ...settings, ai: this.aiSettings }), read: () => this.loadData() });
+      coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData({ ...settings, ai: this.aiStore }), read: () => this.loadData() });
   }
   private createOperationService(): OperationService {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
@@ -336,8 +336,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
   get historyPort() { return this.historyManager; }
   chatSession!: ChatSession;
   /** AI connection settings live next to, not inside, `settings` so snapshots, previews, AI context and MCP never see them. */
-  aiSettings: AiConnectionSettings = defaultAiSettings();
-  aiModels: string[] = [];
+  aiStore: AiStore = defaultAiStore();
+  /** The active connection profile. */
+  get aiSettings(): AiProfile {
+    return this.aiStore.profiles.find((profile) => profile.id === this.aiStore.activeId) ?? this.aiStore.profiles[0];
+  }
+  set aiSettings(next: AiProfile) {
+    this.aiStore.profiles = this.aiStore.profiles.map((profile) => (profile.id === next.id ? next : profile));
+  }
   private viewCounter = 0;
   private mcpServer?: McpServerHandle;
   private mcpTail: Promise<void> = Promise.resolve();
@@ -454,19 +460,25 @@ export default class TaskWorkbenchPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
-    this.aiSettings = normalizeAiSettings(ai);
+    this.aiStore = normalizeAiStore(ai);
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
     this.settingsPersistence = undefined; this.settingsWriter();
-    const migrateOrigin = this.hasAiApiKey() && this.aiSettings.apiKeyOrigin === undefined;
-    if (migrateOrigin) this.aiSettings.apiKeyOrigin = connectionOrigin(this.aiSettings.baseUrl) ?? "";
-    if (this.aiSettings.apiKey && this.app.secretStorage) {
-      // Move a key saved in data.json into secret storage as soon as it is available.
-      try { this.app.secretStorage.setSecret(AI_SECRET_ID, this.aiSettings.apiKey); }
+    let migrateOrigin = false;
+    for (const profile of this.aiStore.profiles) {
+      if (profile.apiKeyOrigin === undefined && (profile.apiKey ?? this.app.secretStorage?.getSecret(aiSecretId(profile.id)))) {
+        profile.apiKeyOrigin = connectionOrigin(profile.baseUrl) ?? "";
+        migrateOrigin = true;
+      }
+    }
+    const withKey = this.aiStore.profiles.filter((profile) => profile.apiKey);
+    if (withKey.length && this.app.secretStorage) {
+      // Move keys saved in data.json into secret storage as soon as it is available.
+      try { for (const profile of withKey) this.app.secretStorage.setSecret(aiSecretId(profile.id), profile.apiKey!); }
       catch { new Notice("APIキーを秘密ストレージへ移せませんでした。"); return; }
-      const { apiKey: _key, ...migrated } = this.aiSettings;
-      void _key;
-      try { await this.writeAiSettings(migrated); delete this.aiSettings.apiKey; }
+      const migrated = structuredClone(this.aiStore);
+      for (const profile of migrated.profiles) delete profile.apiKey;
+      try { await this.writeAiSettings(migrated); for (const profile of withKey) delete profile.apiKey; }
       catch { new Notice("data.json の平文のAPIキーを削除できませんでした。"); }
     } else if (migrateOrigin) {
       try { await this.writeAiSettings(); }
@@ -478,7 +490,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
  *
  * Persists the in-memory settings object to disk.
  */
-  private writeAiSettings(ai = this.aiSettings): Promise<void> {
+  private writeAiSettings(ai: AiStore = this.aiStore): Promise<void> {
     const candidate = structuredClone(ai);
     // AI settings stay outside TaskWorkbenchSettings. Use its persistence path
     // with no workbench patch, and verify the separate AI payload on readback.
@@ -499,15 +511,47 @@ export default class TaskWorkbenchPlugin extends Plugin {
     const next = toConnectionConfig(this.aiSettings), current = this.chatSession.config;
     if (JSON.stringify(next) !== JSON.stringify(current)) this.chatSession.configure(next);
   }
-  getAiSettings(): AiConnectionSettings { const { apiKey: _key, ...rest } = this.aiSettings; void _key; return { ...rest }; }
-  async updateAiSettings(patch: Partial<Omit<AiConnectionSettings, "apiKey" | "apiKeyOrigin">>): Promise<void> {
-    this.aiSettings = normalizeAiSettings({ ...this.aiSettings, ...patch });
+  getAiSettings(): AiProfile { const { apiKey: _key, ...rest } = this.aiSettings; void _key; return { ...rest, addedModels: [...rest.addedModels] }; }
+  async updateAiSettings(patch: AiSettingsPatch): Promise<void> {
+    const { id, name, addedModels } = this.aiSettings;
+    this.aiSettings = {
+      ...normalizeAiSettings({ ...this.aiSettings, ...patch }),
+      id,
+      name: patch.name?.trim() || name,
+      addedModels: patch.addedModels ? uniqueStrings(patch.addedModels) : addedModels,
+    };
     await this.writeAiSettings();
     this.applyAiConnection();
   }
+  listAiProfiles(): { activeId: string; profiles: Array<Pick<AiProfile, "id" | "name" | "preset" | "baseUrl">> } {
+    return { activeId: this.aiStore.activeId, profiles: this.aiStore.profiles.map(({ id, name, preset, baseUrl }) => ({ id, name, preset, baseUrl })) };
+  }
+  private async commitAiStore(next: AiStore): Promise<void> {
+    const previous = this.aiStore;
+    this.aiStore = next;
+    try { await this.writeAiSettings(); } catch (error) { this.aiStore = previous; throw error; }
+    this.applyAiConnection();
+  }
+  async addAiProfile(): Promise<string> {
+    const id = newAiProfileId(this.aiStore.profiles.map((profile) => profile.id));
+    const profile = normalizeAiProfile({ id, name: `接続 ${this.aiStore.profiles.length + 1}` }, id);
+    await this.commitAiStore({ activeId: id, profiles: [...this.aiStore.profiles, profile] });
+    return id;
+  }
+  async selectAiProfile(id: string): Promise<void> {
+    if (id === this.aiStore.activeId || !this.aiStore.profiles.some((profile) => profile.id === id)) return;
+    await this.commitAiStore({ ...this.aiStore, activeId: id });
+  }
+  async deleteAiProfile(id: string): Promise<void> {
+    if (this.aiStore.profiles.length <= 1) throw new Error("LAST_PROFILE");
+    const profiles = this.aiStore.profiles.filter((profile) => profile.id !== id);
+    await this.commitAiStore({ activeId: this.aiStore.activeId === id ? profiles[0].id : this.aiStore.activeId, profiles });
+    // Secret storage has no delete; an empty value is treated as not registered.
+    this.app.secretStorage?.setSecret(aiSecretId(id), "");
+  }
   aiKeyStorage(): "secret" | "data" { return this.aiSettings.apiKey || !this.app.secretStorage ? "data" : "secret"; }
   private storedAiApiKey(): string | null {
-    const stored = this.aiSettings.apiKey ?? this.app.secretStorage?.getSecret(AI_SECRET_ID);
+    const stored = this.aiSettings.apiKey ?? this.app.secretStorage?.getSecret(aiSecretId(this.aiSettings.id));
     return stored ? stored : null;
   }
   private readAiApiKey(endpoint = this.aiSettings.baseUrl): string | null {
@@ -520,7 +564,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     if (!value) throw new Error("EMPTY_KEY");
     const origin = connectionOrigin(this.aiSettings.baseUrl);
     if (!origin) throw new Error("接続先URLを確認してからAPIキーを保存してください。");
-    if (this.app.secretStorage) { this.app.secretStorage.setSecret(AI_SECRET_ID, value); delete this.aiSettings.apiKey; }
+    if (this.app.secretStorage) { this.app.secretStorage.setSecret(aiSecretId(this.aiSettings.id), value); delete this.aiSettings.apiKey; }
     else this.aiSettings = { ...this.aiSettings, apiKey: value };
     this.aiSettings.apiKeyOrigin = origin;
     await this.writeAiSettings();
@@ -528,7 +572,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
   async clearAiApiKey(): Promise<void> {
     // Secret storage has no delete; an empty value is treated as not registered.
-    this.app.secretStorage?.setSecret(AI_SECRET_ID, "");
+    this.app.secretStorage?.setSecret(aiSecretId(this.aiSettings.id), "");
     delete this.aiSettings.apiKey;
     delete this.aiSettings.apiKeyOrigin;
     await this.writeAiSettings();
@@ -537,9 +581,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   async fetchAiModels(): Promise<ModelListResult> {
     const originError = aiKeyOriginError(this.aiSettings);
     if (originError) return { ok: false, reason: originError };
-    const result = await listModels({ baseUrl: this.aiSettings.baseUrl, apiKey: this.readAiApiKey(), apiKeyOrigin: this.aiSettings.apiKeyOrigin });
-    if (result.ok) this.aiModels = result.models;
-    return result;
+    return listModels({ baseUrl: this.aiSettings.baseUrl, apiKey: this.readAiApiKey(), apiKeyOrigin: this.aiSettings.apiKeyOrigin });
   }
   openAiSettings(): void {
     const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
@@ -565,14 +607,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
     this.unloading = false;
     this.historyManager.attachVault(() => this.vaultAdapter());
 
-    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === AI_SECRET_ID ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
+    this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === aiSecretId(this.aiSettings.id) ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,
       previewPorts: this.previewUiPorts("chat"),
       closeDiff: () => this.scheduleGhosts.clear(),
       openSettings: () => this.openAiSettings(),
-      modelOptions: () => this.aiModels,
+      modelOptions: () => this.aiSettings.addedModels,
       selectedTask: () => {
         const file = this.app.workspace.getActiveFile();
         const folder = this.settings.taskFolder.replace(/\/+$/, "");
