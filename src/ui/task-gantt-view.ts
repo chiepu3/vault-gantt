@@ -1650,35 +1650,28 @@ export class TaskGanttView extends ItemView {
  */
   /** Counts renders the host ran itself right after a committed save (see render). */
   private hostRefreshes = 0;
-  /** Set when a save was already followed by a host-driven render, so the caller's own render() is redundant. */
-  private saveCovered = false;
+  /** hostRefreshes as of the last save call; null when no save is awaiting its follow-up render. */
+  private saveMark: number | null = null;
 
-  private async saveItem(row: TaskRow, patch: TaskPatch): Promise<unknown> {
-    return this.trackSave(() => this.host.updateTaskItem(row, patch));
+  private saveItem(row: TaskRow, patch: TaskPatch): Promise<unknown> {
+    this.saveMark = this.hostRefreshes;
+    return this.host.updateTaskItem(row, patch);
   }
 
-  private async saveBatch(commands: TaskUpdateCommand[]): Promise<unknown> {
-    return this.trackSave(() => this.host.updateTaskItemsBatch(commands));
+  private saveBatch(commands: TaskUpdateCommand[]): Promise<unknown> {
+    this.saveMark = this.hostRefreshes;
+    return this.host.updateTaskItemsBatch(commands);
   }
 
   /**
-   * A committed save makes the host refresh every open view, this one included. Callers still
-   * call render() after saving, which would rebuild the chart a second time with identical data;
-   * remember that the refresh happened so that one follow-up render() can be skipped.
+   * A committed save makes the host refresh every open view, this one included, and callers still
+   * call render() after saving, which would rebuild the chart a second time with identical data.
+   * When the host refreshed this view since the save began, that one follow-up render() is skipped.
    */
-  private async trackSave<T>(save: () => Promise<T>): Promise<T> {
-    const before = this.hostRefreshes;
-    const result = await save();
-    if (this.hostRefreshes !== before) {
-      this.saveCovered = true;
-      setTimeout(() => { this.saveCovered = false; }, 0);
-    }
-    return result;
-  }
-
   async render(opts?: { fromHost?: boolean }): Promise<void> {
-    if (!opts?.fromHost && this.saveCovered) { this.saveCovered = false; return; }
-    this.saveCovered = false;
+    const covered = !opts?.fromHost && this.saveMark !== null && this.hostRefreshes !== this.saveMark;
+    if (!opts?.fromHost) this.saveMark = null;
+    if (covered) return;
 
     const renderStartedAt = Date.now();
 
