@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs, escapeHtml as h } from "./common.mjs";
+import { COMPARE_HTML } from "./compare-page.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.targets || !args.out) { console.error("usage: render-index.mjs --targets f --out dir"); process.exit(2); }
@@ -20,16 +21,28 @@ const fmtTime = (iso) => {
 const kindLabel = { main: "メイン", all: "統合ブランチ", pr: "PR" };
 const statusLabel = (s) => (s === "success" ? "成功" : s === "failure" ? "失敗" : "未ビルド");
 
+const mainT = plan.targets.find((t) => t.kind === "main");
+const mainShots = !!(mainT && mainT.shots);
 const cards = sorted.map((t) => {
   const st = t.status || "unknown";
+  const cmp = t.kind !== "main" && t.shots && mainShots ? `<a class="open cmp" href="compare.html?b=${encodeURIComponent(t.slug)}">mainと比較</a>` : "";
   const pr = t.pr ? `<p class="pr"><a href="${h(t.pr.url)}">#${h(t.pr.number)}</a> ${h(t.pr.title)}</p>` : "";
   return `<li class="card ${h(st)}">
   <div class="top"><span class="kind">${kindLabel[t.kind] || h(t.kind)}</span><span class="status ${h(st)}">${statusLabel(st)}</span></div>
   <h2>${h(t.branch)}</h2>${pr}
   <p class="meta"><code>${h(String(t.sha).slice(0, 7))}</code> · ${h(fmtTime(t.commitTime))}</p>
   <div class="links"><a class="open" href="b/${encodeURIComponent(t.slug)}/">プレビューを開く</a>${t.shots ? `<a class="open shots" href="b/${encodeURIComponent(t.slug)}/shots/">実機スクショ</a>` : ""}</div>
+  ${cmp ? `<div class="links second">${cmp}</div>` : ""}
 </li>`;
 }).join("\n");
+
+function renderCompare() {
+  // Static page: the query string (?b=<slug>) picks the branch; shots.json of both targets is fetched at view time.
+  const list = plan.targets.filter((t) => t.kind !== "main" && t.shots).map((t) => ({ slug: t.slug, branch: t.branch, pr: t.pr ? { number: t.pr.number, title: t.pr.title } : null }));
+  const data = JSON.stringify({ main: mainT && mainT.shots ? { slug: mainT.slug, branch: mainT.branch, sha: String(mainT.sha).slice(0, 7) } : null, list })
+    .replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028|\u2029/g, " ");
+  return COMPARE_HTML.replace("__DATA__", () => data);
+}
 
 const html = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
@@ -50,8 +63,8 @@ ul{list-style:none;margin:0;padding:0;display:grid;gap:12px}
 h2{font-size:1.05rem;margin:4px 0;word-break:break-all}
 .pr{margin:2px 0}a{color:var(--acc)}.meta{color:var(--mut);font-size:.85rem;margin:4px 0 10px}
 .open{display:block;text-align:center;background:var(--acc);color:#fff;text-decoration:none;font-weight:700;font-size:1.1rem;padding:12px;border-radius:10px}
-.links{display:flex;gap:8px}.links .open{flex:1}.open.shots{background:transparent;color:var(--acc);border:2px solid var(--acc);padding:10px}
-@media (prefers-color-scheme:dark){.open{color:#0b1020}.open.shots{color:var(--acc)}}
+.links{display:flex;gap:8px}.links .open{flex:1}.links.second{margin-top:8px}.open.cmp{background:transparent;color:var(--acc);border:2px solid var(--acc);padding:8px;font-size:1rem}.open.shots{background:transparent;color:var(--acc);border:2px solid var(--acc);padding:10px}
+@media (prefers-color-scheme:dark){.open{color:#0b1020}.open.shots,.open.cmp{color:var(--acc)}}
 </style></head><body><main>
 <h1>Vault Gantt ブラウザプレビュー</h1>
 <p class="sub">${h(plan.repository)} · ${sorted.length} 件(30分ごとに自動更新)</p>
@@ -62,4 +75,6 @@ ${cards}
 mkdirSync(args.out, { recursive: true });
 writeFileSync(join(args.out, "index.html"), html);
 writeFileSync(join(args.out, ".nojekyll"), "");
+writeFileSync(join(args.out, "compare.html"), renderCompare());
 console.log(`wrote ${join(args.out, "index.html")}`);
+

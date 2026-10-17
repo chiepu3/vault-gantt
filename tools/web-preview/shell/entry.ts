@@ -5,7 +5,8 @@ import Plugin from "@app/main";
 import { EXAMPLE_PROMPTS, installFakeLlm } from "./fake-llm";
 import { makeSeed, today } from "./seed";
 
-declare const __VGP__: { label: string; sha: string; builtAt: string; manifest: { id: string; name: string; version: string } };
+interface About { pr: { number: number; title: string; url: string | null; bodyHtml: string } | null; combines: Array<{ number: number; title: string; url: string | null; slug: string | null }> }
+declare const __VGP__: { about: About | null; label: string; sha: string; builtAt: string; manifest: { id: string; name: string; version: string } };
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const meta = __VGP__;
 const STORE_KEY = `vgp:data:${meta.label}:${meta.sha}`, PREF_KEY = "vgp:prefs";
@@ -94,6 +95,7 @@ function buildShell(app: App, plugin: any, reset: () => void): void {
     sel.addEventListener("change", () => void fillChat(sel.value).then(() => { sel.value = ""; }));
   }
   bar.createDiv("vgp-spacer");
+  if (meta.about) buildAbout(meta.about, bar);
   const mk = (text: string, fn: (b: HTMLButtonElement) => void, title = "") => { const b = bar.createEl("button", { text, title }); b.addEventListener("click", () => fn(b)); return b; };
   mk(document.body.classList.contains("theme-dark") ? "ライト" : "ダーク", (b) => { prefs.theme = document.body.classList.contains("theme-dark") ? "light" : "dark"; savePrefs(); applyPrefs(app); b.setText(prefs.theme === "dark" ? "ライト" : "ダーク"); }, "ライト/ダーク切替");
   const nb = mk("スマホ幅", () => { prefs.narrow = !prefs.narrow; savePrefs(); applyPrefs(app); nb.classList.toggle("is-on", !!prefs.narrow); }, "表示幅をデスクトップ(1200px)と端末幅で切替");
@@ -128,6 +130,34 @@ function buildShell(app: App, plugin: any, reset: () => void): void {
   ws.on("active-leaf-change", (l: WorkspaceLeaf) => { if (l.region === "main") lastMain = l; else lastSide = l; layout(); });
   ws.on("vgp-reveal", (l: WorkspaceLeaf) => { if (l.region !== "main") document.body.classList.add("vgp-side-open"); else document.body.classList.remove("vgp-side-open"); });
   layout();
+}
+
+// "このPRについて": PR title/link/body (bodyHtml is produced by tools/web-preview/md.mjs, which escapes everything) and, on -all branches, the combined PRs.
+function buildAbout(about: About, bar: HTMLElement): void {
+  const panel = document.body.createDiv({ cls: "vgp-about" });
+  panel.hidden = true;
+  const head = panel.createDiv("vgp-about-head");
+  head.createEl("b", { text: "このPRについて" });
+  const close = head.createEl("button", { text: "閉じる" });
+  const link = (host: HTMLElement, url: string | null, text: string) => { if (url) { const a = host.createEl("a", { text, href: url }); a.target = "_blank"; a.rel = "noopener noreferrer"; } else host.appendText(text); };
+  const body = panel.createDiv("vgp-about-body");
+  if (about.pr) {
+    const t = body.createEl("h2"); link(t, about.pr.url, `#${about.pr.number} ${about.pr.title}`);
+    if (about.pr.url) { const o = body.createEl("p", { cls: "vgp-about-open" }); link(o, about.pr.url, "GitHubでPRを開く"); }
+    body.createDiv({ cls: "vgp-md" }).innerHTML = about.pr.bodyHtml || "";
+    if (!about.pr.bodyHtml) body.createEl("p", { cls: "vgp-hint", text: "説明文はありません" });
+  }
+  if (about.combines.length) {
+    body.createEl("h3", { text: "このブランチがまとめているPR" });
+    const ul = body.createEl("ul");
+    for (const c of about.combines) {
+      const li = ul.createEl("li"); link(li, c.url, `#${c.number} ${c.title}`);
+      if (c.slug) { li.appendText(" "); link(li, `../${encodeURIComponent(c.slug)}/`, "[プレビュー]"); }
+    }
+  }
+  const btn = bar.createEl("button", { text: "このPRについて", title: "PRの説明(確認すること)を表示" });
+  const toggle = (on: boolean) => { panel.hidden = !on; btn.classList.toggle("is-on", on); };
+  btn.addEventListener("click", () => toggle(panel.hidden)); close.addEventListener("click", () => toggle(false));
 }
 
 function palette(app: App): void {

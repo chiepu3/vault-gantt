@@ -37,13 +37,23 @@ function errorPage(t, log) {
 function hashTools() {
   const files = [];
   const walk = (d) => { for (const n of readdirSync(d).sort()) { if (n === "node_modules" || n === ".git") continue; const p = join(d, n); if (statSync(p).isDirectory()) walk(p); else files.push(p); } };
-  walk(join(tools, "tools/web-preview"));
+  walk(join(tools, "tools/web-preview")); // includes md.mjs (the PR body renderer)
   for (const f of ["web-preview-site/obsidian-shots.mjs", "web-preview-site/build-all.mjs", "web-preview-site/common.mjs", "e2e/obsidian-runtime.mjs", "e2e/ci-install-obsidian.sh"]) if (existsSync(join(tools, "tools", f))) files.push(join(tools, "tools", f));
   const h = createHash("sha256");
   for (const f of files) h.update(relative(tools, f)).update("\0").update(readFileSync(f)).update("\0");
   return h.digest("hex").slice(0, 16);
 }
 plan.toolsHash = hashTools();
+// Per-target "about" info (PR title/body, combined PRs). Its hash is part of the reuse key, so editing a PR body refreshes that target.
+const slugOf = new Map(plan.targets.map((x) => [x.branch, x.slug]));
+for (const t of plan.targets) {
+  t.info = {
+    branch: t.branch, kind: t.kind, slug: t.slug,
+    pr: t.pr ? { number: t.pr.number, title: t.pr.title, url: t.pr.url, body: t.pr.body ?? "" } : null,
+    combines: (t.combines ?? []).map((c) => ({ ...c, slug: slugOf.get(c.branch) ?? null })),
+  };
+  t.infoHash = createHash("sha256").update(JSON.stringify(t.info)).digest("hex").slice(0, 16);
+}
 plan.builtDay = new Date().toISOString().slice(0, 10);
 plan.shotsEnabled = !!args.shots;
 let prev = null;
@@ -56,7 +66,7 @@ if (args.prev) {
 }
 function reusable(t) {
   const p = prev?.plan.targets?.find((x) => x.slug === t.slug && x.branch === t.branch);
-  if (!p || p.sha !== t.sha || p.status !== "success" || (args.shots && p.shots !== true)) return null;
+  if (!p || p.sha !== t.sha || p.infoHash !== t.infoHash || p.status !== "success" || (args.shots && p.shots !== true)) return null;
   const src = join(prev.dir, "b", t.slug);
   return existsSync(join(src, "index.html")) && (!args.shots || existsSync(join(src, "shots", "index.html"))) ? { src, shots: p.shots } : null;
 }
@@ -96,7 +106,9 @@ for (const t of plan.targets) {
       if (key) installed.set(key, app);
     }
     mkdirSync(dest, { recursive: true });
-    step("preview build", run("node", [join(tools, "tools/web-preview/build.mjs"), "--app", app, "--out", dest, "--label", t.branch, "--sha", t.sha], app));
+    const infoFile = join(work, `${t.slug}.info.json`);
+    writeFileSync(infoFile, JSON.stringify(t.info));
+    step("preview build", run("node", [join(tools, "tools/web-preview/build.mjs"), "--app", app, "--out", dest, "--label", t.branch, "--sha", t.sha, "--info", infoFile], app));
     if (!existsSync(join(dest, "index.html"))) throw new Error("build produced no index.html");
     t.status = "success";
     if (args.shots) {
@@ -104,7 +116,7 @@ for (const t of plan.targets) {
       const shotsDir = join(dest, "shots");
       try {
         step("app build", run("npm", ["run", "build"], app));
-        const r = spawnSync("node", [join(tools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", tools, "--label", t.branch],
+        const r = spawnSync("node", [join(tools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", tools, "--label", t.branch, "--info", infoFile],
           { cwd: app, encoding: "utf8", timeout: 240000, killSignal: "SIGKILL", maxBuffer: 16 << 20 });
         log += `obsidian-shots: status ${r.status}\n${r.stdout || ""}${r.stderr || ""}\n`;
         console.log(`[${t.branch}] obsidian-shots exit ${r.status}\n${tail(`${r.stdout || ""}${r.stderr || ""}`, 25)}`);
@@ -125,5 +137,6 @@ for (const t of plan.targets) {
   // Free disk: the installed node_modules is only kept for lockfile reuse.
   if (!installed.size || ![...installed.values()].includes(app)) rmSync(app, { recursive: true, force: true });
 }
+for (const t of plan.targets) { delete t.info; if (t.pr) delete t.pr.body; } // bodies are only needed inside the built pages
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, "targets.json"), JSON.stringify(plan, null, 2) + "\n");

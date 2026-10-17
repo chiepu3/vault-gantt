@@ -9,6 +9,7 @@ import path from "node:path";
 import { builtinModules, createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { renderMarkdown, safeUrl } from "./md.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => (a.startsWith("--") ? [...acc, [a.slice(2), all[i + 1]]] : acc), []));
@@ -20,6 +21,16 @@ const sha = args.sha ?? (git("rev-parse", "--short", "HEAD") || "unknown");
 const manifest = JSON.parse(fs.readFileSync(path.join(appDir, "manifest.json"), "utf8"));
 // Commit time, not wall-clock time, so rebuilding the same commit yields byte-identical output (gh-pages skips no-op pushes).
 const builtAt = git("log", "-1", "--format=%cI") || new Date().toISOString();
+// Optional "about this PR" info (JSON file from build-all). Rendered to safe HTML here; the shell only shows it.
+let about = null;
+if (args.info) {
+  const raw = JSON.parse(fs.readFileSync(path.resolve(args.info), "utf8"));
+  about = {
+    pr: raw.pr ? { number: raw.pr.number, title: String(raw.pr.title ?? ""), url: safeUrl(raw.pr.url), bodyHtml: renderMarkdown(raw.pr.body) } : null,
+    combines: (raw.combines ?? []).map((c) => ({ number: c.number, title: String(c.title ?? ""), url: safeUrl(c.url), slug: c.slug ? String(c.slug) : null })),
+  };
+  if (!about.pr && !about.combines.length) about = null;
+}
 const esbuild = createRequire(path.join(appDir, "package.json"))("esbuild");
 
 const nodeStub = path.join(here, "shim/stub-node.cjs");
@@ -51,7 +62,7 @@ await esbuild.build({
     __VG_VERSION__: JSON.stringify(String(manifest.version)),
     __VG_COMMIT__: JSON.stringify(sha),
     __VG_BUILT_AT__: JSON.stringify(builtAt),
-    __VGP__: JSON.stringify({ label, sha, builtAt, manifest: { id: manifest.id, name: manifest.name, version: manifest.version } }),
+    __VGP__: JSON.stringify({ label, sha, builtAt, about, manifest: { id: manifest.id, name: manifest.name, version: manifest.version } }),
     "process.env.NODE_ENV": '"production"',
   },
   plugins: [previewPlugin],

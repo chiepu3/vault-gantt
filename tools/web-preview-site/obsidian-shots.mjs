@@ -20,6 +20,9 @@ const args = parseArgs(process.argv.slice(2));
 if (!args.app || !args.out || !args.tools) { console.error("usage: obsidian-shots.mjs --app dir --out dir --tools dir"); process.exit(2); }
 const app = path.resolve(args.app), out = path.resolve(args.out), tools = path.resolve(args.tools);
 const label = args.label ? String(args.label) : "";
+let about = null; // --info: { kind, pr: {number,title,url}|null, combines: [...] } from build-all (untrusted text: always escaped)
+try { if (args.info) about = JSON.parse(fs.readFileSync(path.resolve(String(args.info)), "utf8")); } catch { /* optional */ }
+const httpUrl = (u) => { try { const x = new URL(String(u)); return x.protocol === "https:" || x.protocol === "http:" ? x.href : null; } catch { return null; } };
 const W = 1280, H = 800;
 const runtime = await import(pathToFileURL(path.join(tools, "tools/e2e/obsidian-runtime.mjs")).href);
 const { CdpSession, startObsidian, startXvfb, connectCdp, enablePlugin, ensureObsidianBinary, pollUntil } = runtime;
@@ -177,6 +180,12 @@ function writeGallery() {
     const s = shots.find((x) => x.view === v && x.theme === th);
     return s ? `<a href="${h(s.file)}" class="shot"><img loading="lazy" src="${h(s.file)}" alt="${h(v)} ${themes[th]}"><span>${themes[th]}</span></a>` : `<div class="shot none"><span>${themes[th]}: 撮影なし</span></div>`;
   }).join("")}</div></section>`).join("\n");
+  fs.writeFileSync(path.join(out, "shots.json"), JSON.stringify({ label, views: views.map((v) => ({ name: v, files: Object.fromEntries(["light", "dark"].map((th) => [th, shots.find((x) => x.view === v && x.theme === th)?.file ?? null])) })) }, null, 2));
+  const prUrl = about?.pr && httpUrl(about.pr.url);
+  const aboutHtml = about?.pr ? `<div class="about"><b>${prUrl ? `<a href="${h(prUrl)}">#${h(about.pr.number)} ${h(about.pr.title)}</a>` : `#${h(about.pr.number)} ${h(about.pr.title)}`}</b>
+<div><a href="../">PRの説明を見る(プレビュー内「このPRについて」)</a></div></div>` : "";
+  const combHtml = about?.combines?.length ? `<div class="about"><b>まとめているPR</b><ul>${about.combines.map((c) => { const u = httpUrl(c.url); return `<li>${u ? `<a href="${h(u)}">#${h(c.number)} ${h(c.title)}</a>` : `#${h(c.number)} ${h(c.title)}`}${c.slug ? ` <a href="../../${encodeURIComponent(c.slug)}/shots/">[スクショ]</a>` : ""}</li>`; }).join("")}</ul></div>` : "";
+  const compareHtml = about && about.kind !== "main" && about.slug ? `<p><a class="cmp" href="../../../compare.html?b=${encodeURIComponent(about.slug)}">mainと比較</a></p>` : "";
   const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>実機スクショ${label ? " - " + h(label) : ""}</title>
 <style>:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1c1f24;--line:#d9dde3;--mut:#5b6572}@media(prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e6e8eb;--line:#33383f;--mut:#98a2af}}
@@ -187,8 +196,11 @@ h1{font-size:1.3rem;margin:8px 0}h2{font-size:1.05rem;margin:20px 0 8px}.sub{col
 .note{border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin-top:16px;color:var(--mut);font-size:.9rem}
 #lb{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;overflow:auto;z-index:9;-webkit-overflow-scrolling:touch}#lb.on{display:block}#lb img{display:block;width:max(100%,1280px);height:auto}
 #lb button{position:fixed;top:8px;right:8px;z-index:10;font-size:1rem;padding:8px 14px;border-radius:8px;border:0}
-a.back{display:inline-block;margin-top:8px}</style></head><body><main>
+a.back{display:inline-block;margin-top:8px}
+.about{border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin:8px 0;overflow-wrap:anywhere}a{color:#2a6df4}@media(prefers-color-scheme:dark){a{color:#6b9bff}}
+a.cmp{display:inline-block;border:2px solid currentColor;border-radius:10px;padding:8px 14px;font-weight:700;text-decoration:none}</style></head><body><main>
 <a class="back" href="../">&larr; プレビューに戻る</a>
+${aboutHtml}${combHtml}${compareHtml}
 <h1>実機Obsidianのスクリーンショット</h1><p class="sub">${label ? h(label) + " · " : ""}Obsidian 実機(ヘッドレス) · ${W}x${H} · タップで拡大</p>
 ${sections || "<p>撮影できた画面がありません。</p>"}
 ${notes.length ? `<div class="note"><b>スキップ・注意</b><ul>${notes.map((n) => `<li>${h(n)}</li>`).join("")}</ul></div>` : ""}
