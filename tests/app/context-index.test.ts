@@ -14,6 +14,19 @@ describe("content-hash ContextReadPort", () => {
     const detail = await service.contextPort.query("tasks.get-many", { taskIds: [CHILD_ID], include: ["content", "markers", "workload"] }, context);
     expect(detail.status === "success" && detail.result.data.items[0]).toHaveProperty("content"); expect(contextQueryOutputSchemas["tasks.get-many"].safeParse(detail).success).toBe(true);
   });
+  it("snapshots reread only the files whose stat changed", async () => {
+    const { service, vault, parent } = await runtimeFixture();
+    await service.contextPort.snapshot();
+    const read = vi.spyOn(vault, "read");
+    const unchanged = await service.contextPort.snapshot();
+    expect(read).not.toHaveBeenCalled();
+    parent.displayName = "再読込"; parent.title = "再読込";
+    await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    read.mockClear();
+    const changed = await service.contextPort.snapshot();
+    expect(read.mock.calls.map(([file]) => (file as { path: string }).path)).toEqual([PARENT_ID]);
+    expect(changed.revision).not.toBe(unchanged.revision);
+  });
   it("pages have no gaps/duplicates and are bound to snapshot/query/principal", async () => {
     const { service, context, vault, parent } = await runtimeFixture();
     const first = await service.contextPort.query("tasks.search", { limit: 1 }, context);

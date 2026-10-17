@@ -4671,31 +4671,35 @@ export class TaskGanttView extends ItemView {
     timeline.style.width = `${dates.length * dayWidth}px`;
     timeline.style.height = `${rowHeight}px`;
 
-    // one background cell per date at index × dayWidth,
-    // classified via the shared dateClasses helper.
+    // Only days that actually look different (weekend / holiday / today) get a
+    // background cell, positioned at index × dayWidth and classified via the
+    // shared dateClasses helper. Plain days are transparent, so a single hit
+    // layer underneath resolves right-clicks on them to a date instead of
+    // creating thousands of invisible per-day nodes.
+    const openMenuAt = (evt: MouseEvent, date: string): void => {
+      this.openEmptyCellMenu(evt, parent, date);
+    };
+    const hit = document.createElement("div");
+    hit.classList.add("task-gantt-bg-hit");
+    hit.addEventListener("contextmenu", (evt: MouseEvent) => {
+      const rect = hit.getBoundingClientRect();
+      const x = evt.offsetX ?? evt.clientX - rect.left;
+      const index = Math.min(dates.length - 1, Math.max(0, Math.floor(x / dayWidth)));
+      openMenuAt(evt, dates[index]);
+    });
+    timeline.appendChild(hit);
     dates.forEach((date, index) => {
+      const { isWeekend, isHoliday, isToday } = this.dateClasses(date);
+      if (!isWeekend && !isHoliday && !isToday) return;
       const bg = document.createElement("div");
       bg.classList.add("task-gantt-bg");
       bg.style.width = `${dayWidth}px`;
       bg.style.left = `${index * dayWidth}px`;
-      const { isWeekend, isHoliday, isToday } = this.dateClasses(date);
-      if (isWeekend) {
-        bg.classList.add("is-weekend");
-      }
-      if (isHoliday) {
-        bg.classList.add("is-holiday");
-      }
-      if (isToday) {
-        bg.classList.add("is-today");
-      }
-
-      // Background cells alone use the empty-cell menu. Bars, markers,
-      // resize handles, and deadline markers are sibling elements with their
-      // own handlers.
-
-      bg.addEventListener("contextmenu", (evt: MouseEvent) => {
-        this.openEmptyCellMenu(evt, parent, date);
-      });
+      if (isWeekend) bg.classList.add("is-weekend");
+      if (isHoliday) bg.classList.add("is-holiday");
+      if (isToday) bg.classList.add("is-today");
+      bg.dataset.date = date;
+      bg.addEventListener("contextmenu", (evt: MouseEvent) => openMenuAt(evt, date));
       timeline.appendChild(bg);
     });
 
