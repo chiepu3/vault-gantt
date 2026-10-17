@@ -4,7 +4,7 @@ import { renderGhost } from "../../src/ui/ghost-layer";
 import { TaskGanttView, type TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import { ScheduleGhostStore } from "../../src/app/schedule-ghost";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
-import { createFakeDocument, byClass, makeFakeEl } from "../stubs/fake-dom";
+import { createFakeDocument, byClass, dispatch, makeFakeEl } from "../stubs/fake-dom";
 import { FakePreviewPort } from "./preview-fakes";
 import { DELETE_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARENT_ID } from "../contracts/fixtures";
 import type { TaskRow } from "../../src/core/types";
@@ -100,25 +100,29 @@ describe("Gantt preview overlay from the preview port", () => {
     const host = { settings: { ...DEFAULT_SETTINGS, ganttFeatureWorkloadEnabled: false, ganttFeatureDailyTodoEnabled: false, ganttFeatureEventsEnabled: false }, manifest: { version: "test" }, logger: { debug: vi.fn() }, loadTasks: async () => [parent], activateView: vi.fn(), previewPort: port } as unknown as TaskGanttViewHost;
     return { host, port };
   };
-  it("projects the focused plan as a dashed proposal band plus a separate preview region, and leaves live rows alone", async () => {
+  it("projects the focused plan as a dashed proposal band and highlights the changed bar on the real chart, leaving live rows alone", async () => {
     const { host, port } = base();
     const view = new TaskGanttView({} as any, host); await view.onOpen();
     const container = view.containerEl as any;
-    const dockHost = byClass(container, "vg-pv-dockhost")[0] as any;
-    expect(dockHost.hidden).toBe(true); expect(byClass(container, "vg-ai-ghost")).toHaveLength(0);
+    expect(byClass(container, "vg-pv-dockhost")).toHaveLength(0); expect(byClass(container, "vg-ai-ghost")).toHaveLength(0);
+    expect(byClass(container, "vg-hl-bar")).toHaveLength(0);
     const timeline = byClass(container, "task-gantt-parent-timeline")[0]; const rowHeight = timeline.style.height;
     const bar = byClass(container, "task-gantt-bar")[0]; const barStyle = { ...bar.style };
     port.focus("moved");
-    expect(dockHost.hidden).toBe(false);
-    expect(byClass(dockHost, "vg-pv-dock")).toHaveLength(1);
+    expect(byClass(container, "vg-pv-dock")).toHaveLength(0);
+    const marked = byClass(container, "vg-hl-bar"); expect(marked).toHaveLength(1); expect(marked[0].classList.contains("is-changed")).toBe(true);
+    expect(byClass(container, "vg-hl-row")).toHaveLength(1);
     const band = byClass(container, "vg-ai-ghost");
     expect(band).toHaveLength(1); expect(band[0].classList.contains("is-proposed")).toBe(true);
-    expect(byClass(container, "vg-ai-legend")[0].textContent).toBe("変更案 · チャット · 実線: 現在 / 破線: 変更案（後）");
+    const legend = byClass(container, "vg-ai-legend")[0]; expect(legend.textContent).toBe("変更案を表示中");
+    expect(legend.textContent).not.toContain("表示範囲外");
     expect(byClass(container, "task-gantt-parent-timeline")[0].style.height).toBe(rowHeight);
     expect(byClass(container, "task-gantt-bar")[0].style).toEqual(barStyle);
-    port.focus(null);
-    expect(dockHost.hidden).toBe(true); expect(byClass(container, "vg-ai-ghost")).toHaveLength(0); expect(byClass(container, "vg-ai-legend")).toHaveLength(0);
-    expect(byClass(container, "vg-ai-target")).toHaveLength(0);
+    // The legend's close button stops the highlighting; the plan itself stays in the store.
+    const close = byClass(container, "vg-hl-legend-close")[0]; expect(close.getAttribute("aria-label")).toBe("強調表示を終了"); dispatch(close, "click");
+    expect(port.focused).toBeNull();
+    expect(byClass(container, "vg-ai-ghost")).toHaveLength(0); expect(byClass(container, "vg-ai-legend")).toHaveLength(0);
+    expect(byClass(container, "vg-ai-target")).toHaveLength(0); expect(byClass(container, "vg-hl-bar")).toHaveLength(0); expect(byClass(container, "vg-hl-row")).toHaveLength(0);
     await view.onClose();
   });
   it("drops the overlay when the view closes while the plan itself stays in the store", async () => {
@@ -135,7 +139,7 @@ describe("Gantt preview overlay from the preview port", () => {
     port.focus("moved");
     const band = byClass(view.containerEl as any, "vg-ai-ghost");
     expect(band).toHaveLength(1); expect(band[0].classList.contains("is-proposed")).toBe(false);
-    expect(byClass(view.containerEl as any, "vg-ai-legend")[0].textContent).toContain("保存結果");
+    expect(byClass(view.containerEl as any, "vg-ai-legend")[0].textContent).toContain("保存した変更");
     await view.onClose();
   });
   it("marks a task that will be deleted without touching its live bar position", async () => {
@@ -146,9 +150,45 @@ describe("Gantt preview overlay from the preview port", () => {
     const bar = byClass(view.containerEl as any, "task-gantt-bar")[0]; const style = { ...bar.style };
     port.focus("doomed");
     expect(byClass(view.containerEl as any, "task-gantt-bar")[0].classList.contains("vg-pv-delete-target")).toBe(true);
+    expect(byClass(view.containerEl as any, "task-gantt-bar")[0].classList.contains("is-deleted")).toBe(true);
     expect(byClass(view.containerEl as any, "vg-pv-live-delete")).toHaveLength(1);
     expect(byClass(view.containerEl as any, "task-gantt-bar")[0].style).toEqual(style);
     port.focus(null); expect(byClass(view.containerEl as any, "vg-pv-delete-target")).toHaveLength(0);
+    await view.onClose();
+  });
+  it("highlights workload cells, events, Daily ToDo days and preview-only bars on the real chart", async () => {
+    const { host, port } = base();
+    const [parentRow] = await host.loadTasks(); const review = parentRow.subtasks!.get("review")!;
+    review.workloadPlan = { "2026-10-14": 1 }; review.workloadActual = {};
+    host.settings = { ...host.settings, ganttFeatureWorkloadEnabled: true, ganttFeatureEventsEnabled: true, ganttFeatureDailyTodoEnabled: true,
+      ganttEvents: [{ key: "e1", title: "会議", date: "2026-10-14" }, { key: "e2", title: "削除する予定", date: "2026-10-15" }] };
+    host.loadDailyTodoSummaries = async () => [{ date: "2026-10-14", items: [], completedCount: 0, totalCount: 1 }];
+    const marks = mapped({ ...OUTSIDE_RANGE_PREVIEW, previewId: "marks" });
+    const projection = marks.projection!;
+    const child = (state: any) => state.parents[0].children[0];
+    child(projection.before).hours = [{ date: "2026-10-14", plan: 1, actual: 0 }]; child(projection.after).hours = [{ date: "2026-10-14", plan: 3, actual: 1 }, { date: "2026-10-13", plan: 2, actual: 0 }];
+    projection.after.parents[0].children.push({ ...structuredClone(child(projection.after)), id: PARENT + "::fresh", name: "新規の子", period: { start: "2026-10-20", end: "2026-10-21" }, markers: [], hours: [] });
+    projection.before.events = [{ key: "e1", title: "会議", date: "2026-10-14", hours: [] }, { key: "e2", title: "削除する予定", date: "2026-10-15", hours: [] }];
+    projection.after.events = [{ key: "e1", title: "会議", date: "2026-10-16", hours: [] }, { key: "e3", title: "新しい予定", date: "2026-10-17", hours: [] }];
+    projection.before.daily = [{ date: "2026-10-14", totalCount: 1, completedCount: 0 }]; projection.after.daily = [{ date: "2026-10-14", totalCount: 2, completedCount: 1 }];
+    projection.before.aggregates = [{ date: "2026-10-14", plan: 1, actual: 0, capacity: 7, overCapacity: false }]; projection.after.aggregates = [{ date: "2026-10-14", plan: 3, actual: 1, capacity: 7, overCapacity: false }];
+    port.set(marks as any);
+    const view = new TaskGanttView({} as any, host); await view.onOpen();
+    const container = view.containerEl as any;
+    expect(byClass(container, "vg-hl-cell")).toHaveLength(0);
+    port.focus("marks");
+    const cells = byClass(container, "vg-hl-cell");
+    expect(cells.map((cell) => cell.title)).toContain("計画 1h → 3h / 実績 0h → 1h");
+    expect(cells.map((cell) => cell.title)).toContain("計画 0h → 2h"); // a day that had no hours on the task
+    expect(byClass(container, "task-gantt-workload-summary-cell").some((cell) => cell.classList.contains("vg-hl-cell"))).toBe(true);
+    const chip = byClass(container, "vg-hl-chip"); expect(chip).toHaveLength(1); expect(chip[0].textContent).toBe("1/2"); expect(chip[0].title).toContain("ToDo 1件（完了0） → 2件（完了1）");
+    const events = byClass(container, "vg-hl-event");
+    expect(events.filter((el) => el.classList.contains("is-phantom")).map((el) => [...el.classList].find((name) => name.startsWith("is-") && name !== "is-phantom")).sort()).toEqual(["is-changed", "is-created"]);
+    expect(events.some((el) => el.classList.contains("is-changed") && !el.classList.contains("is-phantom"))).toBe(true);
+    expect(events.some((el) => el.classList.contains("is-deleted"))).toBe(true);
+    const phantom = byClass(container, "vg-hl-phantom"); expect(phantom).toHaveLength(1); expect(phantom[0].classList.contains("is-created")).toBe(true);
+    port.focus(null);
+    for (const name of ["vg-hl-cell", "vg-hl-chip", "vg-hl-event", "vg-hl-phantom", "vg-hl-bar", "vg-hl-row"]) expect(byClass(container, name), name).toHaveLength(0);
     await view.onClose();
   });
 });
