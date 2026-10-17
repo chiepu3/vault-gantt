@@ -1,0 +1,9 @@
+{
+  "id": "vault-gantt",
+  "name": "Vault Gantt",
+  "version": "0.3.0",
+  "minAppVersion": "1.5.0",
+  "description": "Vault内のMarkdownノートを正本とするタスク管理・Ganttチャート機能を提供します。",
+  "author": "ryory",
+  "isDesktopOnly": false
+}

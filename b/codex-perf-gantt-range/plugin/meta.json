@@ -1,0 +1,20 @@
+{
+  "branch": "codex/perf-gantt-range",
+  "sha": "1820499dfc9d4fefa85d00f2e11efdec4c0cbd17",
+  "version": "0.3.0",
+  "builtAt": "2026-10-17T18:03:07.478Z",
+  "files": {
+    "main.js": {
+      "size": 1695453,
+      "sha256": "4b3a62a8e9247ddd5ec58a8fb1200950efb298a16fcc38f669f389b7f820615a"
+    },
+    "manifest.json": {
+      "size": 277,
+      "sha256": "4ad678bee3139fa16c67480d2500f95212ce2bb3daded9627bc69e4359cfa4cf"
+    },
+    "styles.css": {
+      "size": 82369,
+      "sha256": "ae6676ba3e3d6677d49529856c0aea006f175bc1024653b635713f716cdd8b2f"
+    }
+  }
+}

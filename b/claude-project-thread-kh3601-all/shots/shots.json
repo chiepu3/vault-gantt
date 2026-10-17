@@ -1,0 +1,40 @@
+{
+  "label": "claude/project-thread-kh3601-all",
+  "views": [
+    {
+      "name": "ガントチャート",
+      "files": {
+        "light": "gantt-light.png",
+        "dark": "gantt-dark.png"
+      }
+    },
+    {
+      "name": "ワークベンチ",
+      "files": {
+        "light": "workbench-light.png",
+        "dark": "workbench-dark.png"
+      }
+    },
+    {
+      "name": "設定タブ",
+      "files": {
+        "light": "settings-light.png",
+        "dark": "settings-dark.png"
+      }
+    },
+    {
+      "name": "AIチャット",
+      "files": {
+        "light": "ai-chat-light.png",
+        "dark": "ai-chat-dark.png"
+      }
+    },
+    {
+      "name": "ガント(変更案の確認中)",
+      "files": {
+        "light": "gantt-proposal-light.png",
+        "dark": "gantt-proposal-dark.png"
+      }
+    }
+  ]
+}

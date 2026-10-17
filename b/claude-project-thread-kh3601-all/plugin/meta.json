@@ -1,0 +1,20 @@
+{
+  "branch": "claude/project-thread-kh3601-all",
+  "sha": "e77c54b9e97a36f24bbd48acf1a6a93b8161d621",
+  "version": "0.3.0",
+  "builtAt": "2026-10-17T18:02:07.581Z",
+  "files": {
+    "main.js": {
+      "size": 1705151,
+      "sha256": "a780aad7afe571505d6de5dcd0a1ec34967d3b52487e70b7ea86e58bd53a848f"
+    },
+    "manifest.json": {
+      "size": 277,
+      "sha256": "4ad678bee3139fa16c67480d2500f95212ce2bb3daded9627bc69e4359cfa4cf"
+    },
+    "styles.css": {
+      "size": 92666,
+      "sha256": "26800896bb573844140dad29e32f4acf79dc0fa62536bc21b4574b67bc404795"
+    }
+  }
+}
