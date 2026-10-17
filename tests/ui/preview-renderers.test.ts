@@ -192,7 +192,7 @@ describe("workload, order, membership and the rest", () => {
     const send = root(); renderEffect(send, find("external-send"), {});
     expect(text(send)).toContain("送信が成功するまで「適用済み」にはなりません"); expect(text(send)).toContain("https://example.test/api/snapshot"); expect(text(send)).toContain("タイトル"); expect(text(send)).toContain("100 B");
     expect(fmtBytes(2048)).toBe("2 KB");
-    const diagnostic = root(); renderEffect(diagnostic, find("diagnostic"), {}); expect(text(diagnostic)).toContain("記録しない"); expect(text(diagnostic)).toContain("秘密情報はここには表示しません");
+    const diagnostic = root(); renderEffect(diagnostic, find("diagnostic"), {}); expect(text(diagnostic)).toContain("記録しない"); expect(text(diagnostic)).not.toContain("秘密情報");
     const conversation = root(); renderEffect(conversation, { kind: "conversation", action: "configure", before: { model: "a", secretId: "xyz" }, after: { model: "b", secretId: "xyz2" } }, {});
     expect(text(conversation)).toContain("接続設定の変更"); expect(text(conversation)).not.toContain("xyz");
   });
@@ -257,10 +257,10 @@ describe("no internal names on screen", () => {
     const explicit = await f.service.propose("T19", { subtaskId: f.child.id, start: "2026-10-16", end: "2026-10-19" }, f.context);
     expect(text(renderOperationPreviewCard(root(), explicit, {}))).not.toContain("休日を除いた日数を保って移動します");
   });
-  it("shows the day-counting basis in plain words", () => {
+  it("shows the day-counting basis only for business days", () => {
     const business = root(); renderEffect(business, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "business-day" }, {});
     expect(text(business)).toContain("日数の数え方: 営業日（休日を除く）");
     const calendar = root(); renderEffect(calendar, { kind: "schedule", before: { start: DATE, end: DATE }, after: { start: "2026-10-14", end: "2026-10-14" }, unit: "calendar-day" }, {});
-    expect(text(calendar)).toContain("日数の数え方: 暦日（休日も数える）");
+    expect(text(calendar)).not.toContain("日数の数え方");
   });
 });

@@ -13,7 +13,9 @@ export interface ConnectionConfig {
   secretId: string;
   connectionError?: string;
 }
-export type ChatEvent = { type: "text"; text: string } | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown; preview?: OperationPreviewV1; operationId?: WriteOperationId } | { type: "context"; messages: ModelMessage[] } | { type: "completion"; completion: ChatCompletion };
+/** Live activity of a tool call, keyed by the model's call id. */
+export interface ChatToolEvent { type: "tool"; id: string; name: string; input?: unknown; output?: unknown; error?: string; state: "running" | "done" | "error" }
+export type ChatEvent = { type: "text"; text: string } | { type: "reasoning"; id: string; text: string } | { type: "reasoning-end"; id: string } | ChatToolEvent | { type: "plan"; plan: OperationPlan; operation: OperationName; input: unknown; preview?: OperationPreviewV1; operationId?: WriteOperationId } | { type: "context"; messages: ModelMessage[] } | { type: "completion"; completion: ChatCompletion };
 export interface ChatRequest { config: ConnectionConfig; messages: ModelMessage[]; signal: AbortSignal; conversationId?: string }
 export interface ChatProvider {
   connected(config: ConnectionConfig): boolean;
@@ -21,7 +23,58 @@ export interface ChatProvider {
 }
 export type ChatStatus = "idle" | "running" | "preview" | "failed" | "cancelled";
 export interface Proposal { preview?: OperationPreviewV1; operationId?: WriteOperationId; plan: OperationPlan; operation: OperationName; input: unknown; result?: OperationResult; consumed: boolean; retryPrepared?: boolean }
-export interface ChatMessage { completion?: ChatCompletion; role: "user" | "assistant"; text: string; proposals: Proposal[] }
+/** The ordered content of an assistant message; the view renders parts in this order and updates them live. */
+export type ChatPart =
+  | { type: "reasoning"; id: string; text: string; state: "streaming" | "done" }
+  | { type: "text"; id: string; text: string }
+  | { type: "tool"; id: string; name: string; input?: unknown; output?: unknown; error?: string; state: "running" | "done" | "error" }
+  | { type: "proposal"; id: string; previewId: string };
+export interface ChatMessage { completion?: ChatCompletion; role: "user" | "assistant"; text: string; proposals: Proposal[]; parts?: ChatPart[] }
+/** Parts of a message; messages created without parts (older state, tests) are derived from text and proposals. */
+export function partsOf(message: ChatMessage): ChatPart[] {
+  if (message.parts) return message.parts;
+  const parts: ChatPart[] = [];
+  if (message.text) parts.push({ type: "text", id: "text", text: message.text });
+  for (const proposal of message.proposals) parts.push({ type: "proposal", id: "proposal:" + proposal.plan.previewId, previewId: proposal.plan.previewId });
+  return parts;
+}
+const MAX_PART_TEXT = 100000;
+/** Applies one streamed event to the ordered parts of a message. Text and reasoning deltas extend the part at the tail. */
+export function applyPartEvent(message: ChatMessage, event: ChatEvent): void {
+  const parts = message.parts ??= [];
+  if (event.type === "text") {
+    const last = parts.at(-1);
+    if (last?.type === "text") last.text += event.text; else parts.push({ type: "text", id: "text:" + parts.length, text: event.text });
+  } else if (event.type === "reasoning") {
+    const existing = parts.find((part) => part.type === "reasoning" && part.id === event.id);
+    if (existing?.type === "reasoning") { existing.text += event.text; if (existing.text.length > MAX_PART_TEXT) existing.text = existing.text.slice(-MAX_PART_TEXT); }
+    else parts.push({ type: "reasoning", id: event.id, text: event.text, state: "streaming" });
+  } else if (event.type === "reasoning-end") {
+    const existing = parts.find((part) => part.type === "reasoning" && part.id === event.id);
+    if (existing?.type === "reasoning") existing.state = "done";
+  } else if (event.type === "tool") {
+    const existing = parts.find((part) => part.type === "tool" && part.id === event.id);
+    if (existing?.type === "tool") {
+      existing.state = event.state; existing.name = event.name;
+      if (event.input !== undefined) existing.input = event.input;
+      if (event.output !== undefined) existing.output = event.output;
+      if (event.error !== undefined) existing.error = event.error;
+    } else {
+      const { type: _type, ...rest } = event; void _type;
+      parts.push({ type: "tool", ...rest });
+    }
+  } else if (event.type === "plan") {
+    const id = event.plan.previewId;
+    if (!parts.some((part) => part.type === "proposal" && part.previewId === id)) parts.push({ type: "proposal", id: "proposal:" + id, previewId: id });
+  }
+}
+/** A finished turn leaves nothing spinning: unfinished reasoning closes and calls that never returned count as failed. */
+function settleParts(message: ChatMessage): void {
+  for (const part of message.parts ?? []) {
+    if (part.type === "reasoning") part.state = "done";
+    if (part.type === "tool" && part.state === "running") part.state = "error";
+  }
+}
 export interface Conversation { completion?: ChatCompletion; id: string; title: string; messages: ChatMessage[]; context: ModelMessage[]; status: ChatStatus; error: string; draft: string }
 const emptyConfig = (): ConnectionConfig => ({ provider: "disconnected", endpoint: "", model: "", auth: "secret", secretId: "" });
 
@@ -106,8 +159,8 @@ export class ChatSession {
     const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
     conversation.status = "running"; conversation.error = ""; conversation.draft = ""; conversation.completion = undefined;
     conversation.title = text.trim().slice(0, 32);
-    conversation.messages.push({ role: "user", text, proposals: [] });
-    const assistant: ChatMessage = { role: "assistant", text: "", proposals: [] };
+    conversation.messages.push({ role: "user", text, proposals: [], parts: [{ type: "text", id: "text:0", text }] });
+    const assistant: ChatMessage = { role: "assistant", text: "", proposals: [], parts: [] };
     conversation.messages.push(assistant);
     const contextLength = conversation.context.length;
     const messages: ModelMessage[] = [...conversation.context, { role: "user", content: text }];
@@ -121,8 +174,9 @@ export class ChatSession {
         }
         if (event.type === "text") {
           assistant.text += event.text;
-          if (assistant.text.length > 100000) throw new Error("RESPONSE_LIMIT");
+          if (assistant.text.length > MAX_PART_TEXT) throw new Error("RESPONSE_LIMIT");
         }
+        applyPartEvent(assistant, event);
         if (event.type === "plan" && !assistant.proposals.some((proposal) => proposal.plan.previewId === event.plan.previewId)) assistant.proposals.push({ preview: event.preview, operationId: event.operationId, plan: event.plan, operation: event.operation, input: event.input, consumed: false });
         if (event.type === "context") context = event.messages;
         if (event.type === "completion") assistant.completion = conversation.completion = event.completion;
@@ -152,6 +206,7 @@ export class ChatSession {
       }
       this.discardMessage(assistant);
     } finally {
+      settleParts(assistant);
       if (this.controller === controller) this.controller = undefined;
       this.emit();
     }
@@ -162,6 +217,16 @@ export class ChatSession {
   async retry(): Promise<void> {
     const last = [...this.active.messages].reverse().find((message) => message.role === "user");
     if (last) await this.send(last.text);
+  }
+  /** A card started a re-preview itself: the new card is placed right after the one it replaces. */
+  attachPreview(fromPreviewId: string, toPreviewId: string): void {
+    for (const conversation of this.conversations) for (const message of conversation.messages) {
+      const parts = partsOf(message);
+      const at = parts.findIndex((part) => part.type === "proposal" && part.previewId === fromPreviewId);
+      if (at < 0 || parts.some((part) => part.type === "proposal" && part.previewId === toPreviewId)) continue;
+      message.parts = parts; parts.splice(at + 1, 0, { type: "proposal", id: "proposal:" + toPreviewId, previewId: toPreviewId });
+      this.emit(); return;
+    }
   }
   async repreview(proposal: Proposal): Promise<void> {
     const conversation = this.active;
@@ -188,6 +253,10 @@ export class ChatSession {
       if (controller.signal.aborted || this.owners.get(conversation) !== controller) { this.registry.discard(plan.previewId); throw new Error("CANCELLED"); }
       this.registry.discard(proposal.plan.previewId);
       message.proposals.push({ plan, preview, operationId: proposal.operationId, operation: proposal.operation, input, consumed: false });
+      // The new card sits next to the one it replaces.
+      const parts = message.parts ??= partsOf(message).filter((part) => part.type !== "proposal" || part.previewId !== plan.previewId);
+      const at = parts.findIndex((part) => part.type === "proposal" && part.previewId === proposal.plan.previewId);
+      parts.splice(at < 0 ? parts.length : at + 1, 0, { type: "proposal", id: "proposal:" + plan.previewId, previewId: plan.previewId });
       conversation.status = "preview"; conversation.error = "";
     } catch {
       proposal.retryPrepared = false;

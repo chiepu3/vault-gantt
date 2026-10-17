@@ -25,7 +25,10 @@ const cssPath = path.resolve(
   "..",
   "styles.css"
 );
-const rawCss = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : "";
+const fullCss = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : "";
+// The AI chat's motion (keyframes, transitions, prefers-reduced-motion) lives in one marked region.
+// The flat-CSS rules below describe everything else, so that region is excluded from them.
+const rawCss = fullCss.replace(/\/\* vg-motion:start[\s\S]*?\/\* vg-motion:end \*\//, "");
 
 /* ---------------------------------------------------------------------------
  * Minimal flat-CSS parser (justified by, asserted before reliance).
