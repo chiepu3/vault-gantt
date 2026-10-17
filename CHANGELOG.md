@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.4.0 (2026-10-17)
+
+### 新機能
+
+- Daily ToDoのホバー表示とサブタスク名のテキストカーソル ([#52](https://github.com/chiepu3/vault-gantt/pull/52))
+
 ## v0.3.2 (2026-10-17)
 
 ### その他の変更
