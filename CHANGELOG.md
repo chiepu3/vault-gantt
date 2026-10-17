@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.7.1 (2026-10-17)
+
+### 高速化
+
+- 保存後のガント二重再描画をやめる ([#58](https://github.com/chiepu3/vault-gantt/pull/58))
+
 ## v0.7.0 (2026-10-17)
 
 ### 新機能
