@@ -324,8 +324,9 @@ describe("TaskWorkbenchSettingTab", () => {
       updateAutoPriorities,
       syncReadonlyGanttNow,
       holidays: { refreshNationalHolidays: refresh },
+      manifest: { id: "vault-gantt", version: "0.0.0", dir: ".obsidian/plugins/vault-gantt" },
     };
-    tab = new TaskWorkbenchSettingTab({} as any, hostPlugin);
+    tab = new TaskWorkbenchSettingTab({ vault: { adapter: {}, configDir: ".obsidian" } } as any, hostPlugin);
     (tab as any).containerEl = new FakeElement();
   });
 
@@ -392,6 +393,9 @@ describe("TaskWorkbenchSettingTab", () => {
       "Gantt サーバー URL",
       "Gantt 同期間隔（分）",
       "今すぐ同期",
+      "アップデート",
+      "インストールするブランチ",
+      "更新と元に戻す",
     ]);
 
     const names = RecordingSetting.all.map((setting) => setting.name);
