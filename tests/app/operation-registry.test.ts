@@ -209,3 +209,58 @@ describe("serialization guard", () => {
     expect(a.vault.getModifyCallCount()).toBe(0);
   });
 });
+
+describe("registry task cache", () => {
+  function cachedSetup() {
+    const a = setup();
+    const taskCache = new Map();
+    const invalidate = vi.fn((paths?: string[]) => { if (paths) for (const path of paths) taskCache.delete(path); else taskCache.clear(); });
+    const registry = new OperationRegistry({ settings: a.settings, historyManager: a.historyManager, taskCache, invalidate }, () => a.vault);
+    let reads = 0;
+    const read = a.vault.read.bind(a.vault);
+    a.vault.read = async (file) => { reads++; return read(file); };
+    return { ...a, registry, taskCache, invalidate, reads: () => reads, resetReads: () => { reads = 0; } };
+  }
+  it("does not re-read unchanged files on a second updateFromUI with a shared cache", async () => {
+    const a = cachedSetup();
+    const rows = [await createTask(a.vault, a.settings, "A"), await createTask(a.vault, a.settings, "B"), await createTask(a.vault, a.settings, "C")];
+    await a.registry.updateFromUI([{ row: rows[0], patch: { currentStatus: "status2" } }]);
+    a.resetReads();
+    await a.registry.updateFromUI([{ row: rows[1], patch: { currentStatus: "status3" } }]);
+    const uncached = setup();
+    const baseline = new OperationRegistry({ settings: uncached.settings, historyManager: uncached.historyManager, invalidate: uncached.invalidate }, () => uncached.vault);
+    const urows = [await createTask(uncached.vault, uncached.settings, "A"), await createTask(uncached.vault, uncached.settings, "B"), await createTask(uncached.vault, uncached.settings, "C")];
+    await baseline.updateFromUI([{ row: urows[0], patch: { currentStatus: "status2" } }]);
+    let ureads = 0;
+    const uread = uncached.vault.read.bind(uncached.vault);
+    uncached.vault.read = async (file) => { ureads++; return uread(file); };
+    await baseline.updateFromUI([{ row: urows[1], patch: { currentStatus: "status3" } }]);
+    // Unchanged files are served from the cache, so each of the other files saves one read.
+    expect(a.reads()).toBeLessThan(ureads);
+  });
+  it("invalidates only the written paths and reloads their changes", async () => {
+    const a = cachedSetup();
+    const first = await createTask(a.vault, a.settings, "A"); const second = await createTask(a.vault, a.settings, "B");
+    await a.registry.rows();
+    expect(a.taskCache.has(first.file.path)).toBe(true);
+    expect(a.taskCache.has(second.file.path)).toBe(true);
+    await a.registry.updateFromUI([{ row: first, patch: { currentStatus: "status4" } }]);
+    expect(a.invalidate).toHaveBeenCalledWith([first.file.path]);
+    expect(a.taskCache.has(first.file.path)).toBe(false);
+    expect(a.taskCache.has(second.file.path)).toBe(true);
+    expect((await a.registry.get(first.id)).currentStatus).toBe("status4");
+    expect((await a.registry.get(second.id)).currentStatus).not.toBe("status4");
+  });
+});
+
+describe("plan same-file grouping", () => {
+  it("produces the combined content for several commands on one file", async () => {
+    const a = setup(); const parent = await createTask(a.vault, a.settings, "Parent");
+    const child1 = await addSubtask(a.vault, a.settings, parent, "One"); const child2 = await addSubtask(a.vault, a.settings, parent, "Two");
+    const plan = await a.registry.plan("update-batch", { changes: [{ taskId: child1.id, patch: { currentStatus: "status2" } }, { taskId: child2.id, patch: { currentStatus: "status4" } }] });
+    expect(plan.count).toBe(2);
+    expect((await a.registry.commit(plan.previewId)).committed).toBe(2);
+    expect((await a.registry.get(child1.id)).currentStatus).toBe("status2");
+    expect((await a.registry.get(child2.id)).currentStatus).toBe("status4");
+  });
+});
