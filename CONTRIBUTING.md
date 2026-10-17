@@ -15,7 +15,7 @@ Vault Gantt は [セマンティックバージョニング](https://semver.org/
 main に PR をマージすると、GitHub Actions（`.github/workflows/release.yml`）が次を自動で行います。人がバージョンを触る必要はありません。
 
 1. 前回のリリース以降にマージされた PR のタイトルから、上げ方を決めます。
-2. `package.json` / `package-lock.json` / `manifest.json` / `versions.json` を同時に更新し、`CHANGELOG.md` に追記して `chore(release): vX.Y.Z` コミットで main に push します。
+2. `package.json` / `manifest.json` / `versions.json` を同時に更新し、`CHANGELOG.md` に追記して `chore(release): vX.Y.Z` コミットで main に push します。
 3. タグ `vX.Y.Z` を打ち、同じ内容のリリースノートで GitHub Release を作ります。
 
 PR タイトルは [Conventional Commits](https://www.conventionalcommits.org/ja/) の接頭辞で書きます。
@@ -31,7 +31,7 @@ PR タイトルは [Conventional Commits](https://www.conventionalcommits.org/ja
 - 1回の push に複数の PR が含まれるときは、一番大きい上げ方を採用し、リリースノートにはすべて載せます。
 - MAJOR は自動では上がりません。1.0.0 にするときなどは、手元で `npm version major` を実行して push します（`version-bump.mjs` が `manifest.json` と `versions.json` を同期し、`minAppVersion` を変えるときは先に `manifest.json` を直します）。
 - リリースコミットは GITHUB_TOKEN で push するため、CI は再実行されず、ループしません。コミットメッセージが `chore(release):` で始まる場合、ワークフローは何もしません。
-- リリースコミットは main に入るので、`install.cmd`（`git pull` → `npm run build`）はそのまま動きます。`package-lock.json` の依存関係は変わらないため、`npm ci` も走りません。
+- リリースコミットは main に入るので、`install.cmd`（`git pull` → `npm run build`）はそのまま動きます。`package-lock.json` は更新しないので、`install.cmd` が依存の入れ直し（`npm ci`）をすることもありません。
 - 確認だけしたいときは `node tools/release/release.mjs --dry-run` で、次のバージョンとリリースノートを表示できます。
 
 ## 画面表示

@@ -1,6 +1,6 @@
 // Runs in .github/workflows/release.yml after a push to main: decides the next version
-// from the PR titles merged since the last release commit, bumps it with `npm version`
-// (package.json / package-lock.json / manifest.json / versions.json), updates CHANGELOG.md,
+// from the PR titles merged since the last release commit, bumps it
+// (package.json / manifest.json / versions.json), updates CHANGELOG.md,
 // commits, tags and pushes, then publishes a GitHub Release. Pass --dry-run to only print.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -40,12 +40,18 @@ const notes = renderNotes(changes, `https://github.com/${repo}`);
 console.log(`${current} -> ${next} (${bump})\n\n${notes}`);
 if (dryRun) process.exit(0);
 
-execFileSync("npm", ["version", next, "--no-git-tag-version"], { stdio: "inherit" });
+// Not `npm version`: it also rewrites package-lock.json, and install.cmd treats any lockfile
+// change as "dependencies changed" and reruns npm ci. npm ci ignores the root version, so the
+// lockfile is left alone and package.json + version-bump.mjs sync the other files.
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+pkg.version = next;
+writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+execFileSync("node", ["version-bump.mjs"], { stdio: "inherit", env: { ...process.env, npm_package_version: next } });
 const date = new Date().toISOString().slice(0, 10);
 const existing = existsSync("CHANGELOG.md") ? readFileSync("CHANGELOG.md", "utf8") : "";
 writeFileSync("CHANGELOG.md", prependChangelog(existing, next, date, notes));
 
-git("add", "package.json", "package-lock.json", "manifest.json", "versions.json", "CHANGELOG.md");
+git("add", "package.json", "manifest.json", "versions.json", "CHANGELOG.md");
 git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
   "commit", "-m", `chore(release): v${next}`);
 git("tag", `v${next}`);
