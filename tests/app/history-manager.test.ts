@@ -441,4 +441,37 @@ describe("HistoryManager", () => {
     expect(manager.canUndo()).toBe(false);
     expect(manager.canRedo()).toBe(false);
   });
+
+  it("coalesces concurrent eligibility refreshes into at most two read passes", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+    let reads = 0;
+    const asVault = vault.asVault();
+    const read = asVault.read.bind(asVault);
+    asVault.read = (async (file: TFile) => { reads++; return read(file); }) as Vault["read"];
+    manager.push(makeEntry("編集"));
+    manager.attachVault(() => asVault as never);
+    reads = 0;
+    await Promise.all(Array.from({ length: 50 }, () => manager.refreshEligibility()));
+    expect(reads).toBeLessThanOrEqual(2);
+    expect(manager.inspectUndo("編集").state).toBe("available");
+  });
+
+  it("an awaited refresh made during an in-flight check observes later changes", async () => {
+    const manager = new HistoryManager();
+    const vault = new ProcessFakeVault();
+    vault.seed("task.md", "after");
+    const asVault = vault.asVault();
+    manager.push(makeEntry("編集"));
+    manager.attachVault(() => asVault as never);
+    await manager.refreshEligibility();
+    expect(manager.inspectUndo("編集").state).toBe("available");
+    const inFlight = manager.refreshEligibility();
+    vault.seed("task.md", "changed externally");
+    await manager.refreshEligibility();
+    expect(manager.inspectUndo("編集").state).toBe("conflict");
+    await inFlight;
+    expect(manager.inspectUndo("編集").state).toBe("conflict");
+  });
 });
