@@ -13,6 +13,7 @@ import type {
 } from "../core/types";
 import type { HolidayService } from "../app/holiday-service";
 import { pickGanttTagColor } from "../core/constants";
+import { renderUpdaterSection } from "./updater-section";
 import { detectConfiguredDailyNoteSettings } from "../app/daily-note-creation";
 import { addDailyTodoSource as appendDailyTodoSource } from "../app/daily-todo-service";
 
@@ -458,6 +459,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     this.renderAiSettings(containerEl.createDiv({ cls: "vg-settings-ai" }));
     this.renderMcpSettings(containerEl);
+    renderUpdaterSection(containerEl, this.app, this.hostPlugin);
     const { version, commit, builtAt } = getBuildInfo();
     containerEl.createDiv({
       cls: "setting-item-description",

@@ -6,7 +6,7 @@
 //        [--repo-url <git url or path>]   (default https://github.com/$GITHUB_REPOSITORY.git)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync, copyFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join, relative } from "node:path";
 import { parseArgs, escapeHtml } from "./common.mjs";
 
@@ -68,8 +68,10 @@ function reusable(t) {
   const p = prev?.plan.targets?.find((x) => x.slug === t.slug && x.branch === t.branch);
   if (!p || p.sha !== t.sha || p.infoHash !== t.infoHash || p.status !== "success" || (args.shots && p.shots !== true)) return null;
   const src = join(prev.dir, "b", t.slug);
-  return existsSync(join(src, "index.html")) && (!args.shots || existsSync(join(src, "shots", "index.html"))) ? { src, shots: p.shots } : null;
+  return existsSync(join(src, "index.html")) && existsSync(join(src, "plugin", "meta.json")) && (!args.shots || existsSync(join(src, "shots", "index.html"))) ? { src, shots: p.shots } : null;
 }
+
+const PLUGIN_FILES = ["main.js", "manifest.json", "styles.css"];
 
 // package-lock hash -> directory holding an installed node_modules
 const installed = new Map();
@@ -83,6 +85,7 @@ for (const t of plan.targets) {
       rmSync(dest, { recursive: true, force: true });
       cpSync(hit.src, dest, { recursive: true });
       t.status = "success";
+      t.plugin = true;
       if (args.shots) t.shots = true;
       console.log(`[${t.branch}] reused from --prev (${t.sha.slice(0, 7)})`);
       continue;
@@ -111,11 +114,32 @@ for (const t of plan.targets) {
     step("preview build", run("node", [join(tools, "tools/web-preview/build.mjs"), "--app", app, "--out", dest, "--label", t.branch, "--sha", t.sha, "--info", infoFile], app));
     if (!existsSync(join(dest, "index.html"))) throw new Error("build produced no index.html");
     t.status = "success";
-    if (args.shots) {
+    // Built plugin files for the in-plugin updater (src/app/self-update.ts reads <site>/b/<slug>/plugin/).
+    // Isolated: a failed app build only means "this target is not installable from the updater".
+    t.plugin = false;
+    let appBuilt = false;
+    try {
+      step("app build", run("npm", ["run", "build"], app));
+      appBuilt = true;
+      const pluginDir = join(dest, "plugin");
+      mkdirSync(pluginDir, { recursive: true });
+      const files = {};
+      for (const f of PLUGIN_FILES) {
+        const data = readFileSync(join(app, f));
+        copyFileSync(join(app, f), join(pluginDir, f));
+        files[f] = { size: data.length, sha256: createHash("sha256").update(data).digest("hex") };
+      }
+      const manifest = JSON.parse(readFileSync(join(app, "manifest.json"), "utf8"));
+      writeFileSync(join(pluginDir, "meta.json"), JSON.stringify({ branch: t.branch, sha: t.sha, version: manifest.version, builtAt: new Date().toISOString(), files }, null, 2) + "\n");
+      t.plugin = true;
+    } catch (e) {
+      console.error(`[${t.branch}] plugin bundle skipped: ${e.message}`);
+      rmSync(join(dest, "plugin"), { recursive: true, force: true });
+    }
+    if (args.shots && appBuilt) {
       // Isolated: any failure here only means "no screenshot gallery" for this target.
       const shotsDir = join(dest, "shots");
       try {
-        step("app build", run("npm", ["run", "build"], app));
         const r = spawnSync("node", [join(tools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", tools, "--label", t.branch, "--info", infoFile],
           { cwd: app, encoding: "utf8", timeout: 240000, killSignal: "SIGKILL", maxBuffer: 16 << 20 });
         log += `obsidian-shots: status ${r.status}\n${r.stdout || ""}${r.stderr || ""}\n`;
