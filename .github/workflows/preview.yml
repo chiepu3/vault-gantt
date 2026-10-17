@@ -1,0 +1,122 @@
+name: Browser Preview (GitHub Pages)
+
+# Publishes interactive browser previews of the plugin for main, every open
+# same-repo PR, and every "*-all" branch to the gh-pages branch
+# (Settings > Pages > "Deploy from a branch: gh-pages / root").
+#
+# We push to gh-pages directly instead of actions/deploy-pages because the
+# github-pages environment only allows the default branch, and this must work
+# from non-default branches too.
+#
+# Every run rebuilds ALL targets (PRs whose head lacks this file never trigger
+# it themselves; the 30-minute schedule and the other triggers pick them up).
+#
+# Trust model: the plan/build jobs only have a read-only token. Only branches
+# of THIS repository are built (fork PRs are skipped at both the event level
+# and in tools/web-preview-site/plan.mjs), and build code runs with no secrets
+# and no write access. Only the final deploy job holds contents/pull-requests
+# write, and it runs nothing from the built apps: it only publishes the
+# produced static files and posts comments using scripts from this workflow's
+# own commit.
+on:
+  push:
+    branches-ignore: [gh-pages]
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-pages
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node tools/web-preview-site/plan.mjs --repo "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/targets.json"
+          echo "targets=$(jq -c . "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: tools-src
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Build every target (failures are isolated per target)
+        env:
+          TARGETS_JSON: ${{ needs.plan.outputs.targets }}
+        run: |
+          printf '%s' "$TARGETS_JSON" > targets.json
+          node tools-src/tools/web-preview-site/build-all.mjs \
+            --targets targets.json --tools tools-src --work apps --out site
+      - name: Render index
+        run: node tools-src/tools/web-preview-site/render-index.mjs --targets site/targets.json --out site
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: preview-site
+          path: site/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: preview-site
+          path: site
+      - name: Publish to gh-pages (single orphan commit)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash tools/web-preview-site/publish.sh site
+      - name: Update sticky PR comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/web-preview-site/comment-prs.mjs --targets site/targets.json
