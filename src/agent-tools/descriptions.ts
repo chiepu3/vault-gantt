@@ -182,6 +182,12 @@ const LEDGER = {
     "constraints": "起動時/設定ONで呼ぶ。auto対象のみ、日単位で抑制、force可、専用コマンドなし。標準Markdownを検証し、優先度が変わったノートだけ保存する",
     "undo": "×、履歴記録なし"
   },
+  "T31": {
+    "purpose": "日報の実績時間をまとめて登録",
+    "input": "date, entries[{subtaskId|parentId+newSubtaskName|eventKey|eventTitle, hours}]",
+    "constraints": "1回の承認で、既存子の実績・親の下の新規子(date単日の予定付き)・既存/新規イベントの実績を保存。dateの実績だけ置換し他日は保持。hoursは0.5刻み、同一対象は合算",
+    "undo": "子・イベントのみの変更は○、新規ファイル作成を含まないため設定保存(イベント)を含むと×"
+  },
   "M01": {
     "purpose": "子にマーカー追加",
     "input": "subtaskId, title, date, tags?",

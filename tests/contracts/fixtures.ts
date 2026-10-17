@@ -23,7 +23,7 @@ export const INPUT_FIXTURES = {
   T17: { ...parent, enabled: true, order: 1000 }, T18: { orderedParentIds: [PARENT_ID] }, T19: { ...child, start: DATE, end: "2026-10-15" },
   T20: { ...child, calendarDelta: 2 }, T21: { ...child, date: DATE }, T22: { ...child, date: "2026-10-16" }, T23: { ...child, date: DATE }, T24: child,
   T25: { ...parent, anchorId: CHILD_ID, shiftDays: 2 }, T26: child, T27: { changes: [{ ...task, patch: { completed: true } }] },
-  T28: { changes: [{ ...task, patch: { plannedStartDate: DATE, plannedEndDate: "2026-10-15" } }] }, T29: { ...task, patch: { notes: "メモ", tags: [] } }, T30: { force: true },
+  T28: { changes: [{ ...task, patch: { plannedStartDate: DATE, plannedEndDate: "2026-10-15" } }] }, T29: { ...task, patch: { notes: "メモ", tags: [] } }, T30: { force: true }, T31: { date: DATE, entries: [{ ...child, hours: 2 }, { ...parent, newSubtaskName: "不具合修正", hours: 1.5 }, { eventTitle: "割り込み", hours: 0.5 }] },
   M01: { ...child, title: "確認", date: DATE, tags: [] }, M02: { ...markerTarget, patch: { title: "最終確認" } }, M03: { ...markerTarget, date: "2026-10-14" },
   M04: markerTarget, M05: { ...markerTarget, tags: ["リリース"] }, M06: { ...child, markers: [] }, M07: { ...child, workloadPlan: { [DATE]: 1.3 } }, M08: { ...child, workloadActual: { [DATE]: 0 } },
   E01: { title: "イベント", date: DATE }, E02: { ...event, title: "変更名" }, E03: { ...event, date: DATE }, E04: event, E05: event,

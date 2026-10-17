@@ -11,7 +11,7 @@ import {
 
 export type Schema<T> = z.ZodType<T>;
 export const OPERATION_IDS = [
-  "T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19", "T20", "T21", "T22", "T23", "T24", "T25", "T26", "T27", "T28", "T29", "T30",
+  "T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19", "T20", "T21", "T22", "T23", "T24", "T25", "T26", "T27", "T28", "T29", "T30", "T31",
   "M01", "M02", "M03", "M04", "M05", "M06", "M07", "M08",
   "E01", "E02", "E03", "E04", "E05", "E06", "E07", "W01", "W02", "W03",
   "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09",
@@ -29,6 +29,7 @@ const text = z.string().max(20000);
 const clearableDate = z.union([dateOnlySchema, z.literal("")]);
 const expectedRevision = revisionSchema.optional();
 const dateRange = z.object({ from: dateOnlySchema, to: dateOnlySchema }).strict().refine(({ from, to }) => from <= to, "日付範囲が逆転しています");
+const dailyHours = z.number().finite().positive().max(24).multipleOf(0.5);
 const workload = z.record(dateOnlySchema, z.number().finite().min(0).max(24));
 const marker = z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\0:,[\]]+$/), title: singleLine.trim().min(1), date: dateOnlySchema, tags: tagNamesSchema.optional() }).strict();
 const markers = z.array(marker).max(100).refine((items) => new Set(items.map((item) => item.key)).size === items.length, "マーカーkeyは一意");
@@ -81,6 +82,12 @@ export const operationInputSchemas = {
   T27: z.object({ changes: batch }).strict(),
   T28: z.object({ changes: z.array(z.object({ ...task, patch: taskScheduleInputSchema }).strict()).min(1).max(100).refine((items) => new Set(items.map((item) => item.taskId)).size === items.length, "タスクIDの重複は禁止") }).strict(),
   T29: update, T30: force,
+  T31: z.object({ date: dateOnlySchema, entries: z.array(z.union([
+    z.object({ subtaskId: idSchema, hours: dailyHours }).strict(),
+    z.object({ parentId: idSchema, newSubtaskName: name, hours: dailyHours }).strict(),
+    z.object({ eventKey: idSchema, hours: dailyHours }).strict(),
+    z.object({ eventTitle: singleLine.trim().min(1).max(200), hours: dailyHours }).strict(),
+  ])).min(1).max(30) }).strict(),
   M01: z.object({ ...child, title: name, date: dateOnlySchema, tags: tagNamesSchema.optional() }).strict(),
   M02: z.object({ ...markerTarget, patch: z.object({ title: name.optional(), date: dateOnlySchema.optional() }).strict().refine((v) => Object.keys(v).length > 0, "変更項目が必要") }).strict(),
   M03: z.object({ ...markerTarget, date: dateOnlySchema }).strict(), M04: z.object(markerTarget).strict(),
@@ -151,7 +158,7 @@ export const OPERATION_CONTRACTS = {
   T19: ["write", ["schedule", "fields"], ["propose"]], T20: ["write", ["schedule", "marker", "fields"], ["propose"]],
   T21: ["write", ["schedule", "fields"], ["propose"]], T22: ["write", ["schedule", "fields"], ["propose"]], T23: ["write", ["schedule", "fields"], ["propose"]], T24: ["write", ["schedule", "fields"], ["propose"]],
   T25: ["write", ["schedule", "marker", "workload", "fields"], ["propose"]], T26: ["write", ["presence", "fields", "schedule", "workload", "marker"], ["propose"]],
-  T27: ["write", taskEffects, ["propose"]], T28: ["write", ["schedule", "deadline", "fields"], ["propose"]], T29: ["write", taskEffects, ["propose"]], T30: ["write", ["fields", "service-state"], ["propose"]],
+  T27: ["write", taskEffects, ["propose"]], T28: ["write", ["schedule", "deadline", "fields"], ["propose"]], T29: ["write", taskEffects, ["propose"]], T30: ["write", ["fields", "service-state"], ["propose"]], T31: ["write", ["presence", "schedule", "fields", "workload"], ["propose"]],
   M01: ["write", ["marker", "fields"], ["propose"]], M02: ["write", ["marker", "fields"], ["propose"]], M03: ["write", ["marker", "fields"], ["propose"]],
   M04: ["write", ["marker", "fields"], ["propose"]], M05: ["write", ["marker", "fields"], ["propose"]], M06: ["write", ["marker", "fields"], ["propose"]],
   M07: ["write", ["workload", "fields"], ["propose"]], M08: ["write", ["workload", "fields"], ["propose"]],
