@@ -8369,7 +8369,7 @@ export class TaskGanttView extends ItemView {
       }
       // Closing the task popover uncovers whatever lies under the pointer; its
       // mouseover would reopen the task popover and tear the chart down at once.
-      this.armRichPopoverSuppress(MENU_POPOVER_SUPPRESS_MS);
+      this.armRichPopoverSuppress();
       this.showWorkloadPopupForBar(task, barEl);
       const popupEl = this.workloadPopoverState?.el;
       if (popupEl === undefined) {
