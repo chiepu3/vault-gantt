@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.7.0 (2026-10-17)
+
+### 新機能
+
+- 設定画面のタブ化、AI接続の複数管理、モデルの追加と検索 ([#54](https://github.com/chiepu3/vault-gantt/pull/54))
+
 ## v0.6.0 (2026-10-17)
 
 ### 新機能
