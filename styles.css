@@ -1057,3 +1057,18 @@ button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(
 .task-gantt-container .vg-hl-phantom-mark { flex: none; padding: 0 5px; border-radius: var(--radius-l); background: var(--interactive-accent); color: var(--text-on-accent); font-weight: var(--font-semibold); }
 .task-gantt-container .vg-hl-phantom.is-deleted .vg-hl-phantom-mark { background: var(--background-modifier-border-hover); color: var(--text-normal); }
 .task-gantt-container .vg-hl-phantom-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Settings tabs */
+.vg-settings-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--background-modifier-border); }
+.vg-settings-tabs .vg-settings-tab { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; box-shadow: none; padding: 6px 12px; color: var(--text-muted); cursor: pointer; }
+.vg-settings-tabs .vg-settings-tab:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.vg-settings-tabs .vg-settings-tab.is-active { color: var(--text-normal); border-bottom-color: var(--interactive-accent); font-weight: var(--font-semibold); }
+.vg-settings-panel:not(.is-active) { display: none; }
+/* AI models: added vs available */
+.vg-ai-model-list { max-height: 360px; overflow-y: auto; margin-bottom: 8px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); padding: 0 12px; }
+.vg-ai-model-list:empty { display: none; }
+.setting-item.vg-ai-model-row { padding-block: 6px; align-items: center; }
+.vg-ai-model-row.is-current .setting-item-name { color: var(--text-accent); font-weight: var(--font-semibold); }
+.vg-ai-model-row .setting-item-name { overflow-wrap: anywhere; }
+.vg-ai-model-empty { padding: 8px 0; }
+.vg-settings-ai input[type="search"] { min-width: 0; flex: 1 1 12em; }

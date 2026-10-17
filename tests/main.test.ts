@@ -355,7 +355,7 @@ describe("TaskWorkbenchPlugin", () => {
       await h.plugin.saveSettings();
 
       expect(h.savedData).toHaveLength(1);
-      expect(h.savedData[0]).toEqual({ ...h.plugin.settings, ai: h.plugin.aiSettings });
+      expect(h.savedData[0]).toEqual({ ...h.plugin.settings, ai: h.plugin.aiStore });
       expect(h.savedData[0].taskFolder).toBe("changed");
     });
     it("keeps the AI connection outside settings and the API key out of data.json when secret storage exists", async () => {
@@ -383,7 +383,7 @@ describe("TaskWorkbenchPlugin", () => {
       if (storage === "secret") h.fakeApp.secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, value: string) => secrets.set(id, value) };
       await h.plugin.onload();
       await h.plugin.setAiApiKey("sk-synthetic-original");
-      expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe("https://openrouter.ai");
+      expect((await h.plugin.loadData()).ai.profiles[0].apiKeyOrigin).toBe("https://openrouter.ai");
       const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ data: [{ id: "test-model" }] })));
       vi.stubGlobal("fetch", fetchMock);
       await h.plugin.updateAiSettings({ preset: "custom" });
@@ -432,7 +432,7 @@ describe("TaskWorkbenchPlugin", () => {
         await h.plugin.updateAiSettings({ baseUrl });
         await h.plugin.setAiApiKey("sk-synthetic-lan");
         const origin = new URL(baseUrl).origin;
-        expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe(origin);
+        expect((await h.plugin.loadData()).ai.profiles[0].apiKeyOrigin).toBe(origin);
         expect(h.plugin.chatSession.connected).toBe(true);
         expect((await h.plugin.fetchAiModels()).ok).toBe(true);
         expect(new Headers(fetchMock.mock.calls.at(-1)![1]?.headers).get("authorization")).toBe("Bearer sk-synthetic-lan");
@@ -453,7 +453,7 @@ describe("TaskWorkbenchPlugin", () => {
       if (storage === "secret") h.fakeApp.secretStorage = { getSecret: () => "sk-synthetic-legacy", setSecret: vi.fn() };
       await h.plugin.loadSettings();
       expect(h.plugin.getAiSettings().apiKeyOrigin).toBe("https://legacy.example:8443");
-      expect((await h.plugin.loadData()).ai.apiKeyOrigin).toBe("https://legacy.example:8443");
+      expect((await h.plugin.loadData()).ai.profiles[0].apiKeyOrigin).toBe("https://legacy.example:8443");
       await h.plugin.loadSettings();
       expect(h.plugin.saveData).toHaveBeenCalledOnce();
     });
@@ -462,7 +462,7 @@ describe("TaskWorkbenchPlugin", () => {
       await h.plugin.onload();
       expect(h.plugin.aiKeyStorage()).toBe("data");
       await h.plugin.setAiApiKey("sk-synthetic-secret");
-      expect(h.savedData.at(-1).ai.apiKey).toBe("sk-synthetic-secret");
+      expect(h.savedData.at(-1).ai.profiles[0].apiKey).toBe("sk-synthetic-secret");
       expect(h.plugin.getAiSettings()).not.toHaveProperty("apiKey");
       h.plugin.onunload();
       const secrets = new Map<string, string>();
@@ -489,7 +489,8 @@ describe("TaskWorkbenchPlugin", () => {
       expect(setSecret).toHaveBeenCalledWith(AI_SECRET_ID, key);
       expect(secrets.get(AI_SECRET_ID)).toBe(outcome === "secret-failure" ? undefined : key);
       expect(h.plugin.aiSettings.apiKey).toBe(outcome === "success" ? undefined : key);
-      expect((await h.plugin.loadData()).ai.apiKey).toBe(outcome === "success" ? undefined : key);
+      const storedAi = (await h.plugin.loadData()).ai;
+      expect((storedAi.profiles?.[0] ?? storedAi).apiKey).toBe(outcome === "success" ? undefined : key);
       expect(h.plugin.aiKeyStorage()).toBe(outcome === "success" ? "secret" : "data");
       expect(h.plugin.hasAiApiKey()).toBe(true);
       expect(h.plugin.getAiSettings()).not.toHaveProperty("apiKey");
@@ -502,7 +503,7 @@ describe("TaskWorkbenchPlugin", () => {
         setSecret.mockImplementation((id, value) => { secrets.set(id, value); });
         await h.plugin.loadSettings();
         expect(h.plugin.aiSettings).not.toHaveProperty("apiKey");
-        expect((await h.plugin.loadData()).ai).not.toHaveProperty("apiKey");
+        expect((await h.plugin.loadData()).ai.profiles[0]).not.toHaveProperty("apiKey");
         expect(h.plugin.aiKeyStorage()).toBe("secret");
       }
     });
@@ -514,6 +515,30 @@ describe("TaskWorkbenchPlugin", () => {
       expect(h.plugin.aiSettings.apiKey).toBe("sk-synthetic-migration");
       expect(h.plugin.aiKeyStorage()).toBe("data");
       expect(NoticeMock).toHaveBeenCalledWith("data.json の平文のAPIキーを削除できませんでした。");
+    });
+    it("keeps several AI connections, each with its own key and added models", async () => {
+      const secrets = new Map<string, string>();
+      const h = createHarness({ autoPriorityEnabled: false });
+      (h.plugin.app as any).secretStorage = { getSecret: (id: string) => secrets.get(id) ?? null, setSecret: (id: string, v: string) => secrets.set(id, v) };
+      await h.plugin.onload();
+      await h.plugin.updateAiSettings({ addedModels: ["a/one"], model: "a/one" });
+      await h.plugin.setAiApiKey("sk-first");
+      const second = await h.plugin.addAiProfile();
+      expect(h.plugin.listAiProfiles().activeId).toBe(second);
+      expect(h.plugin.getAiSettings().addedModels).toEqual([]);
+      expect(h.plugin.hasAiApiKey()).toBe(false);
+      await h.plugin.updateAiSettings({ name: "ローカル", preset: "local", baseUrl: "http://localhost:1234/v1", useApiKey: false });
+      expect(h.plugin.listAiProfiles().profiles.map((p) => p.name)).toEqual(["OpenRouter", "ローカル"]);
+      expect(h.plugin.getAiSettings().id).toBe(second);
+      await h.plugin.selectAiProfile("default");
+      expect(h.plugin.getAiSettings()).toMatchObject({ model: "a/one", addedModels: ["a/one"] });
+      expect(h.plugin.hasAiApiKey()).toBe(true);
+      expect(secrets.get(AI_SECRET_ID)).toBe("sk-first");
+      expect((await h.plugin.loadData()).ai.activeId).toBe("default");
+      await h.plugin.deleteAiProfile(second);
+      expect(h.plugin.listAiProfiles().profiles).toHaveLength(1);
+      await expect(h.plugin.deleteAiProfile("default")).rejects.toThrow("LAST_PROFILE");
+      h.plugin.onunload();
     });
     it("rejects an AI settings save when readback does not match", async () => {
       const h = createHarness({ autoPriorityEnabled: false }); await h.plugin.onload();
@@ -534,7 +559,7 @@ describe("TaskWorkbenchPlugin", () => {
       const second = order === "ai-first" ? saveWorkbench() : saveAi();
       expect(save).toHaveBeenCalledTimes(1);
       release(); await Promise.all([first, second]);
-      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "new-folder", ai: { model: "new-model" } });
+      expect(await h.plugin.loadData()).toMatchObject({ taskFolder: "new-folder", ai: { profiles: [{ model: "new-model" }] } });
       expect(h.plugin.settings.taskFolder).toBe("new-folder");
       expect(h.plugin.aiSettings.model).toBe("new-model");
       expect(h.plugin.settings).not.toHaveProperty("ai");

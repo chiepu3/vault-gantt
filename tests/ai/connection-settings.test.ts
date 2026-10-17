@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { AI_SECRET_ID, aiKeyOriginError, connectionOrigin, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig } from "../../src/ai/connection-settings";
+import { AI_SECRET_ID, aiSecretId, defaultAiStore, newAiProfileId, normalizeAiStore, aiKeyOriginError, connectionOrigin, defaultAiSettings, listModels, normalizeAiSettings, toConnectionConfig } from "../../src/ai/connection-settings";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -122,5 +122,34 @@ describe("listModels", () => {
     const fetchImpl = (_url: string, init: Parameters<typeof fetch>[1] & object) => new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
     const result = await listModels({ baseUrl: "http://localhost:1234/v1", fetchImpl: fetchImpl as unknown as typeof fetch, timeoutMs: 5 });
     expect(result).toEqual({ ok: false, reason: expect.stringContaining("タイムアウト") });
+  });
+});
+
+describe("AI profiles", () => {
+  it("wraps the older flat settings in one default profile that keeps its secret id and model", () => {
+    const store = normalizeAiStore({ preset: "local", baseUrl: "http://localhost:1234/v1", model: "m", useApiKey: false });
+    expect(store.activeId).toBe("default");
+    expect(store.profiles).toHaveLength(1);
+    expect(store.profiles[0]).toMatchObject({ id: "default", name: "ローカル（LM Studio など）", model: "m", addedModels: ["m"] });
+    expect(aiSecretId(store.profiles[0].id)).toBe(AI_SECRET_ID);
+    expect(normalizeAiStore(undefined)).toEqual(defaultAiStore());
+  });
+  it("keeps valid profiles, repairs duplicates and a missing active id", () => {
+    const store = normalizeAiStore({ activeId: "nope", profiles: [
+      { id: "default", name: " A ", preset: "openrouter", addedModels: ["x", "x", " y ", 3] },
+      { id: "default", preset: "local" },
+      { id: "bad id!", preset: "custom", baseUrl: "http://h/v1" },
+    ] });
+    expect(store.profiles.map((p) => p.id)).toHaveLength(3);
+    expect(new Set(store.profiles.map((p) => p.id)).size).toBe(3);
+    expect(store.activeId).toBe("default");
+    expect(store.profiles[0]).toMatchObject({ name: "A", addedModels: ["x", "y"] });
+    expect(normalizeAiStore({ profiles: [] })).toEqual(defaultAiStore());
+  });
+  it("gives each non-default profile its own secret and a free id", () => {
+    expect(aiSecretId("p2")).toBe(`${AI_SECRET_ID}-p2`);
+    expect(aiSecretId(undefined)).toBe(AI_SECRET_ID);
+    expect(toConnectionConfig({ ...defaultAiSettings(), id: "p2" }).secretId).toBe(`${AI_SECRET_ID}-p2`);
+    expect(newAiProfileId(["default", "p2"])).toBe("p3");
   });
 });
