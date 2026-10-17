@@ -346,7 +346,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private previewUiPorts(kind: string): PreviewUiHostPorts {
     return { operationService: this.operationService, previewPort: this.previewPort, projectionDetailPort: this.previewPort,
       humanApprovalPort: this.humanApprovalPort, historyPort: this.historyPort, uiPort: this.uiPort,
-      undoPort: { undoEntry: (entryId) => this.undoEntry(entryId) }, viewStatePort: this.uiPort, viewId: `${kind}-${++this.viewCounter}` };
+      undoPort: { undoEntry: (entryId) => this.undoEntry(entryId), redoEntry: (entryId) => this.redoEntry(entryId) }, viewStatePort: this.uiPort, viewId: `${kind}-${++this.viewCounter}` };
   }
   getMcpVaultInstanceId(): string { return this.operationService.vaultInstanceId; }
   getMcpSettings() { return this.settings.mcp ?? DEFAULT_MCP_SETTINGS; }
@@ -408,6 +408,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_APPROVAL)[0];
     if (!leaf) { leaf = this.app.workspace.getLeaf("tab"); await leaf.setViewState({ type: VIEW_TYPE_AI_APPROVAL, active: true }); }
     await this.app.workspace.revealLeaf(leaf);
+  }
+  redoEntry(entryId: string): Promise<void> {
+    return this.operations.coordinate(async () => {
+      if (this.historyManager.peekRedoLabel() !== entryId) throw new Error("この履歴は現在やり直せません。履歴を確認してください。");
+      const result = await this.historyManager.redo(this.app.vault);
+      if (result.kind !== "success") throw new Error("保存後の変更を検出したため、やり直せませんでした。");
+      this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
+    });
   }
   undoEntry(entryId: string): Promise<void> {
     return this.operations.coordinate(async () => {

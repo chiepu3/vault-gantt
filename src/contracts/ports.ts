@@ -51,6 +51,8 @@ export interface HistoryPort {
 /** Human UI execution port. Checks entry identity and content again inside the shared save queue. */
 export interface HumanUndoPort {
   undoEntry(entryId: string): Promise<void>;
+  /** Re-applies an entry that was undone. Rejects unless it is the newest undone one. */
+  redoEntry?(entryId: string): Promise<void>;
 }
 export interface ContextReadPort {
   query<K extends ContextQueryId>(id: K, input: ContextQueryMap[K], context: RequestContext): Promise<ContextQueryResult<K>>;

@@ -56,6 +56,7 @@ export interface PreviewCardHandlers {
   onReject?(): void;
   onRepreview?(): void;
   onUndo?(entryId: string): void;
+  onRedo?(entryId: string): void;
   /** Fetch the next projection page; the host merges pages and re-renders with `projection`. */
   onLoadMore?(cursor: string): void;
 }
@@ -231,6 +232,11 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
     const undo = button(actions, "元に戻す", "undo", () => handlers.onUndo?.(entryId), id, options.undoState?.state !== "available");
     undo.title = options.undoState ? UNDO_STATE_TEXT[options.undoState.state] : "元に戻せるか確認中です";
   }
+  if (state === "undone" && outcome?.undoEntryId && handlers.onRedo) {
+    const entryId = outcome.undoEntryId;
+    const redo = button(actions, "元に戻すを取り消す", "redo", () => handlers.onRedo?.(entryId), id);
+    redo.title = "元に戻した変更をもう一度保存します";
+  }
   if ((state === "partial" || state === "cancelled" || state === "failed") && handlers.onRepreview) button(actions, state === "failed" ? "再プレビュー" : "未保存分を再プレビュー", "repreview", handlers.onRepreview, id);
   if (!actions.children.length) actions.remove();
   return card;
@@ -365,6 +371,7 @@ export class PreviewCardController {
         onReject: () => { void this.run(id, () => previewPort.reject(id), "却下できませんでした"); },
         onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); this.extras.repreviewed?.(id, next.previewId); }, "再プレビューできませんでした"); },
         onUndo: (this.ports.undoPort || this.extras.undoEntry) ? (entryId) => { void this.run(id, async () => { if (this.ports.undoPort) await this.ports.undoPort.undoEntry(entryId); else await this.extras.undoEntry?.(entryId); }, "元に戻せませんでした"); } : undefined,
+        onRedo: this.ports.undoPort?.redoEntry ? (entryId) => { void this.run(id, () => this.ports.undoPort!.redoEntry!(entryId), "やり直せませんでした"); } : undefined,
         onLoadMore: () => { void this.pager.loadMore(preview, outcome); },
       },
     };
