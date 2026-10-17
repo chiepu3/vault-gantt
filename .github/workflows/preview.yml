@@ -19,8 +19,10 @@ name: Browser Preview (GitHub Pages)
 # produced static files and posts comments using scripts from this workflow's
 # own commit.
 on:
+  # PR branches are covered by pull_request; also triggering on their pushes would start a
+  # duplicate run that the concurrency group cancels, leaving a red "cancelled" check on the PR.
   push:
-    branches-ignore: [gh-pages]
+    branches: [main, '**-all']
   pull_request:
     types: [opened, synchronize, reopened, closed]
   schedule:
