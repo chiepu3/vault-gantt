@@ -45,6 +45,9 @@ describe("vault-scoped chat session (deterministic fake, not real LLM)", () => {
     const a = setup(provider); a.session.configure(config); await a.session.send("hello");
     expect(a.session.active.status).toBe("failed"); expect(a.session.active.error).not.toContain("SECRET");
     await a.session.retry(); expect(a.session.active.status).toBe("idle"); expect(provider.requests).toHaveLength(2);
+    // The failed turn is replaced, so the question and the answer each appear once.
+    expect(a.session.active.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(a.session.active.messages[1].text).toBe("ok");
   });
   it("stop rejects late output and late plans without writing", async () => {
     let release!: () => void; const wait = new Promise<void>((resolve) => { release = resolve; });

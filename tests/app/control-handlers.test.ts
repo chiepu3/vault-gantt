@@ -40,13 +40,13 @@ describe("chat control operation handlers", () => {
     await expect(controlRequest("Q05", { conversationId }, f.context, f.session)).rejects.toMatchObject({ error: { code: "POLICY_DENIED" } });
     expect(f.vault.getModifyCallCount()).toBe(0);
   });
-  it("Q06 retries only failed replies and preserves the existing message context", async () => {
+  it("Q06 retries only failed replies by replacing the failed turn, not stacking a new one", async () => {
     const f = await fixture(), conversationId = f.session.active.id;
     await controlRequest("Q04", { conversationId, text: "original" }, f.context, f.session);
     await expect(controlRequest("Q06", { conversationId }, f.context, f.session)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
     f.session.active.status = "failed";
-    expect(await controlRequest("Q06", { conversationId }, f.context, f.session)).toMatchObject({ effects: [{ action: "retry", after: { messageCount: 4 } }] });
-    expect(f.session.active.messages[2].text).toBe("original");
+    expect(await controlRequest("Q06", { conversationId }, f.context, f.session)).toMatchObject({ effects: [{ action: "retry", after: { messageCount: 2 } }] });
+    expect(f.session.active.messages[0].text).toBe("original");
   });
   it("refuses capability, abort, busy and message-limit violations", async () => {
     const f = await fixture(), input = { conversationId: f.session.active.id, text: "hello" };

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { PREVIEW_EFFECT_KINDS, previewEffectSchema, type PreviewEffect } from "../../src/contracts/preview";
 import { EFFECT_FIXTURES, PREVIEW_FIXTURES, DELETE_PREVIEW, CHILD_ID, DATE } from "../contracts/fixtures";
 import {
-  EFFECT_RENDERERS, EFFECT_TITLES, FIELD_LABELS, renderEffect, renderEntryEffects, renderGenericEffect, effectIsNoop, buildNameMap, formatScalar, fmtBytes,
+  EFFECT_RENDERERS, EFFECT_TITLES, FIELD_LABELS, renderAggregates, renderEffect, renderEntryEffects, renderGenericEffect, effectIsNoop, buildNameMap, formatScalar, fmtBytes,
 } from "../../src/ui/preview-renderers";
 import { EDITABLE_SETTING_KEYS, } from "../../src/contracts/context";
 import { OPERATION_IDS } from "../../src/contracts/operations";
@@ -76,14 +76,26 @@ describe("effect renderers cover every contract variant", () => {
   });
 });
 
+describe("aggregates", () => {
+  it("lists only the days that change and the days right around them", () => {
+    const state = (actual: Record<string, number>) => ({ aggregates: Array.from({ length: 30 }, (_, index) => { const date = `2026-10-${String(index + 1).padStart(2, "0")}`; return { date, plan: 0, actual: actual[date] ?? 0, capacity: 7, overCapacity: false }; }) });
+    const dates = Array.from({ length: 30 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
+    const parent = root();
+    renderAggregates(parent, { before: state({}), after: state({ "2026-10-15": 2 }), affectedDates: dates } as any);
+    const rows = byClass(parent as any, "vg-pv-agg-row");
+    expect(rows).toHaveLength(5);
+    expect(text(rows[0])).toContain("10-13"); expect(text(rows[4])).toContain("10-17");
+  });
+});
+
 describe("fields", () => {
   const change = (field: string, before: unknown, after: unknown, reason = "requested") => ({ field, before, after, reason }) as any;
-  it("shows requested changes first and folds derived, normalized and update-date changes", () => {
+  it("shows requested changes first and folds derived and normalized changes and leaves out the update date", () => {
     const parent = root();
     renderEffect(parent, { kind: "fields", fields: [change("completed", false, true), change("statusLabel", "active", "done", "derived"), change("updatedAt", "2026-10-01", "2026-10-09", "normalized")] }, {});
     const folded = byClass(parent as any, "vg-pv-derived")[0];
     expect(folded).toBeTruthy();
-    expect(text(folded)).toContain("補正・連動した変更（2件）"); expect(text(folded)).toContain("更新日"); expect(text(folded)).toContain("連動"); expect(text(folded)).toContain("完了");
+    expect(text(folded)).toContain("補正・連動した変更（1件）"); expect(text(folded)).not.toContain("更新日"); expect(text(folded)).toContain("連動"); expect(text(folded)).toContain("完了");
     const main = byClass(parent as any, "vg-pv-row").filter((row) => !findAll(folded, (el) => el === row).length);
     expect(main).toHaveLength(1); expect(text(main[0])).toContain("未完了"); expect(text(main[0])).toContain("完了");
     expect(text(main[0])).toContain("前"); expect(text(main[0])).toContain("後");

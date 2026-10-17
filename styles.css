@@ -756,13 +756,16 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-ai-message[data-streaming="true"] .vg-ai-parts > .vg-ai-text:last-child > :last-child::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-inline-start: 6px; border-radius: 50%; background: var(--interactive-accent); vertical-align: middle; }
 
 /* Tool calls and reasoning: one small collapsible row each, in the place they happened. */
-.vg-ai-tool, .vg-ai-reasoning { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; overflow: hidden; }
-.vg-ai-tool > summary, .vg-ai-reasoning > summary { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 3px 10px; cursor: pointer; list-style: none; user-select: none; }
-.vg-ai-tool > summary::-webkit-details-marker, .vg-ai-reasoning > summary::-webkit-details-marker { display: none; }
-.vg-ai-tool > summary::after, .vg-ai-reasoning > summary::after { content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-inline-start: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
-.vg-ai-tool[open] > summary::after, .vg-ai-reasoning[open] > summary::after { transform: rotate(-135deg); }
-.vg-ai-tool > summary:hover, .vg-ai-reasoning > summary:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.vg-ai-tool, .vg-ai-reasoning, .vg-ai-activity { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; overflow: hidden; }
+.vg-ai-tool > summary, .vg-ai-reasoning > summary, .vg-ai-activity > summary { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 3px 10px; cursor: pointer; list-style: none; user-select: none; }
+.vg-ai-tool > summary::-webkit-details-marker, .vg-ai-reasoning > summary::-webkit-details-marker, .vg-ai-activity > summary::-webkit-details-marker { display: none; }
+.vg-ai-tool > summary::after, .vg-ai-reasoning > summary::after, .vg-ai-activity > summary::after { content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-inline-start: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+.vg-ai-tool[open] > summary::after, .vg-ai-reasoning[open] > summary::after, .vg-ai-activity[open] > summary::after { transform: rotate(-135deg); }
+.vg-ai-tool > summary:hover, .vg-ai-reasoning > summary:hover, .vg-ai-activity > summary:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
 .vg-ai-tool > summary:focus-visible, .vg-ai-reasoning > summary:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
+.vg-ai-activity-body { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px; }
+.vg-ai-activity-body > .vg-ai-tool, .vg-ai-activity-body > .vg-ai-reasoning { background: var(--background-primary); }
+.vg-ai-activity[data-state="error"] { border-color: color-mix(in srgb, var(--text-error) 40%, var(--background-modifier-border)); }
 .vg-ai-mark { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; border-radius: 50%; }
 .vg-ai-mark svg { width: 13px; height: 13px; }
 .vg-ai-mark.is-running { flex-basis: 12px; width: 12px; height: 12px; margin: 2px; border: 2px solid color-mix(in srgb, var(--interactive-accent) 25%, transparent); border-top-color: var(--interactive-accent); }
@@ -968,7 +971,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-actions .vg-pv-button { height: 26px; padding: 0 4px; font-size: 12px; white-space: nowrap; }
 .vg-ai-card-slot .vg-pv-card { padding: 10px 8px 10px 10px; }
 .vg-pv-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
-.vg-pv-button[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--interactive-accent); }
+.vg-pv-button[aria-pressed="true"] { border-color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 14%, var(--interactive-normal)); color: var(--text-normal); box-shadow: none; }
 .vg-pv-rest { margin-top: 6px; }
 .vg-pv-readlist { margin: 4px 0; padding-inline-start: 1.4em; }
 .vg-pv-chat-previews { display: block; }

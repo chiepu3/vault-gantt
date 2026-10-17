@@ -153,6 +153,11 @@ export class AgentView extends ItemView {
     const history = this.element(header, "details"); history.className = "vg-ai-menu";
     const historyToggle = this.element(history, "summary"); this.decorateIcon(historyToggle, "history", "会話履歴を開く");
     this.historyEl = this.element(history, "div"); this.historyEl.className = "vg-ai-popover vg-ai-history";
+    // The history list closes on a click anywhere else, and on Escape.
+    if (typeof document.addEventListener === "function") {
+      this.registerDomEvent(document, "click", (event) => { if (history.open && !history.contains(event.target as Node)) history.removeAttribute("open"); });
+      this.registerDomEvent(document, "keydown", (event) => { if (event.key === "Escape" && history.open) history.removeAttribute("open"); });
+    }
     this.iconButton(header, "settings", "接続設定を開く", () => this.host.openSettings());
     this.messagesEl = this.element(root, "div"); this.messagesEl.className = "vg-ai-messages"; this.messagesEl.setAttribute("role", "log"); this.messagesEl.setAttribute("aria-label", "会話履歴");
     const composer = this.element(root, "div"); composer.className = "vg-ai-content vg-ai-composer";
@@ -320,13 +325,21 @@ export class AgentView extends ItemView {
     const prefix = cid + "/m" + index + "/";
     const items: SyncItem[] = [];
     const parts = partsOf(message);
+    // Thinking and tool calls that follow each other fold into one row; text and proposal cards stay in the flow.
+    let run: Extract<ChatPart, { type: "reasoning" | "tool" }>[] = [];
+    const flush = (): void => {
+      if (run.length > 1) items.push(this.activityItem(prefix + "activity:" + run[0].id, run));
+      else if (run.length) items.push(this.activityPartItem(prefix + run[0].id, run[0]));
+      run = [];
+    };
     for (const part of parts) {
       const key = prefix + part.id;
+      if (part.type === "reasoning" || part.type === "tool") { run.push(part); continue; }
+      flush();
       if (part.type === "text") items.push({ key, sig: part.text, build: () => { const body = this.make("div", "vg-ai-text"); renderChatText(body, part.text); return body; } });
-      else if (part.type === "reasoning") items.push({ key, sig: part.state + part.text, build: () => this.reasoningRow(key, part) });
-      else if (part.type === "tool") items.push({ key, sig: [part.state, part.input !== undefined, part.output !== undefined, part.error ?? ""].join("|"), build: () => this.toolRow(key, part) });
       else items.push(this.proposalItem(key, message, part.previewId, running));
     }
+    flush();
     for (const preview of orphans) items.push(this.proposalItem(prefix + "orphan:" + preview.previewId, message, preview.previewId, running));
     if (message.role === "assistant" && last && running) {
       const tail = parts.at(-1);
@@ -353,6 +366,29 @@ export class AgentView extends ItemView {
       } });
     }
     return items;
+  }
+  private activityPartItem(key: string, part: Extract<ChatPart, { type: "reasoning" | "tool" }>): SyncItem {
+    return part.type === "reasoning"
+      ? { key, sig: part.state + part.text, build: () => this.reasoningRow(key, part) }
+      : { key, sig: [part.state, part.input !== undefined, part.output !== undefined, part.error ?? ""].join("|"), build: () => this.toolRow(key, part) };
+  }
+  /** One foldable row for a run of thinking and tool calls, open while something in it is still going. */
+  private activityItem(key: string, run: Extract<ChatPart, { type: "reasoning" | "tool" }>[]): SyncItem {
+    const children = run.map((part) => this.activityPartItem(key + "/" + part.id, part));
+    const running = run.some((part) => part.type === "reasoning" ? part.state === "streaming" : part.state === "running");
+    const failed = run.some((part) => part.type === "tool" && part.state === "error");
+    const tools = run.filter((part) => part.type === "tool").length;
+    return { key, sig: JSON.stringify([children.map((child) => child.sig), running, failed]), build: () => {
+      const details = this.detailsRow(key, "vg-ai-activity", running);
+      details.dataset.state = running ? "running" : failed ? "error" : "done";
+      const summary = this.element(details, "summary");
+      this.statusMark(summary, running ? "running" : failed ? "error" : "done");
+      const current = running ? [...run].reverse().find((part) => part.type === "tool" ? part.state === "running" : part.state === "streaming") : undefined;
+      this.element(summary, "span").textContent = current ? (current.type === "tool" ? toolLabel(current.name) : "考え中…") : "思考とツール" + (tools ? "（ツール" + tools + "件）" : "");
+      const body = this.element(details, "div"); body.className = "vg-ai-activity-body";
+      for (const child of children) body.appendChild(child.build());
+      return details;
+    } };
   }
   private statusMark(parent: HTMLElement, state: "running" | "done" | "error"): void {
     const mark = this.element(parent, "span"); mark.className = "vg-ai-mark is-" + state; mark.setAttribute("aria-hidden", "true");
