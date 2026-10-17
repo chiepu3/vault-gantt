@@ -552,6 +552,8 @@ const MENU_POPOVER_SUPPRESS_MS = 1200;
 const RICH_POPOVER_GAP_PX = 12;
 // Delay before hiding the rich popover after mouse leave.
 const RICH_POPOVER_HIDE_DELAY_MS = 220;
+// Pointer rest time over a bar hidden under the popover before switching to it.
+const RICH_POPOVER_COVERED_SWITCH_MS = 300;
 // Delay before autosaving Current Status while the user types.
 const RICH_POPOVER_CURRENT_STATUS_DEBOUNCE_MS = 450;
 // Popover width bounds and minimum viewport margin.
@@ -1314,6 +1316,10 @@ export class TaskGanttView extends ItemView {
   private richPopoverInteractionActive = false;
   /** True after the pointer leaves the rich-popover trigger/popover area. */
   private richPopoverPointerOutside = false;
+  /** Each rendered subtask bar's hover trigger, used when the bar is covered by the popover. */
+  private readonly barPopoverTriggers = new WeakMap<HTMLElement, (evt: MouseEvent) => void>();
+  /** Pending switch to a bar the pointer rests on beneath the popover. */
+  private coveredBarSwitch: { barEl: HTMLElement; timer: ReturnType<typeof setTimeout> } | undefined = undefined;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -4925,7 +4931,7 @@ export class TaskGanttView extends ItemView {
       // Show the subtask popover on mouseover unless drag suppression is
       // active. Its read-only period field uses the bar's dates. Mouseleave
       // starts a 220ms hide debounce and clears is-parent-hover from markers.
-      barEl.addEventListener("mouseover", (evt: MouseEvent) => {
+      const showBarPopover = (evt: MouseEvent): void => {
         this.onRichPopoverTrigger(
           {
             kind: "subtask",
@@ -4936,6 +4942,10 @@ export class TaskGanttView extends ItemView {
           },
           evt
         );
+      };
+      this.barPopoverTriggers.set(barEl, showBarPopover);
+      barEl.addEventListener("mouseover", (evt: MouseEvent) => {
+        showBarPopover(evt);
         for (const markerEl of markerElsForBar) {
           markerEl.classList.add("is-parent-hover");
         }
@@ -6877,6 +6887,53 @@ export class TaskGanttView extends ItemView {
     this.openRichPopover(anchor, evt);
   }
 
+  /**
+   * The popover can cover bars in nearby lanes, so pointing at one of them
+   * only ever hovers the popover. When the pointer rests over another bar's
+   * position (away from the popover's controls, with no input in progress),
+   * switch to that bar's popover.
+   */
+  private onRichPopoverMouseMove(el: HTMLElement, evt: MouseEvent): void {
+    const target = evt.target as HTMLElement | null;
+    if (
+      this.richPopoverInteractionActive ||
+      typeof document.elementsFromPoint !== "function" ||
+      target?.closest?.("button, input, select, textarea, a, [contenteditable], .task-gantt-workload-popup")
+    ) {
+      this.cancelCoveredBarSwitch();
+      return;
+    }
+    const covered = document
+      .elementsFromPoint(evt.clientX, evt.clientY)
+      .find((node) => !el.contains(node) && (node as HTMLElement).classList?.contains("task-gantt-bar")) as HTMLElement | undefined;
+    if (!covered || covered === this.richPopoverAnchorEl || !this.barPopoverTriggers.has(covered)) {
+      this.cancelCoveredBarSwitch();
+      return;
+    }
+    if (this.coveredBarSwitch?.barEl === covered) {
+      // Restart the rest timer while the pointer is still moving over it.
+      clearTimeout(this.coveredBarSwitch.timer);
+    } else {
+      this.cancelCoveredBarSwitch();
+    }
+    const clientX = evt.clientX, clientY = evt.clientY;
+    this.coveredBarSwitch = {
+      barEl: covered,
+      timer: setTimeout(() => {
+        this.coveredBarSwitch = undefined;
+        if (this.richPopoverInteractionActive || !covered.isConnected) return;
+        this.barPopoverTriggers.get(covered)?.({ clientX, clientY } as MouseEvent);
+      }, RICH_POPOVER_COVERED_SWITCH_MS),
+    };
+  }
+
+  private cancelCoveredBarSwitch(): void {
+    if (this.coveredBarSwitch !== undefined) {
+      clearTimeout(this.coveredBarSwitch.timer);
+      this.coveredBarSwitch = undefined;
+    }
+  }
+
   /** Builds, populates, wires and positions the popover element. */
   private openRichPopover(
     anchor: RichPopoverAnchor,
@@ -6905,8 +6962,12 @@ export class TaskGanttView extends ItemView {
       this.clearRichPopoverHideTimer();
     });
     el.addEventListener("mouseleave", () => {
+      this.cancelCoveredBarSwitch();
       this.richPopoverPointerOutside = true;
       this.scheduleRichPopoverHide();
+    });
+    el.addEventListener("mousemove", (moveEvt: MouseEvent) => {
+      this.onRichPopoverMouseMove(el, moveEvt);
     });
     // passive:false — onRichPopoverWheel calls preventDefault (its
 
@@ -7037,6 +7098,7 @@ export class TaskGanttView extends ItemView {
  */
   private closeRichPopover(): void {
     this.clearRichPopoverHideTimer();
+    this.cancelCoveredBarSwitch();
     this.richPopoverInteractionActive = false;
     this.richPopoverPointerOutside = false;
     if (this.richPopoverEl !== undefined) {

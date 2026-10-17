@@ -3,7 +3,7 @@
 // Runs the real plugin through the web-preview shim in headless Chromium, so it needs no Obsidian.
 //   NODE_PATH=/opt/node-tools/node_modules node tools/perf/gantt-ui-bench.mjs [--app <checkout>] [--parents 50] [--subtasks 10]
 //     [--samples 7] [--throttle <CPU slowdown, e.g. 4>] [--read-latency <ms per vault.read, default 1>] [--phases] [--dom]
-//     [--profile <out.cpuprofile> --profile-scenario drag|reorder|rerender|full]
+//     [--profile <out.cpuprofile> | --trace <out.json>] [--profile-scenario hover|drag|reorder|rerender|full]
 // The preview vault lives in memory; --read-latency adds a per-read delay so file reads cost something, as on disk.
 // --app defaults to this checkout. Prints median/p90 ms per scenario as JSON.
 import fs from "node:fs";
@@ -66,7 +66,9 @@ try {
   if (throttle > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle });
   // Profiles only the scenario named by --profile-scenario (default: drag).
   const profileScenario = arg("profile-scenario", "drag");
+  const traceOut = arg("trace");
   const profiled = async (name, fn) => {
+    if (traceOut && name === profileScenario) { await browser.startTracing(page, { path: traceOut, categories: ["devtools.timeline", "disabled-by-default-devtools.timeline"] }); await fn(); await browser.stopTracing(); result.trace = traceOut; return; }
     const on = profileOut && name === profileScenario;
     if (on) { await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 100 }); await cdp.send("Profiler.start"); }
     await fn();
@@ -110,6 +112,23 @@ try {
     const lt = v.host.loadTasks; v.host.loadTasks = async () => { const r0 = window.__reads; try { return await lt(); } finally { (window.__phases["view.loadTasks reads"] ??= []).push(window.__reads - r0); } };
     const rc = v.renderChart.bind(v); v.renderChart = () => { const t = performance.now(); rc(); (window.__phases.renderChart ??= []).push(performance.now() - t); };
   });
+  // Hover: move from one bar onto a neighbouring bar and time until the new bar's popover is in the DOM and painted.
+  const hovers = [];
+  await profiled("hover", async () => {
+    const targets = await page.evaluate((n) => [...document.querySelectorAll(".task-gantt-bar")].map((b) => b.getBoundingClientRect()).filter((r) => r.top > 300 && r.bottom < 900 && r.left > 300 && r.right < 1500 && r.width > 40).slice(0, n).map((r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 })), 2 * (samples + 1) + 2);
+    for (let i = 0; i + 1 < targets.length && hovers.length < samples + 1; i += 2) {
+      await page.mouse.move(targets[i].x, targets[i].y); await page.waitForTimeout(400);
+      await page.evaluate(() => { window.__pop = document.querySelector(".task-gantt-rich-popover"); });
+      const t = await page.evaluate(() => performance.now());
+      await page.mouse.move(targets[i + 1].x, targets[i + 1].y);
+      hovers.push(await page.evaluate((t0) => new Promise((resolve) => {
+        const check = () => { const p = document.querySelector(".task-gantt-rich-popover"); if (p && p !== window.__pop) requestAnimationFrame(() => resolve(performance.now() - t0)); else requestAnimationFrame(check); };
+        check(); setTimeout(() => resolve(-1), 3000);
+      }), t));
+    }
+    await page.mouse.move(5, 5); await page.waitForTimeout(400);
+  });
+  result.hoverNeighbourMs = stats(hovers.slice(1));
   const dayW = 28;
   const drags = [], dragReads = [];
   await profiled("drag", async () => { for (let i = 0; i < samples + 1; i++) {
