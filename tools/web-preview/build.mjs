@@ -57,7 +57,7 @@ await esbuild.build({
   absWorkingDir: appDir,
   nodePaths: [path.join(appDir, "node_modules")],
   tsconfig: path.join(appDir, "tsconfig.json"),
-  bundle: true, format: "iife", platform: "browser", target: "es2020", minify: true, logLevel: "warning", legalComments: "none",
+  bundle: true, format: "iife", platform: "browser", target: "es2020", minify: args.minify !== "false", logLevel: "warning", legalComments: "none",
   define: {
     __VG_VERSION__: JSON.stringify(String(manifest.version)),
     __VG_COMMIT__: JSON.stringify(sha),
