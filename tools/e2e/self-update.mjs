@@ -101,6 +101,12 @@ try {
   const options = await ui.evaluate("JSON.stringify(Array.from(document.querySelectorAll('select option')).map(o => o.textContent))");
   console.log("OPTIONS", options);
   check("branch list lists main", options.includes("main"));
+  if (process.env.SHOT_DIR) {
+    await ui.evaluate("Array.from(document.querySelectorAll('.setting-item-heading')).find(e => e.textContent.trim() === 'アップデート')?.scrollIntoView({ block: 'start' })");
+    await sleep(500);
+    fs.mkdirSync(process.env.SHOT_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.SHOT_DIR, "updater-settings.png"), Buffer.from((await ui.send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  }
 
   await clickButton("インストールして再読み込み");
   await pollUntil(() => { const c = fs.readFileSync(path.join(pluginDir, "main.js")); return !c.equals(oldMain); }, { timeoutMs: 20000, label: "main.js replaced" });
