@@ -1,4 +1,5 @@
 import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
+import { formatBuildLabel, getBuildInfo } from "../build-info";
 import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts } from "../contracts/ports";
 import { NotePreservationError } from "../core/note-update";
@@ -2095,12 +2096,12 @@ export class TaskGanttView extends ItemView {
     });
     this.toolbarEl.appendChild(syncButton);
 
-    // read-only version info, right side.
+    // read-only version + commit, right side.
     const versionInfo = document.createElement("span");
     versionInfo.classList.add("task-gantt-version-info");
-    const manifest = this.host.manifest;
-    const notes = manifest.releaseNotes || manifest.description || "";
-    versionInfo.textContent = `※ v${manifest.version}: ${notes}`;
+    const build = getBuildInfo(this.host.manifest.version);
+    versionInfo.textContent = formatBuildLabel(build);
+    versionInfo.title = `Vault Gantt ${formatBuildLabel(build)}\nbuilt ${build.builtAt}`;
     this.toolbarEl.appendChild(versionInfo);
   }
 

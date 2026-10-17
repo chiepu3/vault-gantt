@@ -869,7 +869,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-container .vg-ai-target-label { position: absolute; height: 12px; padding-inline: 4px 2px; border-inline-start: 2px solid var(--interactive-accent); color: var(--text-normal); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); line-height: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: auto; z-index: 2; }
 .task-gantt-container .vg-ai-target-label[hidden] { display: none; }
 .task-gantt-container .vg-ai-legend { flex-shrink: 0; margin-inline-start: auto; padding: 2px 10px; border-radius: var(--radius-l); background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); font-size: var(--font-ui-smaller); color: var(--text-normal); white-space: nowrap; }
-.task-gantt-container .task-gantt-version-info { display: none; }
+.task-gantt-container .task-gantt-version-info { order: 99; margin-inline-start: auto; font-size: var(--font-ui-smaller); color: var(--text-faint); white-space: nowrap; user-select: text; }
+/* The AI legend already pushes itself to the right edge; keep the version label right after it instead of splitting the free space (which centered the legend). */
+.task-gantt-container .task-gantt-toolbar:has(.vg-ai-legend) .task-gantt-version-info { margin-inline-start: 0; }
 
 /* Operation preview card (chat, approval list, Gantt preview region).
  * Meaning is carried by text, borders and patterns; color only reinforces it. */
