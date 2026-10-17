@@ -16,6 +16,7 @@ function response(tool?: { name: string; input: unknown }, text = "") {
 describe("daily work log through the real provider loop", () => {
   it("looks up candidates, proposes one card, then explains it", async () => {
     const f = await runtimeFixture(); let round = 0;
+    // eslint-disable-next-line no-undef
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const request = JSON.parse(init!.body as string);
       ++round;
