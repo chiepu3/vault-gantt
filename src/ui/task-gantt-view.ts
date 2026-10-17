@@ -6960,11 +6960,14 @@ export class TaskGanttView extends ItemView {
     el.addEventListener("mouseover", () => {
       this.richPopoverPointerOutside = false;
       this.clearRichPopoverHideTimer();
+      // Keep the same bar's workload graph open while this popover is hovered.
+      if (this.workloadPopupLinkedToRichPopover()) this.clearWorkloadPopoverHideTimer();
     });
     el.addEventListener("mouseleave", () => {
       this.cancelCoveredBarSwitch();
       this.richPopoverPointerOutside = true;
       this.scheduleRichPopoverHide();
+      if (this.workloadPopupLinkedToRichPopover()) this.scheduleHideWorkloadPopup();
     });
     el.addEventListener("mousemove", (moveEvt: MouseEvent) => {
       this.onRichPopoverMouseMove(el, moveEvt);
@@ -7452,11 +7455,20 @@ export class TaskGanttView extends ItemView {
       this.startWorkloadPaint(evt, graph, task, { modeKey, persist });
     });
 
+    // Hovering the bar's workload graph keeps that bar's rich popover open too.
     el.addEventListener("mouseenter", () => {
       this.clearWorkloadPopoverHideTimer();
+      if (this.workloadPopupLinkedToRichPopover()) {
+        this.richPopoverPointerOutside = false;
+        this.clearRichPopoverHideTimer();
+      }
     });
     el.addEventListener("mouseleave", () => {
       this.scheduleHideWorkloadPopup();
+      if (this.workloadPopupLinkedToRichPopover()) {
+        this.richPopoverPointerOutside = true;
+        this.scheduleRichPopoverHide();
+      }
     });
 
     document.body.appendChild(el);
@@ -7763,6 +7775,12 @@ export class TaskGanttView extends ItemView {
  * Starts (or restarts) the 160ms hide debounce — independent timer from
  * the rich popover's own `scheduleRichPopoverHide` (220ms), same idiom.
  */
+  /** True when the open workload graph and rich popover belong to the same bar. */
+  private workloadPopupLinkedToRichPopover(): boolean {
+    const anchor = this.workloadPopoverState?.anchorEl;
+    return anchor !== undefined && this.richPopoverEl !== undefined && anchor === this.richPopoverAnchorEl;
+  }
+
   private scheduleHideWorkloadPopup(): void {
     this.clearWorkloadPopoverHideTimer();
     this.workloadPopoverHideTimer = setTimeout(() => {
