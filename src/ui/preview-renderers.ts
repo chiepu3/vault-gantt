@@ -212,12 +212,19 @@ export function renderPointTimeline(parent: HTMLElement, glyph: string, noun: st
 }
 
 /** Daily totals before/after for dates the projector listed as affected. Never sums pages. */
-export function renderAggregates(parent: HTMLElement, projection: GanttProjectionV1, limit = 14): void {
-  const dates = [...projection.affectedDates].sort();
+export function renderAggregates(parent: HTMLElement, projection: GanttProjectionV1, limit = 14, context = 2): void {
+  const find = (state: GanttStateV1, date: string) => state.aggregates.find((item) => item.date === date);
+  const same = (date: string): boolean => {
+    const before = find(projection.before, date); const after = find(projection.after, date);
+    return (before?.plan ?? 0) === (after?.plan ?? 0) && (before?.actual ?? 0) === (after?.actual ?? 0) && !!before?.overCapacity === !!after?.overCapacity;
+  };
+  const affected = [...projection.affectedDates].sort();
+  // Only the days that change, with a couple of days around them. Days far from any change tell the reader nothing.
+  const changed = affected.filter((date) => !same(date));
+  const dates = affected.filter((date) => changed.some((other) => Math.abs(diffDays(date, other)) <= context));
   if (!dates.length) return;
   const box = h(parent, "div", "vg-pv-aggregates"); box.setAttribute("role", "group"); box.setAttribute("aria-label", "日別の作業時間集計");
   h(box, "div", "vg-pv-subtitle", "日別の集計（前 → 後）");
-  const find = (state: GanttStateV1, date: string) => state.aggregates.find((item) => item.date === date);
   for (const date of dates.slice(0, limit)) {
     const before = find(projection.before, date); const after = find(projection.after, date);
     const row = h(box, "div", "vg-pv-agg-row");
@@ -229,7 +236,7 @@ export function renderAggregates(parent: HTMLElement, projection: GanttProjectio
     if (after?.overCapacity) badge(row, "上限超過", "warn");
     else if (before?.overCapacity) badge(row, "超過解消", "ok");
   }
-  if (dates.length > limit) h(box, "div", "vg-pv-muted", `ほか ${dates.length - limit} 日（詳細は日付一覧で確認）`);
+  if (dates.length > limit) h(box, "div", "vg-pv-muted", `ほか ${dates.length - limit} 日`);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +248,8 @@ type Renderer<K extends PreviewEffectKind> = (parent: HTMLElement, effect: Extra
 /** `requested` changes stay on top; normalized/derived ones and the update date are folded into a details block. */
 function renderFieldChanges(parent: HTMLElement, changes: readonly FieldChange[]): void {
   const main = changes.filter((change) => change.reason === "requested" && change.field !== "updatedAt");
-  const folded = changes.filter((change) => !main.includes(change));
+  // The update date always moves with any save, so it is not worth listing.
+  const folded = changes.filter((change) => !main.includes(change) && change.field !== "updatedAt");
   for (const change of main) fieldRow(parent, fieldLabel(change.field), change.field, change.before, change.after);
   if (!folded.length) return;
   const details = h(parent, "details", "vg-pv-derived");
