@@ -13,6 +13,7 @@ import type {
 } from "../core/types";
 import type { HolidayService } from "../app/holiday-service";
 import { pickGanttTagColor } from "../core/constants";
+import { renderUpdaterSection } from "./updater-section";
 import { detectConfiguredDailyNoteSettings } from "../app/daily-note-creation";
 import { addDailyTodoSource as appendDailyTodoSource } from "../app/daily-todo-service";
 
@@ -514,6 +515,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
     this.renderMcpSettings(integration);
+    renderUpdaterSection(integration, this.app, this.hostPlugin);
     showTab(this.activeTab);
     const { version, commit, builtAt } = getBuildInfo();
     containerEl.createDiv({
