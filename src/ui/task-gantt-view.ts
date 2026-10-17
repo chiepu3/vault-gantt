@@ -3708,7 +3708,7 @@ export class TaskGanttView extends ItemView {
     const items = this.dailyTodoSummaries.find((s) => s.date === date)?.items ?? [];
     if (items.length === 0 || !anchorEl.isConnected) return;
     const el = document.createElement("div");
-    el.classList.add("task-gantt-daily-todo-popover", "task-gantt-daily-todo-hover", "vg-surface", "vg-popover");
+    el.classList.add("task-gantt-daily-todo-hover", "vg-surface", "vg-popover");
     const title = document.createElement("div");
     title.classList.add("task-gantt-daily-todo-popover-title");
     title.textContent = `Daily ToDo ${moment(date, "YYYY-MM-DD").format("M/D")}`;
