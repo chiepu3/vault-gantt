@@ -95,6 +95,19 @@ describe("MCP and other origins", () => {
   });
 });
 
+describe("redo", () => {
+  it("offers to redo an undone save and hides it while the undo is still available", () => {
+    const outcome = { ...PARTIAL_OUTCOME, status: "success" as const, undoEntryId: "undo-1" };
+    const undone = { entryId: "undo-1", historyRevision: "h", state: "already-undone" as const, reason: null };
+    const onRedo = vi.fn();
+    const card = render(PARTIAL_PREVIEW, { outcome, undoState: undone, handlers: { onRedo } });
+    expect(card.dataset.state).toBe("undone");
+    dispatch(button(card, "redo")!, "click"); expect(onRedo).toHaveBeenCalledWith("undo-1");
+    const live = render(PARTIAL_PREVIEW, { outcome, undoState: { ...undone, state: "available" }, handlers: { onRedo } });
+    expect(button(live, "redo")).toBeUndefined();
+  });
+});
+
 describe("results", () => {
   it("separates saved effects from unsaved ones after a partial save", () => {
     const card = render(PARTIAL_PREVIEW, { outcome: PARTIAL_OUTCOME, undoState: { entryId: "undo-1", historyRevision: "h", state: "available", reason: null }, handlers: { onFocus: vi.fn(), onUndo: vi.fn(), onRepreview: vi.fn() } });
@@ -223,13 +236,13 @@ describe("controller", () => {
     controller.optionsFor(CREATE_PREVIEW).handlers!.onApprove!();
     await vi.waitFor(() => expect(controller.optionsFor(CREATE_PREVIEW).actionError).toBe("保存できませんでした: conflict"));
   });
-  it("toggles the Gantt focus and opens the Gantt only when focusing", () => {
+  it("focuses the preview and opens the Gantt each time, so the Gantt scrolls to it again", () => {
     const ports = fakePorts([CREATE_PREVIEW]); const openGantt = vi.fn();
     const controller = new PreviewCardController(ports, { openGantt }, vi.fn());
     controller.optionsFor(CREATE_PREVIEW).handlers!.onFocus!();
     expect(ports.previewPort.focused).toBe("create-fixture"); expect(openGantt).toHaveBeenCalledOnce();
     controller.optionsFor(CREATE_PREVIEW).handlers!.onFocus!();
-    expect(ports.previewPort.focused).toBeNull(); expect(openGantt).toHaveBeenCalledOnce();
+    expect(ports.previewPort.focused).toBe("create-fixture"); expect(openGantt).toHaveBeenCalledTimes(2);
   });
   it("rejects, re-previews (moving focus only if it was focused) and gates undo on a host callback", async () => {
     const ports = fakePorts([CREATE_PREVIEW]);

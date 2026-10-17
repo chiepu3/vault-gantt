@@ -31,6 +31,25 @@ const assistant = (parts: ChatMessage["parts"], extra: Partial<ChatMessage> = {}
 const user = (text: string): ChatMessage => ({ role: "user", text, proposals: [], parts: [{ type: "text", id: "t", text }] });
 
 describe("AgentView streams ordered parts", () => {
+  it("folds thinking and tool calls between texts into one foldable row", async () => {
+    const { view, session, root } = await open();
+    session.active.messages = [user("調べて"), assistant([
+      { type: "text", id: "t1", text: "確認します。" },
+      { type: "reasoning", id: "r1", text: "考える", state: "done" },
+      { type: "tool", id: "c1", name: "tasks_search", state: "done" },
+      { type: "tool", id: "c2", name: "tasks_search", state: "done" },
+      { type: "text", id: "t2", text: "見つかりました。" },
+      { type: "tool", id: "c3", name: "tasks_search", state: "done" },
+    ])];
+    view.render();
+    const groups = findAll(root, (el) => el.classList.contains("vg-ai-activity"));
+    expect(groups).toHaveLength(1);
+    expect(findAll(groups[0], (el) => el.classList.contains("vg-ai-tool") || el.classList.contains("vg-ai-reasoning"))).toHaveLength(3);
+    expect(deepText(groups[0])).toContain("ツール2件");
+    // A lone tool call keeps its own row.
+    expect(findAll(root, (el) => el.classList.contains("vg-ai-tool"))).toHaveLength(3);
+  });
+
   it("renders reasoning, tool rows, text and the card in the order they happened, with later messages below the card", async () => {
     const { view, session, root } = await open([CREATE_PREVIEW]);
     session.active.messages = [
