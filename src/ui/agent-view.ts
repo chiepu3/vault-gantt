@@ -153,6 +153,9 @@ export class AgentView extends ItemView {
     const history = this.element(header, "details"); history.className = "vg-ai-menu";
     const historyToggle = this.element(history, "summary"); this.decorateIcon(historyToggle, "history", "会話履歴を開く");
     this.historyEl = this.element(history, "div"); this.historyEl.className = "vg-ai-popover vg-ai-history";
+    // The history list closes on a click anywhere else, and on Escape.
+    this.registerDomEvent(document, "click", (event) => { if (history.open && !history.contains(event.target as Node)) history.removeAttribute("open"); });
+    this.registerDomEvent(document, "keydown", (event) => { if (event.key === "Escape" && history.open) history.removeAttribute("open"); });
     this.iconButton(header, "settings", "接続設定を開く", () => this.host.openSettings());
     this.messagesEl = this.element(root, "div"); this.messagesEl.className = "vg-ai-messages"; this.messagesEl.setAttribute("role", "log"); this.messagesEl.setAttribute("aria-label", "会話履歴");
     const composer = this.element(root, "div"); composer.className = "vg-ai-content vg-ai-composer";
