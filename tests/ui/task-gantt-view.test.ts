@@ -7251,42 +7251,38 @@ describe("workload paint-drag and bar-level popup", () => {
     expect(popover.attributes["data-side"]).toBe("above");
   });
 
-  it("bar hover keeps a single popover: the task popover wins, the workload chart is reached from its button", async () => {
-    const { bar } = await openBarView();
+  it("re-places an open rich popover away from the workload popup when it opens, repeatably", async () => {
+    const { view, container, bar } = await openBarView();
+    bar.getBoundingClientRect = () => ({
+      left: 100,
+      top: 600,
+      right: 1190,
+      bottom: 624,
+      width: 1090,
+      height: 24,
+    });
+    // Rich popover opens first (mouseover precedes mouseenter): below does
+    // not fit (624+12+180 > 800) so it goes above, where the workload popup
+    // will also land.
     dispatch(bar, "mouseover", { clientX: 200, clientY: 610 });
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-
-    // mouseenter follows mouseover on a real hover; it must not stack a second layer.
-    dispatch(bar, "mouseenter");
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
-
-    // The 「作業時間」 button swaps the task popover for the workload chart.
-    const button = byClass(byClass(popoverBody(), "task-gantt-rich-popover")[0], "task-gantt-popover-open-workload")[0];
-    expect(button.textContent).toBe("作業時間");
-    dispatch(button, "click");
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
-
-    // An outside mousedown dismisses it again.
-    dispatch(winEl, "mousedown", { target: popoverBody() });
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
-  });
-
-  it("opening a workload popup closes an open task popover", async () => {
-    const { view, bar } = await openBarView();
-    dispatch(bar, "mouseover", { clientX: 100, clientY: 50 });
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    (view as any).showWorkloadPopupForBar((view as any).richPopoverTask, bar);
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
-    // And the reverse: a task popover replaces the workload popup.
-    (view as any).onRichPopoverTrigger(
-      { kind: "subtask", task: (view as any).workloadPopoverState.task, anchorEl: bar, barStart: "", barEnd: "" },
-      { clientX: 100 } as MouseEvent
+    const rich = byClass(popoverBody(), "task-gantt-rich-popover")[0];
+    expect(rich.style.top).toBe("408px"); // 600 - 12 - 180
+    const workloadRect = { left: 90, top: 466, right: 290, bottom: 588 };
+    vi.spyOn(view as any, "getWorkloadPopupRect").mockReturnValue(
+      workloadRect
     );
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
+
+    dispatch(bar, "mouseenter");
+    expect(popoverOf(container)).toBeDefined();
+    // Stacked above the workload popup: 466 - 12 - 180.
+    expect(rich.style.top).toBe("274px");
+    expect(rich.attributes["data-side"]).toBe("above");
+    const bottom = parseFloat(rich.style.top) + 180;
+    expect(bottom + 12).toBeLessThanOrEqual(workloadRect.top);
+
+    // Repeated hover rebuilds the workload popup; placement stays put.
+    dispatch(bar, "mouseenter");
+    expect(rich.style.top).toBe("274px");
   });
 
   it("a context menu closes the hover popovers and blocks new ones while it is open", async () => {
