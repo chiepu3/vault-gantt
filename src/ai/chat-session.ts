@@ -215,8 +215,14 @@ export class ChatSession {
     for (const proposal of message.proposals) { this.registry.discard(proposal.plan.previewId); proposal.consumed = true; }
   }
   async retry(): Promise<void> {
-    const last = [...this.active.messages].reverse().find((message) => message.role === "user");
-    if (last) await this.send(last.text);
+    const conversation = this.active;
+    if (conversation.status === "running") return;
+    const at = conversation.messages.map((message) => message.role).lastIndexOf("user");
+    if (at < 0) return;
+    // The failed attempt is replaced, not stacked: its question and partial reply go, then the question is asked again.
+    const text = conversation.messages[at].text;
+    for (const message of conversation.messages.splice(at)) this.discardMessage(message);
+    await this.send(text);
   }
   /** A card started a re-preview itself: the new card is placed right after the one it replaces. */
   attachPreview(fromPreviewId: string, toPreviewId: string): void {
