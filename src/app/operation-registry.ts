@@ -44,7 +44,7 @@ export interface TaskDiff { taskId: string; name: string; fields: FieldDiff[]; s
 export interface OperationPlan { previewId: string; operation: OperationName; summary: string; diffs: TaskDiff[]; count: number }
 export interface OperationResult { kind: "success" | "partial" | "failed" | "cancelled" | "stale"; committed: number; total: number; diffs: TaskDiff[]; results: TaskUpdateResult[]; message: string; created?: TaskRow; undoLabel?: string }
 interface PendingPlan { public: OperationPlan; changes: TaskUpdateCommand[]; contents: Map<string, string>; create?: { name: string; parent?: TaskRow; path?: string }; expires: number }
-export interface RegistryHost { readonly settings: TaskWorkbenchSettings; readonly historyManager: HistoryManager; invalidate(): Promise<void> | void }
+export interface RegistryHost { readonly settings: TaskWorkbenchSettings; readonly historyManager: HistoryManager; readonly taskCache?: Map<string, { revision: string; taskRow: TaskRow | null }>; invalidate(paths?: string[]): Promise<void> | void }
 export function taskData(row: TaskRow): Record<string, unknown> {
   const { file, subtasks: _subtasks, ...data } = row;
   void _subtasks;
@@ -83,7 +83,7 @@ export class OperationRegistry {
   constructor(private readonly host: RegistryHost, private readonly vaultFactory: () => VaultAdapter) {}
 
   async rows(query = ""): Promise<TaskRow[]> {
-    const parents = await loadTasks(this.vaultFactory(), this.host.settings, new Map());
+    const parents = await loadTasks(this.vaultFactory(), this.host.settings, this.host.taskCache ?? new Map());
     return parents.flatMap((row) => [row, ...row.subtasks!.values()]).filter((row) => `${row.displayName} ${row.title}`.toLowerCase().includes(query.toLowerCase()));
   }
   async get(taskId: string): Promise<TaskRow> {
@@ -120,7 +120,7 @@ export class OperationRegistry {
     } else {
       const args = name === "update" ? [parsed as z.infer<typeof update>] : (parsed as { changes: z.infer<typeof update>[] }).changes;
       if (!args) throw new Error("Mutation operation required");
-      const grouped = new Map<string, { parent: TaskRow; beforeNote: string }>();
+      const grouped = new Map<string, { patch: TaskPatch; rowId: string }[]>();
       const seen = new Set<string>();
       const rows = new Map((await this.rows()).map((row) => [row.id, row]));
       for (const arg of args) {
@@ -147,16 +147,18 @@ export class OperationRegistry {
         changes.push({ row: rowBefore, patch: arg.patch as TaskPatch });
         // Match updateTaskItemsBatch: apply all commands to one original parent,
         // then merge once per file, without intermediate serialization.
-        let group = grouped.get(file.path);
-        if (!group) {
-          const originalParent = parseTaskFile({ path: file.path }, content, this.host.settings)!;
-          group = { parent: originalParent, beforeNote: buildFullNote(originalParent, originalParent.subtasks) };
-          grouped.set(file.path, group);
-        }
-        applyPatchToParent(group.parent, arg.patch as TaskPatch, rowBefore.id, this.host.settings);
+        const group = grouped.get(file.path) ?? [];
+        group.push({ patch: arg.patch as TaskPatch, rowId: rowBefore.id });
+        grouped.set(file.path, group);
       }
       for (const [path, group] of grouped) {
-        assertRoundTrip(group.parent, this.host.settings, contents.get(path)!, group.beforeNote);
+        // A single command was already checked on identical inputs above.
+        if (group.length < 2) continue;
+        const content = contents.get(path)!;
+        const originalParent = parseTaskFile({ path }, content, this.host.settings)!;
+        const beforeNote = buildFullNote(originalParent, originalParent.subtasks);
+        for (const item of group) applyPatchToParent(originalParent, item.patch, item.rowId, this.host.settings);
+        assertRoundTrip(originalParent, this.host.settings, content, beforeNote);
       }
     }
     this.prune();
@@ -245,7 +247,7 @@ export class OperationRegistry {
         this.host.historyManager.push({ label: result.undoLabel, files: history });
       }
       if (result.committed) {
-        try { await this.host.invalidate(); }
+        try { await this.host.invalidate(history.map((change) => change.path)); }
         catch { result.message += " 表示の更新に失敗しました。ビューを再度開いてください。"; }
       }
     }

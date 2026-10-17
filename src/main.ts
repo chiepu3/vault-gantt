@@ -277,7 +277,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
     return new OperationRegistry({
     get settings() { return settings(); },
     historyManager: this.historyManager,
-    invalidate: async () => { this.scheduleGhosts.clear(); this.taskCache.clear(); await this.refreshOpenViews(); },
+    taskCache: this.taskCache,
+    invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter());
   }
   readonly operations = this.createOperations();

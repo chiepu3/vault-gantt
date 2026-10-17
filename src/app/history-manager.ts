@@ -54,11 +54,29 @@ export class HistoryManager implements HistoryPort {
     return { entryId, historyRevision: `history-${this.revision}`, state, reason: state === "available" ? null : "履歴先頭・現在内容・操作状態を確認してください。" };
   }
   private notify(): void { this.revision++; for (const listener of this.listeners) { try { listener({ historyRevision: `history-${this.revision}`, changedEntryIds: null }); } catch { /* Detached subscriber. */ } } }
-  async refreshEligibility(): Promise<void> {
-    if (!this.vaultReader) return;
-    const generation = ++this.checkGeneration;
-    const entry = this.undoStack.at(-1), vault = this.vaultReader();
+  private eligibilityRun?: Promise<void>;
+  private eligibilityNext?: Promise<void>;
+  /**
+   * Coalesces concurrent calls: at most one read pass runs at a time, and calls
+   * made meanwhile share one follow-up pass that starts after they were made.
+   */
+  refreshEligibility(): Promise<void> {
+    if (!this.vaultReader) return Promise.resolve();
+    ++this.checkGeneration;
     this.checking = true; this.notify();
+    if (this.eligibilityNext) return this.eligibilityNext;
+    if (!this.eligibilityRun) return this.startEligibilityRun();
+    const start = () => { this.eligibilityNext = undefined; return this.startEligibilityRun(); };
+    return this.eligibilityNext = this.eligibilityRun.then(start, start);
+  }
+  private startEligibilityRun(): Promise<void> {
+    const run: Promise<void> = this.runEligibilityCheck().finally(() => { if (this.eligibilityRun === run) this.eligibilityRun = undefined; });
+    this.eligibilityRun = run;
+    return run;
+  }
+  private async runEligibilityCheck(): Promise<void> {
+    const generation = this.checkGeneration;
+    const entry = this.undoStack.at(-1), vault = this.vaultReader!();
     let conflict = false;
     if (entry) for (const change of entry.files) { try { const file = vault.getFileByPath(change.path); if (!file || await vault.read(file) !== change.after) conflict = true; } catch { conflict = true; } }
     if (generation !== this.checkGeneration) return;
