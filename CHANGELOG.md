@@ -2,6 +2,13 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.6.0 (2026-10-17)
+
+### 新機能
+
+- AIエージェントのタスク検索あいまい一致と日報の一括実績登録 ([#56](https://github.com/chiepu3/vault-gantt/pull/56))
+- AIチャット画面の改善（思考とツールの折りたたみ、Gantt確認の移動、やり直し ほか） ([#57](https://github.com/chiepu3/vault-gantt/pull/57))
+
 ## v0.5.1 (2026-10-17)
 
 ### 高速化
