@@ -10,18 +10,29 @@ Vault Gantt は [セマンティックバージョニング](https://semver.org/
 
 0.x の間は、互換性を壊す変更も MINOR で上げます。
 
-## 更新手順
+## 自動更新（通常はこれだけ）
 
-バージョンは `package.json` / `manifest.json` / `versions.json` の3ファイルで必ず一致させます。手で編集せず、次のコマンドで同時に更新します。
+main に PR をマージすると、GitHub Actions（`.github/workflows/release.yml`）が次を自動で行います。人がバージョンを触る必要はありません。
 
-```
-npm version patch   # または minor / major
-```
+1. 前回のリリース以降にマージされた PR のタイトルから、上げ方を決めます。
+2. `package.json` / `manifest.json` / `versions.json` を同時に更新し、`CHANGELOG.md` に追記して `chore(release): vX.Y.Z` コミットで main に push します。
+3. タグ `vX.Y.Z` を打ち、同じ内容のリリースノートで GitHub Release を作ります。
 
-`version-bump.mjs` が `manifest.json` と `versions.json`（`バージョン: minAppVersion`）を同期し、コミットとタグ `vX.Y.Z` を作ります。`minAppVersion` を変えるときは先に `manifest.json` を直してから実行してください。
+PR タイトルは [Conventional Commits](https://www.conventionalcommits.org/ja/) の接頭辞で書きます。
 
-- バージョンを上げるのは、リリースしたい変更が main に入った後、専用のコミットで行います（機能PRの中では上げません）。
-- `npm run check` が通ることを確認してからタグを push します。
+| タイトルの接頭辞 | 上がるもの | リリースノートの見出し |
+| --- | --- | --- |
+| `feat:` / `feat(範囲):` | MINOR | 新機能 |
+| `fix:` `perf:` `refactor:` `revert:` | PATCH | 修正・高速化・内部改善・取り消し |
+| 接頭辞なし | PATCH | その他の変更 |
+| `docs:` `ci:` `chore:` `test:` `build:` `style:` だけ | 上げない（リリースなし） | - |
+| `feat!:` のように `!` 付き | MINOR（0.x の間） | 各見出し |
+
+- 1回の push に複数の PR が含まれるときは、一番大きい上げ方を採用し、リリースノートにはすべて載せます。
+- MAJOR は自動では上がりません。1.0.0 にするときなどは、手元で `npm version major` を実行して push します（`version-bump.mjs` が `manifest.json` と `versions.json` を同期し、`minAppVersion` を変えるときは先に `manifest.json` を直します）。
+- リリースコミットは GITHUB_TOKEN で push するため、CI は再実行されず、ループしません。コミットメッセージが `chore(release):` で始まる場合、ワークフローは何もしません。
+- リリースコミットは main に入るので、`install.cmd`（`git pull` → `npm run build`）はそのまま動きます。`package-lock.json` は更新しないので、`install.cmd` が依存の入れ直し（`npm ci`）をすることもありません。
+- 確認だけしたいときは `node tools/release/release.mjs --dry-run` で、次のバージョンとリリースノートを表示できます。
 
 ## 画面表示
 
