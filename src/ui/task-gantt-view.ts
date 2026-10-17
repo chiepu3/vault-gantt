@@ -2939,8 +2939,6 @@ export class TaskGanttView extends ItemView {
     if (!this.host.settings.ganttFeatureWorkloadEnabled) {
       return;
     }
-    this.closeRichPopover(); // One popover at a time.
-    this.closeWorkloadPopup();
     this.closeWorkloadDaySummaryPopover(); // Close any open day-summary popover.
 
     const el = document.createElement("div");
@@ -4952,12 +4950,9 @@ export class TaskGanttView extends ItemView {
       // The bar-level workload graph is a separate popover from the rich
       // popover above. Mouseenter shows it when workload is enabled, and
       // mouseleave starts its independent 160ms hide debounce.
-      // The task popover (opened by mouseover just before) takes precedence:
-      // the chart is then reached from its 「作業時間」 button.
       barEl.addEventListener("mouseenter", () => {
         if (
           this.host.settings.ganttFeatureWorkloadEnabled &&
-          this.richPopoverEl === undefined &&
           !this.hoverPopoversBlocked()
         ) {
           this.showWorkloadPopupForBar(bar.task, barEl);
@@ -6887,9 +6882,6 @@ export class TaskGanttView extends ItemView {
     anchor: RichPopoverAnchor,
     evt: MouseEvent
   ): void {
-    // Only one popover at a time: a task popover replaces the workload ones.
-    this.closeWorkloadPopup();
-    this.closeWorkloadDaySummaryPopover();
     const el = document.createElement("div");
     el.classList.add("task-gantt-rich-popover", "vg-surface", "vg-popover");
     if (anchor.kind === "subtask") {
@@ -7219,7 +7211,7 @@ export class TaskGanttView extends ItemView {
     if (!this.host.settings.ganttFeatureWorkloadEnabled) {
       return;
     }
-    this.closeHoverPopovers(); // one popover at a time; always rebuild fresh.
+    this.closeWorkloadPopup(); // always rebuild fresh.
 
     const { dates, graphLeft } = this.computeWorkloadPopupLayout(task, barEl);
     this.buildWorkloadPopup(
@@ -7247,7 +7239,7 @@ export class TaskGanttView extends ItemView {
     if (!this.host.settings.ganttFeatureWorkloadEnabled) {
       return;
     }
-    this.closeHoverPopovers();
+    this.closeWorkloadPopup();
     let graphLeft = 0;
     try {
       const rect = chipEl.getBoundingClientRect();
@@ -8339,56 +8331,11 @@ export class TaskGanttView extends ItemView {
     // Add the popover action buttons.
     const actions = document.createElement("div");
     actions.classList.add("task-gantt-popover-actions");
-    const workloadButton = this.buildWorkloadButton(task);
-    if (workloadButton !== undefined) {
-      actions.appendChild(workloadButton);
-    }
     actions.appendChild(this.buildOpenNoteButton(task));
     actions.appendChild(this.buildCompletedToggleButton(task));
     root.appendChild(actions);
   }
 
-  /**
-   * 「作業時間」 — swaps the task popover for the bar's workload chart (only
-   * one popover is shown at a time). The chart then closes on an outside
-   * click, scroll or the next hover, like any other hover popover.
-   */
-  private buildWorkloadButton(task: TaskRow): HTMLElement | undefined {
-    if (!this.host.settings.ganttFeatureWorkloadEnabled) {
-      return undefined;
-    }
-    const button = document.createElement("button");
-    button.classList.add("task-gantt-popover-open-workload");
-    button.textContent = "作業時間";
-    button.title = "この期間の作業時間を入力";
-    this.bindRichPopoverInteraction(button);
-    button.addEventListener("click", () => {
-      const barEl = this.richPopoverAnchorEl;
-      if (barEl === undefined) {
-        return;
-      }
-      // Closing the task popover uncovers whatever lies under the pointer; its
-      // mouseover would reopen the task popover and tear the chart down at once.
-      this.armRichPopoverSuppress();
-      this.showWorkloadPopupForBar(task, barEl);
-      const popupEl = this.workloadPopoverState?.el;
-      if (popupEl === undefined) {
-        return;
-      }
-      const outside = (evt: Event): void => {
-        const target = evt.target as Node | null;
-        if (this.workloadPopoverState?.el === popupEl && target !== null && isNodeInside(target, popupEl)) {
-          return;
-        }
-        window.removeEventListener("mousedown", outside, true);
-        if (this.workloadPopoverState?.el === popupEl) {
-          this.closeWorkloadPopup();
-        }
-      };
-      window.addEventListener("mousedown", outside, true);
-    });
-    return button;
-  }
 
 
 
