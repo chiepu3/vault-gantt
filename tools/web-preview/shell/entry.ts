@@ -2,7 +2,7 @@
 import "../shim/globals";
 import { App, Modal, Notice, preview, setIcon, type WorkspaceLeaf } from "../shim/obsidian";
 import Plugin from "@app/main";
-import { installFakeLlm } from "./fake-llm";
+import { EXAMPLE_PROMPTS, installFakeLlm } from "./fake-llm";
 import { makeSeed, today } from "./seed";
 
 declare const __VGP__: { label: string; sha: string; builtAt: string; manifest: { id: string; name: string; version: string } };
@@ -65,6 +65,13 @@ function buildShell(app: App, plugin: any, reset: () => void): void {
 
   const exists = (c: string) => !!app.commands.commands[meta.manifest.id + ":" + c];
   const run = (c: string) => app.commands.executeCommandById(meta.manifest.id + ":" + c);
+  const fillChat = async (prompt: string) => {
+    if (!prompt) return;
+    let ta = document.querySelector<HTMLTextAreaElement>(".vg-ai-composer textarea");
+    if (!ta) { await run("open-ai-chat-right"); await new Promise((r) => setTimeout(r, 150)); ta = document.querySelector<HTMLTextAreaElement>(".vg-ai-composer textarea"); }
+    if (!ta) return;
+    ta.value = prompt; ta.dispatchEvent(new Event("input", { bubbles: true })); ta.focus();
+  };
   const open = async (type: string, region: "main" | "right" = "main") => {
     const l = ws.getLeavesOfType(type)[0] ?? (region === "main" ? ws.getLeaf("tab") : ws.getRightLeaf());
     await l.setViewState({ type, active: true }); await ws.revealLeaf(l);
@@ -79,6 +86,13 @@ function buildShell(app: App, plugin: any, reset: () => void): void {
     ["コマンド", "menu", () => palette(app), true],
   ];
   for (const [label, icon, fn, show] of buttons) if (show) { const b = bar.createEl("button"); const i = b.createSpan(); setIcon(i, icon); b.appendText(" " + label); b.addEventListener("click", () => void fn()); }
+  if (exists("open-ai-chat-right")) {
+    // Shell-only helper (outside the plugin's DOM): fills the chat input with a prompt the scripted fake LLM understands.
+    const sel = bar.createEl("select", { cls: "vgp-examples", title: "台本AI(fake-llm)が反応する例文。選ぶとAIチャットの入力欄に入ります" });
+    sel.createEl("option", { text: "AIに試す例…", value: "" });
+    for (const [label, prompt] of EXAMPLE_PROMPTS) sel.createEl("option", { text: label, value: prompt });
+    sel.addEventListener("change", () => void fillChat(sel.value).then(() => { sel.value = ""; }));
+  }
   bar.createDiv("vgp-spacer");
   const mk = (text: string, fn: (b: HTMLButtonElement) => void, title = "") => { const b = bar.createEl("button", { text, title }); b.addEventListener("click", () => fn(b)); return b; };
   mk(document.body.classList.contains("theme-dark") ? "ライト" : "ダーク", (b) => { prefs.theme = document.body.classList.contains("theme-dark") ? "light" : "dark"; savePrefs(); applyPrefs(app); b.setText(prefs.theme === "dark" ? "ライト" : "ダーク"); }, "ライト/ダーク切替");

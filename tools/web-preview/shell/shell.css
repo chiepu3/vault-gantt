@@ -53,3 +53,5 @@ blockquote { border-left: 3px solid var(--background-modifier-border); margin: 4
   .vgp-side-close { display: inline-flex; }
   .vertical-tab-content { padding: 8px 12px 40px; }
 }
+
+.vgp-examples { height: 28px; flex: none; max-width: 190px; }
