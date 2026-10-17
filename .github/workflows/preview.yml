@@ -77,8 +77,9 @@ jobs:
       # Real Obsidian for the screenshot gallery, installed exactly like e2e.yml: Xvfb + the pinned,
       # SHA256-verified, root-owned Obsidian with the SUID sandbox helper (Chromium sandbox stays on).
       # Needs no token: the token of this job stays read-only.
-      - name: Install Xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+      # fonts-noto-cjk: the runner image has no Japanese fonts, so the shots would show tofu boxes.
+      - name: Install Xvfb and Japanese fonts
+        run: sudo apt-get update && sudo apt-get install -y xvfb fonts-noto-cjk
       - name: Install Obsidian (sandbox-enabled)
         run: bash tools-src/tools/e2e/ci-install-obsidian.sh
       - name: Build every target (failures are isolated per target)
