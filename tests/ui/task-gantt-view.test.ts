@@ -16,7 +16,7 @@ import { PreviewStore } from "../../src/app/preview-store";
 import moment from "moment";
 import { Menu, Notice } from "obsidian";
 import { SubtaskAddConflictError } from "../../src/app/task-operations";
-import { TaskGanttView, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
+import { TaskGanttView, computeEventLaneLayout, computeRichPopoverPosition } from "../../src/ui/task-gantt-view";
 import type { TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import {
   DEFAULT_GANTT_TAG_COLORS,
@@ -2564,6 +2564,42 @@ describe("TaskGanttView", () => {
       ]);
       expect(row.style.height).toBe("60px");
       expect(byClass(row, "task-gantt-event-chip")[1].style.top).toBe("32px");
+    });
+
+    it("reserves a label band only in lanes whose chip shows a work-time label", async () => {
+      const { container } = await openView([], {
+        ganttFeatureWorkloadEnabled: true,
+        ganttEvents: [
+          { key: "e1", title: "会議", date: dateOffset(0) },
+          {
+            key: "e2",
+            title: "レビュー",
+            date: dateOffset(0),
+            workloadPlan: { [dateOffset(0)]: 2 },
+          },
+        ],
+      });
+      const row = byClass(container, "task-gantt-event-row")[0];
+      const chips = byClass(row, "task-gantt-event-chip");
+      // lane0 compact (chip top 8); lane1 labelled: top 24 + 8 + 20 = 52.
+      expect(chips[0].style.top).toBe("8px");
+      expect(chips[1].style.top).toBe("52px");
+      expect(row.style.height).toBe(`${12 + 24 + 44}px`);
+      const labels = byClass(row, "task-gantt-workload-day-label");
+      expect(labels).toHaveLength(1);
+      // label bottom = chip top - 2px; label is 20px tall.
+      expect(labels[0].style.top).toBe("30px");
+    });
+
+    it("computeEventLaneLayout keeps unlabelled lanes compact", () => {
+      expect(computeEventLaneLayout([false])).toEqual({
+        chipTops: [8],
+        rowHeight: 44,
+      });
+      expect(computeEventLaneLayout([true, false])).toEqual({
+        chipTops: [28, 52],
+        rowHeight: 12 + 44 + 24,
+      });
     });
 
     it("adds a default event on an empty timeline contextmenu", async () => {
@@ -8706,6 +8742,34 @@ describe("inline title editing and marker modal", () => {
       expect(byClass(timeline, "task-gantt-inline-editor")).toHaveLength(1);
     });
 
+    it("dblclick on a short bar's callout label edits the subtask title", async () => {
+      const { timeline, h, sub } = await openBarView({
+        displayName: "Very Long Task Title Here",
+        plannedStartDate: dateOffset(0),
+        plannedEndDate: dateOffset(0),
+      });
+      const label = byClass(timeline, "task-gantt-external-label")[0];
+      expect(label).toBeTruthy();
+      dispatch(label, "dblclick");
+
+      expect(label.style.display).toBe("none");
+      const input = editorInputOf(timeline);
+      expect(input.value).toBe("Very Long Task Title Here");
+      expect(input.style.left).toBe(label.style.left);
+      expect(input.style.top).toBe(label.style.top);
+      expect(input.style.width).toBe("160px");
+
+      input.value = "新しい名前";
+      dispatch(input, "keydown", { key: "Enter" });
+      await flush();
+      expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+      expect(h.updateTaskItem.mock.calls[0][0]).toBe(sub);
+      expect(h.updateTaskItem.mock.calls[0][1]).toEqual({
+        displayName: "新しい名前",
+        title: "新しい名前",
+      });
+    });
+
     it("Enter commits, saves, and re-renders", async () => {
       const { timeline, h, bar, sub } = await openBarView({
         displayName: "元の名前",
@@ -9291,7 +9355,7 @@ describe("inline title editing and marker modal", () => {
       expect(h.settings.ganttTags).toContainEqual({
         key: "created",
         name: "created",
-        color: DEFAULT_GANTT_TAG_COLORS[1],
+        color: DEFAULT_GANTT_TAG_COLORS[0],
         order: 1000,
       });
       expect(h.updateTaskItem).toHaveBeenCalledWith(sub, {
@@ -9326,7 +9390,10 @@ describe("inline title editing and marker modal", () => {
       const definitions = tagRegistry(
         ["a", "b", "c", "d", "e", "f", "g", "h"],
         Object.fromEntries(
-          ["a", "b", "c", "d", "e", "f", "g", "h"].map((name) => [name, ""])
+          ["a", "b", "c", "d", "e", "f", "g", "h"].map((name, i) => [
+            name,
+            DEFAULT_GANTT_TAG_COLORS[i],
+          ])
         )
       );
       const { h, bar } = await openBarView(

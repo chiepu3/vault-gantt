@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ContextBuilder } from "../../src/ai/context-builder";
-import { selectToolFamilies } from "../../src/ai/tool-selection";
+import { selectToolFamilies, selectOperationIds } from "../../src/ai/tool-selection";
 import { runtimeFixture } from "../app/operation-runtime-fixture";
 import { CHILD_ID } from "../contracts/fixtures";
 import { ChatSession, type ChatProvider } from "../../src/ai/chat-session";
@@ -10,6 +10,11 @@ describe("catalog chat context", () => {
     const text = await new ContextBuilder(service.contextPort).build(context);
     expect(new TextEncoder().encode(text).length).toBeLessThan(8192); expect(JSON.parse(text).data.kind).toBe("overview"); expect(text).not.toContain("currentStatus"); expect(text).not.toContain("workloadPlan"); expect(text).not.toContain("review-point");
     expect(selectToolFamilies("イベントの実績時間を設定")).toEqual(["tasks", "schedule", "workload", "events"]);
+  });
+  it("event wording selects event operations before generic add rules", () => {
+    expect(selectOperationIds("イベントを追加して")).toEqual(["E01"]);
+    expect(selectOperationIds("イベントを追加、計画2時間")).toEqual(["E01", "E06", "E07"]);
+    expect(selectOperationIds("タスクを追加")).toEqual(["T04", "T03"]);
   });
   it("chat confirms catalog proposals through the same frozen service", async () => {
     const { service, context, vault } = await runtimeFixture();

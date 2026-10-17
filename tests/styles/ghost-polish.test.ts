@@ -36,7 +36,7 @@ describe("scoped Ghost and result-card presentation", () => {
   });
   it("scopes Gantt-only preview selectors to the Gantt container", () => {
     const selectors = css.split("}").map(block => block.split("{")[0].trim()).filter(Boolean);
-    const ganttOnly = /\.vg-pv-(dockhost|dock|dockhead|gantt|gruler|gparent|gparent-title|grow|glabel|gname|gtrack|glane|gbar|gtick|gnote|gpoint|live-[a-z]+|delete-target)(?![a-z-])/;
+    const ganttOnly = /\.vg-(pv-(live-[a-z]+|delete-target)|hl-[a-z-]+)(?![a-z-])/;
     const found = selectors.flatMap(selector => selector.split(",").map(part => part.trim())).filter(part => ganttOnly.test(part));
     expect(found.length).toBeGreaterThan(20);
     for (const part of found) expect(part).toMatch(/^\.task-gantt-container /);
@@ -55,6 +55,5 @@ describe("scoped Ghost and result-card presentation", () => {
   it("keeps the mini timeline rules available to every card host", () => {
     expect(rule(".vg-ai-mini-tick")).toContain("border-inline-start");
     expect(rule(".vg-pv-card")).toContain("overflow-wrap: anywhere");
-    expect(rule(".task-gantt-container .vg-pv-dockhost[hidden]")).toContain("display: none");
   });
 });

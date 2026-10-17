@@ -1,20 +1,18 @@
 import type { HistoryEntryUndoStateV1, PreviewUiHostPorts, ProjectionDetailPort } from "../contracts/ports";
 import type { ReadResultV1, RequestOrigin } from "../contracts/context";
-import { mergeProjectionPages, type FieldChange, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
-import { buildNameMap, effectIsNoop, entityKindLabel, entryTitle, fieldLabel, formatScalar, h, operationLabel, renderEntryEffects, type RenderContext } from "./preview-renderers";
+import { mergeProjectionPages, type FieldChange, type GanttProjectionV1, type OperationOutcomeV1, type OperationPreviewV1, type PreviewEffect, type PreviewEntry, type ProjectionPageV1 } from "../contracts/preview";
+import { buildNameMap, effectIsNoop, entryTitle, fieldLabel, formatScalar, h, operationLabel, renderEntryEffects, type RenderContext } from "./preview-renderers";
 
 export type CardState = "pending" | "applying" | "success" | "partial" | "failed" | "cancelled" | "rejected" | "stale" | "expired" | "revoked" | "undone";
 export const STATE_LABELS: Record<CardState, string> = {
-  pending: "未承認", applying: "適用中", success: "適用済み", partial: "一部適用", failed: "失敗", cancelled: "停止済み",
+  pending: "未承認", applying: "適用中", success: "保存済み", partial: "一部保存", failed: "失敗", cancelled: "停止済み",
   rejected: "却下", stale: "失効", expired: "期限切れ", revoked: "接続の失効", undone: "元に戻しました",
 };
 const UNDO_STATE_TEXT: Record<HistoryEntryUndoStateV1["state"], string> = {
   available: "元に戻せます", "not-latest": "履歴の先頭ではないため元に戻せません", conflict: "保存後に別の変更があり、元に戻せません",
   invalidated: "履歴が無効になり、元に戻せません", missing: "履歴が見つからず、元に戻せません", busy: "他の処理が実行中のため、今は元に戻せません", "already-undone": "元に戻しました",
 };
-const VISIBILITY_TEXT = {
-  visible: "表示されます", filtered: "絞り込みで非表示", "feature-disabled": "機能がオフで非表示", unscheduled: "日程が未設定のため描画なし", "outside-range": "表示範囲の外",
-} as const;
+const HIDDEN_REASON = { filtered: "絞り込みで非表示", "feature-disabled": "機能がオフ", unscheduled: "日程が未設定", "outside-range": "表示範囲の外" } as const;
 const SYSTEM_CAUSES = { priority: "優先度の自動計算", holidays: "祝日の更新", sync: "同期" } as const;
 
 export function originLabel(origin: RequestOrigin): string {
@@ -90,66 +88,64 @@ function renderHeader(card: HTMLElement, preview: OperationPreviewV1, state: Car
   const top = h(header, "div", "vg-pv-headtop");
   const status = h(top, "span", "vg-pv-status", STATE_LABELS[state]); status.setAttribute("role", "status");
   h(top, "strong", "vg-pv-title", cardTitle(preview));
-  const meta = h(header, "div", "vg-pv-meta");
-  h(meta, "span", "", `対象 ${preview.summary.targetCount}件 · 操作 ${preview.summary.actionCount}件`);
-  const origin = h(meta, "span", "vg-pv-origin", "要求元: " + originLabel(preview.origin)); origin.dataset.origin = preview.origin.kind;
-  if (state === "pending" || state === "expired") h(meta, "span", "", (state === "expired" ? "期限 " : "期限 ") + clock(preview.expiresAt));
+  // Chat cards need no origin or deadline. Where the request came from only matters for an outside client.
   if (preview.origin.kind === "mcp") {
+    const meta = h(header, "div", "vg-pv-meta");
+    const origin = h(meta, "span", "vg-pv-origin", "要求元: " + originLabel(preview.origin)); origin.dataset.origin = preview.origin.kind;
+    if (state === "pending" || state === "expired") h(meta, "span", "", "期限 " + clock(preview.expiresAt));
     const detail = h(header, "div", "vg-pv-mcp");
     h(detail, "div", "", `クライアントが名乗っている名前です（認証済みの名前ではありません）。登録ID: ${preview.origin.principalId}`);
     h(detail, "div", "", `対象のVault: ${preview.vaultInstanceId}`);
     if (state === "pending") h(detail, "div", "", "外部のAIは提案だけを行います。保存はこの画面で承認したあとに行われます。");
+  } else if ((state === "pending" || state === "expired") && preview.origin.kind !== "chat") {
+    h(h(header, "div", "vg-pv-meta"), "span", "", "期限 " + clock(preview.expiresAt));
   }
 }
 
+/** Undo is only worth a sentence when it is NOT available; the button itself says it is. */
 function renderUndo(card: HTMLElement, preview: OperationPreviewV1, outcome: OperationOutcomeV1 | undefined, undoState: HistoryEntryUndoStateV1 | undefined): void {
-  const line = h(card, "div", "vg-pv-undo");
-  if (outcome && outcome.undoEntryId) {
-    const live = undoState ? UNDO_STATE_TEXT[undoState.state] : "元に戻せるか確認中です";
-    line.textContent = "元に戻す: " + live + (undoState?.reason ? `（${undoState.reason}）` : "");
-    return;
+  let text = "";
+  if (outcome) {
+    if (outcome.undoEntryId && undoState && undoState.state !== "available" && undoState.state !== "already-undone") text = UNDO_STATE_TEXT[undoState.state] + (undoState.reason ? `（${undoState.reason}）` : "");
+  } else if (preview.undo.support !== "full") {
+    text = (preview.undo.support === "partial" ? "保存後、一部だけ元に戻せます" : "保存後は元に戻せません") + (preview.undo.reason ? `（${preview.undo.reason}）` : "");
   }
-  const texts = { full: "保存後、全体を元に戻せます", partial: "保存後、一部だけ元に戻せます", none: "保存後は元に戻せません" } as const;
-  line.textContent = "元に戻す: " + texts[preview.undo.support] + (preview.undo.reason ? `（${preview.undo.reason}）` : "");
+  if (text) h(card, "div", "vg-pv-undo", text);
 }
 
-function renderProjectionNotes(card: HTMLElement, projection: GanttProjectionV1 | null, kind: "planned" | "actual", options: PreviewCardOptions, previewId: string): void {
-  if (!projection) {
-    if (kind === "actual") h(card, "p", "vg-pv-note", "保存された内容はGanttの表示に影響しません。");
-    return;
-  }
-  const box = h(card, "div", "vg-pv-projection"); box.setAttribute("role", "group"); box.setAttribute("aria-label", "Ganttでの見え方");
-  const { coverage } = projection;
-  h(box, "div", "vg-pv-subtitle", kind === "actual" ? "保存された分のGantt表示" : "Gantt表示への影響");
-  const names = buildNameMap(projection);
+/** One short line when the change will not show on the Gantt; paging controls only when the list was cut. */
+function renderProjectionNotes(card: HTMLElement, projection: GanttProjectionV1 | null, options: PreviewCardOptions, previewId: string): void {
+  if (!projection) return;
   const hidden = projection.visibility.filter((item) => item.state !== "visible");
-  h(box, "div", "vg-pv-muted", `表示対象 ${projection.visibility.length - hidden.length}件 / 表示されない ${hidden.length}件`);
-  for (const state of ["unscheduled", "filtered", "feature-disabled", "outside-range"] as const) {
-    const items = hidden.filter((item) => item.state === state);
-    if (!items.length) continue;
-    const group = h(box, "div", "vg-pv-hidden"); group.dataset.state = state;
-    h(group, "div", "vg-pv-hidden-title", `${VISIBILITY_TEXT[state]}: ${items.length}件`);
-    for (const item of items.slice(0, 5)) {
-      const entity = item.entity;
-      const id = entity.kind === "task" ? entity.taskId : entity.kind === "marker" ? entity.taskId : "";
-      const name = id ? (names.get(id) ?? entityKindLabel("task")) : entityKindLabel(entity.kind);
-      h(group, "div", "vg-pv-muted", `${name}: ${item.reason}`);
-    }
-    if (items.length > 5) h(group, "div", "vg-pv-muted", `ほか ${items.length - 5}件`);
+  if (hidden.length) {
+    const reasons = [...new Set(hidden.map((item) => HIDDEN_REASON[item.state as keyof typeof HIDDEN_REASON]).filter(Boolean))];
+    const all = hidden.length === projection.visibility.length;
+    h(card, "div", "vg-pv-muted vg-pv-hidden", (all ? "Ganttでは表示されません" : "一部はGanttに表示されません") + (reasons.length ? `（${reasons.join("・")}）` : ""));
   }
-  if (coverage.truncated) {
-    const more = h(box, "div", "vg-pv-coverage");
-    h(more, "span", "", `一部だけ表示しています: 全${coverage.targetCount}件中${coverage.includedCount}件`);
-    if (options.handlers?.onLoadMore && coverage.nextCursor) {
-      const cursor = coverage.nextCursor;
-      button(more, options.loadingMore ? "取得中…" : "続きを取得", "load-more", () => options.handlers?.onLoadMore?.(cursor), previewId, !!options.loadingMore);
+  const { coverage } = projection;
+  if (coverage.truncated || options.loadError) {
+    const box = h(card, "div", "vg-pv-projection"); box.setAttribute("role", "group");
+    if (coverage.truncated) {
+      const more = h(box, "div", "vg-pv-coverage");
+      h(more, "span", "", `一部だけ表示しています: 全${coverage.targetCount}件中${coverage.includedCount}件`);
+      if (options.handlers?.onLoadMore && coverage.nextCursor) {
+        const cursor = coverage.nextCursor;
+        button(more, options.loadingMore ? "取得中…" : "続きを取得", "load-more", () => options.handlers?.onLoadMore?.(cursor), previewId, !!options.loadingMore);
+      }
     }
+    if (options.loadError) { const error = h(box, "p", "vg-pv-note is-error", options.loadError); error.setAttribute("role", "alert"); }
   }
-  if (options.loadError) { const error = h(box, "p", "vg-pv-note is-error", options.loadError); error.setAttribute("role", "alert"); }
 }
 
 function entryStateOf(entry: PreviewEntry, outcome: OperationOutcomeV1 | undefined) {
   return outcome?.actions.find((action) => action.actionId === entry.actionId);
+}
+
+/** The before/after date rows already say it; the schedule timeline is kept only where it is the sole representation. */
+function withoutDuplicateSchedule(effects: readonly PreviewEffect[], operationId?: string): readonly PreviewEffect[] {
+  if (operationId === "T20") return effects; // its schedule block carries an explanation worth keeping
+  const datesShown = effects.some((effect) => effect.kind === "fields" && effect.fields.some((change) => change.reason === "requested" && (change.field === "plannedStartDate" || change.field === "plannedEndDate") && !effectIsNoop({ ...effect, fields: [change] })));
+  return datesShown ? effects.filter((effect) => effect.kind !== "schedule") : effects;
 }
 
 function renderEntry(list: HTMLElement, entry: PreviewEntry, ctx: RenderContext, outcome: OperationOutcomeV1 | undefined): void {
@@ -160,21 +156,16 @@ function renderEntry(list: HTMLElement, entry: PreviewEntry, ctx: RenderContext,
   h(head, "strong", "vg-pv-entryname", entryTitle(entry)); 
   if (action) {
     const labels = { committed: "保存済み", failed: "保存できませんでした", "not-attempted": "未実行" } as const;
-    h(head, "span", "vg-pv-badge", labels[action.state]).dataset.kind = action.state;
+    if (action.state !== "committed" || outcome!.actions.some((other) => other.state !== "committed")) h(head, "span", "vg-pv-badge", labels[action.state]).dataset.kind = action.state;
   }
   const body = h(section, "div", "vg-pv-entrybody");
   if (action?.state === "committed") {
-    h(body, "div", "vg-pv-subtitle", "保存された内容");
     // Only the effects the port reports as actually saved.
-    if (action.actual.length) renderEntryEffects(body, entry, ctx, action.actual);
+    if (action.actual.length) renderEntryEffects(body, entry, ctx, withoutDuplicateSchedule(action.actual, ctx.operationId));
     else h(body, "p", "vg-pv-note", "保存された変更はありません。");
   } else {
-    if (action) {
-      const unsaved = h(body, "p", "vg-pv-note is-warn", action.state === "failed" ? `保存されていません${action.errorCode ? `（${action.errorCode}）` : ""}。以下は保存できなかった変更案です。` : "保存されていません。以下は実行されなかった変更案です。");
-      unsaved.setAttribute("role", "note");
-    }
     const wrap = h(body, "div", action ? "vg-pv-unsaved" : "vg-pv-planned");
-    renderEntryEffects(wrap, entry, ctx);
+    renderEntryEffects(wrap, entry, ctx, withoutDuplicateSchedule(entry.effects, ctx.operationId));
   }
 }
 
@@ -192,9 +183,10 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
 
   for (const warning of preview.warnings) { const line = h(card, "p", "vg-pv-note is-warn", warning.detail || warning.code); line.dataset.code = warning.code; }
   if (outcome) {
+    // Nothing to report when everything was saved: the chip says so.
     const count = (kind: string) => outcome.actions.filter((action) => action.state === kind).length;
-    h(card, "div", "vg-pv-result", `保存済み ${count("committed")}件 · 失敗 ${count("failed")}件 · 未実行 ${count("not-attempted")}件`);
-    if (state === "partial" || state === "cancelled") h(card, "p", "vg-pv-note is-warn", "保存できたのは一部だけです。保存済みの分と、保存されていない分を分けて表示しています。");
+    const parts = [["保存済み", count("committed")], ["失敗", count("failed")], ["未実行", count("not-attempted")]].filter(([, n]) => n).map(([label, n]) => `${label} ${n}件`);
+    if (outcome.actions.some((action) => action.state !== "committed")) h(card, "div", "vg-pv-result", parts.join(" · "));
   }
   if (state === "stale") h(card, "p", "vg-pv-note is-warn", "元のデータが変わったため、この変更案は使えません。再プレビューしてください。");
   if (state === "expired") h(card, "p", "vg-pv-note is-warn", "承認の期限が過ぎました。再プレビューしてください。");
@@ -211,7 +203,7 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
   }
   if (!preview.entries.length) h(entries, "p", "vg-pv-note is-noop", "変更する操作はありません。");
 
-  renderProjectionNotes(card, projection, outcome ? "actual" : "planned", options, preview.previewId);
+  renderProjectionNotes(card, projection, options, preview.previewId);
   renderUndo(card, preview, outcome, options.undoState);
 
   if (options.actionError) h(card, "p", "vg-pv-note is-error", options.actionError).setAttribute("role", "alert");
@@ -340,6 +332,8 @@ export interface PreviewCardExtras {
   openGantt?(): Promise<void> | void;
   /** Reverse the history entry the outcome refers to (the ports only inspect history). */
   undoEntry?(entryId: string): Promise<void> | void;
+  /** A re-preview created `to` from `from`; hosts that lay cards out in a flow keep the new one beside the old. */
+  repreviewed?(from: string, to: string): void;
 }
 /** Wires one card to the ports: approve/reject/re-preview/focus/undo, busy flags and errors. */
 export class PreviewCardController {
@@ -369,7 +363,7 @@ export class PreviewCardController {
         onFocus: () => { previewPort.focus(focused ? null : id); if (!focused) void this.extras.openGantt?.(); },
         onApprove: () => { void this.run(id, () => humanApprovalPort.approve(id), "保存できませんでした"); },
         onReject: () => { void this.run(id, () => previewPort.reject(id), "却下できませんでした"); },
-        onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); }, "再プレビューできませんでした"); },
+        onRepreview: () => { void this.run(id, async () => { const next = await previewPort.requestRepreview(id); if (previewPort.focusedPreviewId() === id) previewPort.focus(next.previewId); this.extras.repreviewed?.(id, next.previewId); }, "再プレビューできませんでした"); },
         onUndo: (this.ports.undoPort || this.extras.undoEntry) ? (entryId) => { void this.run(id, async () => { if (this.ports.undoPort) await this.ports.undoPort.undoEntry(entryId); else await this.extras.undoEntry?.(entryId); }, "元に戻せませんでした"); } : undefined,
         onLoadMore: () => { void this.pager.loadMore(preview, outcome); },
       },

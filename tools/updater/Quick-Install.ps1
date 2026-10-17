@@ -1,11 +1,14 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Branch = 'main',
+    [string]$Branch,
     [string]$Vault,
-    [switch]$Reset
+    [switch]$Reset,
+    [switch]$NoCache,
+    [switch]$NoMenu
 )
 
-# Install-VaultGantt.ps1 の短縮版。配置先を初回だけ聞いて、ユーザー環境変数に覚えておく。
+# このリポジトリで git pull → 必要なときだけ npm ci → npm run build → 3ファイルを配置する高速インストーラー。
+# 配置先は初回だけ聞いて、ユーザー環境変数に覚えておく。
 $ErrorActionPreference = 'Stop'
 $envName = 'VAULT_GANTT_DEST'
 
@@ -42,6 +45,185 @@ function Read-VaultFolder {
     return Read-Host 'Vault のフォルダーのパス（エクスプローラーからこの画面へドラッグしても入力できます）'
 }
 
+function Get-Tool {
+    param([string]$Name, [string]$Label)
+    $cmd = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $cmd) { throw "${Label}が見つかりません。インストールして PATH を通してから、もう一度実行してください。" }
+    return $cmd.Source
+}
+
+function Assert-ExitCode {
+    param([string]$Name)
+    if ($LASTEXITCODE -ne 0) { throw "${Name} が失敗しました（終了コード ${LASTEXITCODE}）。上のメッセージを確認してください。" }
+}
+
+function Get-FileSha256 {
+    param([string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $hash = $sha.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+}
+
+function Copy-Artifacts {
+    param([string]$RepoRoot, [string]$Destination)
+    $names = @('main.js', 'manifest.json', 'styles.css')
+    foreach ($n in $names) {
+        if (-not [System.IO.File]::Exists([System.IO.Path]::Combine($RepoRoot, $n))) {
+            throw "ビルド成果物が見つかりません: $n"
+        }
+    }
+    # 1) 先に全ファイルを .tmp として配置先へ書く（ここで失敗しても既存ファイルは無傷）
+    foreach ($n in $names) {
+        [System.IO.File]::Copy([System.IO.Path]::Combine($RepoRoot, $n), [System.IO.Path]::Combine($Destination, $n + '.tmp'), $true)
+    }
+    # 2) 既存の3ファイルを .backup へ退避（前回のバックアップは上書き）
+    $backup = [System.IO.Path]::Combine($Destination, '.backup')
+    [System.IO.Directory]::CreateDirectory($backup) | Out-Null
+    foreach ($n in $names) {
+        $current = [System.IO.Path]::Combine($Destination, $n)
+        if ([System.IO.File]::Exists($current)) {
+            [System.IO.File]::Copy($current, [System.IO.Path]::Combine($backup, $n), $true)
+        }
+    }
+    # 3) .tmp を本来の名前へ置き換え
+    foreach ($n in $names) {
+        $tmp = [System.IO.Path]::Combine($Destination, $n + '.tmp')
+        $final = [System.IO.Path]::Combine($Destination, $n)
+        [System.IO.File]::Copy($tmp, $final, $true)
+        [System.IO.File]::Delete($tmp)
+    }
+}
+
+function Install-FromRepository {
+    param([string]$Destination)
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $git = Get-Tool 'git' 'Git'
+    $npm = Get-Tool 'npm.cmd' 'npm（Node.js）'
+
+    Push-Location -LiteralPath $repoRoot
+    try {
+        if (-not (Test-Path -LiteralPath (Join-Path $repoRoot '.git'))) {
+            throw "このフォルダーは git リポジトリではありません: $repoRoot"
+        }
+
+        $dirty = @(& $git status --porcelain --untracked-files=no)
+        Assert-ExitCode 'git status'
+        if ($dirty.Count -gt 0) {
+            throw "リポジトリに未コミットの変更があります。作業内容を守るため中止しました。コミットか破棄してから再実行してください: $repoRoot"
+        }
+
+        Write-Host '最新の状態を取得しています（git fetch / pull）...'
+        & $git fetch origin --prune
+        Assert-ExitCode 'git fetch'
+
+        if (-not $Branch -and -not $NoMenu) {
+            $currentName = (@(& $git rev-parse --abbrev-ref HEAD))[0]
+            Assert-ExitCode 'git rev-parse'
+            $rows = @(& $git for-each-ref --sort=-committerdate '--format=%(refname:short)|%(committerdate:short)|%(subject)' refs/remotes/origin)
+            Assert-ExitCode 'git for-each-ref'
+            $items = New-Object System.Collections.ArrayList
+            foreach ($row in $rows) {
+                $parts = ([string]$row).Split([char[]]'|', 3)
+                if ($parts.Count -lt 3) { continue }
+                if ($parts[0] -eq 'origin' -or $parts[0] -eq 'origin/HEAD' -or -not $parts[0].StartsWith('origin/')) { continue }
+                [void]$items.Add([pscustomobject]@{ Name = $parts[0].Substring(7); Date = $parts[1]; Subject = $parts[2] })
+            }
+            $ordered = New-Object System.Collections.ArrayList
+            foreach ($it in $items) { if ($it.Name -eq 'main') { [void]$ordered.Add($it) } }
+            foreach ($it in $items) { if ($it.Name -ne 'main') { [void]$ordered.Add($it) } }
+            $menuItems = @($ordered | Select-Object -First 15)
+            if ($menuItems.Count -gt 0) {
+                Write-Host ''
+                for ($i = 0; $i -lt $menuItems.Count; $i++) {
+                    $m = $menuItems[$i]
+                    $subj = $m.Subject
+                    if ($subj.Length -gt 50) { $subj = $subj.Substring(0, 50) }
+                    $mark = ''
+                    if ($m.Name -eq $currentName) { $mark = ' ← 現在' }
+                    Write-Host ("  {0}. {1}  ({2})  {3}{4}" -f ($i + 1), $m.Name, $m.Date, $subj, $mark)
+                }
+                $answer = Read-Host 'ブランチ番号を選択（Enter で 1 = main）'
+                $num = 1
+                if ($answer -and $answer.Trim()) {
+                    if (-not [int]::TryParse($answer.Trim(), [ref]$num) -or $num -lt 1 -or $num -gt $menuItems.Count) {
+                        throw "ブランチ番号が正しくありません: ${answer}（1〜$($menuItems.Count) の番号を入力してください）"
+                    }
+                }
+                $Branch = $menuItems[$num - 1].Name
+                if ($Branch -eq $currentName) { $Branch = $null }
+            }
+        }
+
+        if ($Branch) {
+            & $git show-ref --verify --quiet "refs/heads/$Branch"
+            if ($LASTEXITCODE -eq 0) {
+                & $git switch $Branch
+                Assert-ExitCode 'git switch'
+            } else {
+                & $git switch -c $Branch --track "origin/$Branch"
+                Assert-ExitCode 'git switch -c'
+            }
+        }
+
+        # 追跡ブランチの設定に頼らず、origin の同名ブランチへ早送りする。
+        $current = (@(& $git rev-parse --abbrev-ref HEAD))[0]
+        Assert-ExitCode 'git rev-parse'
+        & $git rev-parse --verify --quiet "refs/remotes/origin/${current}" | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            & $git merge --ff-only "origin/${current}"
+            if ($LASTEXITCODE -ne 0) {
+                throw "ブランチ ${current} の手元の履歴が origin/${current} と分岐しているため、最新にできませんでした。手元だけのコミットを残すか破棄してから再実行してください（破棄してよければ: git reset --hard origin/${current}）。"
+            }
+            & $git branch --set-upstream-to "origin/${current}" | Out-Null
+        } else {
+            Write-Host "origin に ${current} ブランチがないため、取得はせず手元の内容でビルドします。"
+        }
+
+        $lock = Join-Path $repoRoot 'package-lock.json'
+        $modules = Join-Path $repoRoot 'node_modules'
+        $stamp = Join-Path $modules '.vault-gantt-lock-sha256'
+        $lockHash = Get-FileSha256 $lock
+        $needInstall = $true
+        if ($NoCache) {
+            Write-Host '-NoCache が指定されたため、依存パッケージを入れ直します。'
+        } elseif (-not (Test-Path -LiteralPath $modules -PathType Container)) {
+            Write-Host 'node_modules がありません。'
+        } elseif (-not (Test-Path -LiteralPath $stamp -PathType Leaf)) {
+            Write-Host '依存パッケージの記録がありません。'
+        } elseif (([System.IO.File]::ReadAllText($stamp)).Trim() -ne $lockHash) {
+            Write-Host 'package-lock.json が変わりました。'
+        } else {
+            $needInstall = $false
+        }
+        if ($needInstall) {
+            Write-Host '依存パッケージを更新します（npm ci）'
+            & $npm ci --no-audit --no-fund
+            Assert-ExitCode 'npm ci'
+            [System.IO.Directory]::CreateDirectory($modules) | Out-Null
+            [System.IO.File]::WriteAllText($stamp, $lockHash)
+        } else {
+            Write-Host '依存パッケージは変更なし（スキップ）'
+        }
+
+        Write-Host 'ビルドしています（npm run build）...'
+        & $npm run build
+        Assert-ExitCode 'npm run build'
+
+        Copy-Artifacts -RepoRoot $repoRoot -Destination $Destination
+
+        $branchName = (@(& $git rev-parse --abbrev-ref HEAD))[0]
+        Assert-ExitCode 'git rev-parse'
+        $commit = (@(& $git rev-parse --short HEAD))[0]
+        Assert-ExitCode 'git rev-parse'
+        Write-Host "インストールしました: ブランチ ${branchName} / コミット ${commit}"
+    } finally {
+        Pop-Location
+    }
+}
+
 try {
     if ($Reset) {
         [Environment]::SetEnvironmentVariable($envName, $null, 'User')
@@ -69,8 +251,7 @@ try {
     }
 
     Write-Host "インストール先: $destination"
-    & (Join-Path $PSScriptRoot 'Install-VaultGantt.ps1') -Branch $Branch -DestinationPath $destination
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Install-FromRepository -Destination $destination
 
     if ($destination -ne $saved) {
         [Environment]::SetEnvironmentVariable($envName, $destination, 'User')

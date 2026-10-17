@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "../../src/core/constants";
+import { DEFAULT_GANTT_TAG_COLORS, DEFAULT_SETTINGS, DEFAULT_STATUSES, pickGanttTagColor } from "../../src/core/constants";
 
 describe("Core Constants - DEFAULT_SETTINGS", () => {
   it("DEFAULT_SETTINGS.taskFolder = 'tasks'", () => {
@@ -235,5 +235,30 @@ describe("Core Constants - DEFAULT_STATUSES", () => {
 
   it("DEFAULT_STATUSES has exactly 5 entries", () => {
     expect(Object.keys(DEFAULT_STATUSES).length).toBe(5);
+  });
+});
+
+describe("pickGanttTagColor", () => {
+  const P = DEFAULT_GANTT_TAG_COLORS;
+  const defs = (...colors: string[]) => colors.map((color) => ({ color }));
+
+  it("starts with the first palette color and walks the palette in order", () => {
+    expect(pickGanttTagColor([])).toBe(P[0]);
+    expect(pickGanttTagColor(defs(P[0]))).toBe(P[1]);
+    expect(pickGanttTagColor(defs(P[0], P[1]))).toBe(P[2]);
+  });
+
+  it("reuses the color freed by a deleted tag first", () => {
+    expect(pickGanttTagColor(defs(P[0], P[2]))).toBe(P[1]);
+  });
+
+  it("cycles evenly once all eight colors are used", () => {
+    expect(pickGanttTagColor(defs(...P))).toBe(P[0]);
+    expect(pickGanttTagColor(defs(...P, P[0]))).toBe(P[1]);
+  });
+
+  it("ignores non-palette colors and compares trimmed, case-insensitive", () => {
+    expect(pickGanttTagColor(defs("", "#123456"))).toBe(P[0]);
+    expect(pickGanttTagColor(defs(` ${P[0].toUpperCase()} `))).toBe(P[1]);
   });
 });

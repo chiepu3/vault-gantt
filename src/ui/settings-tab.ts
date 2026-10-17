@@ -12,6 +12,7 @@ import type {
   TaskWorkbenchSettings,
 } from "../core/types";
 import type { HolidayService } from "../app/holiday-service";
+import { pickGanttTagColor } from "../core/constants";
 import { detectConfiguredDailyNoteSettings } from "../app/daily-note-creation";
 import { addDailyTodoSource as appendDailyTodoSource } from "../app/daily-todo-service";
 
@@ -992,7 +993,7 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
     definitions.push({
       key: name,
       name,
-      color: "",
+      color: pickGanttTagColor(definitions),
       order: currentCount * 1000,
     });
     await this.hostPlugin.saveSettings();

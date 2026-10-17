@@ -17,6 +17,29 @@ export const DEFAULT_GANTT_TAG_COLORS = [
   "#4b5563",
 ] as const;
 
+/**
+ * Picks the palette color for a newly created tag: the color used the fewest
+ * times by existing definitions (trimmed, case-insensitive; non-palette colors
+ * are ignored), ties broken by palette order.
+ */
+export function pickGanttTagColor(
+  definitions: ReadonlyArray<{ color: string }>
+): string {
+  const counts = DEFAULT_GANTT_TAG_COLORS.map(() => 0);
+  for (const definition of definitions) {
+    const normalized = (definition.color ?? "").trim().toLowerCase();
+    const index = DEFAULT_GANTT_TAG_COLORS.indexOf(
+      normalized as (typeof DEFAULT_GANTT_TAG_COLORS)[number]
+    );
+    if (index >= 0) counts[index]++;
+  }
+  let best = 0;
+  for (let i = 1; i < counts.length; i++) {
+    if (counts[i] < counts[best]) best = i;
+  }
+  return DEFAULT_GANTT_TAG_COLORS[best];
+}
+
 
 
 

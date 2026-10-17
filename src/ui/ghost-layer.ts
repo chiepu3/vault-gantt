@@ -96,7 +96,7 @@ export function renderPointGhosts(timeline: HTMLElement, points: readonly PointG
     const summary = `${noun}「${point.label}」: 前 ${point.before ?? "未設定"} → 後 ${point.after ?? "未設定"}`;
     const edge = (date: string, side: "前" | "後"): void => {
       const x = diffDays(baseDate, date) * dayWidth + dayWidth / 2 - 6;
-      const className = "vg-pv-live-point is-" + (side === "前" ? "before" : "after") + (point.kind === "deadline" ? " is-deadline" : "") + (side === "後" && !point.after ? " is-removed" : "");
+      const className = "vg-pv-live-point is-" + (side === "前" ? "before" : "after") + (point.kind === "deadline" ? " is-deadline" : "") + (side === "後" && !point.after ? " is-removed" : "") + (side === "後" ? " vg-hl-point" : "");
       if (x + 12 <= 0 || x >= limit) {
         const left = x < 0 ? 0 : Math.max(0, limit - 110);
         add("vg-pv-live-edge", `${x < 0 ? "◀ " : ""}${noun}${side}は範囲外${x < 0 ? "" : " ▶"}`, left, summary + `（${side}は表示範囲外）`);

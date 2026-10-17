@@ -154,6 +154,32 @@ export async function run({ cdp, count }) {
   // --- (c, post-scroll) -----------------------------------------------------
   checkRowWidth(after, "post-scroll", failures, details);
 
+  // --- (e) sticky left cell stays opaque (base + drag-over tint states) ---------
+  const alphas = await cdp.evaluate(`(() => {
+    const el = document.querySelector(".task-gantt-parent-left");
+    const alpha = () => { const m = getComputedStyle(el).backgroundColor.match(/rgba?\\(([^)]+)\\)/); const p = m ? m[1].split(",") : []; return p.length > 3 ? parseFloat(p[3]) : 1; };
+    const base = alpha(); el.classList.add("is-drag-over"); const drag = alpha(); el.classList.remove("is-drag-over");
+    return { base, drag };
+  })()`);
+  if (alphas.base !== 1 || alphas.drag !== 1) {
+    failures.push(`sticky .task-gantt-parent-left background not opaque (base alpha=${alphas.base}, drag-over alpha=${alphas.drag})`);
+  } else {
+    details.push("sticky left background opaque");
+  }
+  // --- (f) sticky left cell covers the full row content box; timeline never extends past it ---
+  const geo = await cdp.evaluate(`(() => {
+    const row = document.querySelector(".task-gantt-parent-row");
+    const l = row.querySelector(".task-gantt-parent-left").getBoundingClientRect();
+    const t = row.querySelector(".task-gantt-parent-timeline").getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const bb = parseFloat(getComputedStyle(row).borderBottomWidth) || 0;
+    return { left: l.bottom, tl: t.bottom, content: r.bottom - bb };
+  })()`);
+  if (Math.abs(geo.left - geo.content) > 0.5 || geo.tl > geo.content + 0.5) {
+    failures.push(`parent row strip: left.bottom=${geo.left} timeline.bottom=${geo.tl} row content bottom=${geo.content}`);
+  } else {
+    details.push("left cell/timeline end at row content bottom");
+  }
   // --- (d) zero console errors during the scenario ---------------------------
   const errors = cdp.capturedErrors();
   if (errors.length > 0) {

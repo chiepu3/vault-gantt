@@ -6,8 +6,9 @@ export interface ChatCompletion {
   httpStatus?: number;
 }
 export const completionText: Record<ChatCompletionKind, string> = {
-  "proposal-created": "変更案を作成しました。カードの内容を確認して承認してください。まだ保存していません。",
-  "no-proposal": "変更案は作成していません。保存も行っていません。",
+  // The card shows a pending proposal and the model's own reply covers the rest: no fixed sentence.
+  "proposal-created": "",
+  "no-proposal": "",
   "tool-refused": "操作を完了できませんでした。ツールの入力または対象の状態を確認してください。新しい変更は保存していません。",
   "timeout": "応答が時間切れになりました。作成済みの案がある場合はカードを確認してください。承認前の変更は保存していません。",
   "step-limit": "確認手順の上限に達しました。変更案は作成しておらず、保存していません。対象と変更内容を絞って再試行してください。",
