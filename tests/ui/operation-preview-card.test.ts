@@ -29,11 +29,12 @@ describe("pending card", () => {
     expect(card.dataset.state).toBe("pending");
     expect(text(byClass(card, "vg-pv-status")[0])).toBe("未承認");
     expect(text(byClass(card, "vg-pv-title")[0])).toBe("指定日に子タスクを作成");
-    expect(text(card)).toContain("要求元: チャット"); expect(text(card)).toContain("対象 1件 · 操作 1件");
+    // Chat cards carry no origin, count or deadline text.
+    expect(text(card)).not.toMatch(/要求元|対象 \d+件|操作 \d+件|期限/);
     expect(text(card)).toContain("新しい子"); expect(text(card)).toContain("作成");
     expect(buttons(card).map(text)).toEqual(["Ganttで確認", "承認して保存", "却下"]);
     expect(card.getAttribute("aria-label")).toBe("指定日に子タスクを作成（未承認）");
-    expect(text(byClass(card, "vg-pv-undo")[0])).toContain("保存後、全体を元に戻せます");
+    expect(byClass(card, "vg-pv-undo")).toHaveLength(0); expect(text(card)).not.toContain("元に戻す:");
   });
   it("wires focus, approve and reject to the handlers", () => {
     vi.useFakeTimers(); vi.setSystemTime(NOW);
@@ -98,14 +99,14 @@ describe("results", () => {
   it("separates saved effects from unsaved ones after a partial save", () => {
     const card = render(PARTIAL_PREVIEW, { outcome: PARTIAL_OUTCOME, undoState: { entryId: "undo-1", historyRevision: "h", state: "available", reason: null }, handlers: { onFocus: vi.fn(), onUndo: vi.fn(), onRepreview: vi.fn() } });
     expect(card.dataset.state).toBe("partial");
-    expect(text(byClass(card, "vg-pv-status")[0])).toBe("一部適用");
+    expect(text(byClass(card, "vg-pv-status")[0])).toBe("一部保存");
     expect(text(byClass(card, "vg-pv-result")[0])).toBe("保存済み 1件 · 失敗 1件 · 未実行 1件");
     const entries = byClass(card, "vg-pv-entry");
     expect(entries.map((entry) => entry.dataset.state)).toEqual(["committed", "failed", "not-attempted"]);
-    expect(text(entries[0])).toContain("保存された内容"); expect(text(entries[0])).toContain("保存済み");
-    expect(text(entries[1])).toContain("保存されていません（WRITE_FAILED）"); expect(byClass(entries[1], "vg-pv-unsaved")).toHaveLength(1);
-    expect(text(entries[2])).toContain("実行されなかった変更案"); expect(byClass(entries[0], "vg-pv-unsaved")).toHaveLength(0);
-    expect(text(card)).toContain("保存できたのは一部だけです");
+    expect(text(entries[0])).not.toContain("保存された内容"); expect(text(entries[0])).toContain("保存済み");
+    expect(text(entries[1])).toContain("保存できませんでした"); expect(text(entries[1])).not.toContain("WRITE_FAILED"); expect(byClass(entries[1], "vg-pv-unsaved")).toHaveLength(1);
+    expect(text(entries[2])).toContain("未実行"); expect(byClass(entries[0], "vg-pv-unsaved")).toHaveLength(0);
+    expect(text(card)).not.toContain("保存できたのは一部だけです");
     expect(buttons(card).map(text)).toEqual(["Ganttで確認", "元に戻す", "未保存分を再プレビュー"]);
   });
   it("renders only the committed (actual) effects for a saved action, not the planned ones", () => {
@@ -115,14 +116,15 @@ describe("results", () => {
   });
   it("shows the actual projection only for saved targets, with its filtered reason", () => {
     const card = render(PARTIAL_PREVIEW, { outcome: PARTIAL_OUTCOME });
-    expect(text(byClass(card, "vg-pv-projection")[0])).toContain("保存された分のGantt表示");
-    expect(text(card)).toContain("絞り込みで非表示: 1件");
+    expect(text(card)).not.toContain("保存された分のGantt表示");
+    expect(text(byClass(card, "vg-pv-hidden")[0])).toBe("Ganttでは表示されません（絞り込みで非表示）");
   });
   it("success offers undo only when the latest history allows it, with the reason", () => {
     const outcome = BOUNDARY_OUTCOMES.featureDisabled;
     const withUndo = { ...outcome, undoEntryId: "undo-9" };
     const ok = render(SETTINGS_PREVIEW, { outcome: withUndo, undoState: { entryId: "undo-9", historyRevision: "h", state: "available", reason: null }, handlers: { onUndo: vi.fn() } });
-    expect(text(byClass(ok, "vg-pv-status")[0])).toBe("適用済み"); expect(button(ok, "undo")!.disabled).toBe(false);
+    expect(text(byClass(ok, "vg-pv-status")[0])).toBe("保存済み"); expect(button(ok, "undo")!.disabled).toBe(false);
+    expect(byClass(ok, "vg-pv-undo")).toHaveLength(0);
     const blocked = render(SETTINGS_PREVIEW, { outcome: withUndo, undoState: { entryId: "undo-9", historyRevision: "h", state: "not-latest", reason: "別の変更があります" }, handlers: { onUndo: vi.fn() } });
     expect(button(blocked, "undo")!.disabled).toBe(true); expect(text(blocked)).toContain("履歴の先頭ではないため元に戻せません（別の変更があります）");
     const undone = render(SETTINGS_PREVIEW, { outcome: withUndo, undoState: { entryId: "undo-9", historyRevision: "h", state: "already-undone", reason: null } });
@@ -132,27 +134,27 @@ describe("results", () => {
     const outcome = { previewId: CREATE_PREVIEW.previewId, status: "failed" as const, actions: [{ actionId: CREATE_PREVIEW.entries[0].actionId, state: "failed" as const, actual: [], errorCode: "WRITE_FAILED" }], actualProjection: null };
     const card = render(CREATE_PREVIEW, { outcome, handlers: { onRepreview: vi.fn() } });
     expect(text(byClass(card, "vg-pv-status")[0])).toBe("失敗"); expect(button(card, "undo")).toBeUndefined(); expect(text(button(card, "repreview"))).toBe("再プレビュー");
-    expect(text(card)).toContain("保存された内容はGanttの表示に影響しません");
+    expect(text(card)).not.toContain("Ganttの表示に影響しません");
   });
 });
 
 describe("boundary cases from the shared fixtures", () => {
   it("one-sided period: shows the unscheduled reason and the one-sided timeline", () => {
     const card = render(ONE_SIDED_PREVIEW);
-    expect(text(card)).toContain("日程が未設定のため描画なし: 1件"); expect(text(card)).toContain("開始日が未設定のためbarを描画できない");
+    expect(text(byClass(card, "vg-pv-hidden")[0])).toBe("Ganttでは表示されません（日程が未設定）");
     expect(byClass(card, "vg-ai-mini-tick")).toHaveLength(1); expect(byClass(card, "vg-ai-mini-bar")).toHaveLength(1);
   });
   it("filtered: explains why the Gantt shows nothing", () => {
     const card = render(FILTERED_PREVIEW);
-    expect(text(card)).toContain("絞り込みで非表示: 1件"); expect(text(card)).toContain("選択タグ「対象」に一致しない"); expect(text(card)).toContain("表示対象 0件 / 表示されない 1件");
+    expect(text(byClass(card, "vg-pv-hidden")[0])).toBe("Ganttでは表示されません（絞り込みで非表示）"); expect(text(card)).not.toMatch(/表示対象 \d+件/);
   });
   it("feature disabled: names the disabled feature and the retained data", () => {
     const card = render(SETTINGS_PREVIEW);
-    expect(text(card)).toContain("機能がオフで非表示: 1件"); expect(text(card)).toContain("保存済み時間は保持"); expect(text(card)).toContain("作業時間機能");
+    expect(text(byClass(card, "vg-pv-hidden")[0])).toBe("Ganttでは表示されません（機能がオフ）");
   });
   it("outside range: reports the range reason and still shows both dates", () => {
     const card = render(OUTSIDE_RANGE_PREVIEW);
-    expect(text(card)).toContain("表示範囲の外: 1件"); expect(text(card)).toContain("viewport 2026-10-01〜2026-10-31の範囲外"); expect(byClass(card, "vg-ai-mini-timeline")[0].getAttribute("aria-label")).toContain("2026-12-13 ～ 2026-12-15");
+    expect(text(byClass(card, "vg-pv-hidden")[0])).toBe("Ganttでは表示されません（表示範囲の外）"); expect(byClass(card, "vg-ai-mini-timeline")[0].getAttribute("aria-label")).toContain("2026-12-13 ～ 2026-12-15");
   });
   it("create, delete, marker and workload cards show their dedicated renderers", () => {
     expect(byClass(render(CREATE_PREVIEW), "vg-pv-effect").map((el) => el.dataset.kind)).toEqual(["presence", "schedule"]);
@@ -190,7 +192,7 @@ describe("truncated projection and cursor paging", () => {
     expect(ports.previewPort.pageRequests).toEqual([{ previewId: "partial-fixture", cursor: "projection-page-2", projectionKind: "planned" }]);
     const merged = pager.projectionFor(truncated)!;
     expect(merged.targets).toHaveLength(3); expect(merged.coverage.truncated).toBe(false);
-    expect(text(byClass(render(truncated, { projection: merged }), "vg-pv-projection")[0])).not.toContain("一部だけ表示");
+    expect(text(render(truncated, { projection: merged }))).not.toContain("一部だけ表示");
     expect(onChange).toHaveBeenCalledTimes(2);
   });
   it("on a stale cursor drops every extra page and shows the port's instruction", async () => {
@@ -251,5 +253,23 @@ describe("read result card", () => {
     dispatch(button(card, "load-more")!, "click"); expect(onLoadMore).toHaveBeenCalledWith("opaque-query-snapshot-cursor");
     const daily = renderReadResultCard(root(), READ_FIXTURES.daily as any) as unknown as FakeEl;
     expect(text(daily)).toContain("2026-10-13 · 0/1件完了"); expect(button(daily, "load-more")).toBeUndefined();
+  });
+});
+
+describe("quiet wording", () => {
+  it("keeps the deadline only for outside clients, and shows no count line when everything was saved", () => {
+    expect(text(render(MCP_PREVIEW))).toContain("期限 ");
+    expect(text(render(CREATE_PREVIEW))).not.toContain("期限");
+    const outcome = { previewId: CREATE_PREVIEW.previewId, status: "success" as const, undoEntryId: "u", actions: [{ actionId: CREATE_PREVIEW.entries[0].actionId, state: "committed" as const, actual: CREATE_PREVIEW.entries[0].effects }], actualProjection: null };
+    const saved = render(CREATE_PREVIEW, { outcome, undoState: { entryId: "u", historyRevision: "h", state: "available", reason: null }, handlers: { onUndo: vi.fn() } });
+    expect(text(byClass(saved, "vg-pv-status")[0])).toBe("保存済み");
+    expect(byClass(saved, "vg-pv-result")).toHaveLength(0); expect(byClass(saved, "vg-pv-undo")).toHaveLength(0);
+    expect(byClass(saved, "vg-pv-badge").map(text)).not.toContain("保存済み");
+    expect(buttons(saved).map(text)).toEqual(["元に戻す"]);
+  });
+  it("says why undo is unavailable only when it is", () => {
+    const outcome = { previewId: CREATE_PREVIEW.previewId, status: "success" as const, undoEntryId: "u", actions: [{ actionId: CREATE_PREVIEW.entries[0].actionId, state: "committed" as const, actual: [] }], actualProjection: null };
+    const card = render(CREATE_PREVIEW, { outcome, undoState: { entryId: "u", historyRevision: "h", state: "conflict", reason: null }, handlers: { onUndo: vi.fn() } });
+    expect(text(byClass(card, "vg-pv-undo")[0])).toBe("保存後に別の変更があり、元に戻せません");
   });
 });

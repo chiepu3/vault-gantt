@@ -27,6 +27,7 @@ describe("actual SDK tool recovery", () => {
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const request = JSON.parse(init!.body as string);
       if (++round === 1) return response({ name: "operations_propose", input: JSON.stringify({ operationId: "T07", input: { taskId: CHILD_ID, name: 123 } }) });
+      if (round === 3) { expect(request.tools).toBeUndefined(); return response(undefined, "名前を更新する案を作りました。カードで承認すると保存されます。"); }
       const assistant = request.messages.find((message: { tool_calls?: unknown }) => message.tool_calls);
       expect(assistant.content).toBeNull(); expect(assistant.reasoning_content).toBe("reasoning fixture");
       expect(assistant.tool_calls[0].id).toBe("call-fixture");
@@ -37,7 +38,9 @@ describe("actual SDK tool recovery", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const events = await collect(new SdkChatProvider(f.registry, () => null, f.service));
-    expect(fetchMock).toHaveBeenCalledTimes(2); expect(events.filter((event) => event.type === "plan")).toHaveLength(1);
+    // The extra step after the proposal has no tools and explains the change in the model's own words.
+    expect(fetchMock).toHaveBeenCalledTimes(3); expect(events.filter((event) => event.type === "plan")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "text").map((event) => event.text).join("")).toBe("名前を更新する案を作りました。カードで承認すると保存されます。");
     expect(events.at(-1)).toMatchObject({ type: "completion", completion: { kind: "proposal-created", toolErrors: 1 } });
     expect(f.vault.getModifyCallCount()).toBe(0); f.service.dispose();
   });
@@ -76,7 +79,7 @@ describe("actual SDK tool recovery", () => {
     session.configure(config); await session.send("test"); expect(session.active.completion?.kind).toBe(kind); expect(session.active.messages.at(-1)?.completion?.kind).toBe(kind); session.dispose(); f.service.dispose();
   });
   it("instructs factual progress, nonpublic IDs, and refusal to Undo unsaved changes", () => {
-    expect(CHAT_SYSTEM_PROMPT).toContain("未記録は作業なしや未消化を意味しない");
-    expect(CHAT_SYSTEM_PROMPT).toContain("操作ID"); expect(CHAT_SYSTEM_PROMPT).toContain("未保存・失敗した変更を別の履歴のUndoで戻さない");
+    expect(CHAT_SYSTEM_PROMPT).toContain("未記録は「作業なし」を意味しない");
+    expect(CHAT_SYSTEM_PROMPT).toContain("操作ID"); expect(CHAT_SYSTEM_PROMPT).toContain("未保存・失敗した変更を、別の履歴のUndoで戻さない");
   });
 });

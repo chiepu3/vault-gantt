@@ -122,16 +122,35 @@ describe("provider terminal contracts through the actual SDK and fake HTTP", () 
     expect(f.session.active.messages.at(-1)?.text).toBe("再試行の応答");
   });
 
-  it("accepts a sixth-step proposal with no answer text without saving", async () => {
+  it("accepts a sixth-step proposal and still gets one explanation step without tools", async () => {
     let round = 0;
-    const fetchMock = vi.fn(async () => ++round < 6 ? response({ tool: { name: "operations_describe", input: {} } }) : response({ tool: { name: "operations_propose", input: { operationId: "T07", input: { taskId: CHILD_ID, name: "合成の変更案" } } } }));
+    const fetchMock = vi.fn(async () => ++round < 6 ? response({ tool: { name: "operations_describe", input: {} } }) : round === 6 ? response({ tool: { name: "operations_propose", input: { operationId: "T07", input: { taskId: CHILD_ID, name: "合成の変更案" } } } }) : response({ text: "名前を変える案です。" }));
     vi.stubGlobal("fetch", fetchMock);
     const f = await setup();
     await f.session.send("合成の変更案確認");
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(f.session.active.messages.at(-1)?.text).toBe("名前を変える案です。");
     expect(f.session.active.status).toBe("preview");
     expect(f.session.active.completion?.kind).toBe("proposal-created");
     expect(f.session.active.messages.at(-1)?.proposals).toHaveLength(1);
     expect(f.vault.getModifyCallCount()).toBe(0);
+  });
+
+  it("streams reasoning, tool activity and the proposal card in order, with no fixed completion sentence", async () => {
+    let round = 0;
+    const fetchMock = vi.fn(async () => ++round === 1
+      ? response({ reasoning: "探してみる", tool: { name: "operations_propose", input: { operationId: "T07", input: { taskId: CHILD_ID, name: "合成の変更案" } } } })
+      : response({ text: "名前を変える案です。" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const f = await setup();
+    const seen: string[] = [];
+    f.session.subscribe(() => { const parts = f.session.active.messages.at(-1)?.parts ?? []; seen.push(parts.map((part) => part.type === "tool" ? "tool:" + part.state : part.type).join(",")); });
+    await f.session.send("合成の変更案確認");
+    const parts = f.session.active.messages.at(-1)!.parts!;
+    expect(parts.map((part) => part.type)).toEqual(["tool", "proposal", "text"]);
+    expect(parts[0]).toMatchObject({ name: "operations_propose", state: "done", input: { operationId: "T07" } });
+    expect(seen).toContain("tool:running");
+    expect(f.session.active.messages.at(-1)?.text).toBe("名前を変える案です。");
+    expect(f.session.active.messages.at(-1)?.text).not.toContain(completionText["connection-error"]);
   });
 });

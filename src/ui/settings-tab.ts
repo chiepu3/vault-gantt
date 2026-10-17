@@ -342,6 +342,12 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       "オンの場合、変更されたタスク行のみを再描画します。大量のタスクがある場合にパフォーマンスが向上します。OFFにすると毎回フル再描画します。",
       "incrementalGanttRender"
     );
+    this.addImmediateToggle(
+      containerEl,
+      "親タスクの高さを表示中の期間に合わせて詰める",
+      "オンの場合、表示中の期間（前後に余白あり）にあるサブタスクだけで親タスクの高さを決めます。長期間のタスクで、過去や未来に重なりが多くても今見ている範囲が縦に間延びしません。OFFにすると全期間で高さを決めます。",
+      "compactRowsToViewport"
+    );
 
     // section 4, Task Gantt タグ (display toggles only).
     new Setting(containerEl).setName("タグ").setHeading();

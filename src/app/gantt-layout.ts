@@ -173,6 +173,41 @@ export function isMonthStart(dates: string[], index: number): boolean {
   return dates[index].slice(0, 7) !== dates[index - 1].slice(0, 7);
 }
 
+/**
+ * How dense the header's day / weekday rows can be at a given day width.
+ * Below HEADER_FULL_LABEL_MIN_DAY_WIDTH a two-digit day number and a weekday
+ * glyph no longer fit side by side, so only Mondays keep a (unpadded) day
+ * number and the weekday row is blank.
+ */
+export interface HeaderLabelPlan {
+  showAllDays: boolean;
+  showWeekday: boolean;
+}
+
+export const HEADER_FULL_LABEL_MIN_DAY_WIDTH = 20;
+
+export function headerLabelPlan(dayWidth: number): HeaderLabelPlan {
+  const full = dayWidth >= HEADER_FULL_LABEL_MIN_DAY_WIDTH;
+  return { showAllDays: full, showWeekday: full };
+}
+
+/**
+ * Whether the day-row cell for `dateStr` carries a number under `plan`.
+ * Today keeps its (highlighted) number too, except on a Sunday or Tuesday
+ * where it would touch the neighbouring Monday label.
+ */
+export function isHeaderDayLabelShown(
+  dateStr: string,
+  plan: HeaderLabelPlan,
+  isToday = false
+): boolean {
+  if (plan.showAllDays) {
+    return true;
+  }
+  const day = moment(dateStr, "YYYY-MM-DD").day();
+  return day === 1 || (isToday && day !== 0 && day !== 2);
+}
+
 // Japanese one-letter weekday names indexed by moment.day (0 = Sunday).
 const WEEKDAY_SHORT_JA = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -660,6 +695,61 @@ export function hasPlannedDates(
   );
 }
 
+export interface LaneWindow {
+  start: string;
+  end: string;
+}
+
+/** Grid (in days) the lane window is snapped to so it changes infrequently. */
+export const LANE_WINDOW_SNAP_DAYS = 7;
+/** Minimum buffer (in days) added on each side of the visible dates. */
+export const LANE_WINDOW_MIN_BUFFER_DAYS = 7;
+
+/**
+ * Buffered date window used to decide which subtasks take part in lane
+ * packing. Visible day indices are [scrollLeft/dayWidth, (scrollLeft +
+ * clientWidth)/dayWidth] (the sticky name column overlays the left edge, so
+ * the timeline x origin is 0 in scroll coordinates). The window is expanded
+ * by one viewport width (min 7 days) per side and snapped outward to a
+ * 7-day grid anchored at `rangeStart`.
+ */
+export function computeLaneWindow(input: {
+  scrollLeft: number;
+  clientWidth: number;
+  dayWidth: number;
+  rangeStart: string;
+}): LaneWindow {
+  const dw = Math.max(1, input.dayWidth);
+  const first = Math.floor(Math.max(0, input.scrollLeft) / dw);
+  const last = Math.ceil((Math.max(0, input.scrollLeft) + Math.max(0, input.clientWidth)) / dw);
+  const buffer = Math.max(LANE_WINDOW_MIN_BUFFER_DAYS, last - first);
+  const step = LANE_WINDOW_SNAP_DAYS;
+  const startIdx = Math.floor((first - buffer) / step) * step;
+  const endIdx = Math.ceil((last + buffer) / step) * step;
+  return {
+    start: addDays(input.rangeStart, startIdx),
+    end: addDays(input.rangeStart, endIdx),
+  };
+}
+
+/**
+ * Keeps only subtasks that have both planned dates and whose
+ * [plannedStartDate, plannedEndDate] intersects [windowStart, windowEnd]
+ * (inclusive). Order is preserved.
+ */
+export function filterSubtasksInWindow(
+  subtasks: TaskRow[],
+  windowStart: string,
+  windowEnd: string
+): TaskRow[] {
+  return subtasks.filter(
+    (task) =>
+      hasPlannedDates(task) &&
+      task.plannedEndDate >= windowStart &&
+      task.plannedStartDate <= windowEnd
+  );
+}
+
 /**
  *
  * Assigns every date-complete subtask a horizontal lane (0 = top) using
@@ -824,12 +914,29 @@ export interface LaidOutFloatingEvent {
 
 // A small breathing space keeps adjacent event chips from touching.
 const FLOATING_EVENT_MIN_GAP = 6;
+// The chip starts 8px left of its day-column centre (CSS translateX(-8px)).
+const FLOATING_EVENT_CHIP_OFFSET = 8;
+// Pin, gap, padding and border around the label; the label is 11px type.
+const FLOATING_EVENT_CHIP_CHROME = 34;
+const FLOATING_EVENT_FULLWIDTH_CHAR = 12;
+const FLOATING_EVENT_HALFWIDTH_CHAR = 6.5;
+
+/** Rendered chip width: label glyphs plus the pin / padding / border chrome. */
+function estimateEventChipWidth(title: string): number {
+  let sum = 0;
+  for (const char of title) {
+    sum += FULLWIDTH_CHAR_PATTERN.test(char)
+      ? FLOATING_EVENT_FULLWIDTH_CHAR
+      : FLOATING_EVENT_HALFWIDTH_CHAR;
+  }
+  return sum + FLOATING_EVENT_CHIP_CHROME;
+}
 
 /**
  * Positions fixed-row events and greedily packs overlapping chips into rows.
  *
- * Each event is anchored at the center of its day column and uses the shared
- * text-width estimate for its collision interval. Events are considered in
+ * Each event is anchored at the center of its day column; its collision
+ * interval is the rendered chip (starting 8px left of the anchor). Events are considered in
  * their persisted order and placed in the first row whose existing intervals
  * do not overlap; this keeps the result deterministic while allowing events
  * on distant dates to share a row.
@@ -844,9 +951,9 @@ export function layoutFloatingEvents(
 
   for (const event of events) {
     const x = diffDays(baseDate, event.date) * dayWidth + dayWidth / 2;
-    const width = estimateTextWidth(event.title);
-    const left = x - width / 2;
-    const right = x + width / 2;
+    // Collide on the chip's real extent (it grows rightwards from x - 8).
+    const left = x - FLOATING_EVENT_CHIP_OFFSET;
+    const right = left + estimateEventChipWidth(event.title);
 
     let row = 0;
     while (row < rowIntervals.length) {

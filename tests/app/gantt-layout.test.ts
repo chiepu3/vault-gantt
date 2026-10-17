@@ -11,6 +11,8 @@ import {
   buildDates,
   isMonthStart,
   dateLabel,
+  headerLabelPlan,
+  isHeaderDayLabelShown,
   parseDate,
   isWeekend,
   monthTitle,
@@ -29,6 +31,8 @@ import {
   hasAnySelectedGanttTag,
   hasPlannedDates,
   packSubtasksIntoLanes,
+  filterSubtasksInWindow,
+  computeLaneWindow,
   layoutMarkers,
   layoutFloatingEvents,
   layoutExternalBarLabels,
@@ -227,6 +231,32 @@ describe("isMonthStart", () => {
   it("detects a year boundary as a month change", () => {
     const dates = buildDates("2025-12-31", 2);
     expect(isMonthStart(dates, 1)).toBe(true);
+  });
+});
+
+describe("headerLabelPlan", () => {
+  it("shows every day and weekday from 20px/day upwards", () => {
+    for (const width of [20, 26, 36, 72]) {
+      const plan = headerLabelPlan(width);
+      expect(plan).toEqual({ showAllDays: true, showWeekday: true });
+      expect(isHeaderDayLabelShown("2026-10-15", plan)).toBe(true);
+    }
+  });
+
+  it("thins out to Mondays and drops weekday glyphs below 20px/day", () => {
+    const plan = headerLabelPlan(14);
+    expect(plan).toEqual({ showAllDays: false, showWeekday: false });
+    expect(isHeaderDayLabelShown("2026-10-12", plan)).toBe(true); // Monday
+    expect(isHeaderDayLabelShown("2026-10-13", plan)).toBe(false);
+    expect(isHeaderDayLabelShown("2026-10-18", plan)).toBe(false); // Sunday
+  });
+
+  it("keeps today's number when it does not touch a Monday label", () => {
+    const plan = headerLabelPlan(14);
+    expect(isHeaderDayLabelShown("2026-10-15", plan, true)).toBe(true); // Thursday
+    expect(isHeaderDayLabelShown("2026-10-13", plan, true)).toBe(false); // Tuesday, next to Monday
+    expect(isHeaderDayLabelShown("2026-10-18", plan, true)).toBe(false); // Sunday, next to Monday
+    expect(isHeaderDayLabelShown("2026-10-15", plan, false)).toBe(false);
   });
 });
 
@@ -1190,7 +1220,29 @@ describe("layoutFloatingEvents", () => {
       28
     );
 
-    expect(placed.map((item) => item.row)).toEqual([0, 1, 0]);
+    // e3's chip (starting 8px left of its anchor) still overlaps e1's chip.
+    expect(placed.map((item) => item.row)).toEqual([0, 1, 2]);
+  });
+
+  it("never lets chips on nearby dates overlap at 24px/day", () => {
+    const placed = layoutFloatingEvents(
+      [event("e1", "2026-01-17", "全社会議"), event("e2", "2026-01-20", "締め")],
+      baseDate,
+      24
+    );
+
+    // The 3-day gap (72px) is shorter than the 全社会議 chip (~82px).
+    expect(placed.map((item) => item.row)).toEqual([0, 1]);
+  });
+
+  it("lets chips share a row once their rendered extents clear each other", () => {
+    const placed = layoutFloatingEvents(
+      [event("e1", "2026-01-03", "全社会議"), event("e2", "2026-01-09", "締め")],
+      baseDate,
+      24
+    );
+
+    expect(placed.map((item) => item.row)).toEqual([0, 0]);
   });
 });
 
@@ -1609,5 +1661,71 @@ describe("computeRowFingerprint", () => {
       makeSubtask("sub-b", { title: "Sub B" }),
     ]);
     expect(computeRowFingerprint(row)).not.toBe(baselineRow);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// filterSubtasksInWindow / computeLaneWindow
+// ---------------------------------------------------------------------------
+
+describe("filterSubtasksInWindow", () => {
+  const sub = (key: string, s?: string, e?: string) =>
+    makeSubtask(key, { plannedStartDate: s, plannedEndDate: e });
+
+  it("keeps subtasks intersecting the window (inclusive) and drops the rest", () => {
+    const a = sub("a", "2026-01-01", "2026-01-09");
+    const b = sub("b", "2026-01-01", "2026-01-10");
+    const c = sub("c", "2026-01-15", "2026-01-20");
+    const d = sub("d", "2026-01-20", "2026-01-25");
+    const e = sub("e", "2026-01-21", "2026-01-25");
+    const spanning = sub("s", "2025-12-01", "2026-03-01");
+    const out = filterSubtasksInWindow([a, b, c, d, e, spanning], "2026-01-10", "2026-01-20");
+    expect(out.map((t) => t.key)).toEqual(["b", "c", "d", "s"]);
+  });
+
+  it("drops subtasks without both planned dates", () => {
+    const out = filterSubtasksInWindow(
+      [sub("x", "2026-01-10", undefined), sub("y", undefined, "2026-01-10")],
+      "2026-01-01",
+      "2026-02-01"
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("leaves lane packing at the 1-lane minimum when nothing is in window", () => {
+    const only = sub("a", "2026-01-01", "2026-01-05");
+    const filtered = filterSubtasksInWindow([only], "2026-06-01", "2026-06-30");
+    expect(packSubtasksIntoLanes(filtered)).toEqual({ bars: [], laneCount: 1 });
+  });
+
+  it("shrinks lane count when overlapping early bars leave the window", () => {
+    const early = [1, 2, 3, 4].map((i) => sub(`e${i}`, "2026-01-01", "2026-01-20"));
+    const late = sub("late", "2026-04-01", "2026-04-10");
+    const all = [...early, late];
+    expect(packSubtasksIntoLanes(all).laneCount).toBe(4);
+    const win = filterSubtasksInWindow(all, "2026-03-20", "2026-04-30");
+    expect(packSubtasksIntoLanes(win).laneCount).toBe(1);
+  });
+});
+
+describe("computeLaneWindow", () => {
+  it("buffers one viewport per side and snaps to a 7-day grid", () => {
+    const w = computeLaneWindow({ scrollLeft: 30 * 20, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    // first=30, last=80, buffer=50 -> start idx floor(-20/7)*7=-21, end ceil(130/7)*7=133
+    expect(w.start).toBe(addDays("2026-01-01", -21));
+    expect(w.end).toBe(addDays("2026-01-01", 133));
+  });
+
+  it("uses at least a 7 day buffer on tiny viewports", () => {
+    const w = computeLaneWindow({ scrollLeft: 0, clientWidth: 20, dayWidth: 20, rangeStart: "2026-01-01" });
+    expect(w.start <= addDays("2026-01-01", -7)).toBe(true);
+    expect(w.end >= addDays("2026-01-01", 8)).toBe(true);
+  });
+
+  it("is stable for small scroll movements inside one grid cell", () => {
+    const a = computeLaneWindow({ scrollLeft: 400, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    const b = computeLaneWindow({ scrollLeft: 410, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    expect(a).toEqual(b);
   });
 });

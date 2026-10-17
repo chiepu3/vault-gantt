@@ -1169,7 +1169,8 @@ describe("TaskWorkbenchView", () => {
       const tds = cells(bodyRows(container)[0]);
       expect(tds[10].classList.contains("tiny-col")).toBe(true);
       const button = byTag(tds[10], "button")[0];
-      expect(button.textContent).toBe("開");
+      expect(button.textContent).toBe("開く");
+      expect(button.getAttribute("title")).toBe("ノートを開く");
 
       const evt = dispatch(button, "click");
       await flush();

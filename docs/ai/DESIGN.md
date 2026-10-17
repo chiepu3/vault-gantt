@@ -769,7 +769,7 @@ APIの `pending_approval` はDTOのpending、`committed` はsuccessに対応す�
 
 | 担当ファイル | 内容 |
 | --- | --- |
-| 新規 `src/ui/operation-preview-card.ts`, `preview-renderers.ts`, `preview-gantt-layer.ts`, `preview-panels.ts`, `approval-view.ts` | 各effectのcard、Gantt overlay、設定/同期/診断panel、MCP承認一覧。業務計算/保存/認証を実装しない |
+| 新規 `src/ui/operation-preview-card.ts`, `preview-renderers.ts`, `preview-gantt-layer.ts`, `preview-highlights.ts`, `approval-view.ts` | 各effectのcard、Gantt上の変更箇所の強調表示、MCP承認一覧。業務計算/保存/認証を実装しない |
 | 既存 `src/ui/agent-view.ts`, `task-gantt-view.ts`, `ghost-layer.ts`, `schedule-timeline.ts`, `schedule-summary.ts` | 現cardを専用rendererへ接続、pending/result区別、Gantt投影・残像・legend。共通portへの薄いイベント配線 |
 | 既存 `styles.css` | 既存テーマに沿ったpreview/card/ghost/panel/承認一覧、responsive・accessibility |
 | 新規 `tests/ui/operation-preview-card.test.ts`, `preview-renderers.test.ts`, `preview-gantt-layer.test.ts`, `approval-view.test.ts` | 全effectの表示と動作、MCP要求元、状態・完全なdiff |

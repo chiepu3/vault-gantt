@@ -114,6 +114,7 @@ export const DEFAULT_SETTINGS: TaskWorkbenchSettings = {
   // Rendering/Integration
   ganttFeatureSyncEnabled: true,
   incrementalGanttRender: true,
+  compactRowsToViewport: true,
   agentToolsEnabled: false,
 };
 

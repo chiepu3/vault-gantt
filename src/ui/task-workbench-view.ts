@@ -616,9 +616,18 @@ export class TaskWorkbenchView extends ItemView {
       "開く",
       "+",
     ];
+    const headerTooltips: Record<string, string> = {
+      Ganttで管理: "ガントチャートに表示するタスクかどうか",
+      開く: "ノートを開く",
+      "+": "サブタスクを追加",
+    };
     for (const text of headers) {
       const th = document.createElement("th");
       th.textContent = text;
+      const tooltip = headerTooltips[text];
+      if (tooltip) {
+        th.setAttribute("title", tooltip);
+      }
       headRow.appendChild(th);
     }
     thead.appendChild(headRow);
@@ -1181,8 +1190,10 @@ export class TaskWorkbenchView extends ItemView {
     const td = document.createElement("td");
     td.classList.add("tiny-col");
     const button = document.createElement("button");
-    button.textContent = "開";
+    button.textContent = "開く";
     button.classList.add("vg-btn-sm");
+    button.setAttribute("aria-label", "ノートを開く");
+    button.setAttribute("title", "ノートを開く");
     button.addEventListener("click", (evt) => {
       // open the task file, click propagation stopped.
       evt.stopPropagation();
@@ -1207,6 +1218,8 @@ export class TaskWorkbenchView extends ItemView {
     const button = document.createElement("button");
     button.textContent = "+";
     button.classList.add("vg-btn-sm");
+    button.setAttribute("aria-label", "サブタスクを追加");
+    button.setAttribute("title", "サブタスクを追加");
     button.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.addSubtaskForRow(row);
