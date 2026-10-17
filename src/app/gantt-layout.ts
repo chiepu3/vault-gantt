@@ -32,12 +32,23 @@ import {
 // 1. Date helpers
 
 
+// Parsing with moment dominates render time, so results are memoized per input.
+const DATE_CACHE_LIMIT = 20000;
+const addDaysCache = new Map<string, string>();
+const diffDaysCache = new Map<string, number>();
+
 /**
  *
  * Adds `days` (may be negative) to an ISO date and returns an ISO date.
  */
 export function addDays(dateStr: string, days: number): string {
-  return moment(dateStr, "YYYY-MM-DD").add(days, "days").format("YYYY-MM-DD");
+  const key = `${dateStr}\u0000${days}`;
+  const cached = addDaysCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = moment(dateStr, "YYYY-MM-DD").add(days, "days").format("YYYY-MM-DD");
+  if (addDaysCache.size >= DATE_CACHE_LIMIT) addDaysCache.clear();
+  addDaysCache.set(key, result);
+  return result;
 }
 
 
@@ -54,6 +65,16 @@ export function addDays(dateStr: string, days: number): string {
 
 
 export function diffDays(startStr: string, endStr: string): number {
+  const key = `${startStr}\u0000${endStr}`;
+  const cached = diffDaysCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = diffDaysUncached(startStr, endStr);
+  if (diffDaysCache.size >= DATE_CACHE_LIMIT) diffDaysCache.clear();
+  diffDaysCache.set(key, result);
+  return result;
+}
+
+function diffDaysUncached(startStr: string, endStr: string): number {
   const start = moment(startStr, "YYYY-MM-DD").startOf("day");
   const end = moment(endStr, "YYYY-MM-DD").startOf("day");
   if (!start.isValid() || !end.isValid()) {

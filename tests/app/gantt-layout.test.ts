@@ -1729,3 +1729,21 @@ describe("computeLaneWindow", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("date helper memoization", () => {
+  it("returns identical values on repeated calls", () => {
+    for (let i = 0; i < 3; i++) {
+      expect(addDays("2026-01-31", 1)).toBe("2026-02-01");
+      expect(addDays("2026-03-01", -1)).toBe("2026-02-28");
+      expect(diffDays("2026-01-01", "2026-01-31")).toBe(30);
+      expect(diffDays("2026-02-01", "2026-01-01")).toBe(-31);
+    }
+  });
+  it("keeps invalid input behavior", () => {
+    for (let i = 0; i < 2; i++) {
+      expect(addDays("not-a-date", 3)).toBe("Invalid date");
+      expect(diffDays("not-a-date", "2026-01-01")).toBe(0);
+      expect(diffDays("2026-01-01", "")).toBe(0);
+    }
+  });
+});
