@@ -51,7 +51,27 @@ export class Modal {
   close(): void {}
 }
 
+type WorkspaceHandler = (...args: unknown[]) => void;
+
+/** Minimal workspace event bus: tests fire e.g. "active-leaf-change" through `trigger`. */
+export class FakeWorkspace {
+  handlers: Record<string, WorkspaceHandler[]> = {};
+  on(name: string, callback: WorkspaceHandler): { name: string; callback: WorkspaceHandler } {
+    (this.handlers[name] ??= []).push(callback);
+    return { name, callback };
+  }
+  trigger(name: string, ...args: unknown[]): void {
+    for (const callback of this.handlers[name] ?? []) callback(...args);
+  }
+}
+
 export class ItemView {
+  leaf: unknown;
+  app = { workspace: new FakeWorkspace() } as unknown as App;
+  constructor(leaf?: unknown) {
+    this.leaf = leaf;
+  }
+  registerEvent(_ref: unknown): void {}
   containerEl: HTMLElement = document.createElement("div");
   registerDomEvent(el: EventTarget, type: string, callback: (event: Event) => void, options?: boolean): void {
     el.addEventListener(type, callback, options);

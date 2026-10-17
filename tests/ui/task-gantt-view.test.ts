@@ -608,6 +608,30 @@ describe("TaskGanttView", () => {
       expect(wrap.scrollLeft).toBe(Math.max(0, todayIndex * 28 - 220));
       expect(wrap.scrollLeft).toBe(172); // todayIndex = 14
     });
+
+    it("keeps the initial scroll pending while hidden and applies it once the view is visible", async () => {
+      const { view, container } = await openView([]);
+      const wrap = wrapOf(container);
+      (view as any).initialScrollPending = true;
+      wrap.scrollLeft = 0;
+      Object.defineProperty(wrap, "offsetParent", { configurable: true, value: null });
+      view.onResize();
+      expect(wrap.scrollLeft).toBe(0);
+      expect((view as any).initialScrollPending).toBe(true);
+      Object.defineProperty(wrap, "offsetParent", { configurable: true, value: container });
+      view.onResize();
+      expect(wrap.scrollLeft).toBe(172);
+      expect((view as any).initialScrollPending).toBe(false);
+    });
+
+    it("re-centres a stale range on a fresh open so today is always inside it", async () => {
+      const h = makeHostHarness([]);
+      const view = new TaskGanttView({} as any, h.host);
+      (view as any).rangeStart = "2020-01-01";
+      await view.onOpen();
+      expect(datesOf(view)).toContain(todayStr());
+      expect(wrapOf((view as any).containerEl as FakeEl).scrollLeft).toBe(172);
+    });
   });
 
   describe("initial state", () => {
@@ -679,6 +703,40 @@ describe("TaskGanttView", () => {
         expect(dowCells[i].textContent).not.toBe("");
       }
       expect(boundaryCount).toBeGreaterThanOrEqual(1);
+    });
+
+    it("thins out the day / weekday labels at low zoom so they cannot overlap", async () => {
+      const { view, container } = await openView([], { ganttZoom: 14 });
+      const wrap = wrapOf(container);
+      const dates = datesOf(view);
+      const dayCells = rowOf(wrap, "task-gantt-day-row").children;
+      const dowCells = rowOf(wrap, "task-gantt-dow-row").children;
+      const monthCells = rowOf(wrap, "task-gantt-month-row").children;
+      dates.forEach((date, i) => {
+        const day = moment(date, "YYYY-MM-DD").day();
+        // Mondays keep a number (unpadded), and so does today unless it would
+        // touch a Monday label; the weekday row is blank.
+        const shown = day === 1 || (date === todayStr() && day !== 0 && day !== 2);
+        expect(dayCells[i].textContent).toBe(shown ? String(moment(date, "YYYY-MM-DD").date()) : "");
+        expect(dowCells[i].textContent).toBe("");
+        // Hidden labels stay discoverable through the cell tooltip.
+        expect(dayCells[i].title).toMatch(/^\d+\/\d+\([日月火水木金土]\)$/);
+      });
+      // Month labels are still present and may overflow their narrow cell.
+      expect(monthCells[0].textContent).toBe(monthTitle(dates[0]));
+      expect(monthCells[0].classList.contains("is-month-start")).toBe(true);
+    });
+
+    it("keeps every day and weekday label from 20px/day upwards", async () => {
+      const { view, container } = await openView([], { ganttZoom: 20 });
+      const dates = datesOf(view);
+      const wrap = wrapOf(container);
+      const dayCells = rowOf(wrap, "task-gantt-day-row").children;
+      const dowCells = rowOf(wrap, "task-gantt-dow-row").children;
+      dates.forEach((date, i) => {
+        expect(dayCells[i].textContent).toBe(moment(date, "YYYY-MM-DD").format("DD"));
+        expect(dowCells[i].textContent).not.toBe("");
+      });
     });
 
     it("renders header-left label and tag-filter button when tags enabled", async () => {
@@ -3028,9 +3086,49 @@ describe("TaskGanttView", () => {
         expect(inputOf(rows[1]).value).toBe("議事録を送る");
         expect(checkOf(rows[0]).checked).toBe(false);
         expect(checkOf(rows[1]).checked).toBe(true);
-        expect(addOf(pop).textContent).toBe("+");
+        expect(addOf(pop).textContent).toBe("+ ToDoを追加");
         // The add button is the last element of the popover.
         expect(pop.children[pop.children.length - 1]).toBe(addOf(pop));
+      });
+
+      it("closes on an active-leaf change to another view, keeping typed text", async () => {
+        const { h, view, chip } = await openWithItems([todo(3, "資料を確認する")]);
+        dispatch(chip, "click");
+        const pop = popoverEl()!;
+        inputOf(rowsOf(pop)[0]).value = "資料を確認して送る";
+        // The view's own leaf stays open; any other leaf closes the editor.
+        (view as any).app.workspace.trigger("active-leaf-change", (view as any).leaf);
+        expect(popoverEl()).toBeDefined();
+        (view as any).app.workspace.trigger("active-leaf-change", {});
+        expect(popoverEl()).toBeUndefined();
+        await flush();
+        expect(h.updateDailyTodoItem).toHaveBeenCalledOnce();
+        expect(h.updateDailyTodoItem.mock.calls[0][1]).toEqual({ text: "資料を確認して送る", completed: false });
+      });
+
+      it("closes on Escape even when focus is outside the popover", async () => {
+        const { chip } = await openWithItems([todo(3, "項目")]);
+        dispatch(chip, "click");
+        expect(popoverEl()).toBeTruthy();
+        dispatch((globalThis as any).window as FakeEl, "keydown", { key: "Enter" });
+        expect(popoverEl()).toBeTruthy();
+        dispatch((globalThis as any).window as FakeEl, "keydown", { key: "Escape" });
+        expect(popoverEl()).toBeUndefined();
+      });
+
+      it("shows 「まだToDoはありません」 only while the list is empty and labels the add button", async () => {
+        const { container } = await openWithItems([todo(3, "項目")]);
+        const timeline = byClass(container, "task-gantt-daily-row")[0];
+        const emptyDay = byClass(timeline, "task-gantt-fixed-bg")[40];
+        dispatch(emptyDay, "click");
+        const pop = popoverEl()!;
+        const hint = byClass(pop, "task-gantt-daily-todo-empty")[0];
+        expect(hint.textContent).toBe("まだToDoはありません");
+        expect(hint.classList.contains("is-hidden")).toBe(false);
+        expect(addOf(pop).textContent).toBe("+ ToDoを追加");
+        expect(addOf(pop).title).toBe("この日にToDoを追加");
+        dispatch(addOf(pop), "click");
+        expect(hint.classList.contains("is-hidden")).toBe(true);
       });
 
       it("clicking the same chip again closes the popover", async () => {
@@ -5899,12 +5997,11 @@ describe("rich popover behavior", () => {
   });
 
 
-  it("a committed bar drag closes both popovers", async () => {
+  it("a committed bar drag closes the open popover", async () => {
     const { container, bar } = await openBarView();
     showPopover(container, bar);
-    dispatch(bar, "mouseenter");
     expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
 
     dispatch(bar, "pointerdown", { button: 0, clientX: 100, offsetX: 50 });
     dispatch(winEl, "pointermove", { clientX: 128, clientY: 50 });
@@ -5915,24 +6012,23 @@ describe("rich popover behavior", () => {
     expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
   });
 
-  it("a no-op bar drag keeps both popovers open", async () => {
+  it("a no-op bar drag keeps the open popover", async () => {
     const { container, bar } = await openBarView();
     showPopover(container, bar);
-    dispatch(bar, "mouseenter");
     expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
 
     dispatch(bar, "pointerdown", { button: 0, clientX: 100, offsetX: 50 });
     dispatch(winEl, "pointerup", { clientX: 100, clientY: 50 });
     await flush();
 
     expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
   });
 
 
 
-  it("a committed Bulk-Move closes both popovers", async () => {
+  it("a committed Bulk-Move closes the open popover", async () => {
     useFridayClock();
     const parent = withChildren(makeParent({ ganttEnabled: true }), [
       makeSubtask("s1", {
@@ -5948,9 +6044,8 @@ describe("rich popover behavior", () => {
     const timeline = timelineOf(parentRows(container)[0]);
     const bars = byClass(timeline, "task-gantt-bar");
     showPopover(container, bars[0]);
-    dispatch(bars[0], "mouseenter");
     expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
 
     const bg = byClass(timeline, "task-gantt-bg")[14];
     dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
@@ -5965,7 +6060,7 @@ describe("rich popover behavior", () => {
     expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
   });
 
-  it("a cancelled Bulk-Move keeps both popovers open", async () => {
+  it("a cancelled Bulk-Move changes nothing and the menu has already closed the popover", async () => {
     useFridayClock();
     const parent = withChildren(makeParent({ ganttEnabled: true }), [
       makeSubtask("s1", {
@@ -5982,9 +6077,8 @@ describe("rich popover behavior", () => {
     const timeline = timelineOf(parentRows(container)[0]);
     const bars = byClass(timeline, "task-gantt-bar");
     showPopover(container, bars[0]);
-    dispatch(bars[0], "mouseenter");
     expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0); // one popover at a time
     h.confirmWorkloadShift.mockResolvedValueOnce(false);
 
     const bg = byClass(timeline, "task-gantt-bg")[14];
@@ -5996,8 +6090,8 @@ describe("rich popover behavior", () => {
 
     expect(h.confirmWorkloadShift).toHaveBeenCalledTimes(1);
     expect(h.updateTaskItemsBatch).not.toHaveBeenCalled();
-    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
-    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
   });
 
 
@@ -7176,38 +7270,53 @@ describe("workload paint-drag and bar-level popup", () => {
     expect(popover.attributes["data-side"]).toBe("above");
   });
 
-  it("re-places an open rich popover away from the workload popup when it opens, repeatably", async () => {
-    const { view, container, bar } = await openBarView();
-    bar.getBoundingClientRect = () => ({
-      left: 100,
-      top: 600,
-      right: 1190,
-      bottom: 624,
-      width: 1090,
-      height: 24,
-    });
-    // Rich popover opens first (mouseover precedes mouseenter): below does
-    // not fit (624+12+180 > 800) so it goes above, where the workload popup
-    // will also land.
+  it("bar hover keeps a single popover: the task popover wins, the workload chart is reached from its button", async () => {
+    const { bar } = await openBarView();
     dispatch(bar, "mouseover", { clientX: 200, clientY: 610 });
-    const rich = byClass(popoverBody(), "task-gantt-rich-popover")[0];
-    expect(rich.style.top).toBe("408px"); // 600 - 12 - 180
-    const workloadRect = { left: 90, top: 466, right: 290, bottom: 588 };
-    vi.spyOn(view as any, "getWorkloadPopupRect").mockReturnValue(
-      workloadRect
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
+
+    // mouseenter follows mouseover on a real hover; it must not stack a second layer.
+    dispatch(bar, "mouseenter");
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
+
+    // The 「作業時間」 button swaps the task popover for the workload chart.
+    const button = byClass(byClass(popoverBody(), "task-gantt-rich-popover")[0], "task-gantt-popover-open-workload")[0];
+    expect(button.textContent).toBe("作業時間");
+    dispatch(button, "click");
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+
+    // An outside mousedown dismisses it again.
+    dispatch(winEl, "mousedown", { target: popoverBody() });
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
+  });
+
+  it("opening a workload popup closes an open task popover", async () => {
+    const { view, bar } = await openBarView();
+    dispatch(bar, "mouseover", { clientX: 100, clientY: 50 });
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
+    (view as any).showWorkloadPopupForBar((view as any).richPopoverTask, bar);
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(1);
+    // And the reverse: a task popover replaces the workload popup.
+    (view as any).onRichPopoverTrigger(
+      { kind: "subtask", task: (view as any).workloadPopoverState.task, anchorEl: bar, barStart: "", barEnd: "" },
+      { clientX: 100 } as MouseEvent
     );
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
+    expect(byClass(popoverBody(), "task-gantt-workload-popover")).toHaveLength(0);
+  });
 
-    dispatch(bar, "mouseenter");
-    expect(popoverOf(container)).toBeDefined();
-    // Stacked above the workload popup: 466 - 12 - 180.
-    expect(rich.style.top).toBe("274px");
-    expect(rich.attributes["data-side"]).toBe("above");
-    const bottom = parseFloat(rich.style.top) + 180;
-    expect(bottom + 12).toBeLessThanOrEqual(workloadRect.top);
-
-    // Repeated hover rebuilds the workload popup; placement stays put.
-    dispatch(bar, "mouseenter");
-    expect(rich.style.top).toBe("274px");
+  it("a context menu closes the hover popovers and blocks new ones while it is open", async () => {
+    const { view, bar } = await openBarView();
+    dispatch(bar, "mouseover", { clientX: 100, clientY: 50 });
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(1);
+    const menu = new Menu();
+    (view as any).activateContextMenu(menu);
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
+    dispatch(bar, "mouseover", { clientX: 100, clientY: 50 });
+    expect(byClass(popoverBody(), "task-gantt-rich-popover")).toHaveLength(0);
   });
 
   it("getWorkloadPopupRect reflects the open workload popup and clears when it closes", async () => {

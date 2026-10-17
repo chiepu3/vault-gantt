@@ -11,6 +11,8 @@ import {
   buildDates,
   isMonthStart,
   dateLabel,
+  headerLabelPlan,
+  isHeaderDayLabelShown,
   parseDate,
   isWeekend,
   monthTitle,
@@ -227,6 +229,32 @@ describe("isMonthStart", () => {
   it("detects a year boundary as a month change", () => {
     const dates = buildDates("2025-12-31", 2);
     expect(isMonthStart(dates, 1)).toBe(true);
+  });
+});
+
+describe("headerLabelPlan", () => {
+  it("shows every day and weekday from 20px/day upwards", () => {
+    for (const width of [20, 26, 36, 72]) {
+      const plan = headerLabelPlan(width);
+      expect(plan).toEqual({ showAllDays: true, showWeekday: true });
+      expect(isHeaderDayLabelShown("2026-10-15", plan)).toBe(true);
+    }
+  });
+
+  it("thins out to Mondays and drops weekday glyphs below 20px/day", () => {
+    const plan = headerLabelPlan(14);
+    expect(plan).toEqual({ showAllDays: false, showWeekday: false });
+    expect(isHeaderDayLabelShown("2026-10-12", plan)).toBe(true); // Monday
+    expect(isHeaderDayLabelShown("2026-10-13", plan)).toBe(false);
+    expect(isHeaderDayLabelShown("2026-10-18", plan)).toBe(false); // Sunday
+  });
+
+  it("keeps today's number when it does not touch a Monday label", () => {
+    const plan = headerLabelPlan(14);
+    expect(isHeaderDayLabelShown("2026-10-15", plan, true)).toBe(true); // Thursday
+    expect(isHeaderDayLabelShown("2026-10-13", plan, true)).toBe(false); // Tuesday, next to Monday
+    expect(isHeaderDayLabelShown("2026-10-18", plan, true)).toBe(false); // Sunday, next to Monday
+    expect(isHeaderDayLabelShown("2026-10-15", plan, false)).toBe(false);
   });
 });
 
@@ -1190,7 +1218,29 @@ describe("layoutFloatingEvents", () => {
       28
     );
 
-    expect(placed.map((item) => item.row)).toEqual([0, 1, 0]);
+    // e3's chip (starting 8px left of its anchor) still overlaps e1's chip.
+    expect(placed.map((item) => item.row)).toEqual([0, 1, 2]);
+  });
+
+  it("never lets chips on nearby dates overlap at 24px/day", () => {
+    const placed = layoutFloatingEvents(
+      [event("e1", "2026-01-17", "全社会議"), event("e2", "2026-01-20", "締め")],
+      baseDate,
+      24
+    );
+
+    // The 3-day gap (72px) is shorter than the 全社会議 chip (~82px).
+    expect(placed.map((item) => item.row)).toEqual([0, 1]);
+  });
+
+  it("lets chips share a row once their rendered extents clear each other", () => {
+    const placed = layoutFloatingEvents(
+      [event("e1", "2026-01-03", "全社会議"), event("e2", "2026-01-09", "締め")],
+      baseDate,
+      24
+    );
+
+    expect(placed.map((item) => item.row)).toEqual([0, 0]);
   });
 });
 

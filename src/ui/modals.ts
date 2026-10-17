@@ -545,6 +545,14 @@ export class WeeklyWorkScheduleModal extends Modal {
       return;
     }
     list.replaceChildren();
+    if (this.schedules.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "vg-empty task-gantt-weekly-work-schedule-empty";
+      empty.textContent =
+        "定例作業は、毎週決まった曜日に行う作業（例: 週次ミーティング、メール整理）の時間を、ガントの稼働量に自動で見込む設定です。「追加」を押して、作業名・曜日・週あたりの分数を入力してください。";
+      list.appendChild(empty);
+      return;
+    }
     for (const schedule of this.schedules) {
       this.appendRow(list, schedule);
     }
