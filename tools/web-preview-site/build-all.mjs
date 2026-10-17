@@ -1,5 +1,6 @@
 // Builds every target in a targets file into <out>/b/<slug>/. One failure never aborts the rest.
 // Usage: node build-all.mjs --targets targets.json --tools <toolsCheckout> --work apps --out site
+//        [--shots]   also capture real-Obsidian screenshots into <out>/b/<slug>/shots/ (needs Xvfb + Obsidian, see obsidian-shots.mjs)
 //        [--repo-url <git url or path>]   (default https://github.com/$GITHUB_REPOSITORY.git)
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync } from "node:fs";
@@ -56,6 +57,19 @@ for (const t of plan.targets) {
     step("preview build", run("node", [join(tools, "tools/web-preview/build.mjs"), "--app", app, "--out", dest, "--label", t.branch, "--sha", t.sha], app));
     if (!existsSync(join(dest, "index.html"))) throw new Error("build produced no index.html");
     t.status = "success";
+    if (args.shots) {
+      // Isolated: any failure here only means "no screenshot gallery" for this target.
+      const shotsDir = join(dest, "shots");
+      try {
+        step("app build", run("npm", ["run", "build"], app));
+        const r = spawnSync("node", [join(tools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", tools, "--label", t.branch],
+          { cwd: app, encoding: "utf8", timeout: 190000, killSignal: "SIGKILL", maxBuffer: 16 << 20 });
+        log += `obsidian-shots: status ${r.status}\n${r.stdout || ""}${r.stderr || ""}\n`;
+        console.log(`[${t.branch}] obsidian-shots exit ${r.status}\n${tail(`${r.stdout || ""}${r.stderr || ""}`, 25)}`);
+        t.shots = r.status === 0 && existsSync(join(shotsDir, "index.html"));
+      } catch (e) { console.error(`[${t.branch}] shots skipped: ${e.message}`); t.shots = false; }
+      if (!t.shots) rmSync(shotsDir, { recursive: true, force: true });
+    }
   } catch (e) {
     t.status = "failure";
     t.error = String(e.message || e);

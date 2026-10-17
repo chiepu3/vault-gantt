@@ -27,7 +27,7 @@ const cards = sorted.map((t) => {
   <div class="top"><span class="kind">${kindLabel[t.kind] || h(t.kind)}</span><span class="status ${h(st)}">${statusLabel(st)}</span></div>
   <h2>${h(t.branch)}</h2>${pr}
   <p class="meta"><code>${h(String(t.sha).slice(0, 7))}</code> · ${h(fmtTime(t.commitTime))}</p>
-  <a class="open" href="b/${encodeURIComponent(t.slug)}/">プレビューを開く</a>
+  <div class="links"><a class="open" href="b/${encodeURIComponent(t.slug)}/">プレビューを開く</a>${t.shots ? `<a class="open shots" href="b/${encodeURIComponent(t.slug)}/shots/">実機スクショ</a>` : ""}</div>
 </li>`;
 }).join("\n");
 
@@ -50,7 +50,8 @@ ul{list-style:none;margin:0;padding:0;display:grid;gap:12px}
 h2{font-size:1.05rem;margin:4px 0;word-break:break-all}
 .pr{margin:2px 0}a{color:var(--acc)}.meta{color:var(--mut);font-size:.85rem;margin:4px 0 10px}
 .open{display:block;text-align:center;background:var(--acc);color:#fff;text-decoration:none;font-weight:700;font-size:1.1rem;padding:12px;border-radius:10px}
-@media (prefers-color-scheme:dark){.open{color:#0b1020}}
+.links{display:flex;gap:8px}.links .open{flex:1}.open.shots{background:transparent;color:var(--acc);border:2px solid var(--acc);padding:10px}
+@media (prefers-color-scheme:dark){.open{color:#0b1020}.open.shots{color:var(--acc)}}
 </style></head><body><main>
 <h1>Vault Gantt ブラウザプレビュー</h1>
 <p class="sub">${h(plan.repository)} · ${sorted.length} 件(30分ごとに自動更新)</p>

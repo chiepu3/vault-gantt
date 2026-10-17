@@ -74,13 +74,20 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+      # Real Obsidian for the screenshot gallery, installed exactly like e2e.yml: Xvfb + the pinned,
+      # SHA256-verified, root-owned Obsidian with the SUID sandbox helper (Chromium sandbox stays on).
+      # Needs no token: the token of this job stays read-only.
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Install Obsidian (sandbox-enabled)
+        run: bash tools-src/tools/e2e/ci-install-obsidian.sh
       - name: Build every target (failures are isolated per target)
         env:
           TARGETS_JSON: ${{ needs.plan.outputs.targets }}
         run: |
           printf '%s' "$TARGETS_JSON" > targets.json
           node tools-src/tools/web-preview-site/build-all.mjs \
-            --targets targets.json --tools tools-src --work apps --out site
+            --targets targets.json --tools tools-src --work apps --out site --shots
       - name: Render index
         run: node tools-src/tools/web-preview-site/render-index.mjs --targets site/targets.json --out site
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
