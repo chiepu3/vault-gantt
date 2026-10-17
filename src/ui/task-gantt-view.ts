@@ -1654,12 +1654,36 @@ export class TaskGanttView extends ItemView {
  * full reload + rebuild. Re-reads tasks from the host, then
  * rebuilds the chart.
  */
-  async render(): Promise<void> {
+  /** Counts renders the host ran itself right after a committed save (see render). */
+  private hostRefreshes = 0;
+  /** hostRefreshes as of the last save call; null when no save is awaiting its follow-up render. */
+  private saveMark: number | null = null;
+
+  private saveItem(row: TaskRow, patch: TaskPatch): Promise<unknown> {
+    this.saveMark = this.hostRefreshes;
+    return this.host.updateTaskItem(row, patch);
+  }
+
+  private saveBatch(commands: TaskUpdateCommand[]): Promise<unknown> {
+    this.saveMark = this.hostRefreshes;
+    return this.host.updateTaskItemsBatch(commands);
+  }
+
+  /**
+   * A committed save makes the host refresh every open view, this one included, and callers still
+   * call render() after saving, which would rebuild the chart a second time with identical data.
+   * When the host refreshed this view since the save began, that one follow-up render() is skipped.
+   */
+  async render(opts?: { fromHost?: boolean }): Promise<void> {
+    const covered = !opts?.fromHost && this.saveMark !== null && this.hostRefreshes !== this.saveMark;
+    if (!opts?.fromHost) this.saveMark = null;
+    if (covered) return;
 
     const renderStartedAt = Date.now();
 
     await Promise.all([this.refreshTasks(), this.refreshDailyTodoSummaries()]);
     this.renderChart();
+    if (opts?.fromHost) this.hostRefreshes++;
 
     this.host.logger.debug?.("TaskGanttView", "render completed", {
       durationMs: Date.now() - renderStartedAt,
@@ -4262,7 +4286,7 @@ export class TaskGanttView extends ItemView {
         await enableParentInGantt(
           chosen,
           this.tasks,
-          (row, patch) => this.host.updateTaskItem(row, patch)
+          (row, patch) => this.saveItem(row, patch)
         );
       } catch (err) {
 
@@ -6884,7 +6908,7 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadPopup();
 
     try {
-      await this.host.updateTaskItemsBatch(commands);
+      await this.saveBatch(commands);
     } catch (err) {
 
       this.host.logger.error(
@@ -8103,7 +8127,7 @@ export class TaskGanttView extends ItemView {
         workloadPlan: normalizeWorkloadMap(task.workloadPlan ?? {}),
         workloadActual: normalizeWorkloadMap(task.workloadActual ?? {}),
       };
-      await this.host.updateTaskItem(task, patch);
+      await this.saveItem(task, patch);
 
       this.host.logger.info?.("TaskGanttView", "workload paint committed", {
         taskId: task.id,
@@ -8584,7 +8608,7 @@ export class TaskGanttView extends ItemView {
     patch: TaskPatch
   ): Promise<void> {
     try {
-      await this.host.updateTaskItem(task, patch);
+      await this.saveItem(task, patch);
 
       this.host.logger.info?.("TaskGanttView", "popover save completed", {
         taskId: task.id,
@@ -8631,7 +8655,7 @@ export class TaskGanttView extends ItemView {
     }
     task.currentStatus = newValue; // optimistic in-memory commit
     try {
-      await this.host.updateTaskItem(task, { currentStatus: newValue });
+      await this.saveItem(task, { currentStatus: newValue });
     } catch (err) {
 
       this.host.logger.error(
@@ -8690,7 +8714,7 @@ export class TaskGanttView extends ItemView {
     }
 
     try {
-      await this.host.updateTaskItem(task, patch);
+      await this.saveItem(task, patch);
     } catch (err) {
 
       this.host.logger.error(
@@ -8904,7 +8928,7 @@ export class TaskGanttView extends ItemView {
     task: TaskRow,
     value: string
   ): Promise<void> {
-    await this.host.updateTaskItem(task, {
+    await this.saveItem(task, {
       displayName: value,
       title: value,
     });
@@ -8928,7 +8952,7 @@ export class TaskGanttView extends ItemView {
     const updated = markers.map((m) =>
       m.key === markerKey ? { ...m, title: value } : m
     );
-    await this.host.updateTaskItem(task, { ganttMarkers: updated });
+    await this.saveItem(task, { ganttMarkers: updated });
     await this.render();
   }
 
@@ -9081,7 +9105,7 @@ export class TaskGanttView extends ItemView {
     parent: TaskRow,
     value: string
   ): Promise<void> {
-    await this.host.updateTaskItem(parent, {
+    await this.saveItem(parent, {
       displayName: value,
       title: value,
     });
@@ -9522,7 +9546,7 @@ export class TaskGanttView extends ItemView {
 
   private async removeFromGanttInteractively(task: TaskRow): Promise<void> {
     try {
-      await this.host.updateTaskItem(task, {
+      await this.saveItem(task, {
         plannedStartDate: "",
         plannedEndDate: "",
       });
@@ -9756,7 +9780,7 @@ export class TaskGanttView extends ItemView {
     if (value === "") {
       return;
     }
-    await this.host.updateTaskItem(parent, {
+    await this.saveItem(parent, {
       displayName: value,
       title: value,
     });
@@ -9834,7 +9858,7 @@ export class TaskGanttView extends ItemView {
     if (commands.length === 0) {
       return; // nothing actually changed order
     }
-    await this.host.updateTaskItemsBatch(commands);
+    await this.saveBatch(commands);
     await this.render();
   }
 }

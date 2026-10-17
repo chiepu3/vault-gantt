@@ -1332,6 +1332,27 @@ describe("TaskGanttView", () => {
       expect(h.loadTasks).toHaveBeenCalledTimes(1);
     });
 
+    it("a save that the host already refreshed is not rendered a second time", async () => {
+      const { view, h } = await openView([]);
+      const task = { id: "t", file: { path: "t.md" } } as unknown as TaskRow;
+      h.updateTaskItem.mockImplementation(async () => { await (view as any).render({ fromHost: true }); });
+      h.loadTasks.mockClear();
+      await (view as any).removeFromGanttInteractively(task);
+      await flush();
+      expect(h.loadTasks).toHaveBeenCalledTimes(1); // the host's refresh only
+      // A later, unrelated render still runs.
+      await (view as any).render();
+      expect(h.loadTasks).toHaveBeenCalledTimes(2);
+    });
+
+    it("a save the host did not refresh still renders once", async () => {
+      const { view, h } = await openView([]);
+      const task = { id: "t", file: { path: "t.md" } } as unknown as TaskRow;
+      h.loadTasks.mockClear();
+      await (view as any).removeFromGanttInteractively(task);
+      expect(h.loadTasks).toHaveBeenCalledTimes(1);
+    });
+
     it("「同期」ボタンで host.syncReadonlyGanttNow() が呼ばれる", async () => {
       const { container, h } = await openView([]);
       const button = byClass(container, "task-gantt-sync")[0];
