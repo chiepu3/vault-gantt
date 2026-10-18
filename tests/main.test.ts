@@ -668,6 +668,36 @@ describe("TaskWorkbenchPlugin", () => {
     });
   });
 
+  describe("onload: deferred startup", () => {
+    it("registers views first and runs auto priority / MCP / holiday refresh only after layout ready", async () => {
+      const h = createHarness({});
+      const { refresh } = stubHolidays(h.plugin, {});
+      let ready: (() => void) | undefined;
+      h.workspace.onLayoutReady = vi.fn((cb: () => void) => { ready = cb; });
+      await h.plugin.onload();
+      expect(h.views.size).toBe(4);
+      expect(h.commands).toHaveLength(14);
+      expect(refresh).not.toHaveBeenCalled();
+      expect(h.savedData.some((d) => d.lastAutoPriorityUpdate === "2026-07-29")).toBe(false);
+      ready!();
+      await h.plugin.deferredStartup;
+      expect(refresh).toHaveBeenCalledWith(false, false);
+      expect(h.savedData.some((d) => d.lastAutoPriorityUpdate === "2026-07-29")).toBe(true);
+      h.plugin.onunload();
+    });
+    it("skips deferred work when unloaded before layout ready", async () => {
+      const h = createHarness({});
+      const { refresh } = stubHolidays(h.plugin, {});
+      let ready: (() => void) | undefined;
+      h.workspace.onLayoutReady = vi.fn((cb: () => void) => { ready = cb; });
+      await h.plugin.onload();
+      h.plugin.onunload();
+      ready!();
+      await h.plugin.deferredStartup;
+      expect(refresh).not.toHaveBeenCalled();
+    });
+  });
+
   describe("onload: national holiday refresh", () => {
     it("fires refreshNationalHolidays(false, false) without blocking startup", async () => {
       const h = createHarness({});

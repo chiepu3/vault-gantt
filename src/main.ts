@@ -673,41 +673,6 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
 
-    // updateAutoPriorities failures are caught and logged; view/command/
-    // ribbon registration below MUST still run. Recovery from a missing task
-    // folder is simply creating the folder — no plugin reload required.
-    // The controller supports forced updates internally; no force-update
-    // command is exposed in the command palette.
-    try {
-      const ran = await this.autoPriority.updateAutoPriorities(
-        this.vaultAdapter(),
-        this.settings,
-
-        this.taskCache,
-        false,
-        this.logger
-
-      );
-      if (ran) {
-        // persist settings after the auto priority run
-        await this.saveSettings();
-      }
-    } catch (err) {
-
-      this.logger.error(
-        "TaskWorkbenchPlugin",
-        "Task Workbench: auto priority update failed during onload",
-        err
-      );
-
-    }
-
-    try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
-    // fire-and-forget background holiday refresh.
-    // The caller never awaits or catches: an unexpected rejection surfaces as
-    // an unhandled rejection (console) without blocking plugin startup.
-    void this.holidays.refreshNationalHolidays(false, false);
-
     // the Task Workbench view, constructed with a
     // host object wiring the plugin's existing services.
     this.registerView(VIEW_TYPE_TASK_WORKBENCH, (leaf) =>
@@ -751,13 +716,62 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     this.addSettingTab(new TaskWorkbenchSettingTab(this.app, this));
 
-    // timer start failures would propagate to onload
-    this.startGanttSyncTimer();
-
     this.logger.info("TaskWorkbenchPlugin", "plugin loaded", {
       durationMs: Date.now() - startedAt,
     });
 
+    // Heavy vault work (auto priority, MCP, holiday refresh, sync timer) must not
+    // delay view/command registration: run it once the workspace layout is ready.
+    const workspace = this.app.workspace as { onLayoutReady?: (callback: () => void) => void };
+    if (typeof workspace.onLayoutReady === "function") {
+      workspace.onLayoutReady(() => { this.deferredStartup = this.runDeferredStartup().catch((err) => this.logger.error("TaskWorkbenchPlugin", "deferred startup failed", err)); });
+    } else {
+      await (this.deferredStartup = this.runDeferredStartup());
+    }
+  }
+
+  /** Resolves once the post-layout startup work has finished (tests / diagnostics). */
+  deferredStartup: Promise<void> = Promise.resolve();
+
+  private async runDeferredStartup(): Promise<void> {
+    if (this.unloading) return;
+    // updateAutoPriorities failures are caught and logged; view/command/
+    // ribbon registration below MUST still run. Recovery from a missing task
+    // folder is simply creating the folder — no plugin reload required.
+    // The controller supports forced updates internally; no force-update
+    // command is exposed in the command palette.
+    try {
+      const ran = await this.autoPriority.updateAutoPriorities(
+        this.vaultAdapter(),
+        this.settings,
+
+        this.taskCache,
+        false,
+        this.logger
+
+      );
+      if (ran) {
+        // persist settings after the auto priority run
+        await this.saveSettings();
+      }
+    } catch (err) {
+
+      this.logger.error(
+        "TaskWorkbenchPlugin",
+        "Task Workbench: auto priority update failed during onload",
+        err
+      );
+
+    }
+
+    try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
+    // fire-and-forget background holiday refresh.
+    // The caller never awaits or catches: an unexpected rejection surfaces as
+    // an unhandled rejection (console) without blocking plugin startup.
+    void this.holidays.refreshNationalHolidays(false, false);
+
+    // timer start failures are logged by the caller's rejection handler
+    if (!this.unloading) this.startGanttSyncTimer();
   }
 
   /**
