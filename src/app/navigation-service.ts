@@ -4,7 +4,7 @@ import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 
 import type { Logger } from "../core/logger";
 
-import type { TaskCache } from "./auto-priority";
+import type { TaskCache } from "./note-store";
 import { VaultAdapter, loadTasks } from "./task-operations";
 import { TaskFinderModal } from "../ui/task-finder-modal";
 
@@ -123,27 +123,12 @@ export class NavigationService {
  *
  * Opens a task row in an editor leaf.
  *
- * Subtasks jump through an Obsidian wiki link with a heading anchor
- * ("filename#heading"); when that jump fails (heading renamed/missing)
- * the exception is caught and the parent file is opened instead.
- *
- * Parent tasks reuse the most recently used leaf, creating a new one
+ * Every task, parent or subtask, is its own note. Opening reuses the most recently used leaf and creates a new one
  * only when none exists.
  *
  * openFile failures propagate uncaptured.
  */
   async openTaskItem(item: TaskRow): Promise<void> {
-    if (item.kind === "subtask") {
-      // "[filename]#[subtask heading]" anchor link
-      const link = subtaskLink(item);
-      try {
-        await this.host.app.workspace.openLinkText(link, item.file.path);
-        return;
-      } catch {
-        // If the subtask jump fails, continue by opening the parent file.
-      }
-    }
-
     const ws = this.host.app.workspace;
 
     // reuse the most recently used leaf when one exists
@@ -165,18 +150,4 @@ export class NavigationService {
       : null;
     await leaf.openFile(resolved instanceof TFile ? resolved : item.file!);
   }
-}
-
-/**
- * link form "[filename]#[subtask heading]".
- * The filename is the parent file's basename without the.md extension;
- * the heading falls back to the subtask title when the parsed heading is
- * unavailable.
- */
-function subtaskLink(item: TaskRow): string {
-  const path = item.file.parentPath ?? item.file.path;
-  const fileName = path.split("/").pop() ?? path;
-  const baseName = fileName.replace(/\.md$/i, "");
-  const heading = item.file.heading ?? item.title;
-  return `${baseName}#${heading}`;
 }

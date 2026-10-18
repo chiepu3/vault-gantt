@@ -2,7 +2,7 @@ import { operationInputSchemas, type ViewOperationId, type OperationInputMap } f
 import { formatBuildLabel, getBuildInfo } from "../build-info";
 import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts } from "../contracts/ports";
-import { NotePreservationError } from "../core/note-update";
+import { NotePreservationError } from "../core/note-v2";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
 import type { PreviewPort } from "../contracts/ports";
@@ -1600,14 +1600,25 @@ export class TaskGanttView extends ItemView {
     return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined;
   }
 
+  /** Row elements are keyed by the parent note's path; tasks are known by id. */
+  private readonly parentPathByTaskId = new Map<string, string>();
+  private indexParentPaths(parents: readonly TaskRow[]): void {
+    this.parentPathByTaskId.clear();
+    for (const parent of parents) {
+      this.parentPathByTaskId.set(parent.id, parent.file.path);
+      for (const child of parent.subtasks?.values() ?? []) this.parentPathByTaskId.set(child.id, parent.file.path);
+    }
+  }
+  private rowKeyOf(taskId: string): string { return this.parentPathByTaskId.get(taskId) ?? taskId.split("::")[0]; }
+
   private clearGhostLayer(): void {
     for (const [taskId, { nodes, current }] of this.ghostNodes) {
-      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      this._ganttRowCache?.rowFingerprints.delete(this.rowKeyOf(taskId));
       nodes.forEach((node) => node.remove()); current?.classList.remove("vg-ai-target");
     }
     this.ghostNodes.clear(); this.ghostLegend?.remove(); this.ghostLegend = undefined;
     for (const [taskId, nodes] of this.previewNodes) {
-      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      this._ganttRowCache?.rowFingerprints.delete(this.rowKeyOf(taskId));
       nodes.forEach((node) => node.remove());
     }
     this.previewNodes.clear();
@@ -1650,7 +1661,7 @@ export class TaskGanttView extends ItemView {
       // The first changed day lands clear of the sticky name column.
       this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX + 180);
     }
-    const row = taskId ? this._ganttRowCache?.rowEls.get(taskId.split("::")[0]) : undefined;
+    const row = taskId ? this._ganttRowCache?.rowEls.get(this.rowKeyOf(taskId)) : undefined;
     if (!row?.getBoundingClientRect) return;
     const wrap = this.wrapEl.getBoundingClientRect(); const rect = row.getBoundingClientRect();
     const stickyTop = (this.ganttHeaderEl?.getBoundingClientRect().height ?? 0) + 160;
@@ -1872,7 +1883,7 @@ export class TaskGanttView extends ItemView {
 
   /** The bar element for a subtask, building its parent row first when that row has not been filled in yet. */
   private barElFor(taskId: string): HTMLElement | undefined {
-    const row = this._ganttRowCache?.rowEls.get(taskId.split("::")[0]);
+    const row = this._ganttRowCache?.rowEls.get(this.rowKeyOf(taskId));
     if (row !== undefined) this.populateRow(row);
     return this.barElsByTaskId.get(taskId);
   }
@@ -1918,6 +1929,7 @@ export class TaskGanttView extends ItemView {
     dates: string[],
     headerFingerprint: string
   ): void {
+    this.indexParentPaths(parents);
     // Removing live scroll content clamps the browser's offsets to zero.
     // Restore them after rebuilding, before deriving the visible month.
     const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
@@ -1967,7 +1979,7 @@ export class TaskGanttView extends ItemView {
       const rowEl = this.renderParentRow(parent, dates);
       rowFragment.appendChild(rowEl);
       rowEls.set(parent.file.path, rowEl);
-      rowFingerprints.set(parent.file.path, this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? ""));
+      rowFingerprints.set(parent.file.path, this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.id) ?? "") + (this.previewLayer?.fingerprint(parent.id) ?? ""));
     }
     this.wrapEl.appendChild(rowFragment);
 
@@ -2016,6 +2028,7 @@ export class TaskGanttView extends ItemView {
     dates: string[],
     headerFingerprint: string
   ): void {
+    this.indexParentPaths(parents);
     // Keep the cached root, header, and fixed rows; their inputs are stable
     // within this render epoch.
     // The fixed-row references are part of that cache invariant too: if an
@@ -2074,7 +2087,7 @@ export class TaskGanttView extends ItemView {
       }
 
 
-      const fingerprint = this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? "");
+      const fingerprint = this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.id) ?? "") + (this.previewLayer?.fingerprint(parent.id) ?? "");
       if (
         oldEl !== undefined &&
         cache.rowFingerprints.get(path) === fingerprint
@@ -4617,7 +4630,7 @@ export class TaskGanttView extends ItemView {
       hasDeadlineMarker
     );
     // Preview-only bars for rows the chart does not hold right now get their own strip below the lanes.
-    const phantomLanes = this.layoutPhantomBars(parent.file.path);
+    const phantomLanes = this.layoutPhantomBars(parent.id);
     const rowHeight = baseRowHeight + phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX;
 
     // --- Create the row container and set its height ---
@@ -4628,7 +4641,7 @@ export class TaskGanttView extends ItemView {
     setStyleVar(row, "contain-intrinsic-size", `${PARENT_COL_WIDTH + dates.length * dayWidth}px ${rowHeight}px`);
 
     const leftEl = this.renderParentLeft(parent);
-    const parentMark = this.previewLayer?.rowState(parent.file.path);
+    const parentMark = this.previewLayer?.rowState(parent.id);
     if (parentMark) {
       leftEl.classList.add("vg-hl-row", `is-${parentMark}`);
       row.classList.add("vg-hl-parent-row");

@@ -5,7 +5,7 @@ import { OperationRegistry } from "../../src/app/operation-registry";
 import { createTask, loadTasks } from "../../src/app/task-operations";
 import { FakeVault } from "./fake-vault";
 
-async function setup(withOldNotes = false) {
+async function setup() {
   const vault = new FakeVault();
   const settings = { ...DEFAULT_SETTINGS, autoPriorityEnabled: false };
   const history = new HistoryManager();
@@ -17,23 +17,16 @@ async function setup(withOldNotes = false) {
   const names = ["Alpha", "Beta", "Gamma"];
   const parents = [];
   for (const name of names) parents.push(await createTask(vault, settings, name));
-  if (withOldNotes) {
-    // Old-style notes carry their own ganttOrder line.
-    for (const [index, parent] of parents.entries()) {
-      const file = vault.getFileByPath(parent.id)!;
-      const content = await vault.read(file);
-      await vault.modify(file, content.replace("ganttEnabled: false", `ganttEnabled: true\nganttOrder: ${(3 - index) * 10}`));
-    }
-  }
   vault.resetCounters();
   return { vault, settings, history, registry, parents, persistSettings };
 }
 
 describe("parent order stored in settings", () => {
-  it("migrates the order from the notes' ganttOrder without touching the notes", async () => {
-    const a = await setup(true);
+  it("follows the stored ids and appends parents that are missing from them, without touching the notes", async () => {
+    const a = await setup();
+    a.settings.ganttParentOrder = [a.parents[2].id, a.parents[0].id];
     const rows = await loadTasks(a.vault, a.settings, new Map());
-    expect(a.settings.ganttParentOrder).toEqual([a.parents[2].id, a.parents[1].id, a.parents[0].id]);
+    expect([...rows].sort((x, y) => x.ganttOrder! - y.ganttOrder!).map((r) => r.id)).toEqual([a.parents[2].id, a.parents[0].id, a.parents[1].id]);
     expect(rows.find((r) => r.id === a.parents[2].id)!.ganttOrder).toBe(1000);
     expect(a.vault.getModifyCallCount()).toBe(0);
   });
@@ -42,7 +35,7 @@ describe("parent order stored in settings", () => {
     const a = await setup();
     const rows = await loadTasks(a.vault, a.settings, new Map());
     const before = [...a.settings.ganttParentOrder!];
-    const contents = a.parents.map((p) => a.vault.getFileContent(p.id));
+    const contents = a.parents.map((p) => a.vault.getFileContent(p.file.path));
     const [x, y, z] = before;
     const result = await a.registry.updateFromUI([
       { row: rows.find((r) => r.id === z)!, patch: { ganttOrder: 1000 } },
@@ -51,7 +44,7 @@ describe("parent order stored in settings", () => {
     ]);
     expect(result.length).toBe(3);
     expect(a.vault.getModifyCallCount()).toBe(0);
-    expect(a.parents.map((p) => a.vault.getFileContent(p.id))).toEqual(contents);
+    expect(a.parents.map((p) => a.vault.getFileContent(p.file.path))).toEqual(contents);
     expect(a.settings.ganttParentOrder).toEqual([z, x, y]);
     expect(a.history.canUndo()).toBe(true);
 
@@ -67,8 +60,8 @@ describe("parent order stored in settings", () => {
     const target = rows[0];
     await a.registry.updateFromUI([{ row: target, patch: { ganttEnabled: true, ganttOrder: 99999 } }]);
     expect(a.vault.getModifyCallCount()).toBe(1);
-    const text = a.vault.getFileContent(target.id);
-    expect(text).toContain("ganttEnabled: true");
+    const text = a.vault.getFileContent(target.file.path);
+    expect(text).toContain("gantt: true");
     expect(text).not.toContain("ganttOrder");
     expect(a.settings.ganttParentOrder![a.settings.ganttParentOrder!.length - 1]).toBe(target.id);
   });
@@ -81,7 +74,7 @@ describe("AI operation pipeline with parent order", () => {
     const { service, context, vault, settings, persistSettings } = await runtimeFixture();
     const second = await createTask(vault, settings, "Second");
     vault.resetCounters();
-    const preview = await service.propose("T18", { orderedParentIds: [PARENT_ID, second.id] }, context);
+    const preview = await service.propose("T18", { orderedParentIds: [second.id, PARENT_ID] }, context);
     expect(JSON.stringify(preview.entries)).toContain("ganttOrder");
     expect(vault.getModifyCallCount()).toBe(0);
     const outcome = await service.humanApprovalPort.approve(preview.previewId);

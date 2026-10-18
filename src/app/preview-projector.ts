@@ -101,10 +101,13 @@ export function project(snapshot: TaskSnapshot, afterParents: readonly TaskRow[]
   scan(snapshot.parents, snapshot.settings); scan(afterParents, afterSettings);
   const affectedDates = [...dates].sort();
   const before = ganttState(snapshot.parents, snapshot.settings, affectedDates), after = ganttState(afterParents, afterSettings, affectedDates);
-  const parentIds = new Set(targets.flatMap((entity) => entity.kind === "task" ? [entity.taskId.split("::")[0]] : entity.kind === "marker" ? [entity.taskId.split("::")[0]] : []));
+  const owners = new Map<string, string>();
+  for (const parent of [...snapshot.parents, ...afterParents]) { owners.set(parent.id, parent.id); for (const child of parent.subtasks?.values() ?? []) owners.set(child.id, parent.id); }
+  const ownerOf = (entity: EntityRef & { taskId: string }) => (entity.kind === "task" ? entity.parentId : undefined) ?? owners.get(entity.taskId) ?? entity.taskId;
+  const parentIds = new Set(targets.flatMap((entity) => entity.kind === "task" || entity.kind === "marker" ? [ownerOf(entity)] : []));
   const visibility = (entity: EntityRef): GanttProjectionV1["visibility"][number] => {
     if (entity.kind === "task") {
-      const parent = after.parents.find((parent) => parent.id === entity.taskId.split("::")[0]) ?? before.parents.find((parent) => parent.id === entity.taskId.split("::")[0]);
+      const ownerId = ownerOf(entity), parent = after.parents.find((parent) => parent.id === ownerId) ?? before.parents.find((parent) => parent.id === ownerId);
       const child = parent?.children.find((child) => child.id === entity.taskId);
       if (!parent?.enabled) return { entity, state: "feature-disabled", reason: "親のGantt管理が無効です。" };
       if (child && (!child.period.start || !child.period.end)) return { entity, state: "unscheduled", reason: "予定日の両端が未設定です。" };

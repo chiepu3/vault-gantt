@@ -1,4 +1,4 @@
-import { NotePreservationError } from "../../src/core/note-update";
+import { NotePreservationError } from "../../src/core/note-v2";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 

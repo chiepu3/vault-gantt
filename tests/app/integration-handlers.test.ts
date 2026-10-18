@@ -62,7 +62,7 @@ describe("settings and integration operation handlers", () => {
   });
   it("S27 supports marker assignment and leaves preservation validation to the writer", async () => {
     const f = await fixture();
-    const target = { kind: "marker" as const, taskId: f.child.id, markerKey: "review-point" };
+    const target = { kind: "marker" as const, taskId: f.child.id, markerKey: "確認" };
     const plan = await integrationPlan("S27", { name: "リリース", target }, f.snapshot, f.host);
     expect(plan.changes[0].patch.ganttMarkers?.[0].tags).toEqual(["リリース"]); validEntries(plan);
     await expect(integrationPlan("S27", { name: "a", target: { ...target, markerKey: "missing" } }, f.snapshot, f.host)).rejects.toMatchObject({ error: { code: "NOT_FOUND" } });

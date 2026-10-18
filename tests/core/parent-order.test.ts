@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyStoredOrder, computeParentOrder, reconcileParentOrder, renameInParentOrder } from "../../src/core/parent-order";
+import { applyStoredOrder, computeParentOrder, reconcileParentOrder } from "../../src/core/parent-order";
 import type { TaskRow } from "../../src/core/types";
 
 const parent = (path: string, ganttOrder: number | undefined, name = path): TaskRow =>
@@ -33,9 +33,5 @@ describe("parent-order", () => {
     expect(computeParentOrder(["a", "b", "c"], new Map([["c", 500]]))).toEqual(["c", "a", "b"]);
     expect(computeParentOrder(["a", "b"], new Map([["z", 1500]]))).toEqual(["a", "z", "b"]);
     expect(computeParentOrder(["a", "b"], new Map([["b", 1000]]))).toEqual(["a", "b"]);
-  });
-
-  it("renameInParentOrder replaces the path", () => {
-    expect(renameInParentOrder(["a", "b"], "a", "z")).toEqual(["z", "b"]);
   });
 });

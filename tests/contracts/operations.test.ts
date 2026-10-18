@@ -133,7 +133,7 @@ describe("legacy six-tool compatibility", () => {
     const registry = new OperationRegistry({ settings, historyManager: new HistoryManager(), invalidate: () => undefined }, () => vault);
     const parent = await createTask(vault, settings, "Parent");
     const child = await addSubtask(vault, settings, parent, "Child");
-    const content = await vault.read(vault.getFileByPath(parent.id)!);
+    const content = await vault.read(vault.getFileByPath(parent.file.path)!);
     vault.resetCounters();
     const read = await registry.invoke("search", { query: "Parent" });
     expect(Array.isArray(read)).toBe(true);
@@ -158,6 +158,6 @@ describe("legacy six-tool compatibility", () => {
     }
     expect(vault.getCreateCallCount()).toBe(0);
     expect(vault.getModifyCallCount()).toBe(0);
-    expect(await vault.read(vault.getFileByPath(parent.id)!)).toBe(content);
+    expect(await vault.read(vault.getFileByPath(parent.file.path)!)).toBe(content);
   });
 });

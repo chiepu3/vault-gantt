@@ -1,3 +1,4 @@
+import { stringifyYaml } from "obsidian";
 import {
   TaskRow,
   TaskPatch,
@@ -6,23 +7,23 @@ import {
   TaskUpdateResult,
 } from "../core/types";
 
-import type { Logger } from "../core/logger";
-
 import {
   todayStr,
-  sanitizeFileName,
   buildFileRevision,
   changedFields,
-  getSubtaskKey,
 } from "../core/utils";
-import {
-  parseTaskFile,
-  buildFullNote,
-} from "../core/note-format";
-import { mergeTaskNote } from "../core/note-update";
-import { applyPatchToParent } from "../core/task-patch";
-import { computeParentOrder, reconcileParentOrder } from "../core/parent-order";
-import type { HistoryFileChange, HistoryManager } from "./history-manager";
+import { buildNewNote } from "../core/note-v2";
+import { generateTaskId } from "../core/ids";
+import { parentFileStem, sanitizeFileStem, uniqueFileStem } from "../core/file-names";
+import { applyPatchToRow } from "../core/task-patch";
+import { computeParentOrder } from "../core/parent-order";
+import type { HistoryManager } from "./history-manager";
+import { applyNoteChange, diffRow, type AppliedNote } from "./note-changes";
+import { linkTextFor } from "./note-vault";
+import { isUnderRoot, loadNoteTasks, readNote, taskRoot, type TaskCache } from "./note-store";
+
+export { loadNoteTasks as loadTasks };
+export type { TaskCache };
 
 
 // VAULT ADAPTER INTERFACE - for testability
@@ -45,11 +46,35 @@ export interface VaultAdapter {
   // Read file content from disk
   read(file: VaultFile): Promise<string>;
 
+  // Read through Obsidian's cache (bodies are shown a lot and change rarely)
+  cachedRead(file: VaultFile): Promise<string>;
+
   // Get all files in vault
   getFiles(): VaultFile[];
 
   // Get file by path (returns null if not found)
   getFileByPath(path: string): VaultFile | null;
+
+  /** metadataCache frontmatter: undefined = not indexed yet, null = the note has none. */
+  getFrontmatter(file: VaultFile): Record<string, unknown> | null | undefined;
+
+  /** app.fileManager.processFrontMatter: only the keys the callback touches change. */
+  processFrontMatter(file: VaultFile, update: (frontmatter: Record<string, unknown>) => void): Promise<void>;
+
+  /** app.fileManager.renameFile (files and folders; missing parent folders are created). */
+  rename(path: string, newPath: string): Promise<void>;
+
+  /** app.fileManager.trashFile */
+  trash(file: VaultFile): Promise<void>;
+
+  /** Resolves a link such as "[[name]]" the way the metadataCache would from `fromPath`. */
+  resolveLink(link: string, fromPath: string): VaultFile | null;
+
+  /** Resolves once the metadataCache has indexed these files (or after the timeout). */
+  whenIndexed(files: readonly VaultFile[], timeoutMs?: number): Promise<void>;
+
+  /** After writing: resolves when the metadataCache has caught up with the file (or after a timeout). */
+  afterWrite(file: VaultFile, contentChanged: boolean): Promise<void>;
 }
 
 /**
@@ -65,96 +90,81 @@ export interface VaultFile {
 }
 
 
-// TASK FOLDER AND PATH UTILITIES
+// IDS AND PATHS
 
 
-/**
- *
- * Get the task folder path for a given date.
- * Format: {taskFolder}/YYYY/MM
- */
-export function getTaskFolderForDate(
-  settings: TaskWorkbenchSettings,
-  dateStr: string
-): string {
-  // dateStr expected to be YYYY-MM-DD
-  const [year, month] = dateStr.split("-");
-  return `${settings.taskFolder}/${year}/${month}`;
+/** Ids already used by task notes under the task folder (read from the metadataCache). */
+export function collectTaskIds(vault: VaultAdapter, settings: Pick<TaskWorkbenchSettings, "taskFolder">): Set<string> {
+  const root = taskRoot(settings);
+  const ids = new Set<string>();
+  for (const file of vault.getFiles()) {
+    if (!isUnderRoot(file.path, root)) continue;
+    const id = vault.getFrontmatter(file)?.id;
+    if (typeof id === "string") ids.add(id);
+  }
+  return ids;
+}
+
+/** Lower-cased file stems of the notes directly inside `folder`. */
+function stemsIn(vault: VaultAdapter, folder: string, reserved: ReadonlySet<string>): Set<string> {
+  const names = new Set<string>();
+  const prefix = folder ? `${folder}/` : "";
+  const add = (path: string) => {
+    if (!path.startsWith(prefix) || !path.endsWith(".md")) return;
+    const rest = path.slice(prefix.length);
+    if (!rest.includes("/")) names.add(rest.slice(0, -3).toLowerCase());
+  };
+  for (const file of vault.getFiles()) add(file.path);
+  for (const path of reserved) add(path);
+  return names;
 }
 
 /**
- *
- * Get an available task file path, handling sanitization and collisions.
- * With filenameUsesDatePrefix, adds "YYYY-MM-DD " prefix.
- * On collision, appends " 1", " 2",... (no upper bound).
+ * Path for a new parent note: `<taskFolder>/<[YYYY-MM-DD ]title>.md`, with a numeric suffix on collisions.
+ * `reserved` holds paths another part of the same plan is about to create.
  */
 export function getAvailableTaskPath(
   vault: VaultAdapter,
   settings: TaskWorkbenchSettings,
   name: string,
-  dateStr: string
+  dateStr: string,
+  reserved: ReadonlySet<string> = new Set()
 ): string {
-  const taskFolder = getTaskFolderForDate(settings, dateStr);
+  const folder = taskRoot(settings);
+  const taken = stemsIn(vault, folder, reserved);
+  const stem = uniqueFileStem(parentFileStem(name, dateStr, settings.filenameUsesDatePrefix), (candidate) => taken.has(candidate.toLowerCase()));
+  return `${folder}/${stem}.md`;
+}
 
-  // Sanitize the name
-  let sanitized = sanitizeFileName(name);
+/** The folder holding a parent's subtask notes: next to the parent, named like it. */
+export function subtaskFolderOf(parentPath: string): string {
+  return parentPath.replace(/\.md$/i, "");
+}
 
-  // Add date prefix if enabled
-  let baseName = sanitized;
-  if (settings.filenameUsesDatePrefix) {
-    baseName = `${dateStr} ${sanitized}`;
-  }
-
-  // Check for collisions and add suffix if needed
-  let candidate = `${taskFolder}/${baseName}.md`;
-  let suffix = 1;
-
-  while (vault.getFileByPath(candidate) !== null) {
-    const prefix = settings.filenameUsesDatePrefix ? `${dateStr} ` : "";
-    candidate = `${taskFolder}/${prefix}${sanitized} ${suffix}.md`;
-    suffix++;
-  }
-
-  return candidate;
+/** Path for a new subtask note inside the parent's folder, with a numeric suffix on collisions. */
+export function getAvailableSubtaskPath(
+  vault: VaultAdapter,
+  parentPath: string,
+  name: string,
+  reserved: ReadonlySet<string> = new Set()
+): string {
+  const folder = subtaskFolderOf(parentPath);
+  const taken = stemsIn(vault, folder, reserved);
+  const stem = uniqueFileStem(sanitizeFileStem(name), (candidate) => taken.has(candidate.toLowerCase()));
+  return `${folder}/${stem}.md`;
 }
 
 
-// TASK CREATION
+// NEW ROWS
 
 
-/**
- *
- * Create a new task with default values.
- * Rejects empty or whitespace-only name by throwing.
- * Returns the newly parsed TaskRow.
- */
-export async function createTask(
-  vault: VaultAdapter,
-  settings: TaskWorkbenchSettings,
-  taskName: string,
-  historyManager?: HistoryManager
-): Promise<TaskRow> {
-  // Reject empty or whitespace-only name
-  const trimmedName = taskName.trim();
-  if (!trimmedName) {
-    throw new Error("Task name cannot be empty");
-  }
-
-  // Use today's date
-  const today = todayStr();
-
-  // Get available path
-  const taskPath = getAvailableTaskPath(vault, settings, trimmedName, today);
-
-  // Build the default parent task row.
-  const defaultRow: TaskRow = {
+export function newParentRow(id: string, path: string, name: string, today = todayStr()): TaskRow {
+  return {
     kind: "parent",
-    id: taskPath,
-    file: {
-      path: taskPath,
-    } as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-    title: trimmedName,
-    displayName: trimmedName,
+    id,
+    file: { path } as TaskRow["file"],
+    title: name,
+    displayName: name,
     statusLabel: "active",
     completed: false,
     createdAt: today,
@@ -168,173 +178,84 @@ export async function createTask(
     ganttEnabled: false,
     subtasks: new Map(),
   };
+}
 
-  // Write via vault.create + buildFullNote
-  const content = buildFullNote(defaultRow, new Map());
-  await vault.create(taskPath, content);
-  // File creation itself is not recorded for undo.
-  historyManager?.discardRedo();
-
-  // Re-parse and return the task row
-  const file = vault.getFileByPath(taskPath);
-  if (!file) {
-    throw new Error("Task file not found");
+export function newSubtaskRow(id: string, path: string, parent: TaskRow, name: string, patch?: TaskPatch, today = todayStr()): TaskRow {
+  const row: TaskRow = {
+    kind: "subtask",
+    id,
+    key: id,
+    parentId: parent.id,
+    file: { path, parentPath: parent.file.path } as TaskRow["file"],
+    title: name,
+    displayName: name,
+    statusLabel: "active",
+    completed: false,
+    createdAt: today,
+    updatedAt: today,
+    dueDate: undefined,
+    priority: 0,
+    priorityMode: "auto",
+    currentStatus: "",
+    notes: "",
+    tags: [],
+    ganttEnabled: false,
+    plannedStartDate: undefined,
+    plannedEndDate: undefined,
+    workloadPlan: undefined,
+    workloadActual: undefined,
+    ganttMarkers: undefined,
+  };
+  // Optional patch expands after defaults (simple merge)
+  if (patch) {
+    for (const [key, value] of Object.entries(patch)) {
+      if (value !== undefined && key in row) (row as unknown as Record<string, unknown>)[key] = value;
+    }
   }
+  return row;
+}
 
-  const fileContent = await vault.read(file);
-  const parsed = parseTaskFile(
-    { path: file.path },
-    fileContent,
-    settings
-  );
-  if (!parsed) {
-    throw new Error("Failed to parse created task");
-  }
-
-  return parsed;
+/** Whole text of a new task note. */
+export function newNoteText(vault: VaultAdapter, row: TaskRow, parent?: TaskRow): string {
+  const parentFile = parent ? { path: parent.file.path } : undefined;
+  return buildNewNote(row, stringifyYaml, parentFile ? { parentLink: linkTextFor(vault, parentFile) } : {});
 }
 
 
-// TASK LOADING WITH CACHING
+// TASK CREATION
 
 
 /**
- *
- * Load all tasks from vault with caching.
- * Cache key: ${mtime}:${size}
- * Parse errors are logged and file is filtered from results.
- * Old cache entries are deleted before load.
- * Same mtime+size but different content uses old cache (known limitation).
+ * Create a new parent task note with default values.
+ * Rejects empty or whitespace-only name by throwing.
+ * Returns the newly parsed TaskRow.
  */
-export async function loadTasks(
+export async function createTask(
   vault: VaultAdapter,
   settings: TaskWorkbenchSettings,
-
-  cache: Map<string, { revision: string; taskRow: TaskRow | null }>,
-  logger?: Logger,
-  onOrderChanged?: () => void
-
-): Promise<TaskRow[]> {
-
-  const startedAt = Date.now();
-  let fileCount = 0;
-
-  const result: TaskRow[] = [];
-
-  // Root folder with trailing slash removed
-  const root = settings.taskFolder.replace(/\/$/, "");
-
-  const files = vault.getFiles();
-
-  // Only files under the task root can be cached, so a vault-wide path Set is not needed
-  // to find stale entries: they are pruned (with a Set) only when the counts disagree.
-  const rootPaths: string[] = [];
-
-  // Process all files
-  for (const file of files) {
-
-    fileCount += 1;
-
-    // File match: path.startsWith(root+"/") OR path === root
-    if (!file.path.startsWith(root + "/") && file.path !== root) {
-      continue;
-    }
-    rootPaths.push(file.path);
-
-    // Unchanged files need neither a read nor a parse. Only trust a revision
-    // when the adapter supplies file stats; stat-less adapters still read.
-    const cachedEntry = cache.get(file.path);
-    if (file.stat && cachedEntry && cachedEntry.revision === buildFileRevision(file as any)) { // eslint-disable-line @typescript-eslint/no-explicit-any
-      if (cachedEntry.taskRow) {
-        result.push(cachedEntry.taskRow);
-      }
-      continue;
-    }
-
-    // Read file content
-    let content: string;
-    try {
-      content = await vault.read(file);
-    } catch {
-      // Parse errors are logged and file is filtered
-
-      if (logger) {
-        logger.error("loadTasks", `Failed to read file: ${file.path}`);
-      } else {
-        console.error(`Failed to read file: ${file.path}`);
-      }
-
-      continue;
-    }
-
-    // Build revision key
-    const revision = buildFileRevision(file as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-
-    // Check cache hit
-    if (cachedEntry && cachedEntry.revision === revision) {
-      // Cache hit - skip parsing
-      if (cachedEntry.taskRow) {
-        result.push(cachedEntry.taskRow);
-      }
-      continue;
-    }
-
-    // Parse file
-    let taskRow: TaskRow | null = null;
-    try {
-      taskRow = parseTaskFile(
-        { path: file.path },
-        content,
-        settings
-      );
-    } catch (err) {
-      // Parse errors are logged and file is filtered
-
-      if (logger) {
-        logger.error("loadTasks", `Failed to parse task file ${file.path}:`, err);
-      } else {
-        console.error(`Failed to parse task file ${file.path}:`, err);
-      }
-
-      cache.set(file.path, { revision, taskRow: null });
-      continue;
-    }
-
-    // Only process task files
-    if (taskRow) {
-      result.push(taskRow);
-    }
-
-    // Update cache
-    cache.set(file.path, { revision, taskRow });
+  taskName: string,
+  historyManager?: HistoryManager,
+  cache?: TaskCache
+): Promise<TaskRow> {
+  const trimmedName = taskName.trim();
+  if (!trimmedName) {
+    throw new Error("Task name cannot be empty");
   }
+  const today = todayStr();
+  const path = getAvailableTaskPath(vault, settings, trimmedName, today);
+  const row = newParentRow(generateTaskId("parent", collectTaskIds(vault, settings)), path, trimmedName, today);
+  const content = newNoteText(vault, row);
+  const file = await vault.create(path, content);
+  await vault.afterWrite(file, true);
+  cache?.delete(path);
+  historyManager?.push({ label: "タスク作成", files: [{ path, before: null, after: content }] });
 
-  // Delete old cache entries for files that no longer exist
-  if (cache.size > 0) {
-    let cachedPresent = 0;
-    for (const path of rootPaths) if (cache.has(path)) cachedPresent += 1;
-    if (cache.size !== cachedPresent) {
-      const currentFilePaths = new Set<string>();
-      for (const file of files) currentFilePaths.add(file.path);
-      for (const cachedPath of [...cache.keys()]) {
-        if (!currentFilePaths.has(cachedPath)) {
-          cache.delete(cachedPath);
-        }
-      }
-    }
+  const created = await readNote(vault, file, settings, content);
+  if (!created) {
+    throw new Error("Failed to parse created task");
   }
-
-
-  // Parent order lives in settings: migrate/complete it and set row.ganttOrder.
-  if (reconcileParentOrder(settings, result)) onOrderChanged?.();
-
-  logger?.debug("loadTasks", "load completed", {
-    durationMs: Date.now() - startedAt,
-    fileCount,
-    taskCount: result.length,
-  });
-
-  return result;
+  created.row.subtasks = new Map();
+  return created.row;
 }
 
 
@@ -342,13 +263,12 @@ export async function loadTasks(
 
 
 /**
- *
  * Thin wrapper over updateTaskItemsBatch for a single command.
  */
 export async function updateTaskItem(
   vault: VaultAdapter,
   settings: TaskWorkbenchSettings,
-  cache: Map<string, { revision: string; taskRow: TaskRow | null }>,
+  cache: TaskCache,
   command: TaskUpdateCommand,
   options?: { expectedRevision?: string },
   historyManager?: HistoryManager
@@ -380,16 +300,15 @@ export interface RevisionConflictError extends Error {
 }
 
 /**
- *
- * Batch update tasks, grouped by parent file path.
- * Per file: all-or-nothing atomicity. If any command's expectedRevision doesn't match,
- * throw REVISION_CONFLICT for entire file (other files unaffected).
- * Single vault.modify per file.
+ * Batch update tasks. Every task is its own note, so each note is read, patched and written on
+ * its own (only the changed frontmatter keys and body sections); nothing else is touched.
+ * Per note: if a command's expectedRevision doesn't match, throw REVISION_CONFLICT for it
+ * (notes written before stay written, and the history is cleared as a barrier).
  */
 export async function updateTaskItemsBatch(
   vault: VaultAdapter,
   settings: TaskWorkbenchSettings,
-  cache: Map<string, { revision: string; taskRow: TaskRow | null }>,
+  cache: TaskCache,
   commands: unknown,
   options?: { expectedRevision?: string; persistParentOrder?: (order: string[]) => Promise<void> },
   historyManager?: HistoryManager
@@ -399,7 +318,6 @@ export async function updateTaskItemsBatch(
     return [];
   }
 
-  // Type guard
   const allCommands = commands as TaskUpdateCommand[];
 
   // ganttOrder goes to settings.ganttParentOrder, never to the note.
@@ -411,7 +329,7 @@ export async function updateTaskItemsBatch(
       const { ganttOrder, ...rest } = cmd.patch;
       const num = typeof ganttOrder === "number" ? ganttOrder : parseFloat(String(ganttOrder));
       if (!isFinite(num)) throw new Error("ganttOrder must be a finite number");
-      orderTargets.set(cmd.row.file.path, num);
+      orderTargets.set(cmd.row.id, num);
       if (Object.values(rest).every((value) => value === undefined)) {
         orderOnly.push(cmd);
         continue;
@@ -422,52 +340,43 @@ export async function updateTaskItemsBatch(
     typedCommands.push(cmd);
   }
 
-  // Group commands by parent file path
-  const groupedByPath = new Map<string, TaskUpdateCommand[]>();
+  // Group commands by task (= by note)
+  const groups = new Map<string, TaskUpdateCommand[]>();
   for (const cmd of typedCommands) {
-    // Task update command requires row
     if (!cmd.row) {
       throw new Error("Task update command requires row");
     }
-
-    const parentPath = cmd.row.file.path;
-    if (!groupedByPath.has(parentPath)) {
-      groupedByPath.set(parentPath, []);
-    }
-    groupedByPath.get(parentPath)!.push(cmd);
+    const list = groups.get(cmd.row.id) ?? [];
+    list.push(cmd);
+    groups.set(cmd.row.id, list);
   }
 
   const results: TaskUpdateResult[] = [];
-  const appliedChanges: HistoryFileChange[] = [];
+  const appliedChanges: AppliedNote[] = [];
   let orderChange: { before: string[]; after: string[] } | undefined;
 
-  // Process each file
   try {
-    for (const [parentPath, fileCommands] of groupedByPath.entries()) {
-      // Load the current parent task
-      const parentFile = vault.getFileByPath(parentPath);
-      if (!parentFile) {
+    for (const noteCommands of groups.values()) {
+      const target = noteCommands[0].row;
+      const path = target.file.path;
+      const file = vault.getFileByPath(path);
+      if (!file) {
         throw new Error("Task file not found");
       }
 
-      const parentContent = await vault.read(parentFile);
-      const parent = parseTaskFile(
-        { path: parentFile.path },
-        parentContent,
-        settings
-      );
-      if (!parent) {
+      const content = await vault.read(file);
+      const current = await readNote(vault, file, settings, content);
+      if (!current) {
         throw new Error("Managed task not found");
       }
 
-      // Check revision conflicts for entire file
-      const currentRevision = buildFileRevision(parentFile as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-      for (const cmd of fileCommands) {
+      // Check revision conflicts for the note
+      const currentRevision = buildFileRevision(file as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const cmd of noteCommands) {
         const expectedRev = cmd.expectedRevision || options?.expectedRevision;
         if (expectedRev && expectedRev !== "" && expectedRev !== currentRevision) {
-          // Throw REVISION_CONFLICT with.code,.expectedRevision,.currentRevision
           const conflict = new Error(
-            `Revision conflict on ${parentPath}`
+            `Revision conflict on ${path}`
           ) as RevisionConflictError;
           conflict.code = "REVISION_CONFLICT";
           conflict.expectedRevision = expectedRev;
@@ -476,36 +385,26 @@ export async function updateTaskItemsBatch(
         }
       }
 
-      const beforeNote = buildFullNote(parent, parent.subtasks);
-
-      // Apply each command in order via applyPatchToParent in memory
-      for (const cmd of fileCommands) {
-        const taskId = cmd.row.id;
-        applyPatchToParent(parent, cmd.patch, taskId, settings);
+      // Apply each command in order in memory, then write the note once
+      const updated = structuredClone(current.row);
+      for (const cmd of noteCommands) {
+        applyPatchToRow(updated, cmd.patch, settings);
       }
+      const change = diffRow(current.row, updated);
+      if (change) {
+        appliedChanges.push(await applyNoteChange(vault, change, content));
+      }
+      cache.delete(path);
 
-      // Single vault.modify per file for the whole batch
-      const newContent = mergeTaskNote(parentContent, beforeNote, buildFullNote(parent, parent.subtasks));
-      await vault.modify(parentFile, newContent);
-      appliedChanges.push({
-        path: parentPath,
-        before: parentContent,
-        after: newContent,
-      });
-
-      // Update cache with new revision
-      const newRevision = buildFileRevision(parentFile as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-      cache.set(parentPath, { revision: newRevision, taskRow: parent });
-
-      // Return result per command
-      for (const cmd of fileCommands) {
+      const newRevision = buildFileRevision(vault.getFileByPath(path) as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const cmd of noteCommands) {
         const changed = changedFields(
           cmd.row as unknown as Record<string, unknown>,
-          parent as unknown as Record<string, unknown>
+          { ...updated, file: cmd.row.file, parentId: cmd.row.parentId, subtasks: cmd.row.subtasks } as unknown as Record<string, unknown>
         );
         results.push({
           taskId: cmd.row.id,
-          parentPath,
+          parentPath: cmd.row.file.parentPath ?? path,
           revisionBefore: currentRevision,
           revisionAfter: newRevision,
           changedFields: changed,
@@ -534,12 +433,9 @@ export async function updateTaskItemsBatch(
       }
     }
   } catch (error) {
-    // A batch may span multiple parent files. If a later file fails, earlier
-    // files may already be written but the requested operation did not finish
-    // as one unit. Do not expose that partial mutation as an undo entry: the
-    // next undo could otherwise silently cross an incomplete operation. The
-    // history barrier is safer than attempting to overwrite a file that may
-    // have changed externally while the failing batch was unwinding.
+    // A batch may span several notes. If a later note fails, earlier ones may already be written but
+    // the requested operation did not finish as one unit, so it must not become an undo entry:
+    // clear the history as a barrier instead.
     if (appliedChanges.length > 0) {
       historyManager?.clear();
     }
@@ -558,13 +454,11 @@ export async function updateTaskItemsBatch(
 
 
 /**
- *
- * Add a subtask to a parent task.
- * Unique key via getSubtaskKey.
+ * Add a subtask to a parent task: a new note `<parent folder>/<title>.md` whose `parent` links back.
+ * The parent note is not touched.
  * Defaults: empty plan dates, workload, markers.
  * Optional patch parameter expands after defaults (can override anything).
  * Rejects empty or whitespace-only name by throwing.
- * Writes and re-parses.
  */
 export async function addSubtask(
   vault: VaultAdapter,
@@ -572,102 +466,36 @@ export async function addSubtask(
   parentRow: TaskRow,
   name: string,
   patch?: TaskPatch,
-  historyManager?: HistoryManager
+  historyManager?: HistoryManager,
+  cache?: TaskCache
 ): Promise<TaskRow> {
-  // Reject empty or whitespace-only name
   const trimmedName = name.trim();
   if (!trimmedName) {
     throw new Error("Subtask name cannot be empty");
   }
-
-  // Generate unique key
-  const existingKeys = parentRow.subtasks
-    ? new Set(parentRow.subtasks.keys())
-    : new Set<string>();
-  const subtaskKey = getSubtaskKey(trimmedName, existingKeys);
-
-  // Build default subtask
-  const today = todayStr();
-  const defaultSubtask: TaskRow = {
-    kind: "subtask",
-    id: `${parentRow.id}::${subtaskKey}`,
-    key: subtaskKey,
-    file: {
-      path: parentRow.file.path,
-      parentPath: parentRow.file.path,
-      heading: trimmedName,
-    } as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-    title: trimmedName,
-    displayName: trimmedName,
-    statusLabel: "active",
-    completed: false,
-    createdAt: today,
-    updatedAt: today,
-    dueDate: undefined,
-    priority: 0,
-    priorityMode: "auto",
-    currentStatus: "",
-    notes: "",
-    tags: [],
-    ganttEnabled: false,
-    plannedStartDate: undefined,
-    plannedEndDate: undefined,
-    workloadPlan: undefined,
-    workloadActual: undefined,
-    ganttMarkers: undefined,
-  };
-
-  // Optional patch expands after defaults (simple merge)
-  if (patch) {
-    for (const [key, value] of Object.entries(patch)) {
-      if (value !== undefined && key in defaultSubtask) {
-        (defaultSubtask as unknown as Record<string, unknown>)[key] = value;
-      }
-    }
-  }
-
   const parentFile = vault.getFileByPath(parentRow.file.path);
   if (!parentFile) {
     throw new Error("Task file not found");
   }
-  const parentContent = await vault.read(parentFile);
-  const beforeNote = buildFullNote(parentRow, parentRow.subtasks);
 
-  // Build separately so a refused save leaves the caller's row unchanged.
-  const updatedParent = { ...parentRow, subtasks: new Map(parentRow.subtasks) };
-  updatedParent.subtasks.set(subtaskKey, defaultSubtask);
-  updatedParent.updatedAt = todayStr();
+  const path = getAvailableSubtaskPath(vault, parentRow.file.path, trimmedName);
+  const row = newSubtaskRow(generateTaskId("subtask", collectTaskIds(vault, settings)), path, parentRow, trimmedName, patch);
+  const content = newNoteText(vault, row, parentRow);
+  const file = await vault.create(path, content);
+  await vault.afterWrite(file, true);
+  cache?.delete(path);
+  historyManager?.push({ label: "サブタスク追加", files: [{ path, before: null, after: content }] });
 
-  // Write and re-parse
-  const content = mergeTaskNote(parentContent, beforeNote, buildFullNote(updatedParent, updatedParent.subtasks));
-  await vault.modify(parentFile, content);
-  Object.assign(parentRow, updatedParent);
-  historyManager?.push({
-    label: "サブタスク追加",
-    files: [{ path: parentFile.path, before: parentContent, after: content }],
-  });
-
-  // Re-parse to get fresh state
-  const fileContent = await vault.read(parentFile);
-  const parsed = parseTaskFile(
-    { path: parentFile.path },
-    fileContent,
-    settings
-  );
-  if (!parsed || !parsed.subtasks) {
-    throw new Error("Failed to re-parse parent task after adding subtask");
-  }
-
-  const subtask = parsed.subtasks.get(subtaskKey);
-  if (!subtask) {
+  const created = await readNote(vault, file, settings, content);
+  if (!created) {
     throw new Error("Failed to find newly added subtask");
   }
-
-  return subtask;
+  created.row.parentId = parentRow.id;
+  created.row.file = { ...created.row.file, parentPath: parentRow.file.path } as TaskRow["file"];
+  return created.row;
 }
 
 /**
- *
  * A concurrent edit must be kept instead of overwritten by subtask creation.
  */
 export class SubtaskAddConflictError extends Error {
@@ -678,8 +506,8 @@ export class SubtaskAddConflictError extends Error {
 }
 
 /**
- * Add to the latest parent, with both planned dates set to dateStr.
- * Guard the read content atomically so edits during creation are preserved.
+ * Add a subtask whose planned start and end are both dateStr. The new subtask is its own note,
+ * so there is no concurrent edit of the parent to guard against.
  */
 export async function addSubtaskWithPlan(
   vault: VaultAdapter,
@@ -687,100 +515,35 @@ export async function addSubtaskWithPlan(
   parentRow: TaskRow,
   name: string,
   dateStr: string,
-  historyManager?: HistoryManager
+  historyManager?: HistoryManager,
+  cache?: TaskCache
 ): Promise<TaskRow> {
-  const parentFile = vault.getFileByPath(parentRow.file.path);
-  if (!parentFile) {
+  if (!vault.getFileByPath(parentRow.file.path)) {
     throw new Error("親タスクのノートが見つかりません。");
   }
-  const parentContent = await vault.read(parentFile);
-  const parent = parseTaskFile({ path: parentFile.path }, parentContent, settings);
-  if (!parent) {
-    throw new Error("親タスクのノートを読み込めませんでした。");
-  }
-  if (!vault.process) {
-    throw new Error("サブタスクを安全に保存できませんでした。");
-  }
-
-  // Reuse subtask defaults and serialization, replacing only the write path.
-  const guardedVault: VaultAdapter = {
-    create: (path, content) => vault.create(path, content),
-    read: (file) => vault.read(file),
-    getFiles: () => vault.getFiles(),
-    getFileByPath: (path) => vault.getFileByPath(path),
-    modify: async (file, content) => {
-      await vault.process!(file, (current) => {
-        if (current !== parentContent) {
-          throw new SubtaskAddConflictError();
-        }
-        return content;
-      });
-    },
-  };
-  const patch: TaskPatch = {
-    plannedStartDate: dateStr,
-    plannedEndDate: dateStr,
-  };
-
-  return addSubtask(guardedVault, settings, parent, name, patch, historyManager);
+  return addSubtask(vault, settings, parentRow, name, { plannedStartDate: dateStr, plannedEndDate: dateStr }, historyManager, cache);
 }
 
 /**
- *
- * Delete a subtask from a parent task.
- * Filters by id/key match.
- * Throws "Subtask not found" if count unchanged.
- * Writes updated parent.
+ * Delete a subtask: its note goes to the trash. Recorded for undo.
  */
 export async function deleteSubtaskTaskItem(
   vault: VaultAdapter,
-  settings: TaskWorkbenchSettings,
+  _settings: TaskWorkbenchSettings,
   row: TaskRow,
-  historyManager?: HistoryManager
+  historyManager?: HistoryManager,
+  cache?: TaskCache
 ): Promise<void> {
-  // row should be a subtask with id format: {parentPath}::{key}
-  if (row.kind !== "subtask" || !row.key) {
+  void _settings;
+  if (row.kind !== "subtask") {
     throw new Error("Subtask not found");
   }
-
-  const parentPath = row.file.parentPath;
-  if (!parentPath) {
+  const file = vault.getFileByPath(row.file.path);
+  if (!file) {
     throw new Error("Subtask not found");
   }
-
-  // Load the parent task
-  const parentFile = vault.getFileByPath(parentPath);
-  if (!parentFile) {
-    throw new Error("Task file not found");
-  }
-
-  const parentContent = await vault.read(parentFile);
-  const parent = parseTaskFile(
-    { path: parentFile.path },
-    parentContent,
-    settings
-  );
-  if (!parent || !parent.subtasks) {
-    throw new Error("Managed task not found");
-  }
-
-  const beforeNote = buildFullNote(parent, parent.subtasks);
-
-  // Filter by key
-  const countBefore = parent.subtasks.size;
-  parent.subtasks.delete(row.key);
-  const countAfter = parent.subtasks.size;
-
-  // Throw if count unchanged
-  if (countBefore === countAfter) {
-    throw new Error("Subtask not found");
-  }
-
-  // Write updated parent
-  const content = mergeTaskNote(parentContent, beforeNote, buildFullNote(parent, parent.subtasks));
-  await vault.modify(parentFile, content);
-  historyManager?.push({
-    label: "サブタスク削除",
-    files: [{ path: parentFile.path, before: parentContent, after: content }],
-  });
+  const before = await vault.read(file);
+  await vault.trash(file);
+  cache?.delete(row.file.path);
+  historyManager?.push({ label: "サブタスク削除", files: [{ path: row.file.path, before, after: null }] });
 }

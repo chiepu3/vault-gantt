@@ -5,7 +5,7 @@ import { HistoryManager } from "../../src/app/history-manager";
 import { addSubtask, createTask } from "../../src/app/task-operations";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import type { TaskPatch } from "../../src/core/types";
-import { todayStr } from "../../src/core/utils";
+import { makeUniqueMarkerKey, todayStr } from "../../src/core/utils";
 import { FakeVault } from "./fake-vault";
 
 async function setup() {
@@ -25,6 +25,9 @@ async function setup() {
       await vault.modify(file, content);
       return content;
     },
+    create: vault.create.bind(vault),
+    rename: vault.rename.bind(vault),
+    trash: vault.trash.bind(vault),
   } as unknown as Vault;
   const update = async (taskId: string, patch: TaskPatch) => {
     const plan = await registry.plan("update", { taskId, patch });
@@ -122,12 +125,13 @@ describe("marker full-array replacement", () => {
     ["replace rather than merge", [{ ...markerA, title: "Only retained marker" }]],
   ] as const)("%s on a subtask", async (_name, markers) => {
     const a = await setup(); await a.update(a.child.id, { ganttMarkers: [markerA, markerB] });
-    const replacement = markers.map(marker => ({ ...marker, tags: [...marker.tags] }));
-    const before = a.vault.getFileContent(a.parent.id);
+    // Marker keys are not stored; reading derives them from the title.
+    const replacement = markers.map(marker => ({ ...marker, key: makeUniqueMarkerKey(marker.title), tags: [...marker.tags] }));
+    const before = a.vault.getFileContent(a.child.file.path);
     const plan = await a.registry.plan("update", { taskId: a.child.id, patch: { ganttMarkers: replacement } });
     const persistedMarkers = (items: typeof replacement) => items.map(marker => ({ ...marker, tags: marker.tags.length ? marker.tags : undefined }));
     expect(plan.diffs[0].fields).toContainEqual({ field: "ganttMarkers", before: persistedMarkers([markerA, markerB]), after: replacement.length ? persistedMarkers(replacement) : "" });
-    expect(a.vault.getFileContent(a.parent.id)).toBe(before);
+    expect(a.vault.getFileContent(a.child.file.path)).toBe(before);
     expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
     expect((await a.registry.get(a.child.id)).ganttMarkers).toEqual(replacement.length ? persistedMarkers(replacement) : undefined);
     expect((await a.registry.get(a.sibling.id)).ganttMarkers ?? []).toEqual([]);
@@ -254,17 +258,20 @@ describe("patch categories and parent/subtask boundaries", () => {
 });
 
 describe("batch limits and history outcomes", () => {
-  it.each(["schedule-batch", "update-batch"] as const)("%s accepts exactly 100 changes and writes once per file", async (operation) => {
+  it.each(["schedule-batch", "update-batch"] as const)("%s accepts exactly 100 changes and writes each subtask note, never the parent", async (operation) => {
     const a = await setup();
     const children = [a.child, a.sibling];
     for (let i = 2; i < 100; i++) children.push(await addSubtask(a.vault, a.settings, a.parent, `Synthetic child ${i}`));
-    const patch = operation === "schedule-batch" ? { plannedStartDate: "2026-10-01", plannedEndDate: "2026-10-02" } : { notes: "Batch memo", priority: 3 };
+    const patch = operation === "schedule-batch" ? { plannedStartDate: "2026-10-01", plannedEndDate: "2026-10-02" } : { notes: "Batch memo", priority: 3, priorityMode: "manual" as const };
+    const parentBefore = a.vault.getFileContent(a.parent.file.path);
     a.vault.resetCounters();
+    const modified = new Set<string>(); const modify = a.vault.modify.bind(a.vault);
+    vi.spyOn(a.vault, "modify").mockImplementation(async (file, content) => { modified.add(file.path); await modify(file, content); });
     const plan = await a.registry.plan(operation, { changes: children.map(row => ({ taskId: row.id, patch })) });
     expect(plan.count).toBe(100); expect(a.vault.getModifyCallCount()).toBe(0);
     const result = await a.registry.commit(plan.previewId);
     expect(result).toMatchObject({ kind: "success", committed: 100, total: 100 });
-    expect(result.diffs).toHaveLength(100); expect(a.vault.getModifyCallCount()).toBe(1);
+    expect(result.diffs).toHaveLength(100); expect(modified.size).toBe(100); expect(modified.has(a.parent.file.path)).toBe(false); expect(a.vault.getFileContent(a.parent.file.path)).toBe(parentBefore);
     for (const row of children) expect(await a.registry.get(row.id)).toMatchObject(patch);
   });
 
@@ -280,7 +287,7 @@ describe("batch limits and history outcomes", () => {
   it("preflights the entire mixed-file batch before writing", async () => {
     const a = await setup(); const other = await createTask(a.vault, a.settings, "Synthetic other");
     const plan = await a.registry.plan("update-batch", { changes: [a.child, other].map(row => ({ taskId: row.id, patch: { notes: "new" } })) });
-    const file = a.vault.getFileByPath(other.id)!;
+    const file = a.vault.getFileByPath(other.file.path)!;
     await a.vault.modify(file, (await a.vault.read(file)) + "\nExternal synthetic edit");
     a.vault.resetCounters();
     const result = await a.registry.commit(plan.previewId);
@@ -305,11 +312,11 @@ describe("batch limits and history outcomes", () => {
 
   it.each(["partial", "cancelled"] as const)("%s after a file write retains only committed diffs and real undo history", async (kind) => {
     const a = await setup(); const other = await createTask(a.vault, a.settings, "Synthetic other");
-    const before = a.vault.getFileContent(a.parent.id);
+    const before = a.vault.getFileContent(a.child.file.path);
     const plan = await a.registry.plan("update-batch", { changes: [a.child, other].map(row => ({ taskId: row.id, patch: { notes: "new" } })) });
     const controller = new AbortController(); const modify = a.vault.modify.bind(a.vault);
     vi.spyOn(a.vault, "modify").mockImplementation(async (file, content) => {
-      if (file.path === other.id) throw new Error("Synthetic failure");
+      if (file.path === other.file.path) throw new Error("Synthetic failure");
       await modify(file, content);
       if (kind === "cancelled") controller.abort();
     });
@@ -318,57 +325,60 @@ describe("batch limits and history outcomes", () => {
     expect(result.diffs.map(diff => diff.taskId)).toEqual([a.child.id]);
     expect(result.undoLabel).toBe(a.history.peekUndoLabel()); expect(result.undoLabel).toBeTruthy();
     expect((await a.registry.get(other.id)).notes).toBe(""); expect(a.invalidate).toHaveBeenCalledOnce();
-    expect((await a.history.undo(a.historyVault)).kind).toBe("success");
-    expect(a.vault.getFileContent(a.parent.id)).toBe(before);
-    expect((await a.history.redo(a.historyVault)).kind).toBe("success");
+    expect((await a.history.undo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.getFileContent(a.child.file.path)).toBe(before);
+    expect((await a.history.redo(a.historyVault as never)).kind).toBe("success");
     expect((await a.registry.get(a.child.id)).notes).toBe("new");
   });
 
   it("normal updates support exact undo/redo and a new update clears redo", async () => {
-    const a = await setup(); const before = a.vault.getFileContent(a.parent.id);
+    const a = await setup(); const before = a.vault.getFileContent(a.child.file.path);
     const result = await a.update(a.child.id, { notes: "new", ganttMarkers: [markerA], ...initialDates });
-    const after = a.vault.getFileContent(a.parent.id);
+    const after = a.vault.getFileContent(a.child.file.path);
     expect(result.undoLabel).toBe(a.history.peekUndoLabel()); expect(a.history.canRedo()).toBe(false);
-    expect((await a.history.undo(a.historyVault)).kind).toBe("success");
-    expect(a.vault.getFileContent(a.parent.id)).toBe(before); expect(a.history.canRedo()).toBe(true);
-    expect((await a.history.redo(a.historyVault)).kind).toBe("success");
-    expect(a.vault.getFileContent(a.parent.id)).toBe(after);
-    await a.history.undo(a.historyVault);
+    expect((await a.history.undo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.getFileContent(a.child.file.path)).toBe(before); expect(a.history.canRedo()).toBe(true);
+    expect((await a.history.redo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.getFileContent(a.child.file.path)).toBe(after);
+    await a.history.undo(a.historyVault as never);
     await a.update(a.child.id, { notes: "different timeline" });
     expect(a.history.canUndo()).toBe(true); expect(a.history.canRedo()).toBe(false);
-    expect((await a.history.redo(a.historyVault)).kind).toBe("empty");
+    expect((await a.history.redo(a.historyVault as never)).kind).toBe("empty");
   });
 
-  it.each(["undo", "redo"] as const)("parent create preserves undo and discards redo with existing %s history", async (direction) => {
+  it.each(["undo", "redo"] as const)("parent create is undoable and discards redo with existing %s history", async (direction) => {
     const a = await setup(); await a.update(a.child.id, { notes: "existing history" });
-    if (direction === "redo") await a.history.undo(a.historyVault);
+    if (direction === "redo") await a.history.undo(a.historyVault as never);
     const plan = await a.registry.plan("create", { name: "Synthetic new parent" });
     expect(a.history.canUndo() || a.history.canRedo()).toBe(true);
     const result = await a.registry.commit(plan.previewId);
     expect(result).toMatchObject({ kind: "success", committed: 1, created: { kind: "parent", displayName: "Synthetic new parent" } });
-    expect(result.undoLabel).toBeUndefined();
-    expect(a.history.canUndo()).toBe(direction === "undo");
+    expect(result.undoLabel).toBe(a.history.peekUndoLabel()); expect(result.undoLabel).toBeTruthy();
+    expect(a.history.canUndo()).toBe(true);
     expect(a.history.canRedo()).toBe(false);
-    if (direction === "undo") {
-      expect((await a.history.undo(a.historyVault)).kind).toBe("success");
-      expect((await a.registry.get(a.child.id)).notes).toBe("");
-      expect(a.vault.getFileByPath(result.created!.id)).not.toBeNull();
-    }
+    const path = result.created!.file.path;
+    expect(a.vault.getFileByPath(path)).not.toBeNull();
+    expect((await a.history.undo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.getFileByPath(path)).toBeNull(); expect(a.vault.trashed).toContain(path);
+    expect((await a.history.redo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.getFileByPath(path)).not.toBeNull();
   });
 
-  it("subtask create through parent-file modify is undoable, not a clear barrier", async () => {
+  it("subtask create writes only the new note, is undoable and not a clear barrier", async () => {
     const a = await setup(); const earlier = await a.update(a.child.id, { notes: "prior update" });
-    const before = a.vault.getFileContent(a.parent.id);
+    const before = a.vault.snapshot();
     const plan = await a.registry.plan("create", { parentTaskId: a.parent.id, name: "Synthetic new child" });
-    expect(a.vault.getFileContent(a.parent.id)).toBe(before);
+    expect(a.vault.snapshot()).toEqual(before);
     const result = await a.registry.commit(plan.previewId);
     expect(result).toMatchObject({ kind: "success", committed: 1, created: { kind: "subtask", displayName: "Synthetic new child" } });
     expect(result.undoLabel).toBe(a.history.peekUndoLabel()); expect(result.undoLabel).toBeTruthy();
-    const after = a.vault.getFileContent(a.parent.id);
-    expect((await a.history.undo(a.historyVault)).kind).toBe("success");
-    expect(a.vault.getFileContent(a.parent.id)).toBe(before); expect(a.history.peekUndoLabel()).toBe(earlier.undoLabel);
-    expect((await a.history.redo(a.historyVault)).kind).toBe("success");
-    expect(a.vault.getFileContent(a.parent.id)).toBe(after);
+    const path = result.created!.file.path, after = a.vault.snapshot();
+    expect(Object.keys(after).filter((key) => !(key in before))).toEqual([path]);
+    expect(a.vault.getFileContent(a.parent.file.path)).toBe(before[a.parent.file.path]);
+    expect((await a.history.undo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.snapshot()).toEqual(before); expect(a.history.peekUndoLabel()).toBe(earlier.undoLabel);
+    expect((await a.history.redo(a.historyVault as never)).kind).toBe("success");
+    expect(a.vault.snapshot()).toEqual(after);
     await expect(a.registry.plan("create", { parentTaskId: a.child.id, name: "Nested" })).rejects.toThrow("Not a parent");
   });
 });

@@ -9,7 +9,6 @@ import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
 import { linkTarget, type NoteVault } from "./app/note-vault";
 import { SettingsPersistence } from "./app/settings-persistence";
-import { renameInParentOrder } from "./core/parent-order";
 import { canonical } from "./app/operations/runtime";
 import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
@@ -62,7 +61,7 @@ import {
   deleteSubtaskTaskItem,
   loadTasks,
 } from "./app/task-operations";
-import { AutoPriorityController, TaskCache } from "./app/auto-priority";
+import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
 import {
   createRequestUrlNationalHolidayFetcher,
   HolidayService,
@@ -328,7 +327,6 @@ export default class TaskWorkbenchPlugin extends Plugin {
   );
 
   readonly taskFiles = new TaskFileService();
-  readonly autoPriority = new AutoPriorityController();
   readonly taskCache: TaskCache = new Map();
   readonly historyManager = new HistoryManager();
   readonly scheduleGhosts = new ScheduleGhostStore();
@@ -352,13 +350,6 @@ export default class TaskWorkbenchPlugin extends Plugin {
   /** Saves settings after the parent order was created/extended from loaded notes (fire and forget). */
   private persistParentOrder(): void {
     void this.settingsWriter().save().catch((error: unknown) => this.logger?.error("TaskWorkbenchPlugin", "failed to save Gantt parent order", error));
-  }
-  /** A task note moved or was deleted: keep the stored parent order pointing at real paths. */
-  private updateParentOrderPath(oldPath: string, newPath?: string): void {
-    const order = this.settings?.ganttParentOrder;
-    if (!order?.includes(oldPath)) return;
-    this.settings.ganttParentOrder = newPath ? renameInParentOrder(order, oldPath, newPath) : order.filter((path) => path !== oldPath);
-    this.persistParentOrder();
   }
   private createOperationService(): OperationService {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
@@ -491,7 +482,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   redoEntry(entryId: string): Promise<void> {
     return this.operations.coordinate(async () => {
       if (this.historyManager.peekRedoLabel() !== entryId) throw new Error("この履歴は現在やり直せません。履歴を確認してください。");
-      const result = await this.historyManager.redo(this.app.vault);
+      const result = await this.historyManager.redo(this.vaultAdapter());
       if (result.kind !== "success") throw new Error("保存後の変更を検出したため、やり直せませんでした。");
       this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
     });
@@ -500,7 +491,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     return this.operations.coordinate(async () => {
       await this.historyManager.refreshEligibility();
       if (this.historyPort.inspectUndo(entryId).state !== "available" || this.historyManager.peekUndoLabel() !== entryId) throw new Error("この履歴は現在元に戻せません。履歴と対象ファイルを確認してください。");
-      const result = await this.historyManager.undo(this.app.vault);
+      const result = await this.historyManager.undo(this.vaultAdapter());
       if (result.kind !== "success") throw new Error("保存後の変更を検出したため、元に戻せませんでした。");
       this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
     });
@@ -763,8 +754,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("create", (file) => clear(file as TFile, "create")));
       this.registerEvent(this.app.vault.on("delete", (file) => clear(file as TFile, "delete")));
       this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
-      this.registerEvent(this.app.vault.on("delete", (file) => this.updateParentOrderPath(file.path)));
-      this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.updateParentOrderPath(oldPath, file.path)));
+      // Frontmatter comes from the metadataCache: drop what it re-indexed and redraw once it settles.
+      let indexed = false, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      const refreshSoon = () => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { refreshTimer = undefined; if (!this.unloading) void this.refreshOpenViews(); }, 300); };
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); refreshSoon(); }));
+      this.registerEvent(this.app.metadataCache.on("resolved", () => { if (indexed) return; indexed = true; this.taskCache.clear(); refreshSoon(); }));
     }
     this.registerCommands();
     for (const [position, label] of [["tab", "タブ"], ["left", "左サイドバー"], ["right", "右サイドバー"]] as const) {
@@ -795,35 +789,6 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
   private async runDeferredStartup(): Promise<void> {
     if (this.unloading) return;
-    // updateAutoPriorities failures are caught and logged; view/command/
-    // ribbon registration below MUST still run. Recovery from a missing task
-    // folder is simply creating the folder — no plugin reload required.
-    // The controller supports forced updates internally; no force-update
-    // command is exposed in the command palette.
-    try {
-      const ran = await this.autoPriority.updateAutoPriorities(
-        this.vaultAdapter(),
-        this.settings,
-
-        this.taskCache,
-        false,
-        this.logger
-
-      );
-      if (ran) {
-        // persist settings after the auto priority run
-        await this.saveSettings();
-      }
-    } catch (err) {
-
-      this.logger.error(
-        "TaskWorkbenchPlugin",
-        "Task Workbench: auto priority update failed during onload",
-        err
-      );
-
-    }
-
     try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
     // fire-and-forget background holiday refresh.
     // The caller never awaits or catches: an unexpected rejection surfaces as
@@ -839,27 +804,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
  * controller path, then persist its updated last-run timestamp.
  */
   async updateAutoPriorities(): Promise<void> {
-
-    const startedAt = Date.now();
-
-    const ran = await this.autoPriority.updateAutoPriorities(
-      this.vaultAdapter(),
-      this.settings,
-
-      this.taskCache,
-      true,
-      this.logger
-
-    );
-    if (ran) {
-      await this.saveSettings();
-    }
-
-    this.logger.info("TaskWorkbenchPlugin", "auto priority run", {
-      durationMs: Date.now() - startedAt,
-      ran,
-    });
-
+    // Auto priority is computed when shown, so a settings change only needs a save and a redraw.
+    await this.saveSettings();
+    this.taskCache.clear();
+    await this.refreshOpenViews();
   }
 
   async openAIChat(position: "tab" | "left" | "right" = "tab"): Promise<void> {
@@ -1034,7 +982,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private async performUndo(): Promise<void> {
     this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
-    const result = await this.historyManager.undo(this.app.vault);
+    const result = await this.historyManager.undo(this.vaultAdapter());
     switch (result.kind) {
       case "empty":
         new Notice("元に戻せる操作がありません");
@@ -1061,7 +1009,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private async performRedo(): Promise<void> {
     this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
-    const result = await this.historyManager.redo(this.app.vault);
+    const result = await this.historyManager.redo(this.vaultAdapter());
     switch (result.kind) {
       case "empty":
         new Notice("やり直せる操作がありません");

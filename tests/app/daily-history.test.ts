@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { runtimeFixture } from "./operation-runtime-fixture";
 import { dailyItems } from "../../src/app/operations/daily-handlers";
-import { buildFullNote } from "../../src/core/note-format";
+import { newNoteText } from "../../src/app/task-operations";
+import { CHILD_ID, CHILD_PATH } from "../contracts/fixtures";
 
 const date = "2026-10-10";
 const content = "---\r\ntitle: 日記\r\n---\r\n# メモ\r\n本文を保持\r\n- [ ] 同じ\r\n- [ ] 同じ\r\n- [x] 完了\r\n";
@@ -40,12 +41,12 @@ describe("AI Daily history previews and approval", () => {
     f.settings.dailyTodoSources.push({ key: "meeting", label: "会議", format: "[tasks/daily/]YYYY-MM-DD", creatableFromGantt: false });
     await f.vault.create(path, content);
     await f.vault.create(sibling, "- [x] 別ソース");
-    const file = f.vault.getFileByPath(path)!, task = f.vault.getFileByPath(f.parent.id)!;
+    const file = f.vault.getFileByPath(path)!, task = f.vault.getFileByPath(CHILD_PATH)!;
     const taskBefore = await f.vault.read(task), copy = structuredClone(f.parent);
-    copy.subtasks!.get("review")!.title = "変更"; copy.subtasks!.get("review")!.displayName = "変更";
-    const taskAfter = buildFullNote(copy, copy.subtasks), after = content.replace("同じ", "変更");
+    const child = copy.subtasks!.get(CHILD_ID)!; child.title = "変更"; child.displayName = "変更";
+    const taskAfter = newNoteText(f.vault, child, copy), after = content.replace("同じ", "変更");
     await f.vault.modify(task, taskAfter); await f.vault.modify(file, after);
-    f.historyManager.push({ label: "mixed", files: [{ path, before: content, after }, { path: f.parent.id, before: taskBefore, after: taskAfter }] });
+    f.historyManager.push({ label: "mixed", files: [{ path, before: content, after }, { path: CHILD_PATH, before: taskBefore, after: taskAfter }] });
     for (const id of ["V20", "V21"] as const) {
       const preview = await f.service.propose(id, {}, f.context);
       expect(preview.entries.some((entry) => entry.entity.kind === "task")).toBe(true);

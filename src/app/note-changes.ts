@@ -1,6 +1,6 @@
-import { applyFrontmatterChanges, diffFrontmatter, managedFrontmatter, replaceSections, type Frontmatter } from "../core/note-v2";
-import type { TaskRow } from "../core/types";
-import type { NoteVault } from "./note-vault";
+import { applyFrontmatterChanges, bodiesOfRow, diffFrontmatter, managedFrontmatter, newNoteFrontmatter, parseNote, replaceSections, type Frontmatter } from "../core/note-v2";
+import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
+import type { VaultAdapter as NoteVault } from "./task-operations";
 
 /** One note's worth of change, derived by comparing the rows before and after an edit. */
 export interface NoteChange {
@@ -35,6 +35,21 @@ export class NoteConflictError extends Error {
 const flat = (parents: readonly TaskRow[]): { row: TaskRow; parent?: TaskRow }[] =>
   parents.flatMap((parent) => [{ row: parent }, ...[...parent.subtasks?.values() ?? []].map((row) => ({ row, parent }))]);
 
+/** The change that turns `old` into `row` (same task), or null when the note would stay as it is. */
+export function diffRow(old: TaskRow, row: TaskRow): NoteChange | null {
+  const fm = diffFrontmatter(managedFrontmatter(old), managedFrontmatter(row));
+  const sections: NonNullable<NoteChange["sections"]> = {};
+  if ((old.currentStatus ?? "").trim() !== (row.currentStatus ?? "").trim()) sections.currentStatus = row.currentStatus ?? "";
+  if ((old.notes ?? "").trim() !== (row.notes ?? "").trim()) sections.notes = row.notes ?? "";
+  const hasFm = Object.keys(fm).length > 0, hasSections = Object.keys(sections).length > 0;
+  if (!hasFm && !hasSections) return null;
+  return {
+    kind: "update", path: old.file.path, taskId: row.id,
+    ...(hasFm ? { fm } : {}), ...(hasSections ? { sections } : {}),
+    ...((old.displayName || old.title) !== (row.displayName || row.title) ? { title: row.displayName || row.title } : {}),
+  };
+}
+
 /**
  * Compares two row trees and lists the note changes that turn the first into the second.
  * Only managed keys that differ are listed; a subtask edit never produces a change for its parent.
@@ -50,17 +65,8 @@ export function diffTasks(before: readonly TaskRow[], after: readonly TaskRow[],
       changes.push({ kind: "create", path: row.file.path, taskId: row.id, content: createText(row, parent) });
       continue;
     }
-    const fm = diffFrontmatter(managedFrontmatter(old), managedFrontmatter(row));
-    const sections: NoteChange["sections"] = {};
-    if ((old.currentStatus ?? "").trim() !== (row.currentStatus ?? "").trim()) sections.currentStatus = row.currentStatus ?? "";
-    if ((old.notes ?? "").trim() !== (row.notes ?? "").trim()) sections.notes = row.notes ?? "";
-    const hasSections = Object.keys(sections).length > 0;
-    if (!Object.keys(fm).length && !hasSections) continue;
-    changes.push({
-      kind: "update", path: old.file.path, taskId: row.id,
-      ...(Object.keys(fm).length ? { fm } : {}), ...(hasSections ? { sections } : {}),
-      ...((old.displayName || old.title) !== (row.displayName || row.title) ? { title: row.displayName || row.title } : {}),
-    });
+    const change = diffRow(old, row);
+    if (change) changes.push(change);
   }
   for (const { row } of flat(before)) {
     if (row.kind === "subtask" && !next.has(row.id)) changes.push({ kind: "delete", path: row.file.path, taskId: row.id });
@@ -95,4 +101,18 @@ export async function applyNoteChange(vault: NoteVault, change: NoteChange, expe
   const after = await vault.read(file);
   await vault.afterWrite(file, after !== before);
   return { path: change.path, before, after };
+}
+
+/**
+ * Serializes a row the way a note stores it and reads it back. What differs from the original is
+ * what the format cannot hold, so callers refuse to save such an edit instead of losing data.
+ */
+export function roundTripRow(row: TaskRow, settings: Pick<TaskWorkbenchSettings, "autoPriorityEnabled">): TaskRow | null {
+  const fm = newNoteFrontmatter(row, row.kind === "subtask" ? { parentLink: "[[parent]]" } : {});
+  const parsed = parseNote({ path: row.file.path }, fm, bodiesOfRow(row), settings);
+  if (!parsed) return null;
+  parsed.row.file = row.file;
+  if (row.parentId) parsed.row.parentId = row.parentId;
+  if (row.kind === "parent") parsed.row.subtasks = row.subtasks;
+  return parsed.row;
 }

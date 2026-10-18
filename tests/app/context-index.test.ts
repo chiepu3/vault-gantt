@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { runtimeFixture } from "./operation-runtime-fixture";
-import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
-import { buildFullNote } from "../../src/core/note-format";
+import { CHILD_ID, CHILD_PATH, PARENT_ID, PARENT_PATH } from "../contracts/fixtures";
+import { newNoteText } from "../../src/app/task-operations";
 import { contextQueryOutputSchemas } from "../../src/contracts/context";
 
 describe("content-hash ContextReadPort", () => {
@@ -21,10 +21,10 @@ describe("content-hash ContextReadPort", () => {
     const unchanged = await service.contextPort.snapshot();
     expect(read).not.toHaveBeenCalled();
     parent.displayName = "再読込"; parent.title = "再読込";
-    await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    await vault.modify(vault.getFileByPath(PARENT_PATH)!, newNoteText(vault, parent));
     read.mockClear();
     const changed = await service.contextPort.snapshot();
-    expect(read.mock.calls.map(([file]) => (file as { path: string }).path)).toEqual([PARENT_ID]);
+    expect(read.mock.calls.map(([file]) => (file as { path: string }).path)).toEqual([PARENT_PATH]);
     expect(changed.revision).not.toBe(unchanged.revision);
   });
   it("pages have no gaps/duplicates and are bound to snapshot/query/principal", async () => {
@@ -38,7 +38,7 @@ describe("content-hash ContextReadPort", () => {
     expect(second.status === "success" && second.result.data.nextCursor).toBeNull();
     const wrong = await service.contextPort.query("tasks.search", { limit: 1, cursor }, { ...context, principalId: "other" }); expect(wrong).toMatchObject({ status: "error", error: { code: "CURSOR_STALE", nextAction: expect.any(String) } });
     const changedQuery = await service.contextPort.query("tasks.search", { limit: 1, cursor, name: "レビュー" }, context); expect(changedQuery).toMatchObject({ status: "error", error: { code: "CURSOR_STALE" } });
-    parent.displayName = "変化"; parent.title = "変化"; await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    parent.displayName = "変化"; parent.title = "変化"; await vault.modify(vault.getFileByPath(PARENT_PATH)!, newNoteText(vault, parent));
     const stale = await service.contextPort.query("tasks.search", { limit: 1, cursor }, context); expect(stale).toMatchObject({ status: "error", error: { code: "CURSOR_STALE" } });
   });
   it("parent derived periods and child writable schedule are distinguished", async () => {
@@ -78,11 +78,14 @@ describe("content-hash ContextReadPort", () => {
   });
   it("scales compact search over 1200 children while fetching only requested page", async () => {
     const { service, context, vault, parent, child } = await runtimeFixture();
-    parent.subtasks = new Map(Array.from({ length: 1200 }, (_, index) => { const key = `child-${index}`; return [key, { ...structuredClone(child), id: `${PARENT_ID}::${key}`, key, notes: "長い本文".repeat(100), displayName: key, title: key }]; }));
-    await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    for (let index = 0; index < 1200; index++) {
+      const key = `s-${index.toString(36).padStart(6, "0")}`;
+      const row = { ...structuredClone(child), id: key, key, notes: "長い本文".repeat(100), displayName: `child-${index}`, title: `child-${index}`, file: { path: `tasks/リリース/child-${index}.md`, parentPath: parent.file.path } as typeof child.file };
+      await vault.create(row.file.path, newNoteText(vault, row, parent));
+    }
     const result = await service.contextPort.query("tasks.search", { kind: "subtask", limit: 20 }, context);
     expect(result.status).toBe("success"); if (result.status !== "success") return;
-    expect(result.result.data.totalMatched).toBe(1200); expect(result.result.data.returned).toBe(20);
+    expect(result.result.data.totalMatched).toBe(1201); expect(result.result.data.returned).toBe(20);
     expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThan(15000); expect(JSON.stringify(result)).not.toContain("長い本文");
   });
 });
@@ -90,7 +93,7 @@ describe("content-hash ContextReadPort", () => {
 it("unreadable files are explicit and stored/effective priorities remain separate", async () => {
   const { service, context, vault, parent } = await runtimeFixture();
   parent.dueDate = "2001-01-01"; parent.priority = 0;
-  await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+  await vault.modify(vault.getFileByPath(PARENT_PATH)!, newNoteText(vault, parent));
   await vault.create("tasks/broken.md", "---\ntype: task\ninvalid: [\n---\n");
   const read = vault.read.bind(vault);
   vi.spyOn(vault, "read").mockImplementation((file) => { if (file.path === "tasks/broken.md") return Promise.reject(new Error("READ_FAILED")); return read(file); });
@@ -135,26 +138,26 @@ describe("snapshot caching", () => {
     const d = await service.contextPort.snapshot();
     expect(d.parents[0].ganttOrder).toBe(2000);
     expect(c.parents[0].ganttOrder).toBe(1000);
-    parent.title = "再読込みです"; parent.displayName = "再読込みです"; await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    parent.title = "再読込みです"; parent.displayName = "再読込みです"; await vault.modify(vault.getFileByPath(PARENT_PATH)!, newNoteText(vault, parent));
     const e = await service.contextPort.snapshot();
     expect(e.revision).not.toBe(d.revision);
   });
   it("retains old revisions without file bytes and still answers context.changes", async () => {
-    const { service, context, vault, parent } = await runtimeFixture();
+    const { service, context, vault, parent, child } = await runtimeFixture();
     const overview = await service.contextPort.query("context.overview", { scope: {} }, context);
     if (overview.status !== "success") throw new Error("overview");
     const since = overview.result.snapshotRevision;
     const stored = (service.contextPort as unknown as { snapshots: Map<string, { contents?: unknown }> }).snapshots;
     expect(stored.get(since)).toBeDefined(); expect(stored.get(since)!.contents).toBeUndefined();
-    parent.subtasks!.get("review")!.title = "変更後です"; parent.subtasks!.get("review")!.displayName = "変更後です";
-    await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    child.title = "変更後です"; child.displayName = "変更後です";
+    await vault.modify(vault.getFileByPath(CHILD_PATH)!, newNoteText(vault, child, parent));
     const changes = await service.contextPort.query("context.changes", { sinceRevision: since, scope: {} }, context);
     expect(changes).toMatchObject({ status: "success", result: { data: { kind: "changes", changed: expect.arrayContaining([expect.objectContaining({ id: CHILD_ID, name: "変更後です" })]), added: [], deletedIds: [] } } });
   });
   it("covers() is true only for task-folder and daily-source markdown", async () => {
     const { service } = await runtimeFixture();
     const index = service.contextPort;
-    expect(index.covers(PARENT_ID)).toBe(true);
+    expect(index.covers(PARENT_PATH)).toBe(true);
     expect(index.covers("daily/2026-10-13.md")).toBe(true);
     expect(index.covers("notes/other.md")).toBe(false);
     expect(index.covers("tasks/image.png")).toBe(false);

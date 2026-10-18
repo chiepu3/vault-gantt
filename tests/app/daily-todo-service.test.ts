@@ -1367,13 +1367,13 @@ describe("daily-todo-service", () => {
       const summary = { date: "2026-07-25", items: [first, meeting], completedCount: 0, totalCount: 2 };
       await updateDailyTodos(summary, [{ ...first, completed: true }, { ...meeting, text: "edited" }, todoItem({ path: "", line: -1, text: "new", isNew: true })], app, DEFAULT_SETTINGS, history);
       const saved = getContent(path);
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(getContent(path)).toBe(before);
       expect(getContent(other)).toBe("- [ ] meeting");
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(getContent("task.md")).toBe("due: 2026-07-01");
-      expect((await history.redo(vault)).kind).toBe("success");
-      expect((await history.redo(vault)).kind).toBe("success");
+      expect((await history.redo(vault as never)).kind).toBe("success");
+      expect((await history.redo(vault as never)).kind).toBe("success");
       expect(getContent(path)).toBe(saved);
       expect(getContent(other)).toBe("- [ ] edited");
     });
@@ -1388,7 +1388,7 @@ describe("daily-todo-service", () => {
       await deleteDailyTodoItem(item, vault, history);
       await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
       for (const expected of ["", "- [x] first", before]) {
-        expect((await history.undo(vault)).kind).toBe("success");
+        expect((await history.undo(vault as never)).kind).toBe("success");
         expect(getContent(path)).toBe(expected);
       }
       expect(history.peekUndoLabel()).toBe("以前の変更");
@@ -1402,7 +1402,7 @@ describe("daily-todo-service", () => {
         setFile(file.path, content);
       }).mockRejectedValueOnce(new Error("save failed"));
       await expect(updateDailyTodos({ date: "2026-07-25", items, completedCount: 0, totalCount: 2 }, items.map((item) => ({ ...item, completed: true })), app, DEFAULT_SETTINGS, history)).rejects.toThrow("save failed");
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(getContent(path)).toBe("- [ ] first");
       expect(getContent("meeting.md")).toBe("- [ ] second");
     });
@@ -1412,7 +1412,7 @@ describe("daily-todo-service", () => {
       const history = new HistoryManager();
       history.push({ label: "以前の変更", files: [{ path: "other.md", before: "a", after: "b" }] });
       await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(vault.getFileByPath(path)).not.toBeNull();
       expect(getContent(path)).not.toContain("- [ ] new");
       expect(history.peekUndoLabel()).toBe("以前の変更");
@@ -1422,7 +1422,7 @@ describe("daily-todo-service", () => {
       const { vault, app } = makeFakeVault({ [path]: "- [ ] first", "task.md": "b" });
       const history = new HistoryManager();
       history.push({ label: "以前の変更", files: [{ path: "task.md", before: "a", after: "b" }] });
-      await history.undo(vault);
+      await history.undo(vault as never);
       const item = todoItem({ path, line: 0, text: "first" });
       await updateDailyTodos({ date: "2026-07-25", items: [item], completedCount: 0, totalCount: 1 }, [item], app, DEFAULT_SETTINGS, history);
       expect(history.canUndo()).toBe(false);

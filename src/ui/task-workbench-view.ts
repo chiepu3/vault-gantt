@@ -1,7 +1,7 @@
 import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
 import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts, ViewStateV1 } from "../contracts/ports";
-import { NotePreservationError } from "../core/note-update";
+import { NotePreservationError } from "../core/note-v2";
 import { ItemView, moment, Notice, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
@@ -1556,18 +1556,18 @@ export class TaskWorkbenchView extends ItemView {
 
   /**
  * Resolves a subtask's parent display name for the flat-mode prefix.
- * Parent lookup matches `row.file.parentPath` against the in-memory task
+ * Parent lookup matches `row.parentId` against the in-memory task
  * list; unknown parents yield an empty prefix.
  */
   private parentDisplayName(
     row: TaskRow,
     parentDisplayNames?: Map<string, string>
   ): string {
-    const parentPath = row.file.parentPath;
-    if (!parentPath || !parentDisplayNames) {
+    const parentId = row.parentId ?? row.file.parentPath;
+    if (!parentId || !parentDisplayNames) {
       return "";
     }
-    return parentDisplayNames.get(parentPath) ?? "";
+    return parentDisplayNames.get(parentId) ?? "";
   }
 
   /**

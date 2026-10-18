@@ -4,12 +4,15 @@ import { CONTEXT_CURSOR_RULES } from "../../src/contracts/context";
 import { PROJECTION_PAGING_RULES } from "../../src/contracts/preview";
 import type { GanttChildStateV1, GanttParentStateV1, GanttStateV1, GanttProjectionV1, OperationPreviewV1, OperationOutcomeV1, PreviewEffect, ProjectionPageV1 } from "../../src/contracts/preview";
 
-export const PARENT_ID = "tasks/2026/10/リリース.md";
-export const CHILD_ID = `${PARENT_ID}::review`;
+export const PARENT_ID = "t-aaaaaa";
+export const CHILD_ID = "s-bbbbbb";
+/** Where the fixture notes live: the subtask sits in a folder named like its parent note. */
+export const PARENT_PATH = "tasks/リリース.md";
+export const CHILD_PATH = "tasks/リリース/レビュー.md";
 export const DATE = "2026-10-13";
 const revision = "file-content-sha256:fixture";
 const task = { taskId: CHILD_ID }, child = { subtaskId: CHILD_ID }, parent = { parentId: PARENT_ID };
-const markerTarget = { ...child, markerKey: "review-point" }, event = { eventKey: "event-1" };
+const markerTarget = { ...child, markerKey: "確認" }, event = { eventKey: "event-1" };
 const source = { sourceKey: "main" }, tag = { tagKey: "tag-1" }, view = { viewId: "gantt-1" };
 const daily = { path: "daily/2026-10-13.md", line: 3, itemFingerprint: "line-sha256:fixture", expectedRevision: revision };
 const feature = { enabled: true }, conversation = { conversationId: "conversation-2" };
@@ -38,7 +41,7 @@ export const INPUT_FIXTURES = {
   S09: feature, S10: feature, S11: feature, S12: feature, S13: feature, S14: feature, S15: feature, S16: feature, S17: feature, S18: feature,
   S19: { ganttSyncUrl: "https://example.test/api/snapshot" }, S20: { ganttSyncIntervalMinutes: 5 }, S21: {},
   S22: { name: "リリース", color: "#4488cc", order: 1000 }, S23: { ...tag, name: "出荷" }, S24: { ...tag, color: "#4488cc" }, S25: { orderedKeys: ["tag-1"] }, S26: tag,
-  S27: { name: "リリース", target: { kind: "marker", taskId: CHILD_ID, markerKey: "review-point" } },
+  S27: { name: "リリース", target: { kind: "marker", taskId: CHILD_ID, markerKey: "確認" } },
   S28: { label: "日次", format: "[daily/]YYYY-MM-DD", creatableFromGantt: true }, S29: { ...source, label: "日次" }, S30: { ...source, momentFormat: "[daily/]YYYY-MM-DD" },
   S31: { ...source, templatePath: "" }, S32: { ...source, creatableFromGantt: true }, S33: { orderedKeys: ["main"] }, S34: source, S35: {},
   V01: { position: "tab" }, V02: view, V03: { query: "レビュー" }, V04: task, V05: { date: DATE }, V06: { position: "right" },
@@ -55,7 +58,7 @@ export const INPUT_FIXTURES = {
 export const CHILD_STATE: GanttChildStateV1 = {
   id: CHILD_ID, parentId: PARENT_ID, name: "レビュー", status: "in_progress", completed: false, tags: ["対象"],
   period: { start: DATE, end: "2026-10-15" }, due: null,
-  markers: [{ key: "review-point", title: "確認", date: DATE, tags: [] }], hours: [{ date: DATE, plan: 1.5, actual: 1 }],
+  markers: [{ key: "確認", title: "確認", date: DATE, tags: [] }], hours: [{ date: DATE, plan: 1.5, actual: 1 }],
   effectivePriority: 0, appearance: { color: "#4488cc", tags: [{ name: "対象", color: "#4488cc", origin: "own" }] },
 };
 const parentState: GanttParentStateV1 = {
@@ -87,7 +90,7 @@ function preview(id: string, operationId: OperationPreviewV1["operationId"], eff
     warnings: [], undo: { support: "full" }, projection: after ? projection(after) : null,
   };
 }
-const createdChild = { ...CHILD_STATE, id: `${PARENT_ID}::new`, name: "新しい子", period: { start: DATE, end: DATE }, markers: [], hours: [] };
+const createdChild = { ...CHILD_STATE, id: "s-eeeeee", name: "新しい子", period: { start: DATE, end: DATE }, markers: [], hours: [] };
 const create = preview("create-fixture", "T06", [{ kind: "presence", action: "create", before: null, after: { id: createdChild.id, name: createdChild.name } },
   { kind: "schedule", before: { start: null, end: null }, after: createdChild.period, unit: "business-day" }],
 { ...GANTT_STATE, parents: [{ ...parentState, children: [CHILD_STATE, createdChild] }] });
@@ -108,8 +111,8 @@ export const SETTINGS_PREVIEW: OperationPreviewV1 = {
   projection: { ...settings.projection!, targets: [{ kind: "setting", key: "ganttFeatureWorkloadEnabled" }], visibility: [{ entity: { kind: "setting", key: "ganttFeatureWorkloadEnabled" }, state: "feature-disabled", reason: "作業時間機能をOFFにするため表示しない。保存済み時間は保持。" }] },
 };
 const fields: PreviewEffect[] = [{ kind: "fields", fields: [{ field: "completed", before: false, after: true, reason: "requested" }, { field: "statusLabel", before: "active", after: "done", reason: "derived" }] }];
-export const SECOND_PARENT_ID = "tasks/2026/10/別リリース.md";
-export const SECOND_CHILD_ID = `${SECOND_PARENT_ID}::review`;
+export const SECOND_PARENT_ID = "t-cccccc";
+export const SECOND_CHILD_ID = "s-dddddd";
 const secondChild: GanttChildStateV1 = { ...CHILD_STATE, id: SECOND_CHILD_ID, parentId: SECOND_PARENT_ID, hours: [{ date: DATE, plan: 2, actual: 0 }] };
 const secondParent: GanttParentStateV1 = { ...parentState, id: SECOND_PARENT_ID, name: "別リリース", children: [secondChild] };
 const partialBefore: GanttStateV1 = { ...GANTT_STATE, parents: [parentState, secondParent], aggregates: [{ date: DATE, plan: 3.5, actual: 1, capacity: 7, overCapacity: false }] };

@@ -254,16 +254,18 @@ describe("NavigationService", () => {
   });
 
   describe("openTaskItem", () => {
-    it("subtasks open through a filename#heading anchor link", async () => {
+    it("subtasks open their own note in the most recently used leaf", async () => {
       const h = createHarness();
+      const recent = makeLeaf();
+      h.workspace.getMostRecentLeaf.mockReturnValue(recent);
       const subtask = makeRow({
         kind: "subtask",
-        id: "tasks/2026/07/2026-07-29 Parent.md::child",
-        key: "child",
+        id: "s-abc123",
+        key: "s-abc123",
+        parentId: "t-parent",
         file: {
-          path: "tasks/2026/07/2026-07-29 Parent.md",
-          parentPath: "tasks/2026/07/2026-07-29 Parent.md",
-          heading: "Sub One",
+          path: "tasks/2026-07-29 Parent/Sub One.md",
+          parentPath: "tasks/2026-07-29 Parent.md",
         },
         title: "Sub One",
         displayName: "Sub One",
@@ -271,34 +273,8 @@ describe("NavigationService", () => {
 
       await h.service.openTaskItem(subtask);
 
-      expect(h.workspace.openLinkText).toHaveBeenCalledTimes(1);
-      expect(h.workspace.openLinkText).toHaveBeenCalledWith(
-        "2026-07-29 Parent#Sub One",
-        "tasks/2026/07/2026-07-29 Parent.md"
-      );
-      // link jump succeeded — no leaf fallback happened
-      expect(h.workspace.getMostRecentLeaf).not.toHaveBeenCalled();
-      expect(h.workspace.getLeaf).not.toHaveBeenCalled();
-    });
-
-    it("a failed link jump is caught and falls back to opening the parent file", async () => {
-      const h = createHarness();
-      h.workspace.openLinkText.mockRejectedValue(new Error("heading not found"));
-      const recent = makeLeaf();
-      h.workspace.getMostRecentLeaf.mockReturnValue(recent);
-      const subtask = makeRow({
-        kind: "subtask",
-        id: "tasks/a.md::child",
-        key: "child",
-        file: { path: "tasks/a.md", parentPath: "tasks/a.md", heading: "Gone" },
-        title: "Gone",
-        displayName: "Gone",
-      });
-
-      await expect(h.service.openTaskItem(subtask)).resolves.toBeUndefined();
-
-      expect(h.workspace.openLinkText).toHaveBeenCalledTimes(1);
-      expect(recent.openFile).toHaveBeenCalledTimes(1);
+      expect(h.workspace.openLinkText).not.toHaveBeenCalled();
+      expect(h.vaultStub.getAbstractFileByPath).toHaveBeenCalledWith("tasks/2026-07-29 Parent/Sub One.md");
       expect(recent.openFile).toHaveBeenCalledWith(subtask.file);
     });
 

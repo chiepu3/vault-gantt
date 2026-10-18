@@ -1,12 +1,12 @@
 import { vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import type { TaskRow } from "../../src/core/types";
-import { buildFullNote } from "../../src/core/note-format";
+import { newNoteText } from "../../src/app/task-operations";
 import { OperationRegistry } from "../../src/app/operation-registry";
 import { OperationService, type OperationServiceHost } from "../../src/app/operation-service";
 import { HistoryManager } from "../../src/app/history-manager";
 import { FakeVault } from "./fake-vault";
-import { PARENT_ID, CHILD_ID } from "../contracts/fixtures";
+import { PARENT_ID, CHILD_ID, PARENT_PATH, CHILD_PATH } from "../contracts/fixtures";
 import { Logger } from "../../src/core/logger";
 import { todayStr } from "../../src/core/utils";
 export async function runtimeFixture(overrides: Partial<OperationServiceHost> = {}) {
@@ -18,9 +18,10 @@ export async function runtimeFixture(overrides: Partial<OperationServiceHost> = 
   settings.dailyTodoSources = [{ key: "main", label: "日次", format: "[daily/]YYYY-MM-DD", creatableFromGantt: true }];
   const vault = new FakeVault(), historyManager = new HistoryManager();
   const base = { title: "リリース", displayName: "リリース", statusLabel: "active" as const, completed: false, createdAt: todayStr(), updatedAt: todayStr(), priority: 0, priorityMode: "auto" as const, currentStatus: "", notes: "", tags: ["リリース"], ganttEnabled: true };
-  const child: TaskRow = { ...base, kind: "subtask", id: CHILD_ID, key: "review", file: { path: PARENT_ID, parentPath: PARENT_ID, heading: "レビュー" } as TaskRow["file"], title: "レビュー", displayName: "レビュー", ganttEnabled: false, plannedStartDate: "2026-10-13", plannedEndDate: "2026-10-15", workloadPlan: { "2026-10-13": 2 }, workloadActual: { "2026-10-13": 1 }, ganttMarkers: [{ key: "review-point", title: "確認", date: "2026-10-13", tags: [] }] };
-  const parent: TaskRow = { ...base, kind: "parent", id: PARENT_ID, file: { path: PARENT_ID } as TaskRow["file"], ganttOrder: 1000, subtasks: new Map([["review", child]]) };
-  await vault.create(PARENT_ID, buildFullNote(parent, parent.subtasks)); vault.resetCounters();
+  const child: TaskRow = { ...base, kind: "subtask", id: CHILD_ID, key: CHILD_ID, parentId: PARENT_ID, file: { path: CHILD_PATH, parentPath: PARENT_PATH } as TaskRow["file"], title: "レビュー", displayName: "レビュー", ganttEnabled: false, plannedStartDate: "2026-10-13", plannedEndDate: "2026-10-15", workloadPlan: { "2026-10-13": 2 }, workloadActual: { "2026-10-13": 1 }, ganttMarkers: [{ key: "確認", title: "確認", date: "2026-10-13", tags: [] }] };
+  const parent: TaskRow = { ...base, kind: "parent", id: PARENT_ID, file: { path: PARENT_PATH } as TaskRow["file"], ganttOrder: 1000, subtasks: new Map([[CHILD_ID, child]]) };
+  settings.ganttParentOrder = [PARENT_ID];
+  await vault.create(PARENT_PATH, newNoteText(vault, parent)); await vault.create(CHILD_PATH, newNoteText(vault, child, parent)); vault.resetCounters();
   Object.assign(vault, { process: async (file: { path: string }, transform: (content: string) => string) => {
     const next = transform(await vault.read(file)); await vault.modify(file, next); return next;
   } });

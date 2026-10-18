@@ -330,49 +330,23 @@ export interface ApplyPatchResult {
 }
 
 /**
- * Apply a normalized task patch to a parent or subtask row.
- * normalize and merge patch, sync displayName/title, bump updatedAt, apply auto-priority (if enabled and mode=auto), re-check date range
- * @param parent The parent TaskRow containing the target (parent or subtask)
- * @param patch The unnormalized patch object
- * @param taskId The task ID (parent path or parent::{subtaskKey})
- * @param settings The task workbench settings, used to gate auto-priority recalculation
+ * Applies a patch to one row in place: normalize and merge, sync displayName/title, bump updatedAt,
+ * recompute the auto priority (if enabled and mode=auto) and re-check the planned date range.
+ * Returns the changed field names.
  * @throws If patch validation fails or date ranges are invalid
  */
-export function applyPatchToParent(
-  parent: TaskRow,
+export function applyPatchToRow(
+  target: TaskRow,
   patch: TaskPatch,
-  taskId: string,
-  settings: TaskWorkbenchSettings
-): ApplyPatchResult {
-  // exact pipeline from パート9
+  settings: Pick<TaskWorkbenchSettings, "autoPriorityEnabled">
+): string[] {
+  const { subtasks, ...rest } = target;
+  // Subtasks are other notes: compare and clone only this row's own fields.
+  const before = JSON.parse(JSON.stringify(rest)) as Record<string, unknown>;
+  void subtasks;
 
-  // Determine if this is a parent or subtask update
-  const isSubtask = taskId.includes("::");
-
-  let target: TaskRow;
-  if (isSubtask) {
-    // Extract subtask key from taskId (format: {parentPath}::{key})
-    const parts = taskId.split("::");
-    const subtaskKey = parts[parts.length - 1];
-    const subtask = parent.subtasks?.get(subtaskKey);
-    if (!subtask) {
-      throw new Error("Subtask not found");
-    }
-    target = subtask;
-  } else {
-    target = parent;
-  }
-
-  // Store the state before applying patch for change tracking
-  const before = JSON.parse(JSON.stringify(target)) as Record<
-    string,
-    unknown
-  >;
-
-  // normalizeTaskPatch → validate and normalize
   const normalizedPatch = normalizeTaskPatch(patch, target.kind);
 
-  // merge into target
   for (const [key, value] of Object.entries(normalizedPatch)) {
     if (value !== undefined) {
       (target as unknown as Record<string, unknown>)[key] = value;
@@ -404,7 +378,7 @@ export function applyPatchToParent(
   }
 
   // re-check planned date range for subtasks only
-  if (isSubtask) {
+  if (target.kind === "subtask") {
     if (
       target.plannedStartDate &&
       target.plannedEndDate &&
@@ -414,16 +388,44 @@ export function applyPatchToParent(
     }
   }
 
-  // calculate changed fields using JSON-stringify comparison
-  const after = JSON.parse(JSON.stringify(target)) as Record<
-    string,
-    unknown
-  >;
-  const changed = changedFields(before, after);
+  const { subtasks: afterSubtasks, ...afterRest } = target;
+  void afterSubtasks;
+  const after = JSON.parse(JSON.stringify(afterRest)) as Record<string, unknown>;
+  return changedFields(before, after);
+}
 
-  return {
-    parent,
-    changed,
-    taskId,
-  };
+/** The subtask row a task id refers to inside `parent`, or the parent itself. */
+function targetOf(parent: TaskRow, taskId: string): TaskRow {
+  if (taskId === parent.id && !parent.subtasks?.has(taskId)) return parent;
+  const direct = parent.subtasks?.get(taskId);
+  if (direct) return direct;
+  if (taskId.includes("::")) {
+    // Ids of the old note format: {parentPath}::{key}
+    const subtask = parent.subtasks?.get(taskId.split("::").pop()!);
+    if (!subtask) throw new Error("Subtask not found");
+    return subtask;
+  }
+  if (taskId !== parent.id && parent.subtasks?.size) {
+    const byId = [...parent.subtasks.values()].find((row) => row.id === taskId);
+    if (byId) return byId;
+  }
+  return parent;
+}
+
+/**
+ * Apply a normalized task patch to a parent or one of its subtasks.
+ * @param parent The parent TaskRow containing the target (parent or subtask)
+ * @param patch The unnormalized patch object
+ * @param taskId The id of the parent or of one of its subtasks
+ * @param settings The task workbench settings, used to gate auto-priority recalculation
+ * @throws If patch validation fails or date ranges are invalid
+ */
+export function applyPatchToParent(
+  parent: TaskRow,
+  patch: TaskPatch,
+  taskId: string,
+  settings: TaskWorkbenchSettings
+): ApplyPatchResult {
+  const changed = applyPatchToRow(targetOf(parent, taskId), patch, settings);
+  return { parent, changed, taskId };
 }

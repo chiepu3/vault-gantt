@@ -11,7 +11,7 @@ import { createFakeDocument, byTag, deepText, dispatch, type FakeEl } from "../s
 import { ChatSession } from "../../src/ai/chat-session";
 import type { Capability } from "../../src/contracts/context";
 import { runtimeFixture } from "./operation-runtime-fixture";
-import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
+import { CHILD_ID, CHILD_PATH } from "../contracts/fixtures";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -19,18 +19,18 @@ describe("P3 real runtime and transport integration", () => {
   it("records an approved chat save in the shared human undo/redo history", async () => {
     const { service, context, vault, historyManager, registry } = await runtimeFixture();
     try {
-      const before = vault.getFileContent(PARENT_ID);
+      const before = vault.getFileContent(CHILD_PATH);
       const preview = await service.propose("T07", { taskId: CHILD_ID, name: "チャットの変更" }, context);
       const outcome = await service.humanApprovalPort.approve(preview.previewId);
       expect(outcome.status).toBe("success");
       expect(outcome.undoEntryId).toBe(historyManager.peekUndoLabel());
-      const after = vault.getFileContent(PARENT_ID);
+      const after = vault.getFileContent(CHILD_PATH);
       expect(after).toContain("チャットの変更");
-      await registry.coordinate(() => historyManager.undo(vault as unknown as Vault));
-      expect(vault.getFileContent(PARENT_ID)).toBe(before);
+      await registry.coordinate(() => historyManager.undo(vault as unknown as Vault as never));
+      expect(vault.getFileContent(CHILD_PATH)).toBe(before);
       expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("already-undone");
-      await registry.coordinate(() => historyManager.redo(vault as unknown as Vault));
-      expect(vault.getFileContent(PARENT_ID)).toBe(after);
+      await registry.coordinate(() => historyManager.redo(vault as unknown as Vault as never));
+      expect(vault.getFileContent(CHILD_PATH)).toBe(after);
       expect(historyManager.peekUndoLabel()).toBe(outcome.undoEntryId);
     } finally { service.dispose(); }
   });
@@ -56,7 +56,7 @@ describe("P3 real runtime and transport integration", () => {
       const approve = byTag(view.containerEl as unknown as FakeEl, "button").find((button) => button.dataset.action === "approve")!;
       dispatch(approve, "click");
       await vi.waitFor(() => expect(service.previewPort.inspectOutcome(preview.previewId)?.status).toBe("success"));
-      expect(vault.getFileContent(PARENT_ID)).toContain("承認後の名前"); expect(vault.getModifyCallCount()).toBe(1);
+      expect(vault.getFileContent(CHILD_PATH)).toContain("承認後の名前"); expect(vault.getModifyCallCount()).toBe(1);
       expect(events.filter((event) => event.kind === "approved")).toHaveLength(1);
       const status = await client.callTool({ name: "previews.status", arguments: { previewId: preview.previewId } });
       expect(JSON.stringify(status.structuredContent)).toContain("committed");

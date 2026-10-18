@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { runtimeFixture } from "./operation-runtime-fixture";
-import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
+import { CHILD_ID, CHILD_PATH } from "../contracts/fixtures";
 
 describe("vault modify filtering", () => {
   it("skips the context snapshot for modify events of unrelated notes", async () => {
@@ -19,8 +19,8 @@ describe("vault modify filtering", () => {
     const snapshot = vi.spyOn(f.service.contextPort, "snapshot");
     await f.service.handleVaultChange("outside.md", "create");
     expect(snapshot).toHaveBeenCalled();
-    await f.vault.modify(f.vault.getFileByPath(PARENT_ID)!, f.vault.getFileContent(PARENT_ID)! + "\nexternal\n");
-    await f.service.handleVaultChange(PARENT_ID, "modify");
+    await f.vault.modify(f.vault.getFileByPath(CHILD_PATH)!, f.vault.getFileContent(CHILD_PATH)! + "\nexternal\n");
+    await f.service.handleVaultChange(CHILD_PATH, "modify");
     expect(f.service.previewPort.inspect(preview.previewId)?.status).toBe("stale");
     f.service.dispose();
   });

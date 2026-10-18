@@ -1,11 +1,12 @@
 import { contextQueryInputSchemas, contextQueryOutputSchemas, publicSettingsSchema, readResultSchema, type ContextQueryId, type ContextQueryMap, type ContextQueryResult, type CompactTaskV1, type TaskFieldGroup, type ReadResultV1, type RequestContext, type TaskReadV1 } from "../contracts/context";
 import type { ContextReadPort } from "../contracts/ports";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
-import { parseTaskFile } from "../core/note-format";
 import { reconcileParentOrder } from "../core/parent-order";
 import { matchScore } from "../core/fuzzy-match";
 import { todayStr, getEffectivePriority, buildFileRevision } from "../core/utils";
 import type { VaultAdapter } from "./task-operations";
+import { assembleTasks, isUnderRoot, readNote, taskRoot } from "./note-store";
+import type { AssembleMemo, NoteCacheEntry } from "./note-store";
 import { canonical, contentRevision, fail, flatten, findTask, rowIndex, OperationFailure, type TaskSnapshot } from "./operations/runtime";
 import { publicSettings, period, progress, hours, aggregates } from "./preview-projector";
 import { holidaySet } from "./gantt-actions";
@@ -32,7 +33,7 @@ export function compactTask(row: TaskRow, snapshot: Pick<TaskSnapshot, "revision
     ...(fields.includes("derived") ? { derived: { period: period(row), progress: progress(row), effectivePriority: getEffectivePriority(row, snapshot.settings.autoPriorityEnabled) } } : {}),
     ...(fields.includes("children") ? { children: [...row.subtasks?.values() ?? []].map((child) => child.id) } : {}),
     ...(fields.includes("workload") ? { hoursTotal: hoursTotal(row) } : {}),
-  } : { ...common, kind: "subtask", parentId: row.file.path,
+  } : { ...common, kind: "subtask", parentId: row.parentId ?? "",
     ...(fields.includes("schedule") ? { schedule: { start: row.plannedStartDate || null, end: row.plannedEndDate || null, due: row.dueDate || null } } : {}),
     ...(fields.includes("markers") ? { markers: (row.ganttMarkers ?? []).map((marker) => ({ ...marker, tags: [...marker.tags ?? []] })) } : {}),
     ...(fields.includes("workload") ? { hours: hours(row), hoursTotal: hoursTotal(row) } : {}),
@@ -43,7 +44,8 @@ interface Cursor { binding: string; revision: string; offset: number }
 type StoredSnapshot = Pick<TaskSnapshot, "parents" | "revisions" | "settings">;
 
 export class ContextIndex implements ContextReadPort {
-  private readonly parsed = new Map<string, { revision: string; parent: TaskRow | null }>();
+  private readonly parsed = new Map<string, { revision: string; note: NoteCacheEntry["taskRow"]; parentLink?: string }>();
+  private readonly assembled: AssembleMemo = new Map();
   private readonly snapshots = new Map<string, StoredSnapshot>();
   /** Last built snapshot with the key (file stats + settings + day) it is valid for. */
   private last?: { key: string; snapshot: TaskSnapshot };
@@ -68,12 +70,13 @@ export class ContextIndex implements ContextReadPort {
     const vault = this.vaultFactory(), settings = structuredClone(this.settings());
     const today = todayStr(), timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const parseSettings = { ...settings, autoPriorityEnabled: false };
-    const contents = new Map<string, string>(), revisions = new Map<string, string>(), statRevisions = new Map<string, string>(), parents: TaskRow[] = [], sources: TaskRow[] = [], parseFailures: string[] = [];
-    const root = settings.taskFolder.replace(/\/$/, "");
+    const contents = new Map<string, string>(), revisions = new Map<string, string>(), statRevisions = new Map<string, string>(), parseFailures: string[] = [];
+    const root = taskRoot(settings);
     const files = vault.getFiles().filter((file) => file.path.endsWith(".md") && (file.path.startsWith(root + "/") || getDailyTodoSourceForPath(file.path, settings))).sort((a, b) => a.path.localeCompare(b.path));
     // Same files with the same mtime:size, settings and day give the same snapshot: skip hashing and cloning.
     let key: string | null = files.every((file) => (file as TaskRow["file"]).stat) ? JSON.stringify([files.map((file) => file.path + "\0" + buildFileRevision(file as TaskRow["file"])), settings, today, timezone]) : null;
     if (key && this.last?.key === key) return this.handOut(this.last.snapshot);
+    const taskFiles: typeof files = [];
     for (const file of files) {
       try {
         // Unchanged files (same mtime:size) reuse their previous bytes and hash, so a snapshot after
@@ -84,18 +87,32 @@ export class ContextIndex implements ContextReadPort {
         else { content = await vault.read(file); revision = await contentRevision(content); this.fileBytes.set(file.path, { stat, content, revision }); }
         contents.set(file.path, content); revisions.set(file.path, revision); statRevisions.set(file.path, stat);
         // Daily bytes participate in conflict checks, but are never task models.
-        if (!file.path.startsWith(root + "/") || getDailyTodoSourceForPath(file.path, settings) && /^\d{4}-\d{2}-\d{2}$/.test(extractDateFromDailyPath(file.path, settings))) { this.parsed.delete(file.path); continue; }
-        const parseRevision = revision + ":" + today;
-        const cached = this.parsed.get(file.path);
-        let parent: TaskRow | null;
-        if (cached?.revision === parseRevision) parent = cached.parent;
-        else { parent = parseTaskFile({ path: file.path }, content, parseSettings); this.parsed.set(file.path, { revision: parseRevision, parent }); }
-        if (parent) { parents.push(parent); sources.push(parent); }
-        else if (/^type:\s*task\s*$/m.test(content)) parseFailures.push(file.path);
+        if (!isUnderRoot(file.path, root) || getDailyTodoSourceForPath(file.path, settings) && /^\d{4}-\d{2}-\d{2}$/.test(extractDateFromDailyPath(file.path, settings))) { this.parsed.delete(file.path); continue; }
+        taskFiles.push(file);
+      } catch { parseFailures.push(file.path); this.parsed.delete(file.path); }
+    }
+    // Frontmatter comes from the metadataCache; wait for notes it has not indexed yet.
+    const unindexed = taskFiles.filter((file) => vault.getFrontmatter(file) === undefined);
+    if (unindexed.length) await vault.whenIndexed(unindexed);
+    const entries: { path: string; row: TaskRow; parentLink?: string }[] = [];
+    for (const file of taskFiles) {
+      try {
+        const parseRevision = revisions.get(file.path) + ":" + today;
+        let cached = this.parsed.get(file.path);
+        if (cached?.revision !== parseRevision) {
+          const note = await readNote(vault, file, parseSettings, contents.get(file.path));
+          if (note === undefined) { this.parsed.delete(file.path); continue; }
+          cached = { revision: parseRevision, note: note?.row ?? null, parentLink: note?.parentLink };
+          this.parsed.set(file.path, cached);
+        }
+        if (cached.note) entries.push({ path: file.path, row: cached.note, parentLink: cached.parentLink });
+        else if (/^(task|subtask)$/.test(String(vault.getFrontmatter(file)?.type))) parseFailures.push(file.path);
       } catch { parseFailures.push(file.path); this.parsed.delete(file.path); }
     }
     for (const path of this.parsed.keys()) if (!contents.has(path)) this.parsed.delete(path);
     for (const path of this.fileBytes.keys()) if (!contents.has(path)) this.fileBytes.delete(path);
+    const parents: TaskRow[] = assembleTasks(vault, entries, parseSettings, this.assembled, undefined, parseFailures);
+    const sources = parents;
     // The revision covers the stored settings as they are; the snapshot copy then gets the parent order
     // completed from the loaded notes (read-only: live settings are not touched here).
     const settingsRevision = await contentRevision(settings), calendarRevision = await contentRevision([...holidaySet(settings)].sort());
@@ -104,14 +121,15 @@ export class ContextIndex implements ContextReadPort {
     const stubs = parents.map((parent) => ({ ...parent }));
     reconcileParentOrder(settings, stubs);
     const cloned = stubs.map((stub, index) => {
-      const source = sources[index], seen = this.clones.get(source.file.path);
+      const source = sources[index], seen = this.clones.get(source.id);
       if (seen?.source === source && seen.clone.ganttOrder === stub.ganttOrder) return seen.clone;
       const clone = structuredClone(source);
       if (clone.ganttOrder !== stub.ganttOrder) clone.ganttOrder = stub.ganttOrder;
-      this.clones.set(source.file.path, { source, clone });
+      this.clones.set(source.id, { source, clone });
       return clone;
     });
-    for (const path of this.clones.keys()) if (!contents.has(path)) this.clones.delete(path);
+    const liveIds = new Set(parents.map((parent) => parent.id));
+    for (const id of this.clones.keys()) if (!liveIds.has(id)) this.clones.delete(id);
     const snapshot = { parents: cloned, contents, revisions, statRevisions, settings, revision, settingsRevision, calendarRevision, today, timezone, parseFailures };
     // Older revisions keep only what context.changes compares; the rows are shared, not copied again.
     this.snapshots.delete(revision);
@@ -166,7 +184,7 @@ export class ContextIndex implements ContextReadPort {
         const fields = [...new Set<TaskFieldGroup>(["identity", ...args.fields ?? DEFAULT_FIELDS])];
         const scores = new Map<TaskRow, number>();
         const matches = (row: TaskRow, level: number) => {
-          const parent = row.kind === "parent" ? row : rowIndex(snapshot.parents).parents.get(row.file.path)!;
+          const parent = row.kind === "parent" ? row : rowIndex(snapshot.parents).parents.get(row.parentId ?? "")!;
           const text = `${row.displayName} ${row.title} ${row.currentStatus} ${row.notes}`.toLowerCase();
           if (args.name) {
             // The parent name also counts so "親の名前 子の名前" style queries resolve; scoring is lenient on spaces/width/case.
@@ -175,7 +193,7 @@ export class ContextIndex implements ContextReadPort {
             scores.set(row, score);
           }
           return (!args.text || text.includes(args.text.toLowerCase()))
-            && (!args.kind || row.kind === args.kind) && (!args.parentId || row.kind === "subtask" && row.file.path === args.parentId)
+            && (!args.kind || row.kind === args.kind) && (!args.parentId || row.kind === "subtask" && row.parentId === args.parentId)
             && (!args.statuses || args.statuses.includes(row.statusLabel)) && (!args.tags || args.tags.every((tag) => row.tags.includes(tag)))
             && (!args.dueRange || !!row.dueDate && row.dueDate >= args.dueRange.from && row.dueDate <= args.dueRange.to)
             && (!args.plannedRange || !!row.plannedStartDate && !!row.plannedEndDate && row.plannedStartDate <= args.plannedRange.to && row.plannedEndDate >= args.plannedRange.from)
@@ -215,7 +233,7 @@ export class ContextIndex implements ContextReadPort {
       } else if (id === "context.changes") {
         const args = parsed.data as ContextQueryMap["context.changes"], old = this.snapshots.get(args.sinceRevision);
         if (!old) fail("RESET_REQUIRED", "古い差分を破棄し、overviewと対象の詳細を再取得してください。");
-        const scoped = (state: StoredSnapshot) => flatten(state.parents).filter((row) => !args.scope.parentIds || args.scope.parentIds.includes(row.file.path));
+        const scoped = (state: StoredSnapshot) => flatten(state.parents).filter((row) => !args.scope.parentIds || args.scope.parentIds.includes(row.kind === "parent" ? row.id : row.parentId ?? ""));
         const oldRows = new Map(scoped(old).map((row) => [row.id, row])), newRows = new Map(scoped(snapshot).map((row) => [row.id, row]));
         const allFields: TaskFieldGroup[] = ["identity", "status", "schedule", "priority", "tags", "content", "markers", "workload", "children", "derived"];
         data = { kind: "changes", sinceRevision: args.sinceRevision, added: [...newRows.values()].filter((row) => !oldRows.has(row.id)).map((row) => compactTask(row, snapshot, allFields)), changed: [...newRows.values()].filter((row) => oldRows.has(row.id) && canonical(compactTask(oldRows.get(row.id)!, old, allFields)) !== canonical(compactTask(row, snapshot, allFields))).map((row) => compactTask(row, snapshot, allFields)), deletedIds: [...oldRows.keys()].filter((taskId) => !newRows.has(taskId)) };

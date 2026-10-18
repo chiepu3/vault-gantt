@@ -16,6 +16,9 @@ export const FORMAT_VERSION = 2;
 export const SECTION_STATUS = "現状";
 export const SECTION_NOTES = "メモ";
 
+/** An edit the note format cannot hold without losing data; the message is shown to the user. */
+export class NotePreservationError extends Error {}
+
 export type Frontmatter = Record<string, unknown>;
 export type NoteKind = "parent" | "subtask";
 
@@ -287,6 +290,11 @@ export function replaceSections(content: string, sections: { currentStatus?: str
   if (sections.currentStatus !== undefined) one(SECTION_STATUS, sections.currentStatus);
   if (sections.notes !== undefined) one(SECTION_NOTES, sections.notes);
   return front + next;
+}
+
+/** The sections a row's body would be written with, read back (to check text survives the section format). */
+export function bodiesOfRow(row: Pick<TaskRow, "currentStatus" | "notes">): NoteBodies {
+  return readSections(newNoteBody(row));
 }
 
 export function newNoteBody(row: Pick<TaskRow, "currentStatus" | "notes">): string {

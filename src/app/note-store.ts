@@ -36,12 +36,13 @@ export async function readNote(vault: NoteVault, file: VaultFile, settings: Task
 }
 
 /** Ids must be unique; a later note with an id that is already taken is left out. */
-function dedupe(entries: { path: string; row: TaskRow; parentLink?: string }[], logger?: Logger): typeof entries {
+function dedupe(entries: { path: string; row: TaskRow; parentLink?: string }[], logger?: Logger, problems?: string[]): typeof entries {
   const seen = new Map<string, string>();
   return entries.filter((entry) => {
     const owner = seen.get(entry.row.id);
     if (owner === undefined) { seen.set(entry.row.id, entry.path); return true; }
     logger?.warn("note-store", `duplicate task id ${entry.row.id}: ${entry.path} is ignored (first seen in ${owner})`);
+    problems?.push(entry.path);
     return false;
   });
 }
@@ -56,14 +57,16 @@ function dirname(path: string): string {
  * resolves to; if the link does not resolve, to a parent note named like the subtask's folder
  * and next to it. Rows of unchanged notes are reused as they are.
  */
+export type AssembleMemo = Map<string, Assembled>;
 export function assembleTasks(
   vault: NoteVault,
   entries: { path: string; row: TaskRow; parentLink?: string }[],
   settings: TaskWorkbenchSettings,
   memo: Map<string, Assembled>,
-  logger?: Logger
+  logger?: Logger,
+  problems?: string[]
 ): TaskRow[] {
-  const unique = dedupe(entries, logger);
+  const unique = dedupe(entries, logger, problems);
   const parentsByPath = new Map<string, TaskRow>();
   const parents: TaskRow[] = [];
   for (const entry of unique) if (entry.row.kind === "parent") { parentsByPath.set(entry.path, entry.row); parents.push(entry.row); }
@@ -78,6 +81,7 @@ export function assembleTasks(
     const parent = parentPath ? parentsByPath.get(parentPath) : undefined;
     if (!parent || !parentPath) {
       logger?.warn("note-store", `subtask ${entry.path} has no parent note (parent: ${entry.parentLink ?? "-"})`);
+      problems?.push(entry.path);
       continue;
     }
     const row = entry.row;
@@ -129,7 +133,7 @@ export async function loadNoteTasks(
       cache.set(file.path, { revision, taskRow: note?.row ?? null, parentLink: note?.parentLink });
     } catch (error) {
       logger?.error("loadTasks", `Failed to read task note ${file.path}:`, error);
-      cache.set(file.path, { revision, taskRow: null });
+      cache.delete(file.path);
     }
   }));
   const present = new Set(files.map((file) => file.path));

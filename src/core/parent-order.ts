@@ -70,9 +70,3 @@ export function computeParentOrder(order: readonly string[], targets: ReadonlyMa
   }
   return entries.sort((a, b) => a.value - b.value || a.rank - b.rank).map((entry) => entry.id);
 }
-
-/** Path moved in the vault. */
-export function renameInParentOrder(order: readonly string[], from: string, to: string): string[] {
-  const renamed = order.map((path) => path === from ? to : path);
-  return renamed.filter((path, index) => renamed.indexOf(path) === index);
-}
