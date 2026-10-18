@@ -176,6 +176,8 @@ function formatWorkloadBadgeHours(hours: number): string {
 }
 
 /** Planned-mode fill color from low-hours blue to at-capacity red-orange. */
+const WORKLOAD_LABEL_INK = "hsl(220 15% 14%)";
+
 function workloadPlannedFillColor(hours: number, maxHours: number): string {
   const ratio = Math.max(0, Math.min(1, hours / Math.max(0.5, maxHours)));
   const hue = 205 - ratio * 195;
@@ -3064,8 +3066,10 @@ export class TaskGanttView extends ItemView {
       );
       // Same cyan-to-red scale as the bar workload popover: the closer a
       // day's total gets to maxHours (7h by default), the redder it turns.
-      setRatio("--vg-workload-actual-color", workloadPlannedFillColor(actualTotal, maxHours));
-      setRatio("--vg-workload-plan-color", workloadPlannedFillColor(planTotal, maxHours));
+      setRatio("--twb-workload-actual-color", workloadPlannedFillColor(actualTotal, maxHours));
+      setRatio("--twb-workload-plan-color", workloadPlannedFillColor(planTotal, maxHours));
+      // The label chips are always light-to-mid tones, so they need dark ink in both themes.
+      setRatio("--twb-workload-label-ink", WORKLOAD_LABEL_INK);
 
 
       const actualLabel = document.createElement("span");
