@@ -116,6 +116,7 @@ import {
 import { WeeklyWorkScheduleModal } from "./modals";
 import { registerHistoryHotkeys } from "./history-hotkeys";
 import { StickyTitleTracker } from "./gantt-sticky-titles";
+import { pickTopmostAt, rectsIntersect } from "./rich-popover-cover";
 
 
 /**
@@ -1325,6 +1326,8 @@ export class TaskGanttView extends ItemView {
   private readonly barPopoverTriggers = new WeakMap<HTMLElement, (evt: MouseEvent) => void>();
   /** Pending switch to a bar the pointer rests on beneath the popover. */
   private coveredBarSwitch: { barEl: HTMLElement; timer: ReturnType<typeof setTimeout> } | undefined = undefined;
+  /** Bars under the open rich popover with their rects, for the covered-bar check on mousemove. */
+  private coveredBarCandidates: { popover: HTMLElement; bars: { el: HTMLElement; rect: RichPopoverRect }[] } | undefined = undefined;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -1721,6 +1724,7 @@ export class TaskGanttView extends ItemView {
     // the visible date and derive a month from the range's far-left edge.
     if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
     this.chartNeedsVisibleRender = false;
+    this.coveredBarCandidates = undefined;
     this.dateClassesCache.clear();
     if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
       const legend = this.previewLayer?.legend();
@@ -7003,15 +7007,14 @@ export class TaskGanttView extends ItemView {
     const target = evt.target as HTMLElement | null;
     if (
       this.richPopoverInteractionActive ||
-      typeof document.elementsFromPoint !== "function" ||
       target?.closest?.("button, input, select, textarea, a, [contenteditable], .task-gantt-workload-popup")
     ) {
       this.cancelCoveredBarSwitch();
       return;
     }
-    const covered = document
-      .elementsFromPoint(evt.clientX, evt.clientY)
-      .find((node) => !el.contains(node) && (node as HTMLElement).classList?.contains("task-gantt-bar")) as HTMLElement | undefined;
+    // Hit-testing the whole page (elementsFromPoint) on every mousemove cost milliseconds at thousands of bars;
+    // only the bars under the popover can be covered, and their rects stay fixed while it is open.
+    const covered = pickTopmostAt(this.getCoveredBarCandidates(el), evt.clientX, evt.clientY);
     if (!covered || covered === this.richPopoverAnchorEl || !this.barPopoverTriggers.has(covered)) {
       this.cancelCoveredBarSwitch();
       return;
@@ -7031,6 +7034,27 @@ export class TaskGanttView extends ItemView {
         this.barPopoverTriggers.get(covered)?.({ clientX, clientY } as MouseEvent);
       }, RICH_POPOVER_COVERED_SWITCH_MS),
     };
+  }
+
+  /** The bars whose rects intersect the open popover, measured once per popover (the popover closes on scroll and re-render). */
+  private getCoveredBarCandidates(popover: HTMLElement): { el: HTMLElement; rect: RichPopoverRect }[] {
+    if (this.coveredBarCandidates?.popover === popover) return this.coveredBarCandidates.bars;
+    const bars: { el: HTMLElement; rect: RichPopoverRect }[] = [];
+    try {
+      const popoverRect = popover.getBoundingClientRect();
+      for (const row of this._ganttRowCache?.rowEls.values() ?? []) {
+        if (!rectsIntersect(row.getBoundingClientRect(), popoverRect)) continue;
+        for (const barEl of Array.from(row.querySelectorAll<HTMLElement>(".task-gantt-bar"))) {
+          if (!this.barPopoverTriggers.has(barEl)) continue;
+          const rect = barEl.getBoundingClientRect();
+          if (rectsIntersect(rect, popoverRect)) bars.push({ el: barEl, rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } });
+        }
+      }
+    } catch {
+      bars.length = 0; // measuring is best-effort; without candidates no bar switch is offered
+    }
+    this.coveredBarCandidates = { popover, bars };
+    return bars;
   }
 
   private cancelCoveredBarSwitch(): void {
@@ -7210,6 +7234,7 @@ export class TaskGanttView extends ItemView {
     this.cancelCoveredBarSwitch();
     this.richPopoverInteractionActive = false;
     this.richPopoverPointerOutside = false;
+    this.coveredBarCandidates = undefined;
     if (this.richPopoverEl !== undefined) {
       this.richPopoverEl.remove();
     }

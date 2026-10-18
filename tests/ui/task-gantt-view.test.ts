@@ -6606,6 +6606,57 @@ describe("rich popover behavior", () => {
       expect(popoverOf(container)).toBeDefined();
     });
 
+    it("switches to the bar resting under the popover after 300ms, resolved from cached rects (no page hit test)", async () => {
+      const first = makeSubtask("subA", { title: "AAA", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const second = makeSubtask("subB", { title: "BBB", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const parent = withChildren(makeParent({ ganttEnabled: true }), [first, second]);
+      const { container } = await openView([parent]);
+      const row = parentRows(container)[0];
+      const [barA, barB] = byClass(timelineOf(row), "task-gantt-bar");
+      const rect = (left: number, top: number, right: number, bottom: number) => () => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+      row.getBoundingClientRect = rect(0, 0, 2000, 400);
+      (row as any).querySelectorAll = () => [barA, barB];
+      barA.getBoundingClientRect = rect(600, 40, 700, 64);
+      barB.getBoundingClientRect = rect(250, 120, 350, 144);
+      const popover = showPopover(container, barA);
+      popover.getBoundingClientRect = rect(200, 100, 640, 300);
+      const titleOf = () => byClass(popoverOf(container) as FakeEl, "task-gantt-popover-title")[0].textContent;
+      expect(titleOf()).toBe("subA");
+      const hitTests = vi.fn(() => []);
+      (globalThis as any).document.elementsFromPoint = hitTests;
+
+      dispatch(popover, "mousemove", { clientX: 300, clientY: 130 });
+      vi.advanceTimersByTime(299);
+      expect(titleOf()).toBe("subA");
+      // moving again over the same covered bar restarts the rest timer
+      dispatch(popover, "mousemove", { clientX: 301, clientY: 131 });
+      vi.advanceTimersByTime(299);
+      expect(titleOf()).toBe("subA");
+      vi.advanceTimersByTime(1);
+      expect(titleOf()).toBe("subB");
+      expect(hitTests).not.toHaveBeenCalled();
+    });
+
+    it("does not switch while the pointer is over a part of the popover that covers no other bar", async () => {
+      const first = makeSubtask("subA", { title: "AAA", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const second = makeSubtask("subB", { title: "BBB", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const parent = withChildren(makeParent({ ganttEnabled: true }), [first, second]);
+      const { container } = await openView([parent]);
+      const row = parentRows(container)[0];
+      const [barA, barB] = byClass(timelineOf(row), "task-gantt-bar");
+      const rect = (left: number, top: number, right: number, bottom: number) => () => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+      row.getBoundingClientRect = rect(0, 0, 2000, 400);
+      (row as any).querySelectorAll = () => [barA, barB];
+      barA.getBoundingClientRect = rect(600, 40, 700, 64);
+      barB.getBoundingClientRect = rect(250, 120, 350, 144);
+      const popover = showPopover(container, barA);
+      popover.getBoundingClientRect = rect(200, 100, 640, 300);
+      dispatch(popover, "mousemove", { clientX: 450, clientY: 250 }); // inside the popover, over no bar
+      dispatch(popover, "mousemove", { clientX: 650, clientY: 50 }); // over the anchor bar's own rect: never a switch
+      vi.advanceTimersByTime(1000);
+      expect(byClass(popoverOf(container) as FakeEl, "task-gantt-popover-title")[0].textContent).toBe("subA");
+    });
+
     it("keeps the popover open while Current Status is focused and typed into", async () => {
       const { container, bar } = await openBarView();
       const popover = showPopover(container, bar);
