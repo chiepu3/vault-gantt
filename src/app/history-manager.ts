@@ -37,6 +37,43 @@ export type HistoryOpResult =
 
 type HistoryContentField = "before" | "after";
 
+/**
+ * A file change as retained in memory. Notes are large and an edit touches a small region, so when
+ * `before` and `after` share a long prefix/suffix only `after` plus the differing middle of `before`
+ * is kept; `before` is rebuilt exactly on demand. `size` is the logical before+after length (the cap unit).
+ */
+interface StoredFileChange {
+  path: string;
+  size: number;
+  after: string;
+  before?: string;
+  patch?: { prefix: number; suffix: number; middle: string };
+}
+interface StoredEntry {
+  label: string;
+  files: StoredFileChange[];
+  order?: HistoryOrderChange;
+}
+const MIN_COMPACT_LENGTH = 2048;
+function compactChange(change: HistoryFileChange): StoredFileChange {
+  const { path, before, after } = change, size = before.length + after.length;
+  if (before.length + after.length < MIN_COMPACT_LENGTH) return { path, size, before, after };
+  const limit = Math.min(before.length, after.length);
+  let prefix = 0;
+  while (prefix < limit && before.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix++;
+  let suffix = 0;
+  while (suffix < limit - prefix && before.charCodeAt(before.length - 1 - suffix) === after.charCodeAt(after.length - 1 - suffix)) suffix++;
+  const middle = before.slice(prefix, before.length - suffix);
+  if (middle.length * 2 >= before.length) return { path, size, before, after };
+  return { path, size, after, patch: { prefix, suffix, middle } };
+}
+function beforeOf(change: StoredFileChange): string {
+  if (!change.patch) return change.before!;
+  const { prefix, suffix, middle } = change.patch;
+  return change.after.slice(0, prefix) + middle + change.after.slice(change.after.length - suffix);
+}
+function materialize(change: StoredFileChange): HistoryFileChange { return { path: change.path, before: beforeOf(change), after: change.after }; }
+
 interface PreparedFileChange {
   change: HistoryFileChange;
   vaultFile: TFile;
@@ -47,7 +84,7 @@ interface PreparedFileChange {
 type PendingMutation =
   | { kind: "clear" }
   | { kind: "discardRedo" }
-  | { kind: "push"; entry: HistoryEntry };
+  | { kind: "push"; entry: StoredEntry };
 
 /**
  * In-memory undo/redo history for coordinated Markdown file changes.
@@ -104,8 +141,8 @@ export class HistoryManager implements HistoryPort {
     if (entry === this.undoStack.at(-1)) { if (entry) { if (conflict) this.conflicts.add(entry.label); else this.conflicts.delete(entry.label); } }
     this.checking = false; this.notify();
   }
-  private readonly undoStack: HistoryEntry[] = [];
-  private readonly redoStack: HistoryEntry[] = [];
+  private readonly undoStack: StoredEntry[] = [];
+  private readonly redoStack: StoredEntry[] = [];
   private readonly maxEntries = 50;
   private readonly maxTotalBytes = 12 * 1024 * 1024;
   private operationTail: Promise<void> = Promise.resolve();
@@ -129,9 +166,9 @@ export class HistoryManager implements HistoryPort {
       return;
     }
 
-    const clonedEntry: HistoryEntry = {
+    const clonedEntry: StoredEntry = {
       label: entry.label,
-      files: files.map((file) => ({ ...file })),
+      files: files.map(compactChange),
       ...(order ? { order: { before: [...order.before], after: [...order.after] } } : {}),
     };
 
@@ -143,7 +180,7 @@ export class HistoryManager implements HistoryPort {
     this.pushEntry(clonedEntry);
   }
 
-  private pushEntry(entry: HistoryEntry): void {
+  private pushEntry(entry: StoredEntry): void {
     this.redoStack.length = 0;
     this.undoStack.push(entry);
     this.conflicts.delete(entry.label);
@@ -207,7 +244,7 @@ export class HistoryManager implements HistoryPort {
   inspectTransition(direction: "undo" | "redo"): { historyRevision: string; busy: boolean; entry: HistoryEntry | null } {
     const stack = direction === "undo" ? this.undoStack : this.redoStack;
     const entry = stack[stack.length - 1];
-    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map((file) => ({ ...file })), ...(entry.order ? { order: { before: [...entry.order.before], after: [...entry.order.after] } } : {}) } : null };
+    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map(materialize), ...(entry.order ? { order: { before: [...entry.order.before], after: [...entry.order.after] } } : {}) } : null };
   }
 
   undo(vault: Vault): Promise<HistoryOpResult> {
@@ -305,17 +342,14 @@ export class HistoryManager implements HistoryPort {
     return this.undoStack.reduce(
       (entryTotal, entry) =>
         entryTotal +
-        entry.files.reduce(
-          (fileTotal, file) => fileTotal + file.before.length + file.after.length,
-          0
-        ),
+        entry.files.reduce((fileTotal, file) => fileTotal + file.size, 0),
       0
     );
   }
 
   private async applyDirectional(
     vault: Vault,
-    entry: HistoryEntry,
+    entry: StoredEntry,
     expectField: HistoryContentField,
     targetField: HistoryContentField
   ): Promise<HistoryOpResult> {
@@ -326,7 +360,8 @@ export class HistoryManager implements HistoryPort {
       conflictingPaths.push("Gantt並び順");
     }
 
-    for (const change of entry.files) {
+    for (const stored of entry.files) {
+      const change = materialize(stored);
       const vaultFile = vault.getFileByPath(change.path);
       if (!vaultFile) {
         conflictingPaths.push(change.path);
@@ -428,7 +463,7 @@ export class HistoryManager implements HistoryPort {
     return { kind: "success", label: entry.label };
   }
 
-  private getFallbackPath(entry: HistoryEntry): string {
+  private getFallbackPath(entry: StoredEntry): string {
     return entry.files[0]?.path ?? "（対象ファイルなし）";
   }
 

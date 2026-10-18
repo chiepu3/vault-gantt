@@ -482,4 +482,50 @@ describe("HistoryManager", () => {
     expect(manager.touchesTopEntry("task.md")).toBe(true);
     expect(manager.touchesTopEntry("other.md")).toBe(false);
   });
+
+  describe("compact storage of large notes", () => {
+    const note = (lines: number, edit?: (rows: string[]) => void): string => {
+      const rows = Array.from({ length: lines }, (_, index) => `subtask__${index}__plannedStartDate: 2026-10-${String(index % 28 + 1).padStart(2, "0")}`);
+      edit?.(rows);
+      return rows.join("\n");
+    };
+    const cases: Array<[string, string, string]> = [
+      ["middle edit", note(400), note(400, (rows) => { rows[200] = "subtask__200__plannedStartDate: 2027-01-01"; })],
+      ["append", note(400), note(400) + "\nextra: 1"],
+      ["truncate", note(400) + "\nextra: 1", note(400)],
+      ["insert at start", note(400), "head: x\n" + note(400)],
+      ["unrelated texts", note(300), "完全に別の内容\n".repeat(300)],
+      ["emoji and CJK", "あ😀い\n".repeat(600), "あ😀い\n".repeat(300) + "う🎉え\n" + "あ😀い\n".repeat(299)],
+      ["repeated characters", "a".repeat(5000), "a".repeat(2500) + "b" + "a".repeat(2499)],
+    ];
+    it.each(cases)("undo and redo restore exactly: %s", async (_name, before, after) => {
+      const manager = new HistoryManager();
+      const vault = new ProcessFakeVault();
+      vault.seed("task.md", after);
+      manager.push(makeEntry("編集", [makeChange("task.md", before, after)]));
+      expect(manager.inspectTransition("undo").entry!.files).toEqual([{ path: "task.md", before, after }]);
+      expect((await manager.undo(vault.asVault())).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(before);
+      expect(manager.inspectTransition("redo").entry!.files).toEqual([{ path: "task.md", before, after }]);
+      expect((await manager.redo(vault.asVault())).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(after);
+    });
+    it("still detects conflicts on a compacted entry and keeps order changes", async () => {
+      const manager = new HistoryManager();
+      const vault = new ProcessFakeVault();
+      const before = note(400), after = note(400, (rows) => { rows[10] = "changed"; });
+      let order = ["a.md", "b.md"];
+      manager.attachOrderStore({ get: () => order, set: async (next) => { order = next; } });
+      vault.seed("task.md", after);
+      manager.push({ label: "並び替え", files: [makeChange("task.md", before, after)], order: { before: ["a.md", "b.md"], after: ["b.md", "a.md"] } });
+      order = ["b.md", "a.md"];
+      vault.seed("task.md", after + "\n外部");
+      expect((await manager.undo(vault.asVault())).kind).toBe("conflict");
+      vault.seed("task.md", after);
+      expect((await manager.undo(vault.asVault())).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(before); expect(order).toEqual(["a.md", "b.md"]);
+      expect((await manager.redo(vault.asVault())).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(after); expect(order).toEqual(["b.md", "a.md"]);
+    });
+  });
 });
