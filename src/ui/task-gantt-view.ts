@@ -117,6 +117,7 @@ import { WeeklyWorkScheduleModal } from "./modals";
 import { registerHistoryHotkeys } from "./history-hotkeys";
 import { StickyTitleTracker } from "./gantt-sticky-titles";
 import { pickTopmostAt, rectsIntersect } from "./rich-popover-cover";
+import { planInitialViewport } from "../app/gantt-viewport";
 
 
 /**
@@ -991,6 +992,11 @@ export class TaskGanttView extends ItemView {
   private chartNeedsVisibleRender = false;
   /** True until the first visible chart has been scrolled to today. */
   private initialScrollPending = true;
+  /**
+   * scrollLeft the first render will be scrolled to (and its lane window computed for). Planned before that render so the
+   * chart is built once at its final range and position instead of at the range start and then rebuilt after the scroll.
+   */
+  private initialScrollLeft: number | undefined = undefined;
 
 
 
@@ -1458,6 +1464,7 @@ export class TaskGanttView extends ItemView {
       if (event === "show") this.renderChart();
       else this.clearGhostLayer();
     });
+    this.planInitialViewport();
     await this.render();
 
     // defer the initial scroll to the next animation frame so the
@@ -1465,6 +1472,30 @@ export class TaskGanttView extends ItemView {
     requestAnimationFrame(() => {
       this.applyInitialScroll();
     });
+  }
+
+  /**
+   * Decides the range and scroll offset the chart opens at, before it is first built. Opening used to build the chart at
+   * scrollLeft 0, scroll to today (which sits within the left-extension threshold of the range start), extend the range
+   * and the lane window, and rebuild twice more. This runs the same extension rule up front, so the one build already
+   * has its final range, lane window and scroll position. A chart that is not laid out yet (hidden tab) keeps the
+   * old path, which applies the scroll once it becomes visible.
+   */
+  private planInitialViewport(): void {
+    this.initialScrollLeft = undefined;
+    const clientWidth = this.wrapEl.clientWidth;
+    if (!(clientWidth > 0)) return;
+    const plan = planInitialViewport({
+      today: todayStr(),
+      rangeStart: this.rangeStart,
+      rangeDays: this.rangeDays,
+      dayWidth: this.dayWidth,
+      clientWidth,
+      offsetPx: INITIAL_SCROLL_OFFSET_PX,
+    });
+    this.rangeStart = plan.rangeStart;
+    this.rangeDays = plan.rangeDays;
+    this.initialScrollLeft = plan.scrollLeft;
   }
 
   /**
@@ -1833,6 +1864,13 @@ export class TaskGanttView extends ItemView {
 
 
 
+  /** The planned opening scroll offset, once: the first full build positions itself instead of being scrolled afterwards. */
+  private takeInitialScrollLeft(): number | undefined {
+    const value = this.initialScrollLeft;
+    this.initialScrollLeft = undefined;
+    return value;
+  }
+
   private renderChartFull(
     parents: TaskRow[],
     dates: string[],
@@ -1860,7 +1898,7 @@ export class TaskGanttView extends ItemView {
       empty.textContent =
         "ガント表示対象の親タスクがありません。親タスクの frontmatter / ダッシュボードで ganttEnabled を true にしてください。";
       this.wrapEl.appendChild(empty);
-      this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
+      this.wrapEl.scrollLeft = this.takeInitialScrollLeft() ?? scrollLeft; this.wrapEl.scrollTop = scrollTop;
       this.updateFloatingMonth();
       return;
     }
@@ -1906,7 +1944,7 @@ export class TaskGanttView extends ItemView {
     // the add row is (re)built at the very end.
     this.renderParentAddRow();
 
-    this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
+    this.wrapEl.scrollLeft = this.takeInitialScrollLeft() ?? scrollLeft; this.wrapEl.scrollTop = scrollTop;
 
     // keep the floating month in sync after every chart render.
     this.updateFloatingMonth();
@@ -5442,7 +5480,7 @@ export class TaskGanttView extends ItemView {
   private computeCurrentLaneWindow(): { start: string; end: string } | null {
     if (this.host.settings.compactRowsToViewport === false) return null;
     return computeLaneWindow({
-      scrollLeft: this.wrapEl.scrollLeft + this.pendingScrollShiftPx,
+      scrollLeft: this.initialScrollLeft ?? this.wrapEl.scrollLeft + this.pendingScrollShiftPx,
       clientWidth: this.wrapEl.clientWidth || 1200,
       dayWidth: this.dayWidth,
       rangeStart: this.rangeStart,
