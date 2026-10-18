@@ -98,6 +98,8 @@ export class OperationService implements OperationServicePort {
       try { if (await vault.read(file) === own.content) return; } catch { /* Treat unreadable bytes as an external change. */ }
     }
     this.clearSavedProjection();
+    // A plain content edit of a note the context index never reads cannot change any pending preview's snapshot.
+    if (kind === "modify" && !this.contextPort.covers(path)) return;
     await this.invalidatePreviews();
   }
   describe(ids?: readonly OperationId[]) { return this.catalog.describe(ids).map((description) => !IMPLEMENTED_OPERATION_IDS.has(description.id) || this.available(description.id) ? description : { ...description, available: false, denial: { code: "POLICY_DENIED" as const, retryable: false, nextAction: "この操作に必要な実行portが未接続です。人間用UIから操作してください。" } }); }

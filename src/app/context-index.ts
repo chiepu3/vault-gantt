@@ -47,6 +47,12 @@ export class ContextIndex implements ContextReadPort {
   private readonly fileBytes = new Map<string, { stat: string; content: string; revision: string }>();
   private counter = 0;
   constructor(private readonly vaultFactory: () => VaultAdapter, private readonly settings: () => TaskWorkbenchSettings, readonly vaultInstanceId: string) {}
+  /** True when `path` is a file whose bytes take part in snapshots (task folder or daily sources). */
+  covers(path: string): boolean {
+    if (!path.endsWith(".md")) return false;
+    const settings = this.settings();
+    return path.startsWith(settings.taskFolder.replace(/\/$/, "") + "/") || !!getDailyTodoSourceForPath(path, settings);
+  }
   async snapshot(): Promise<TaskSnapshot> {
     const vault = this.vaultFactory(), settings = structuredClone(this.settings());
     const today = todayStr(), timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

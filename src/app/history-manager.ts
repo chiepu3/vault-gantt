@@ -72,6 +72,8 @@ export class HistoryManager implements HistoryPort {
     return { entryId, historyRevision: `history-${this.revision}`, state, reason: state === "available" ? null : "履歴先頭・現在内容・操作状態を確認してください。" };
   }
   private notify(): void { this.revision++; for (const listener of this.listeners) { try { listener({ historyRevision: `history-${this.revision}`, changedEntryIds: null }); } catch { /* Detached subscriber. */ } } }
+  /** True when `path` belongs to the newest undo entry, i.e. a change to it can alter undo eligibility. */
+  touchesTopEntry(path: string): boolean { return !!this.undoStack.at(-1)?.files.some((change) => change.path === path); }
   private eligibilityRun?: Promise<void>;
   private eligibilityNext?: Promise<void>;
   /**

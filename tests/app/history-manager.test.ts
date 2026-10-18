@@ -474,4 +474,12 @@ describe("HistoryManager", () => {
     await inFlight;
     expect(manager.inspectUndo("編集").state).toBe("conflict");
   });
+
+  it("touchesTopEntry is true only for paths of the newest undo entry", () => {
+    const manager = new HistoryManager();
+    expect(manager.touchesTopEntry("task.md")).toBe(false);
+    manager.push(makeEntry("編集"));
+    expect(manager.touchesTopEntry("task.md")).toBe(true);
+    expect(manager.touchesTopEntry("other.md")).toBe(false);
+  });
 });

@@ -698,7 +698,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     );
 
     if (typeof this.registerEvent === "function") {
-      const clear = (file: TFile, kind: "modify" | "create" | "delete" | "rename") => { this.scheduleGhosts.clear(); void this.historyManager.refreshEligibility(); void this.operationService.handleVaultChange(file.path, kind); };
+      const clear = (file: TFile, kind: "modify" | "create" | "delete" | "rename") => { this.scheduleGhosts.clear(); if (kind !== "modify" || this.historyManager.touchesTopEntry(file.path)) void this.historyManager.refreshEligibility(); void this.operationService.handleVaultChange(file.path, kind); };
       this.registerEvent(this.app.vault.on("modify", (file) => clear(file as TFile, "modify")));
       this.registerEvent(this.app.vault.on("create", (file) => clear(file as TFile, "create")));
       this.registerEvent(this.app.vault.on("delete", (file) => clear(file as TFile, "delete")));
