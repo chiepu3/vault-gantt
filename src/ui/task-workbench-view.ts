@@ -58,6 +58,11 @@ const FILTER_RENDER_DEBOUNCE_MS = 200;
 
 
 
+interface RowCacheEntry {
+  tr: HTMLTableRowElement;
+  sig: string;
+}
+
 export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
 
   logger: Logger;
@@ -143,6 +148,16 @@ export class TaskWorkbenchView extends ItemView {
   private headerEl!: HTMLElement;
 
   private tableWrapEl!: HTMLElement;
+
+  private tbodyEl!: HTMLTableSectionElement;
+
+  private emptyEl?: HTMLElement;
+
+  /** Reusable <tr> per row id with the signature it was built from. */
+  private rowCache = new Map<string, RowCacheEntry>();
+
+  /** Display row behind each rendered <tr> (delegated handlers read this). */
+  private rowByEl = new WeakMap<Element, WorkbenchDisplayRow>();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -571,9 +586,7 @@ export class TaskWorkbenchView extends ItemView {
 
 
   renderTable(startedAt?: number): void {
-
-    // full clear on every call.
-    this.tableWrapEl.empty();
+    this.ensureTable();
 
     const today = moment().startOf("day");
     const parentDisplayNames = this.flatDueSort
@@ -594,7 +607,45 @@ export class TaskWorkbenchView extends ItemView {
           this.ensureCollapseState()
         );
 
-    // a brand-new <table> every call.
+    this.syncRows(rows, parentDisplayNames, today);
+
+    // empty-state message below the table.
+    const empty = this.emptyEl;
+    if (rows.length === 0) {
+      if (!empty) {
+        const el = document.createElement("div");
+        el.classList.add("task-workbench-empty");
+        el.textContent = "条件に一致するタスクがありません。";
+        this.tableWrapEl.appendChild(el);
+        this.emptyEl = el;
+      }
+    } else if (empty) {
+      empty.remove();
+      this.emptyEl = undefined;
+    }
+
+    if (startedAt !== undefined) {
+      const rowCount = rows.length;
+      this.host.logger.debug?.("TaskWorkbenchView", "render completed", {
+        durationMs: Date.now() - startedAt,
+        rowCount,
+      });
+    }
+  }
+
+  /**
+   * Creates the persistent <table> (thead + tbody) once. Rows are patched in
+   * place by syncRows; user actions are handled by delegated listeners on the
+   * tbody instead of per-cell listeners.
+   */
+  private ensureTable(): void {
+    if (this.tbodyEl && this.tbodyEl.parentNode) {
+      return;
+    }
+    this.tableWrapEl.empty();
+    this.emptyEl = undefined;
+    this.rowCache = new Map();
+
     const table = document.createElement("table");
     table.classList.add("task-workbench-table");
 
@@ -633,35 +684,215 @@ export class TaskWorkbenchView extends ItemView {
     thead.appendChild(headRow);
     table.appendChild(thead);
 
-    // zero rows → empty tbody.
     const tbody = document.createElement("tbody");
-    for (const row of rows) {
-      // listeners are re-attached per row on every rebuild.
-      tbody.appendChild(this.buildRow(row, parentDisplayNames, today));
-    }
+    tbody.addEventListener("click", (evt) => this.onBodyClick(evt));
+    tbody.addEventListener("change", (evt) => this.onBodyChange(evt));
+    tbody.addEventListener("dblclick", (evt) => this.onBodyDblClick(evt));
     table.appendChild(tbody);
 
     this.tableWrapEl.appendChild(table);
-
-    // empty-state message below the table.
-    if (rows.length === 0) {
-      const empty = document.createElement("div");
-      empty.classList.add("task-workbench-empty");
-      empty.textContent = "条件に一致するタスクがありません。";
-      this.tableWrapEl.appendChild(empty);
-    }
-
-
-    if (startedAt !== undefined) {
-      const rowCount = rows.length;
-      this.host.logger.debug?.("TaskWorkbenchView", "render completed", {
-        durationMs: Date.now() - startedAt,
-        rowCount,
-      });
-    }
-
+    this.tbodyEl = tbody;
   }
 
+  /**
+   * Makes the tbody show `rows`. Existing <tr> elements are reused when the
+   * row's rendered signature is unchanged, so an edit or filter keystroke only
+   * rebuilds the rows that actually changed.
+   */
+  private syncRows(
+    rows: WorkbenchDisplayRow[],
+    parentDisplayNames: Map<string, string> | undefined,
+    today: moment.Moment
+  ): void {
+    const tbody = this.tbodyEl;
+    const settingsKey = this.settingsSignature();
+    const dayKey = today.format("YYYY-MM-DD");
+    const nextCache = new Map<string, RowCacheEntry>();
+    const trs: HTMLTableRowElement[] = [];
+    for (const row of rows) {
+      const key = row.id;
+      const duplicate = nextCache.has(key);
+      const sig = this.rowSignature(row, parentDisplayNames, dayKey, settingsKey);
+      const cached = duplicate ? undefined : this.rowCache.get(key);
+      let tr: HTMLTableRowElement;
+      if (cached && cached.sig === sig) {
+        tr = cached.tr;
+      } else {
+        tr = this.buildRow(row, parentDisplayNames, today);
+      }
+      this.rowByEl.set(tr, row);
+      if (!duplicate) {
+        nextCache.set(key, { tr, sig });
+      }
+      trs.push(tr);
+    }
+    this.rowCache = nextCache;
+
+    let cursor = tbody.children[0] as Element | undefined;
+    for (const tr of trs) {
+      if (tr === cursor) {
+        cursor = cursor.nextSibling as Element | undefined;
+      } else {
+        tbody.insertBefore(tr, cursor ?? null);
+      }
+    }
+    while (cursor) {
+      const next = cursor.nextSibling as Element | undefined;
+      cursor.remove();
+      cursor = next;
+    }
+  }
+
+  /** Cheap stand-in for JSON of the settings that influence cell rendering. */
+  private settingsSignature(): string {
+    try {
+      return JSON.stringify(this.host.settings);
+    } catch {
+      return String(Math.random());
+    }
+  }
+
+  /** Everything buildRow reads from a row, as a string (cache key for reuse). */
+  private rowSignature(
+    row: WorkbenchDisplayRow,
+    parentDisplayNames: Map<string, string> | undefined,
+    dayKey: string,
+    settingsKey: string
+  ): string {
+    const info = row.__twbCollapseInfo;
+    const editing =
+      this.editing !== null && this.editing.rowId === row.id
+        ? this.editing.field
+        : "";
+    return JSON.stringify([
+      row.kind,
+      row.displayName,
+      row.title,
+      row.completed,
+      row.dueDate,
+      row.priority,
+      row.priorityMode,
+      row.statusLabel,
+      row.currentStatus,
+      row.createdAt,
+      row.updatedAt,
+      row.tags,
+      row.ganttEnabled,
+      info ? [info.expanded, info.total, info.visibleCount, info.hiddenCount] : 0,
+      row.__twbCollapsedPreview === true,
+      this.flatDueSort,
+      this.flatDueSort && row.kind === "subtask"
+        ? this.parentDisplayName(row, parentDisplayNames)
+        : "",
+      editing,
+      dayKey,
+      settingsKey,
+    ]);
+  }
+
+  /**
+   * Finds the delegated target: the nearest ancestor (up to the tbody) that
+   * carries `data-<attr>`, plus its owning <tr>'s display row.
+   */
+  private resolveTarget(
+    evt: Event,
+    attr: "twbAct" | "twbDbl"
+  ): { el: HTMLElement; value: string; row: WorkbenchDisplayRow } | null {
+    let node = evt.target as HTMLElement | null;
+    let hit: HTMLElement | null = null;
+    while (node && node !== this.tbodyEl) {
+      if (hit === null && node.dataset?.[attr] !== undefined) {
+        hit = node;
+      }
+      const row = this.rowByEl.get(node);
+      if (row) {
+        return hit ? { el: hit, value: hit.dataset[attr] ?? "", row } : null;
+      }
+      node = node.parentNode as HTMLElement | null;
+    }
+    return null;
+  }
+
+  private onBodyClick(evt: Event): void {
+    const hit = this.resolveTarget(evt, "twbAct");
+    if (!hit) {
+      return;
+    }
+    const { el, value, row } = hit;
+    // every action element keeps its click inside the cell.
+    evt.stopPropagation();
+    switch (value) {
+      case "toggle":
+        this.toggleParentExpanded(row);
+        break;
+      case "star": {
+        const autoPriorityEnabled =
+          this.host.settings.autoPriorityEnabled !== false;
+        const isAuto =
+          autoPriorityEnabled && normalizePriorityMode(row.priorityMode) !== "manual";
+        void this.applyPriorityStarClick(row, Number(el.dataset.twbPos), isAuto);
+        break;
+      }
+      case "reset":
+        // reset restores the auto-calculated priority.
+        void this.savePatch(row, {
+          priority: calculateAutoPriority(row.dueDate),
+          priorityMode: "auto",
+        });
+        break;
+      case "open":
+        void this.host.openTaskItem(row);
+        break;
+      case "add":
+        this.addSubtaskForRow(row);
+        break;
+      default:
+        // status/due/completed/gantt: the click itself does nothing.
+        break;
+    }
+  }
+
+  private onBodyChange(evt: Event): void {
+    const hit = this.resolveTarget(evt, "twbAct");
+    if (!hit) {
+      return;
+    }
+    const { el, value, row } = hit;
+    const control = el as HTMLInputElement & HTMLSelectElement;
+    switch (value) {
+      case "status":
+        // save immediately on change, then re-render.
+        void this.savePatch(row, { statusLabel: control.value });
+        break;
+      case "due":
+        // save YYYY-MM-DD (or empty string) and re-render.
+        void this.savePatch(row, { dueDate: control.value });
+        break;
+      case "completed":
+        void this.savePatch(row, { completed: control.checked });
+        break;
+      case "gantt":
+        // keep a finite stored ganttOrder; stamp the
+        // current unix time on first enable (undefined → Number(undefined)
+        // is NaN → not finite → Date.now).
+        void this.savePatch(row, {
+          ganttEnabled: control.checked,
+          ganttOrder: Number.isFinite(Number(row.ganttOrder))
+            ? row.ganttOrder
+            : Date.now(),
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
+  private onBodyDblClick(evt: Event): void {
+    const hit = this.resolveTarget(evt, "twbDbl");
+    if (hit) {
+      this.startEditing(hit.row, hit.value);
+    }
+  }
 
   private displayOptions(today?: moment.Moment): DisplayRowsOptions {
     return {
@@ -761,7 +992,7 @@ export class TaskWorkbenchView extends ItemView {
     tr.appendChild(this.buildTagsCell(row));
     tr.appendChild(this.buildCompletedCell(row));
     tr.appendChild(this.buildGanttCell(row));
-    tr.appendChild(this.buildOpenCell(row));
+    tr.appendChild(this.buildOpenCell());
     tr.appendChild(this.buildAddCell(row));
     return tr;
   }
@@ -810,10 +1041,7 @@ export class TaskWorkbenchView extends ItemView {
         : `子タスクを展開（${info.total}件中 ${info.visibleCount}件表示）`;
       toggle.setAttribute("aria-label", label);
       toggle.title = label;
-      toggle.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        this.toggleParentExpanded(row);
-      });
+      toggle.dataset.twbAct = "toggle";
       textWrap.appendChild(toggle);
     }
 
@@ -848,9 +1076,7 @@ export class TaskWorkbenchView extends ItemView {
     }
 
     // dblclick on the displayed name starts inline editing.
-    textWrap.addEventListener("dblclick", () => {
-      this.startEditing(row, "displayName");
-    });
+    textWrap.dataset.twbDbl = "displayName";
 
     if (row.kind === "subtask" && !this.flatDueSort) {
       // indent subtask names in hierarchy mode.
@@ -932,10 +1158,8 @@ export class TaskWorkbenchView extends ItemView {
       // clamped to [0,5] by normalizePriority, so priority=10 → all five ★
 
       star.textContent = position <= effective ? "★" : "☆";
-      star.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        void this.applyPriorityStarClick(row, position, isAuto);
-      });
+      star.dataset.twbAct = "star";
+      star.dataset.twbPos = String(position);
       starsWrap.appendChild(star);
     }
 
@@ -944,14 +1168,7 @@ export class TaskWorkbenchView extends ItemView {
     reset.classList.add("task-workbench-priority-reset");
     reset.setAttribute("title", "手動優先度を解除して自動計算に戻す");
     reset.textContent = "↺";
-    reset.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      // reset restores the auto-calculated priority.
-      void this.savePatch(row, {
-        priority: calculateAutoPriority(row.dueDate),
-        priorityMode: "auto",
-      });
-    });
+    reset.dataset.twbAct = "reset";
     starsWrap.appendChild(reset);
 
     return td;
@@ -1008,14 +1225,7 @@ export class TaskWorkbenchView extends ItemView {
     // a statusLabel outside DEFAULT_STATUSES matches no option
     // — the select silently shows no selection (no error notification).
     select.value = row.statusLabel;
-    select.addEventListener("change", () => {
-      // save immediately on change, then re-render.
-      void this.savePatch(row, { statusLabel: select.value });
-    });
-    select.addEventListener("click", (evt) => {
-      // keep clicks inside the select.
-      evt.stopPropagation();
-    });
+    select.dataset.twbAct = "status";
     td.appendChild(select);
     return td;
   }
@@ -1038,9 +1248,7 @@ export class TaskWorkbenchView extends ItemView {
     // empty currentStatus renders as empty text.
     text.textContent = row.currentStatus ?? "";
     // dblclick on the displayed text starts inline editing.
-    text.addEventListener("dblclick", () => {
-      this.startEditing(row, "currentStatus");
-    });
+    text.dataset.twbDbl = "currentStatus";
     td.appendChild(text);
     return td;
   }
@@ -1090,14 +1298,7 @@ export class TaskWorkbenchView extends ItemView {
 
     // invalid dates are rejected by native HTML5
     // validation and never fire change — nothing to do on the view side.
-    input.addEventListener("change", () => {
-      // save YYYY-MM-DD (or empty string) and re-render.
-      void this.savePatch(row, { dueDate: input.value });
-    });
-    input.addEventListener("click", (evt) => {
-      // stop click propagation.
-      evt.stopPropagation();
-    });
+    input.dataset.twbAct = "due";
     td.appendChild(input);
     return td;
   }
@@ -1118,9 +1319,7 @@ export class TaskWorkbenchView extends ItemView {
     // (row.tags || []) guards undefined/null at runtime.
     appendTagChips(td, row.tags || [], this.host.settings);
     // dblclick on the cell starts inline editing.
-    td.addEventListener("dblclick", () => {
-      this.startEditing(row, "tags");
-    });
+    td.dataset.twbDbl = "tags";
     return td;
   }
 
@@ -1135,14 +1334,7 @@ export class TaskWorkbenchView extends ItemView {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = row.completed === true;
-    checkbox.addEventListener("change", () => {
-      // persist the new state, then full re-render.
-      void this.savePatch(row, { completed: checkbox.checked });
-    });
-    checkbox.addEventListener("click", (evt) => {
-      // click propagation stopped.
-      evt.stopPropagation();
-    });
+    checkbox.dataset.twbAct = "completed";
     td.appendChild(checkbox);
     return td;
   }
@@ -1162,21 +1354,7 @@ export class TaskWorkbenchView extends ItemView {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = row.ganttEnabled === true;
-    checkbox.addEventListener("change", () => {
-      // keep a finite stored ganttOrder; stamp the
-      // current unix time on first enable (undefined → Number(undefined)
-      // is NaN → not finite → Date.now).
-      void this.savePatch(row, {
-        ganttEnabled: checkbox.checked,
-        ganttOrder: Number.isFinite(Number(row.ganttOrder))
-          ? row.ganttOrder
-          : Date.now(),
-      });
-    });
-    checkbox.addEventListener("click", (evt) => {
-      // click propagation stopped.
-      evt.stopPropagation();
-    });
+    checkbox.dataset.twbAct = "gantt";
     td.appendChild(checkbox);
     return td;
   }
@@ -1186,7 +1364,7 @@ export class TaskWorkbenchView extends ItemView {
  *
  *
  */
-  private buildOpenCell(row: TaskRow): HTMLTableCellElement {
+  private buildOpenCell(): HTMLTableCellElement {
     const td = document.createElement("td");
     td.classList.add("tiny-col");
     const button = document.createElement("button");
@@ -1194,11 +1372,7 @@ export class TaskWorkbenchView extends ItemView {
     button.classList.add("vg-btn-sm");
     button.setAttribute("aria-label", "ノートを開く");
     button.setAttribute("title", "ノートを開く");
-    button.addEventListener("click", (evt) => {
-      // open the task file, click propagation stopped.
-      evt.stopPropagation();
-      void this.host.openTaskItem(row);
-    });
+    button.dataset.twbAct = "open";
     td.appendChild(button);
     return td;
   }
@@ -1220,10 +1394,7 @@ export class TaskWorkbenchView extends ItemView {
     button.classList.add("vg-btn-sm");
     button.setAttribute("aria-label", "サブタスクを追加");
     button.setAttribute("title", "サブタスクを追加");
-    button.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      this.addSubtaskForRow(row);
-    });
+    button.dataset.twbAct = "add";
     td.appendChild(button);
     return td;
   }

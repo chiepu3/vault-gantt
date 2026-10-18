@@ -32,7 +32,7 @@ import {
   byTag,
   createFakeDocument,
   deepText,
-  dispatch,
+  dispatchBubbling as dispatch,
   makeFakeEl,
 } from "../stubs/fake-dom";
 import type { FakeEl } from "../stubs/fake-dom";
@@ -652,16 +652,41 @@ describe("TaskWorkbenchView", () => {
       expect(byTag(container, "table")).toHaveLength(1);
     });
 
-    it("each renderTable empties the wrapper and builds a fresh table", async () => {
-      const { view, container } = await openView([makeParent()]);
+    it("renderTable keeps one persistent table and reuses unchanged rows", async () => {
+      const { view, container } = await openView([
+        makeParent({ id: "tasks/a.md", displayName: "Alpha" }),
+        makeParent({ id: "tasks/b.md", displayName: "Beta" }),
+      ]);
       const wrap = tableWrapOf(container);
       const firstTable = byTag(wrap, "table")[0];
+      const firstRows = bodyRows(container);
 
       await view.render();
 
       const tables = byTag(wrap, "table");
       expect(tables).toHaveLength(1);
-      expect(tables[0]).not.toBe(firstTable); // brand-new element
+      expect(tables[0]).toBe(firstTable);
+      const rows = bodyRows(container);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toBe(firstRows[0]);
+      expect(rows[1]).toBe(firstRows[1]);
+    });
+
+    it("rebuilds only the row whose content changed", async () => {
+      const a = makeParent({ id: "tasks/a.md", displayName: "Alpha" });
+      const b = makeParent({ id: "tasks/b.md", displayName: "Beta" });
+      const { view, container, h } = await openView([a, b]);
+      const before = bodyRows(container);
+
+      h.loadTasks.mockResolvedValue([
+        a,
+        makeParent({ id: "tasks/b.md", displayName: "Beta", currentStatus: "changed" }),
+      ]);
+      await view.render();
+
+      const after = bodyRows(container);
+      expect(after[0]).toBe(before[0]);
+      expect(after[1]).not.toBe(before[1]);
     });
 
     it("preserves control state across 「更新」 re-renders", async () => {
