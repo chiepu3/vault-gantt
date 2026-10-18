@@ -15,17 +15,38 @@ export function isLegacyFrontmatter(fm: Record<string, unknown> | null | undefin
   return !(Number.isFinite(version) && version >= FORMAT_VERSION);
 }
 
-const CALLOUT_START = /^>\s*\[!note\]\s*ダッシュボード/;
+/** Callout header: `> [!type]`, optional fold marker, optional title. */
+const CALLOUT_HEADER = /^>\s*\[![^\]\s]+\][+-]?\s*(.*)$/;
+/** Titles of the callouts the plugin generated itself (`ダッシュボード`; `(サブ)タスクダッシュボード` / `(サブ)タスク情報` from older versions). */
+const DASHBOARD_TITLE = /^(?:(?:サブ|親)?タスク(?:ダッシュボード|情報)|ダッシュボード|Dashboard)\s*$/i;
+/** A Meta Bind field line: only a bold/plain label and `INPUT[...]` / `VIEW[...]` inline code, nothing else. */
+const FIELD_LINE = /^(?:\*\*[^*]*\*\*|[^`]*?)\s*[:：]?\s*(?:`(?:INPUT|VIEW)\[[^`]*\]`\s*)+$/;
 
-/** Body without the Meta Bind dashboard callouts and the hidden `meta-bind-button` blocks. */
+const isFieldLine = (line: string): boolean => FIELD_LINE.test(line.trim());
+/** Outside a callout only the plugin's own shape (bold label or none) counts, so ordinary text with inline code stays. */
+const isBareFieldLine = (line: string): boolean => isFieldLine(line) && /^(?:\*\*[^*]*\*\*\s*[:：]?\s*)?`/.test(line.trim());
+
+/** True for a callout the plugin generated: a known header, or nothing but Meta Bind field lines. */
+function isDashboardCallout(block: string[]): boolean {
+  if (DASHBOARD_TITLE.test(CALLOUT_HEADER.exec(block[0])?.[1].trim() ?? "")) return true;
+  const content = block.slice(1).map((line) => line.replace(/^>\s?/, "").trim()).filter(Boolean);
+  return content.length > 0 && content.every(isFieldLine);
+}
+
+/** Body without the Meta Bind dashboard callouts, field lines and the hidden `meta-bind-button` blocks. */
 export function cleanLegacyBody(body: string): string {
   const lines = body.split("\n"), out: string[] = [];
   for (let i = 0; i < lines.length; i += 1) {
     if (/^```meta-bind-button\s*$/.test(lines[i])) {
       while (i + 1 < lines.length && !/^```\s*$/.test(lines[i + 1])) i += 1;
       i += 1;
-    } else if (CALLOUT_START.test(lines[i])) {
-      while (i + 1 < lines.length && lines[i + 1].startsWith(">")) i += 1;
+    } else if (CALLOUT_HEADER.test(lines[i])) {
+      let end = i;
+      while (end + 1 < lines.length && lines[end + 1].startsWith(">")) end += 1;
+      if (isDashboardCallout(lines.slice(i, end + 1))) i = end;
+      else out.push(...lines.slice(i, end + 1)), i = end;
+    } else if (/`(?:INPUT|VIEW)\[/.test(lines[i]) && isBareFieldLine(lines[i])) {
+      continue;
     } else out.push(lines[i]);
   }
   return out.join("\n");

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { buildFullNote } from "../../src/core/note-format";
 import type { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
+import { cleanLegacyBody } from "../../src/core/legacy-v1";
 import { backupStamp, findLegacyNotes, planMigration, runMigration } from "../../src/app/migration-v1";
 import { setNoteNotifier } from "../../src/app/note-changes";
 import { updateTaskItemsBatch } from "../../src/app/task-operations";
@@ -205,5 +206,37 @@ describe("v1 to v2 conversion", () => {
     const rows = await loadNoteTasks(vault, settings, new Map());
     const name = (id: string) => rows.find((row) => row.id === id)!.displayName;
     expect(settings.ganttParentOrder!.map(name)).toEqual(["イ", "ウ", "カ", "アルファ", "ベータ"]);
+  });
+
+  it("removes plugin dashboards from converted notes but keeps user callouts and text", async () => {
+    const dash = (title: string) => `${title}\n> \n> **ステータス**: \`INPUT[select(option(a)):subtask__design__statusLabel]\`\n> \n> **作成日**: \`VIEW[{subtask__design__createdAt}]\``;
+    let text = vault.getFileContent(A)!;
+    text = text.replace("#### Current Status\n設計中", `${dash("> [!info]- サブタスク情報")}\n\n\`\`\`meta-bind-button\nid: x\nactions:\n  - type: command\n\`\`\`\n\n#### Current Status\n設計中`);
+    text = text.replace("#### Notes\n設計のメモ", "#### Notes\n設計のメモ\n\n> [!warning] 注意\n> 納期厳守\n\n> [!info]- 自分の情報\n> 大事な話");
+    await vault.modify(vault.getFileByPath(A)!, text);
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const design = [...rows.find((row) => row.displayName === "アルファ")!.subtasks!.values()][0];
+    expect(design.currentStatus).toBe("設計中");
+    expect(design.notes).toContain("設計のメモ");
+    expect(design.notes).toContain("> [!warning] 注意\n> 納期厳守");
+    expect(design.notes).toContain("> [!info]- 自分の情報\n> 大事な話");
+    for (const sub of vault.getFiles().filter((file) => file.path.includes("アルファ/"))) {
+      expect(vault.getFileContent(sub.path)).not.toMatch(/INPUT\[|VIEW\[|meta-bind|サブタスク情報/);
+    }
+  });
+});
+
+describe("cleanLegacyBody", () => {
+  const fields = "> \n> **完了**: `INPUT[toggle:completed]`\n> \n> **更新日**: `VIEW[{updatedAt}]`";
+  it.each([
+    "> [!note] ダッシュボード", "> [!info] タスクダッシュボード", "> [!info]- サブタスクダッシュボード", "> [!info]- タスク情報", "> [!info]- サブタスク情報",
+    "> [!tip] 別の名前",
+  ])("drops the dashboard shape %s", (header) => {
+    expect(cleanLegacyBody(`前\n${header}\n${fields}\n後`)).toBe("前\n後");
+  });
+  it("drops a known-titled callout and a hidden button, keeps genuine callouts and bare text", () => {
+    const body = "a\n> [!note] ダッシュボード\n> x\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n```meta-bind-button\nid: a\n```\n本文 `VIEW[x]` あり\nb";
+    expect(cleanLegacyBody(body)).toBe("a\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n本文 `VIEW[x]` あり\nb");
   });
 });

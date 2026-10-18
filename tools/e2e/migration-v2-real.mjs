@@ -44,6 +44,8 @@ await withRunner(async (load) => {
     const parent = row({ kind: "parent", id: p, displayName: spec.name, ganttEnabled: true, file: { path: p }, notes: "親のメモ", tags: ["a"], currentStatus: "進行中" });
     parent.subtasks = subs;
     let text = buildFullNote(parent, subs).replace("ganttEnabled: true", `ganttEnabled: true\nganttOrder: ${(spec.tie ? pi : pi + 1) * 1000}`).replace("type: task\n", "type: task\nproject: 顧客A\n");
+    // an old-version dashboard shape inside a subtask section (must not become memo text)
+    text = text.replace("#### Current Status", "> [!info]- サブタスク情報\n> \n> **ステータス**: `INPUT[text:subtask__k0__statusLabel]`\n\n#### Current Status");
     text += "\n## 参考資料\n[資料](https://example.com)\n";
     v1Files[p] = text;
   });
@@ -125,7 +127,7 @@ try {
       const sRel = `tasks/${spec.tie ? "zz/" : ""}${today} ${spec.name}/${title}.md`;
       assert.ok(fs.existsSync(path.join(vaultDir, sRel)), sRel);
       const sf = fmOf(sRel);
-      assert.match(sf, new RegExp(`start: ${s}`)); assert.match(sf, new RegExp(`end: ${e}`)); assert.match(sf, /type: subtask/); assert.match(sf, new RegExp(`parent: .*\\[\\[${today} ${spec.name}\\]\\]`));
+      assert.match(sf, new RegExp(`start: ${s}`)); assert.match(sf, new RegExp(`end: ${e}`)); assert.match(sf, /type: subtask/); assert.ok(!/INPUT\[|サブタスク情報/.test(fs.readFileSync(path.join(vaultDir, sRel), "utf8")), "no dashboard text in subtask note"); assert.match(sf, new RegExp(`parent: .*\\[\\[${today} ${spec.name}\\]\\]`));
     }
   }
   ok("conversion verified on disk", "parents rewritten (formatVersion 2, gantt: true, no v1 keys, user key/section kept), subtask notes carry start/end/parent");
