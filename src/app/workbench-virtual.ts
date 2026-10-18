@@ -10,7 +10,7 @@
 export const VIRTUAL_MIN_ROWS = 120;
 
 /** Pixels rendered above and below the visible area. */
-export const VIRTUAL_OVERSCAN_PX = 900;
+export const VIRTUAL_OVERSCAN_PX = 600;
 
 /** Row height guess before anything has been measured. */
 export const VIRTUAL_DEFAULT_ROW_HEIGHT = 35;
@@ -100,4 +100,69 @@ export function spacerHeights(
     top: offsets[range.start],
     bottom: offsets[count] - offsets[range.end],
   };
+}
+
+/** Display width estimate of a string: CJK / full-width characters count double. */
+export function textWeight(text: string | null | undefined): number {
+  if (!text) return 0;
+  let weight = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    weight += text.charCodeAt(i) >= 0x2e80 ? 2 : 1;
+  }
+  return weight;
+}
+
+export interface WidthProbeMetrics {
+  /** Estimated width of the name cell content. */
+  name: number;
+  /** Rows of different structure (parent / subtask) are ranked separately for the name column. */
+  group: number;
+  /** Estimated width of the current-status text. */
+  status: number;
+  /** Estimated width of the tag chips. */
+  tags: number;
+}
+
+/**
+ * Picks the rows that most likely set each auto-layout column's width (the
+ * widest name per group, status text and tags). Rendering them in the table
+ * as zero-height `visibility: collapse` rows keeps column widths the same as
+ * if every row were in the DOM.
+ */
+export function selectWidthProbes(
+  count: number,
+  metricsAt: (index: number) => WidthProbeMetrics,
+  perColumn = 2
+): number[] {
+  interface Slot {
+    index: number;
+    value: number;
+  }
+  const best = new Map<string, Slot[]>();
+  const consider = (key: string, index: number, value: number): void => {
+    if (value <= 0) return;
+    let slots = best.get(key);
+    if (!slots) {
+      slots = [];
+      best.set(key, slots);
+    }
+    if (slots.length < perColumn) {
+      slots.push({ index, value });
+      slots.sort((a, b) => b.value - a.value);
+    } else if (value > slots[slots.length - 1].value) {
+      slots[slots.length - 1] = { index, value };
+      slots.sort((a, b) => b.value - a.value);
+    }
+  };
+  for (let i = 0; i < count; i += 1) {
+    const m = metricsAt(i);
+    consider(`name:${m.group}`, i, m.name);
+    consider("status", i, m.status);
+    consider("tags", i, m.tags);
+  }
+  const picked = new Set<number>();
+  for (const slots of best.values()) {
+    for (const slot of slots) picked.add(slot.index);
+  }
+  return [...picked].sort((a, b) => a - b);
 }

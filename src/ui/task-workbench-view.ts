@@ -25,6 +25,17 @@ import type {
   DisplayRowsOptions,
   WorkbenchDisplayRow,
 } from "../app/workbench-display";
+import {
+  VIRTUAL_DEFAULT_ROW_HEIGHT,
+  VIRTUAL_MIN_ROWS,
+  buildOffsets,
+  computeVirtualRange,
+  extendRangeToInclude,
+  findRowAtOffset,
+  selectWidthProbes,
+  textWeight,
+} from "../app/workbench-virtual";
+import type { VirtualRange } from "../app/workbench-virtual";
 import { TaskFinderModal } from "./task-finder-modal";
 import { registerHistoryHotkeys } from "./history-hotkeys";
 import { appendTagChips } from "./tag-chip";
@@ -32,6 +43,9 @@ import { appendTagChips } from "./tag-chip";
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
 const FILTER_RENDER_DEBOUNCE_MS = 200;
+
+/** Delay before the off-screen buffer rows are drawn after a data change. */
+const VIRTUAL_FILL_DELAY_MS = 40;
 
 
 
@@ -159,6 +173,59 @@ export class TaskWorkbenchView extends ItemView {
   /** Display row behind each rendered <tr> (delegated handlers read this). */
   private rowByEl = new WeakMap<Element, WorkbenchDisplayRow>();
 
+  // --- virtual scrolling state -------------------------------------------
+  private theadEl?: HTMLElement;
+
+  private topSpacerEl?: HTMLTableRowElement;
+
+  private bottomSpacerEl?: HTMLTableRowElement;
+
+  /** Rows currently shown by the table (after filter/sort/collapse). */
+  private displayedRows: WorkbenchDisplayRow[] = [];
+
+  private displayCtx: {
+    names: Map<string, string> | undefined;
+    today: moment.Moment;
+  } | null = null;
+
+  /** Prefix sums of row heights (tbody coordinates). */
+  private offsets: Float64Array = new Float64Array(1);
+
+  /** Measured <tr> heights by row id (unmeasured rows use the average). */
+  private heightById = new Map<string, number>();
+
+  /** Sum / count of measured heights per row shape (estimate for unmeasured rows). */
+  private shapeStats = new Map<string, { sum: number; count: number }>();
+
+  private renderedRange: VirtualRange = { start: 0, end: 0 };
+
+  private virtualActive = false;
+
+  /** Row index pinned into the window by keyboard focus near its edge. */
+  private focusRowIdx = -1;
+
+  private lastWrapWidth = 0;
+
+  private resizeObserver?: ResizeObserver;
+
+  private resetScrollOnRender = false;
+
+  /** Rows kept in the DOM as collapsed width probes (see selectWidthProbes). */
+  private probeRows: WorkbenchDisplayRow[] = [];
+
+  private probeCache = new Map<string, RowCacheEntry>();
+
+  private measureCtx?: CanvasRenderingContext2D;
+
+  /** Canvas font template ("@W" = weight); "" when measuring is unavailable. */
+  private measureFontKey?: string;
+
+  private measureWeights: string[] = ["400", "600"];
+
+  private measureCache = new Map<string, number>();
+
+  private fillTimer: ReturnType<typeof setTimeout> | undefined;
+
   constructor(
     leaf: WorkspaceLeaf,
     private readonly host: TaskWorkbenchViewHost
@@ -230,6 +297,12 @@ export class TaskWorkbenchView extends ItemView {
     this.tableWrapEl.classList.add("task-workbench-table-wrap");
     container.appendChild(this.tableWrapEl);
 
+    this.tableWrapEl.addEventListener("scroll", () => this.onWrapScroll());
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver?.disconnect();
+      this.resizeObserver = new ResizeObserver(() => this.onWrapResize());
+      this.resizeObserver.observe(this.tableWrapEl);
+    }
 
     await this.render();
   }
@@ -265,6 +338,7 @@ export class TaskWorkbenchView extends ItemView {
       this.filterRenderTimer !== undefined ||
       this.filterRenderLeadingValue !== undefined;
     if (!isBurstActive) {
+      this.resetScrollOnRender = true;
       this.renderTable();
       this.filterRenderLeadingValue = this.filterText;
     } else if (this.filterRenderTimer !== undefined) {
@@ -280,6 +354,7 @@ export class TaskWorkbenchView extends ItemView {
       const leadingValue = this.filterRenderLeadingValue;
       this.filterRenderLeadingValue = undefined;
       if (leadingValue !== this.filterText) {
+        this.resetScrollOnRender = true;
         this.renderTable();
       }
     }, FILTER_RENDER_DEBOUNCE_MS);
@@ -295,6 +370,7 @@ export class TaskWorkbenchView extends ItemView {
     const leadingValue = this.filterRenderLeadingValue;
     this.filterRenderLeadingValue = undefined;
     if (!this.filterComposing && leadingValue !== this.filterText) {
+      this.resetScrollOnRender = true;
       this.renderTable();
     }
   }
@@ -302,6 +378,7 @@ export class TaskWorkbenchView extends ItemView {
   /** Renders a mode change without leaving an older filter timer pending. */
   private renderTableImmediately(): void {
     this.cancelFilterRender();
+    this.resetScrollOnRender = true;
     this.renderTable();
   }
 
@@ -313,6 +390,12 @@ export class TaskWorkbenchView extends ItemView {
     this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
     this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
+    if (this.fillTimer !== undefined) {
+      clearTimeout(this.fillTimer);
+      this.fillTimer = undefined;
+    }
     return Promise.resolve();
   }
 
@@ -645,6 +728,8 @@ export class TaskWorkbenchView extends ItemView {
     this.tableWrapEl.empty();
     this.emptyEl = undefined;
     this.rowCache = new Map();
+    this.topSpacerEl = undefined;
+    this.bottomSpacerEl = undefined;
 
     const table = document.createElement("table");
     table.classList.add("task-workbench-table");
@@ -683,11 +768,16 @@ export class TaskWorkbenchView extends ItemView {
     }
     thead.appendChild(headRow);
     table.appendChild(thead);
+    this.theadEl = thead;
 
     const tbody = document.createElement("tbody");
     tbody.addEventListener("click", (evt) => this.onBodyClick(evt));
     tbody.addEventListener("change", (evt) => this.onBodyChange(evt));
     tbody.addEventListener("dblclick", (evt) => this.onBodyDblClick(evt));
+    tbody.addEventListener("focusin", (evt) => this.onBodyFocusIn(evt));
+    tbody.addEventListener("focusout", () => {
+      this.focusRowIdx = -1;
+    });
     table.appendChild(tbody);
 
     this.tableWrapEl.appendChild(table);
@@ -695,51 +785,414 @@ export class TaskWorkbenchView extends ItemView {
   }
 
   /**
-   * Makes the tbody show `rows`. Existing <tr> elements are reused when the
-   * row's rendered signature is unchanged, so an edit or filter keystroke only
-   * rebuilds the rows that actually changed.
+   * Makes the tbody show `rows`. Only the rows near the viewport are in the DOM
+   * (see layoutWindow); spacer rows stand in for the rest.
    */
   private syncRows(
     rows: WorkbenchDisplayRow[],
     parentDisplayNames: Map<string, string> | undefined,
     today: moment.Moment
   ): void {
+    this.displayedRows = rows;
+    this.displayCtx = { names: parentDisplayNames, today };
+    this.rebuildOffsets();
+    this.probeRows =
+      rows.length > VIRTUAL_MIN_ROWS
+        ? this.pickWidthProbes(rows, parentDisplayNames)
+        : [];
+    if (this.resetScrollOnRender) {
+      this.resetScrollOnRender = false;
+      this.tableWrapEl.scrollTop = 0;
+    }
+    // Data changed: draw only the visible rows first so the keystroke / click
+    // paints quickly, then fill the overscan buffer right after.
+    this.layoutWindow(0);
+    if (this.virtualActive) {
+      this.fillTimer = setTimeout(() => {
+        this.fillTimer = undefined;
+        this.layoutWindow();
+      }, VIRTUAL_FILL_DELAY_MS);
+    }
+  }
+
+  /**
+   * Pixel width of `text` in the table font (canvas measurement, cached per
+   * string). Falls back to a character-count estimate where canvas is missing.
+   */
+  private measureWidth(text: string, bold: boolean): number {
+    if (!text) {
+      return 0;
+    }
+    if (this.measureFontKey === undefined) {
+      try {
+        const cs = getComputedStyle(this.tbodyEl);
+        const ctx = document.createElement("canvas").getContext("2d");
+        if (ctx) {
+          this.measureCtx = ctx;
+          this.measureFontKey = `${cs.fontStyle} @W ${cs.fontSize} ${cs.fontFamily}`;
+          this.measureWeights = [cs.fontWeight, "600"];
+        } else {
+          this.measureFontKey = "";
+        }
+      } catch {
+        this.measureFontKey = "";
+      }
+    }
+    const ctx = this.measureCtx;
+    if (!ctx || !this.measureFontKey) {
+      return textWeight(text) * 7;
+    }
+    const key = (bold ? "b" : "n") + text;
+    const hit = this.measureCache.get(key);
+    if (hit !== undefined) {
+      return hit;
+    }
+    if (this.measureCache.size > 50000) {
+      this.measureCache.clear();
+    }
+    ctx.font = this.measureFontKey.replace(
+      "@W",
+      bold ? this.measureWeights[1] : this.measureWeights[0]
+    );
+    const width = ctx.measureText(text).width;
+    this.measureCache.set(key, width);
+    return width;
+  }
+
+  private pickWidthProbes(
+    rows: WorkbenchDisplayRow[],
+    names: Map<string, string> | undefined
+  ): WorkbenchDisplayRow[] {
+    const indices = selectWidthProbes(rows.length, (i) => {
+      const row = rows[i];
+      const info = row.__twbCollapseInfo;
+      const flatSub = this.flatDueSort && row.kind === "subtask";
+      const isParent = row.kind === "parent";
+      let label = row.displayName || row.title;
+      if (flatSub) {
+        label = `${this.parentDisplayName(row, names)} / ${label}`;
+      }
+      let name = this.measureWidth(label, isParent);
+      if (info) {
+        name += 20;
+        if (info.hiddenCount > 0 && !info.expanded) {
+          name += this.measureWidth(` 他${info.hiddenCount}件`, false);
+        }
+      }
+      let tags = 0;
+      for (const tag of row.tags || []) {
+        tags += this.measureWidth(String(tag), false) + 16;
+      }
+      return {
+        name,
+        group: isParent ? 0 : 1,
+        status: this.measureWidth(row.currentStatus ?? "", false),
+        tags,
+      };
+    });
+    return indices.map((i) => rows[i]);
+  }
+
+  private rebuildOffsets(): void {
+    const rows = this.displayedRows;
+    let all = 0;
+    let allCount = 0;
+    for (const stat of this.shapeStats.values()) {
+      all += stat.sum;
+      allCount += stat.count;
+    }
+    const fallback = allCount > 0 ? all / allCount : VIRTUAL_DEFAULT_ROW_HEIGHT;
+    const estimates = new Map<string, number>();
+    this.offsets = buildOffsets(rows.length, (i) => {
+      const key = this.heightKey(rows[i]);
+      const measured = this.heightById.get(key);
+      if (measured !== undefined) {
+        return measured;
+      }
+      const shape = this.rowShape(rows[i]);
+      let estimate = estimates.get(shape);
+      if (estimate === undefined) {
+        const stat = this.shapeStats.get(shape);
+        estimate = stat && stat.count > 0 ? stat.sum / stat.count : fallback;
+        estimates.set(shape, estimate);
+      }
+      return estimate;
+    });
+  }
+
+  /** Rows of the same shape render at (nearly) the same height. */
+  private rowShape(row: WorkbenchDisplayRow): string {
+    const info = row.__twbCollapseInfo;
+    const summary = info && !info.expanded && info.hiddenCount > 0 ? 1 : 0;
+    return `${row.kind}${summary}${this.flatDueSort ? "f" : "h"}`;
+  }
+
+  private heightKey(row: WorkbenchDisplayRow): string {
+    return `${row.id}\u0001${this.rowShape(row)}`;
+  }
+
+  private theadHeight(): number {
+    return this.theadEl ? this.theadEl.getBoundingClientRect().height : 0;
+  }
+
+  /** Index of the row being edited in the displayed rows, or -1. */
+  private editingRowIndex(): number {
+    if (this.editing === null) {
+      return -1;
+    }
+    const id = this.editing.rowId;
+    return this.displayedRows.findIndex((row) => row.id === id);
+  }
+
+  /**
+   * Renders the rows for the current scroll position, then measures them so
+   * the spacers (and scroll position) stay consistent with real row heights.
+   */
+  private layoutWindow(overscanPx?: number): void {
+    if (this.fillTimer !== undefined) {
+      clearTimeout(this.fillTimer);
+      this.fillTimer = undefined;
+    }
+    const rows = this.displayedRows;
+    const count = rows.length;
+    const wrap = this.tableWrapEl;
+    const virtual = count > VIRTUAL_MIN_ROWS;
+    this.virtualActive = virtual;
+    if (!virtual) {
+      this.patchDom({ start: 0, end: count }, false);
+      this.renderedRange = { start: 0, end: count };
+      return;
+    }
+    for (let pass = 0; ; pass += 1) {
+      const theadH = this.theadHeight();
+      const viewTop = wrap.scrollTop - theadH;
+      let range = computeVirtualRange({
+        offsets: this.offsets,
+        viewTop,
+        viewHeight: wrap.clientHeight,
+        overscanPx,
+      });
+      range = extendRangeToInclude(range, this.editingRowIndex(), count);
+      if (this.focusRowIdx >= 0) {
+        range = extendRangeToInclude(range, this.focusRowIdx - 20, count);
+        range = extendRangeToInclude(range, this.focusRowIdx + 20, count);
+      }
+      const anchor = findRowAtOffset(this.offsets, viewTop);
+      const intra = viewTop - this.offsets[anchor];
+      this.patchDom(range, true);
+      this.renderedRange = range;
+      if (!this.measureRendered(range) || pass >= 3) {
+        break;
+      }
+      this.rebuildOffsets();
+      const target = this.offsets[anchor] + intra + theadH;
+      if (Math.abs(wrap.scrollTop - target) > 0.5) {
+        wrap.scrollTop = target;
+      }
+    }
+  }
+
+  /** Reconciles the tbody children with [top spacer, rows in range, bottom spacer]. */
+  private patchDom(range: VirtualRange, virtual: boolean): void {
+    const ctx = this.displayCtx;
+    if (!ctx) {
+      return;
+    }
     const tbody = this.tbodyEl;
+    const rows = this.displayedRows;
     const settingsKey = this.settingsSignature();
-    const dayKey = today.format("YYYY-MM-DD");
+    const dayKey = ctx.today.format("YYYY-MM-DD");
     const nextCache = new Map<string, RowCacheEntry>();
-    const trs: HTMLTableRowElement[] = [];
-    for (const row of rows) {
+    const nodes: HTMLTableRowElement[] = [];
+    if (virtual && this.offsets[range.start] > 0.5) {
+      nodes.push(this.spacer("top", this.offsets[range.start]));
+    }
+    for (let i = range.start; i < range.end; i += 1) {
+      const row = rows[i];
       const key = row.id;
       const duplicate = nextCache.has(key);
-      const sig = this.rowSignature(row, parentDisplayNames, dayKey, settingsKey);
+      const sig = this.rowSignature(row, ctx.names, dayKey, settingsKey);
       const cached = duplicate ? undefined : this.rowCache.get(key);
       let tr: HTMLTableRowElement;
       if (cached && cached.sig === sig) {
         tr = cached.tr;
       } else {
-        tr = this.buildRow(row, parentDisplayNames, today);
+        tr = this.buildRow(row, ctx.names, ctx.today);
       }
       this.rowByEl.set(tr, row);
       if (!duplicate) {
         nextCache.set(key, { tr, sig });
       }
-      trs.push(tr);
+      nodes.push(tr);
+    }
+    const below = this.offsets[rows.length] - this.offsets[range.end];
+    if (virtual && below > 0.5) {
+      nodes.push(this.spacer("bottom", below));
     }
     this.rowCache = nextCache;
 
+    // Collapsed zero-height probe rows keep the auto-layout column widths
+    // equal to those of the full table.
+    const nextProbes = new Map<string, RowCacheEntry>();
+    if (virtual) {
+      for (const row of this.probeRows) {
+        if (nextCache.has(row.id)) {
+          continue;
+        }
+        const sig = this.rowSignature(row, ctx.names, dayKey, settingsKey);
+        const cached = this.probeCache.get(row.id);
+        let tr: HTMLTableRowElement;
+        if (cached && cached.sig === sig) {
+          tr = cached.tr;
+        } else {
+          tr = this.buildRow(row, ctx.names, ctx.today);
+          tr.classList.add("twb-width-probe");
+          tr.setAttribute("aria-hidden", "true");
+        }
+        this.rowByEl.set(tr, row);
+        nextProbes.set(row.id, { tr, sig });
+        nodes.push(tr);
+      }
+    }
+    this.probeCache = nextProbes;
+
     let cursor = tbody.children[0] as Element | undefined;
-    for (const tr of trs) {
-      if (tr === cursor) {
+    for (const node of nodes) {
+      if (node === cursor) {
         cursor = cursor.nextSibling as Element | undefined;
       } else {
-        tbody.insertBefore(tr, cursor ?? null);
+        tbody.insertBefore(node, cursor ?? null);
       }
     }
     while (cursor) {
       const next = cursor.nextSibling as Element | undefined;
       cursor.remove();
       cursor = next;
+    }
+  }
+
+  private spacer(which: "top" | "bottom", height: number): HTMLTableRowElement {
+    let tr = which === "top" ? this.topSpacerEl : this.bottomSpacerEl;
+    if (!tr) {
+      tr = document.createElement("tr");
+      tr.classList.add("twb-virtual-spacer");
+      tr.setAttribute("aria-hidden", "true");
+      const td = document.createElement("td");
+      td.colSpan = 12;
+      tr.appendChild(td);
+      if (which === "top") {
+        this.topSpacerEl = tr;
+      } else {
+        this.bottomSpacerEl = tr;
+      }
+    }
+    // Under collapsed borders the first real row sits half a pixel lower than
+    // the same row after a border-less spacer; compensate to keep every row
+    // exactly where the full table would put it.
+    const px = which === "top" ? height + 0.5 : height;
+    (tr.children[0] as HTMLElement).style.height = `${px}px`;
+    return tr;
+  }
+
+  /** Stores the real height of every rendered row; true when anything moved. */
+  private measureRendered(range: VirtualRange): boolean {
+    const rows = this.displayedRows;
+    // Row height = distance to the next row's top (the real pitch under
+    // border-collapse); the last rendered row has no successor and is skipped
+    // unless it ends the table.
+    const tops: number[] = [];
+    for (let i = range.start; i < range.end; i += 1) {
+      const entry = this.rowCache.get(rows[i].id);
+      tops.push(entry ? entry.tr.getBoundingClientRect().top : Number.NaN);
+    }
+    let changed = false;
+    // Under a spacer the first row's collapsed top border shifts its top by
+    // half a pixel, so its pitch is not measured.
+    const first = range.start > 0 ? range.start + 1 : range.start;
+    for (let i = first; i < range.end - 1; i += 1) {
+      const height = tops[i - range.start + 1] - tops[i - range.start];
+      if (!(height > 0)) {
+        continue;
+      }
+      const key = this.heightKey(rows[i]);
+      const prev = this.heightById.get(key);
+      if (prev === undefined || Math.abs(prev - height) > 0.4) {
+        const shape = this.rowShape(rows[i]);
+        const stat = this.shapeStats.get(shape) ?? { sum: 0, count: 0 };
+        stat.sum += height - (prev ?? 0);
+        stat.count += prev === undefined ? 1 : 0;
+        this.shapeStats.set(shape, stat);
+        this.heightById.set(key, height);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private onWrapScroll(): void {
+    if (!this.virtualActive) {
+      return;
+    }
+    const { start, end } = this.renderedRange;
+    const count = this.displayedRows.length;
+    const viewTop = this.tableWrapEl.scrollTop - this.theadHeight();
+    const viewBottom = viewTop + this.tableWrapEl.clientHeight;
+    const margin = 300;
+    if (
+      (start > 0 && viewTop < this.offsets[start] + margin) ||
+      (end < count && viewBottom > this.offsets[end] - margin)
+    ) {
+      this.layoutWindow();
+    }
+  }
+
+  private onWrapResize(): void {
+    const width = this.tableWrapEl.clientWidth;
+    if (width === this.lastWrapWidth) {
+      return;
+    }
+    this.lastWrapWidth = width;
+    // wrapped text changes row heights, and column widths start over.
+    this.heightById.clear();
+    this.shapeStats.clear();
+    if (this.displayCtx) {
+      this.rebuildOffsets();
+      this.layoutWindow();
+    }
+  }
+
+  /** Keyboard focus near the edge of the window pulls more rows in. */
+  private onBodyFocusIn(evt: Event): void {
+    if (!this.virtualActive) {
+      return;
+    }
+    let node = evt.target as HTMLElement | null;
+    let row: WorkbenchDisplayRow | undefined;
+    while (node && node !== this.tbodyEl) {
+      row = this.rowByEl.get(node);
+      if (row) {
+        break;
+      }
+      node = node.parentNode as HTMLElement | null;
+    }
+    if (!row) {
+      return;
+    }
+    const { start, end } = this.renderedRange;
+    const rows = this.displayedRows;
+    let idx = -1;
+    for (let i = start; i < end; i += 1) {
+      if (rows[i] === row) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) {
+      return;
+    }
+    if ((idx - start < 4 && start > 0) || (end - 1 - idx < 4 && end < rows.length)) {
+      this.focusRowIdx = idx;
+      this.layoutWindow();
     }
   }
 

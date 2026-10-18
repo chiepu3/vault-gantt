@@ -117,6 +117,12 @@ body {
 
 .task-workbench-table thead th { position: sticky; top: 0; z-index: 1; background: var(--background-secondary); white-space: nowrap; padding-top: 6px; padding-bottom: 6px; font-size: var(--vg-font-m); font-weight: var(--vg-weight-strong); color: var(--text-muted); box-shadow: inset 0 -1px 0 var(--background-modifier-border); }
 
+/* Virtual-scroll spacers stand in for rows outside the rendered window. */
+.task-workbench-table tr.twb-virtual-spacer td { padding: 0; border: 0; }
+/* Zero-height rows that still size the auto-layout columns, so virtualized
+   column widths match the full table. */
+.task-workbench-table tr.twb-width-probe { visibility: collapse; }
+
 .task-workbench-table .task-workbench-col-name { min-width: 240px; }
 .task-workbench-table .task-workbench-col-status { min-width: 120px; }
 .task-workbench-table .task-workbench-priority-cell { white-space: nowrap; text-align: center; }

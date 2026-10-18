@@ -2383,3 +2383,177 @@ describe("TaskWorkbenchView", () => {
     });
   });
 });
+
+describe("TaskWorkbenchView virtual scrolling", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", createFakeDocument());
+    vi.stubGlobal("window", makeFakeEl("window"));
+  });
+
+  const opened: any[] = [];
+
+  afterEach(async () => {
+    // cancel the deferred overscan fill before the globals disappear
+    for (const view of opened.splice(0)) await view.onClose();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const makeMany = (n: number): TaskRow[] =>
+    Array.from({ length: n }, (_, i) => {
+      const id = `tasks/p-${String(i).padStart(4, "0")}.md`;
+      const name = `Task ${String(i).padStart(4, "0")}`;
+      return makeParent({
+        id,
+        file: { path: id },
+        displayName: name,
+        title: name,
+        tags: [],
+        currentStatus: "",
+      });
+    });
+
+  const taskRows = (container: FakeEl): FakeEl[] =>
+    bodyRows(container).filter((r) => r.classList.contains("task-workbench-row"));
+
+  const visibleRows = (container: FakeEl): FakeEl[] =>
+    taskRows(container).filter((r) => !r.classList.contains("twb-width-probe"));
+
+  const spacersOf = (container: FakeEl): FakeEl[] =>
+    bodyRows(container).filter((r) => r.classList.contains("twb-virtual-spacer"));
+
+  const nameOf = (row: FakeEl): string => deepText(cells(row)[0]);
+
+  const indexOfName = (row: FakeEl): number =>
+    Number(/Task (\d{4})/.exec(nameOf(row))![1]);
+
+  async function openMany(
+    tasks: TaskRow[]
+  ): Promise<{ view: any; container: FakeEl; h: HostHarness }> {
+    const opened0 = await openView(tasks);
+    const { container, h } = opened0;
+    const view = opened0.view as any;
+    opened.push(view);
+    view.sortKey = "title";
+    view.sortDir = "asc";
+    tableWrapOf(container).clientHeight = 700;
+    view.renderTable();
+    return { view, container, h };
+  }
+
+  it("renders only a window of rows plus a bottom spacer for a large table", async () => {
+    const { container } = await openMany(makeMany(300));
+    const rows = visibleRows(container);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(80);
+    expect(nameOf(rows[0])).toContain("Task 0000");
+    const spacers = spacersOf(container);
+    expect(spacers).toHaveLength(1);
+    const px = Number.parseFloat(cells(spacers[0])[0].style.height);
+    // 300 rows * 35px default estimate, minus the rendered ones
+    expect(px + rows.length * 35).toBeCloseTo(300 * 35, 0);
+  });
+
+  it("small tables are rendered in full with no spacers", async () => {
+    const { view, container } = await openView(makeMany(100));
+    opened.push(view);
+    expect(taskRows(container)).toHaveLength(100);
+    expect(spacersOf(container)).toHaveLength(0);
+  });
+
+  it("scrolling swaps the window and keeps spacers consistent", async () => {
+    const { view, container } = await openMany(makeMany(300));
+    const wrap = tableWrapOf(container);
+    wrap.scrollTop = 35 * 150;
+    dispatch(wrap, "scroll");
+    const rows = visibleRows(container);
+    const first = indexOfName(rows[0]);
+    const last = indexOfName(rows[rows.length - 1]);
+    expect(first).toBeLessThanOrEqual(150);
+    expect(last).toBeGreaterThanOrEqual(150 + 700 / 35 - 1);
+    const spacers = spacersOf(container);
+    expect(spacers).toHaveLength(2);
+    // the top spacer carries +0.5px of border compensation
+    const top = Number.parseFloat(cells(spacers[0])[0].style.height) - 0.5;
+    const bottom = Number.parseFloat(cells(spacers[1])[0].style.height);
+    expect(top + bottom + rows.length * 35).toBeCloseTo(300 * 35, 0);
+    expect(view.renderedRange.start).toBe(first);
+  });
+
+  it("scrolling reuses the row elements that stay in the window", async () => {
+    const { container } = await openMany(makeMany(300));
+    const wrap = tableWrapOf(container);
+    const before = visibleRows(container);
+    wrap.scrollTop = 35 * 12;
+    dispatch(wrap, "scroll");
+    const after = visibleRows(container);
+    const shared = before.filter((r) => after.includes(r));
+    expect(shared.length).toBeGreaterThan(before.length / 2);
+  });
+
+  it("delegated clicks resolve the right row inside the window", async () => {
+    const { container, h } = await openMany(makeMany(300));
+    const wrap = tableWrapOf(container);
+    wrap.scrollTop = 35 * 200;
+    dispatch(wrap, "scroll");
+    const row = visibleRows(container).find((r) => nameOf(r).includes("Task 0200"))!;
+    const stars = byClass(row, "task-workbench-priority-star");
+    dispatch(stars[3], "click");
+    await flush();
+    expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
+    const [patchedRow, patch] = h.updateTaskItem.mock.calls[0] as any[];
+    expect(patchedRow.id).toBe("tasks/p-0200.md");
+    expect(patch).toEqual({ priority: 4, priorityMode: "manual" });
+  });
+
+  it("filtering narrows the table and resets scroll to the top", async () => {
+    vi.useFakeTimers();
+    const { view, container } = await openMany(makeMany(300));
+    const wrap = tableWrapOf(container);
+    wrap.scrollTop = 35 * 200;
+    dispatch(wrap, "scroll");
+    const search = byClass(headerOf(container), "task-workbench-search")[0];
+    search.value = "Task 02";
+    dispatch(search, "input");
+    vi.advanceTimersByTime(300);
+    expect(wrap.scrollTop).toBe(0);
+    expect(view.displayedRows).toHaveLength(100);
+    // at or below the threshold the table is rendered in full again
+    expect(taskRows(container)).toHaveLength(100);
+    expect(spacersOf(container)).toHaveLength(0);
+  });
+
+  it("a reload keeps the scroll position", async () => {
+    const { view, container } = await openMany(makeMany(300));
+    const wrap = tableWrapOf(container);
+    wrap.scrollTop = 35 * 120;
+    dispatch(wrap, "scroll");
+    await view.render();
+    expect(wrap.scrollTop).toBe(35 * 120);
+    expect(indexOfName(visibleRows(container)[0])).toBeGreaterThan(50);
+  });
+
+  it("keeps the row being edited in the DOM after scrolling away", async () => {
+    const { view, container } = await openMany(makeMany(300));
+    const row = visibleRows(container)[2];
+    dispatch(byClass(cells(row)[0], "task-workbench-cell-text")[0], "dblclick");
+    expect(view.editing).not.toBeNull();
+    const wrap = tableWrapOf(container);
+    wrap.scrollTop = 35 * 250;
+    dispatch(wrap, "scroll");
+    expect(byClass(container, "task-workbench-title-textarea")).toHaveLength(1);
+  });
+
+  it("adds zero-height width-probe rows for the widest content outside the window", async () => {
+    const tasks = makeMany(300);
+    (tasks[280] as any).displayName =
+      "Task 0280 a very long task name that is the widest of all rows";
+    const { container } = await openMany(tasks);
+    const probes = taskRows(container).filter((r) =>
+      r.classList.contains("twb-width-probe")
+    );
+    expect(probes.map(nameOf).join("|")).toContain("a very long task name");
+    expect(probes[0].attributes["aria-hidden"]).toBe("true");
+  });
+});
