@@ -3010,6 +3010,7 @@ export class TaskGanttView extends ItemView {
 
     const totalsByDate = this.getWorkloadSummaryValues(parents, dates);
     const capacityHours = getCapacityHours(this.host.settings);
+    const maxHours = getMaxHours(this.host.settings);
     for (const date of dates) {
       const cell = document.createElement("div");
       cell.classList.add("task-gantt-workload-summary-cell");
@@ -3061,16 +3062,22 @@ export class TaskGanttView extends ItemView {
         "--twb-workload-actual-ratio",
         `${(actualRatio * 100).toFixed(1)}%`
       );
+      // Same cyan-to-red scale as the bar workload popover: the closer a
+      // day's total gets to maxHours (7h by default), the redder it turns.
+      setRatio("--vg-workload-actual-color", workloadPlannedFillColor(actualTotal, maxHours));
+      setRatio("--vg-workload-plan-color", workloadPlannedFillColor(planTotal, maxHours));
 
 
       const actualLabel = document.createElement("span");
       actualLabel.classList.add("task-gantt-workload-summary-actual");
       actualLabel.textContent = formatWorkloadHours(actualTotal);
+      actualLabel.classList.toggle("has-value", actualTotal > 0);
       cell.appendChild(actualLabel);
 
       const planLabel = document.createElement("span");
       planLabel.classList.add("task-gantt-workload-summary-plan");
       planLabel.textContent = formatWorkloadHours(planTotal);
+      planLabel.classList.toggle("has-value", planTotal > 0);
       cell.appendChild(planLabel);
 
       // match the bar-level workload popup's
