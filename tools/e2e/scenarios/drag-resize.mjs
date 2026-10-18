@@ -190,11 +190,17 @@ export async function run({ cdp, vaultDir }) {
   }
 
   // Settle point before the second gesture: wait for the re-render to
-  // finish (exactly one bar again) — see header + cdp-input.mjs's
-  // dragGesture isolation warning for why this matters.
+  // finish (exactly one bar again, already narrowed by resize-start) — see
+  // header + cdp-input.mjs's dragGesture isolation warning for why this
+  // matters. The save's follow-up render waits for the metadata cache, so
+  // the bar count alone also matches the stale pre-save bar.
   try {
     await cdp.waitForExpression(
-      `document.querySelectorAll(".task-gantt-bar").length === 1`,
+      `(() => {
+        const bars = document.querySelectorAll(".task-gantt-bar");
+        return bars.length === 1 && !bars[0].classList.contains("is-dragging") &&
+          parseFloat(bars[0].style.width) <= ${rect1.width - RESIZE_START_DELTA_DAYS * DAY_WIDTH_PX / 2};
+      })()`,
       { timeoutMs: 15000, label: "single gantt bar re-rendered after resize-start save" }
     );
   } catch (err) {

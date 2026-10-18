@@ -1053,6 +1053,10 @@ export class TaskGanttView extends ItemView {
 
 
   private dragState: Record<string, unknown> | undefined = undefined;
+  /** True from a drag's pointerdown until its pointerup/pointercancel (dragState outlives the gesture). */
+  private dragActive = false;
+  /** A chart render that arrived mid-drag; it runs when the gesture ends. */
+  private renderAfterDrag = false;
 
   /**
  *
@@ -1779,6 +1783,9 @@ export class TaskGanttView extends ItemView {
  * selects the full-render escape hatch.
  */
   renderChart(): void {
+    // Rebuilding rows mid-drag would detach the dragged bar (a save's follow-up refresh can land
+    // after the next drag began); the render runs when the gesture ends.
+    if (this.dragActive) { this.renderAfterDrag = true; return; }
     // Hidden tabs report zero scroll offsets. Rebuilding them would discard
     // the visible date and derive a month from the range's far-left edge.
     if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
@@ -5588,7 +5595,7 @@ export class TaskGanttView extends ItemView {
 
   private relayoutForWindow(): void {
     if (typeof document === "undefined") return; // view outlived its environment
-    if (this.isExtendingRange || this.dragState !== undefined) {
+    if (this.isExtendingRange || this.dragActive) {
       // Range extension re-renders itself, and rebuilding rows mid-drag would
       // detach the dragged bar; retry once either has settled.
       this.scheduleLaneRelayout();
@@ -5602,6 +5609,22 @@ export class TaskGanttView extends ItemView {
     const anchor = this.captureRowAnchor();
     this.renderChart();
     this.restoreRowAnchor(anchor);
+  }
+
+  /** Marks a drag gesture active until the pointer is released; registered after the drag's own onUp so that runs first. */
+  private trackDragGesture(): void {
+    this.dragActive = true;
+    const end = (): void => {
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      this.dragActive = false;
+      if (this.renderAfterDrag) {
+        this.renderAfterDrag = false;
+        this.renderChart();
+      }
+    };
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   }
 
   /** Anchor parent row below the sticky header block, with its viewport offset. */
@@ -6084,6 +6107,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     this.dragState = { kind: `bar-${kind}`, taskId: task.id };
+    this.trackDragGesture();
   }
 
 
@@ -6264,6 +6288,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
     this.dragState = { kind: "gantt-event", eventKey: event.key };
+    this.trackDragGesture();
   }
 
   private async finishGanttEventDrag(
@@ -6491,6 +6516,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     this.dragState = { kind: "marker", taskId, markerKey };
+    this.trackDragGesture();
   }
 
   /**
@@ -6632,6 +6658,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     this.dragState = { kind: "parent-due", taskId: parent.id };
+    this.trackDragGesture();
   }
 
 
@@ -7016,6 +7043,7 @@ export class TaskGanttView extends ItemView {
       parentId: parent.id,
       targetIds: targets.map((t) => t.id),
     };
+    this.trackDragGesture();
   }
 
   /**
