@@ -4,7 +4,7 @@ import { reconcileParentOrder } from "../core/parent-order";
 import { sortSubtasks } from "../core/subtask-order";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { buildFileRevision, todayStr } from "../core/utils";
-import type { NoteVault } from "./note-vault";
+import { linkTarget, type NoteVault } from "./note-vault";
 import type { VaultFile } from "./task-operations";
 
 /** One note's parse result. `taskRow` is a single note (a parent without subtasks yet, or a subtask); null = not a task note. */
@@ -12,6 +12,7 @@ export interface NoteCacheEntry { revision: string; taskRow: TaskRow | null; par
 export type TaskCache = Map<string, NoteCacheEntry>;
 
 interface Assembled { source: TaskRow; kids: TaskRow[]; order: string; row: TaskRow }
+const attachedTo = new WeakMap<TaskRow, { from: string; parent: string }>();
 const assembledByCache = new WeakMap<TaskCache, Map<string, Assembled>>();
 
 export const taskRoot = (settings: Pick<TaskWorkbenchSettings, "taskFolder">): string => settings.taskFolder.replace(/\/$/, "");
@@ -52,6 +53,13 @@ function dirname(path: string): string {
   return slash < 0 ? "" : path.slice(0, slash);
 }
 
+/** True when a link target (`Name`, `dir/Name`, with or without `.md`) can only mean the note at `path`. */
+function namesNote(target: string, path: string): boolean {
+  const note = path.replace(/\.md$/, "");
+  const wanted = target.replace(/\.md$/, "");
+  return wanted !== "" && (note === wanted || note.endsWith("/" + wanted));
+}
+
 /**
  * Builds the parent rows with their subtasks. A subtask belongs to the note its `parent` link
  * resolves to; if the link does not resolve, to a parent note named like the subtask's folder
@@ -73,10 +81,21 @@ export function assembleTasks(
   const kidsOf = new Map<string, TaskRow[]>();
   for (const entry of unique) {
     if (entry.row.kind !== "subtask") continue;
-    let parentPath = entry.parentLink ? vault.resolveLink(entry.parentLink, entry.path)?.path : undefined;
-    if (!parentPath || !parentsByPath.has(parentPath)) {
-      const folder = dirname(entry.path);
-      parentPath = folder ? `${folder}.md` : undefined;
+    // A subtask row stays the same object until its note changes, so where it was attached last time is reused
+    // while that parent still exists. Otherwise: the usual layout keeps a subtask in its parent's folder
+    // (`Parent/Sub.md` next to `Parent.md`) with a link naming that parent, which is confirmed by text;
+    // anything else goes through link resolution.
+    const known = attachedTo.get(entry.row);
+    let parentPath: string | undefined = known && known.from === entry.path && parentsByPath.has(known.parent) ? known.parent : undefined;
+    const folder = dirname(entry.path);
+    const sibling = folder ? `${folder}.md` : undefined;
+    if (!parentPath) {
+      if (sibling && parentsByPath.has(sibling) && entry.parentLink && namesNote(linkTarget(entry.parentLink), sibling)) parentPath = sibling;
+      else {
+        parentPath = entry.parentLink ? vault.resolveLink(entry.parentLink, entry.path)?.path : undefined;
+        if (!parentPath || !parentsByPath.has(parentPath)) parentPath = sibling;
+      }
+      if (parentPath && parentsByPath.has(parentPath)) attachedTo.set(entry.row, { from: entry.path, parent: parentPath });
     }
     const parent = parentPath ? parentsByPath.get(parentPath) : undefined;
     if (!parent || !parentPath) {
@@ -122,11 +141,16 @@ export async function loadNoteTasks(
   const startedAt = Date.now();
   const root = taskRoot(settings), today = todayStr();
   const files = vault.getFiles().filter((file) => isUnderRoot(file.path, root));
-  const stale = files.filter((file) => cache.get(file.path)?.revision !== noteRevision(file, settings, today));
+  const revisions = new Map<string, string>();
+  const stale = files.filter((file) => {
+    const revision = noteRevision(file, settings, today);
+    revisions.set(file.path, revision);
+    return cache.get(file.path)?.revision !== revision;
+  });
   const unindexed = stale.filter((file) => vault.getFrontmatter(file) === undefined);
   if (unindexed.length) await vault.whenIndexed(unindexed);
   await Promise.all(stale.map(async (file) => {
-    const revision = noteRevision(file, settings, today);
+    const revision = revisions.get(file.path)!;
     try {
       const note = await readNote(vault, file, settings);
       if (note === undefined) { cache.delete(file.path); return; }

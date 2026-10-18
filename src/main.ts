@@ -298,8 +298,9 @@ export class ObsidianVaultAdapter implements NoteVault {
   afterWrite(file: VaultFile, contentChanged: boolean): Promise<void> {
     if (!contentChanged) return Promise.resolve();
     const cache = this.app.metadataCache;
+    ownWrites.add(file.path);
     return new Promise<void>((resolve) => {
-      const finish = () => { cache.offref(ref); clearTimeout(timer); resolve(); };
+      const finish = () => { ownWrites.delete(file.path); cache.offref(ref); clearTimeout(timer); resolve(); };
       const ref = cache.on("changed", (changed) => { if (changed.path === file.path) finish(); });
       const timer = setTimeout(finish, 2000);
     });
@@ -315,7 +316,21 @@ export class ObsidianVaultAdapter implements NoteVault {
   }
 }
 
+/** Notes this plugin just wrote and is waiting on the metadataCache for; the writer refreshes the views itself afterwards. */
+const ownWrites = new Set<string>();
+
+const vaultFiles = new WeakMap<TFile, VaultFile>();
+
+/** Notes are listed on every load; the snapshot of a note is reused until its path or stat changes. */
 function toVaultFile(file: TFile): VaultFile {
+  const known = vaultFiles.get(file);
+  if (known && known.path === file.path && known.stat?.mtime === file.stat?.mtime && known.stat?.size === file.stat?.size) return known;
+  const made = snapshotVaultFile(file);
+  vaultFiles.set(file, made);
+  return made;
+}
+
+function snapshotVaultFile(file: TFile): VaultFile {
   return {
     path: file.path,
     basename: file.basename,
@@ -788,7 +803,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       // Frontmatter comes from the metadataCache: drop what it re-indexed and redraw once it settles.
       let indexed = false, refreshTimer: ReturnType<typeof setTimeout> | undefined;
       const refreshSoon = () => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { refreshTimer = undefined; if (!this.unloading) void this.refreshOpenViews(); }, 300); };
-      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); refreshSoon(); }));
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (!ownWrites.has(file.path)) refreshSoon(); }));
       this.registerEvent(this.app.metadataCache.on("resolved", () => { if (indexed) return; indexed = true; this.taskCache.clear(); refreshSoon(); }));
     }
     this.registerCommands();
