@@ -23,6 +23,12 @@ export class PreviewStore implements PreviewPort {
     while (this.previews.size > 100) { const old = this.previews.keys().next().value!; this.callbacks.reject(old); this.previews.delete(old); this.outcomes.delete(old); if (this.focused === old) this.focused = null; }
     this.scheduleExpiry(); this.emit();
   }
+  /** Swaps the content of a preview that was re-planned against newer data; the id, status and approval stay. */
+  replace(id: string, preview: OperationPreviewV1): void {
+    const old = this.previews.get(id); if (!old) return;
+    this.previews.set(id, structuredClone(operationPreviewSchema.parse({ ...preview, previewId: id, status: old.status, ...(old.approvedEvent ? { approvedEvent: old.approvedEvent } : {}) })));
+    this.scheduleExpiry(); this.emit();
+  }
   private scheduleExpiry(): void {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     const pending = [...this.previews.values()].filter((preview) => preview.status === "pending");
