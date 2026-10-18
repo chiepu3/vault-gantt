@@ -33,6 +33,7 @@ import {
   packSubtasksIntoLanes,
   filterSubtasksInWindow,
   computeLaneWindow,
+  laneWindowCoversViewport,
   layoutMarkers,
   layoutFloatingEvents,
   layoutExternalBarLabels,
@@ -1710,23 +1711,52 @@ describe("filterSubtasksInWindow", () => {
 });
 
 describe("computeLaneWindow", () => {
-  it("buffers one viewport per side and snaps to a 7-day grid", () => {
+  it("buffers 1.5 viewports per side and snaps to a 7-day grid", () => {
     const w = computeLaneWindow({ scrollLeft: 30 * 20, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
-    // first=30, last=80, buffer=50 -> start idx floor(-20/7)*7=-21, end ceil(130/7)*7=133
-    expect(w.start).toBe(addDays("2026-01-01", -21));
-    expect(w.end).toBe(addDays("2026-01-01", 133));
+    // first=30, last=80, buffer=75 -> start idx floor(-45/7)*7=-49, end ceil(155/7)*7=161
+    expect(w.start).toBe(addDays("2026-01-01", -49));
+    expect(w.end).toBe(addDays("2026-01-01", 161));
   });
 
-  it("uses at least a 7 day buffer on tiny viewports", () => {
+  it("uses at least a 14 day buffer on tiny viewports", () => {
     const w = computeLaneWindow({ scrollLeft: 0, clientWidth: 20, dayWidth: 20, rangeStart: "2026-01-01" });
-    expect(w.start <= addDays("2026-01-01", -7)).toBe(true);
-    expect(w.end >= addDays("2026-01-01", 8)).toBe(true);
+    expect(w.start <= addDays("2026-01-01", -14)).toBe(true);
+    expect(w.end >= addDays("2026-01-01", 15)).toBe(true);
   });
 
   it("is stable for small scroll movements inside one grid cell", () => {
-    const a = computeLaneWindow({ scrollLeft: 400, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
-    const b = computeLaneWindow({ scrollLeft: 410, clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" });
+    const a = computeLaneWindow({ scrollLeft: 400, clientWidth: 990, dayWidth: 20, rangeStart: "2026-01-01" });
+    const b = computeLaneWindow({ scrollLeft: 410, clientWidth: 990, dayWidth: 20, rangeStart: "2026-01-01" });
     expect(a).toEqual(b);
+  });
+});
+
+describe("laneWindowCoversViewport", () => {
+  const base = { clientWidth: 1000, dayWidth: 20, rangeStart: "2026-01-01" };
+
+  it("is true for a window computed at the same position", () => {
+    const win = computeLaneWindow({ ...base, scrollLeft: 600 });
+    expect(laneWindowCoversViewport(win, { ...base, scrollLeft: 600 })).toBe(true);
+  });
+
+  it("stays true for moderate scrolls and false once the margin is crossed", () => {
+    const win = computeLaneWindow({ ...base, scrollLeft: 600 });
+    // window is idx [-49,161]; margin is 25 days for a 50-day viewport
+    expect(laneWindowCoversViewport(win, { ...base, scrollLeft: 600 + 20 * 20 })).toBe(true);
+    expect(laneWindowCoversViewport(win, { ...base, scrollLeft: 600 + 100 * 20 })).toBe(false);
+    expect(laneWindowCoversViewport(win, { ...base, scrollLeft: 0 })).toBe(true);
+  });
+
+  it("is false when scrolled left past the margin", () => {
+    const win = computeLaneWindow({ ...base, scrollLeft: 100 * 20 });
+    expect(laneWindowCoversViewport(win, { ...base, scrollLeft: 0 })).toBe(false);
+  });
+
+  it("requires at least a 7 day margin on tiny viewports", () => {
+    const win = { start: "2026-01-01", end: "2026-01-31" };
+    const tiny = { clientWidth: 20, dayWidth: 20, rangeStart: "2026-01-01" };
+    expect(laneWindowCoversViewport(win, { ...tiny, scrollLeft: 10 * 20 })).toBe(true);
+    expect(laneWindowCoversViewport(win, { ...tiny, scrollLeft: 5 * 20 })).toBe(false);
   });
 });
 
