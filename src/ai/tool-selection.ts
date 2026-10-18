@@ -12,7 +12,7 @@ export function operationFamily(id: OperationId): ToolFamily {
 }
 export function selectToolFamilies(text: string): readonly ToolFamily[] {
   const families = new Set<ToolFamily>(["tasks", "schedule"]);
-  for (const [family, words] of [["daily", /daily|デイリー|日次|ToDo/i], ["view", /画面|表示|ビュー|view|filter/i], ["control", /チャット|会話|conversation/i], ["markers", /マーカー|marker/i], ["workload", /時間|工数|実績|workload|hours/i], ["events", /イベント|event/i], ["weekly", /定例|毎週|weekly/i], ["settings", /設定(?:画面|値|変更)|プラグイン設定|休日|タグ定義|ソース|settings|holiday|source/i]] as const) if (words.test(text)) families.add(family);
+  for (const [family, words] of [["daily", /daily|デイリー|日次|ToDo/i], ["view", /画面|表示|ビュー|ガント|view|filter/i], ["control", /チャット|会話|conversation/i], ["markers", /マーカー|marker/i], ["workload", /時間|工数|実績|workload|hours/i], ["events", /イベント|event/i], ["weekly", /定例|毎週|weekly/i], ["settings", /設定(?:画面|値|変更)|プラグイン設定|休日|タグ定義|ソース|settings|holiday|source/i]] as const) if (words.test(text)) families.add(family);
   return [...families];
 }
 

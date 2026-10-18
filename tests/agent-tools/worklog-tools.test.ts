@@ -38,6 +38,9 @@ describe("worklog tools", () => {
     expect(candidates.results[0].subtasks[0].subtaskId).toBe(CHILD_ID);
     expect(candidates.results[1].parents[0].parentId).toBe(PARENT_ID);
     expect(candidates.results[2].matchQuality).toBe("near-or-none");
+    // no space between the parent name and the new work name: the parent is still offered so a new subtask can be created under it
+    const joined = await invoke(tools, "worklog_candidates", { date: "2026-10-13", labels: ["リリースの設計見直し"] });
+    expect(joined.results[0].parents[0].parentId).toBe(PARENT_ID);
     const before = f.vault.snapshot();
     const proposed = await invoke(tools, "worklog_propose", { date: "2026-10-13", entries: [
       { subtaskId: CHILD_ID, hours: 1 }, { subtaskId: CHILD_ID, hours: 2 },

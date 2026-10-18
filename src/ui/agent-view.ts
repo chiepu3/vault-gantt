@@ -36,7 +36,7 @@ function display(value: unknown): string { return value === "" || value == null 
 // Deliberately small Markdown subset: text nodes only, no HTML, images or executable links.
 // Rendering is line based and stateless, so a half-received reply (open code fence, table
 // without its separator row yet, unclosed bold) stays readable and re-renders cleanly.
-const STATUS_WORDS: Record<string, string> = { active: "進行中", in_progress: "作業中", done: "完了", completed: "完了", todo: "未着手", pending: "未着手", blocked: "保留", cancelled: "中止" };
+const STATUS_WORDS: Record<string, string> = { active: "未着手", in_progress: "進行中", waiting: "待ち", hold: "保留", done: "完了", completed: "完了", todo: "未着手", pending: "未着手", blocked: "保留", cancelled: "中止" };
 function inline(parent: HTMLElement, content: string): void {
   for (const part of content.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
     if (!part) continue;

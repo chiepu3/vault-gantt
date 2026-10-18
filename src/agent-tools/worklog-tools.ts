@@ -5,13 +5,18 @@ import type { RequestContext } from "../contracts/context";
 import { dateOnlySchema } from "../contracts/context";
 import { operationInputSchemas } from "../contracts/operations";
 import type { OperationPreviewV1 } from "../contracts/preview";
-import { matchScore } from "../core/fuzzy-match";
+import { compactForMatch, matchScore } from "../core/fuzzy-match";
 import { validatedTool } from "./validated-tool";
 
 const candidatesSchema = z.object({ date: dateOnlySchema, labels: z.array(z.string().trim().min(1).max(200)).min(1).max(20) }).strict();
 const proposeSchema = operationInputSchemas.T31;
 
 type Emit = (preview: OperationPreviewV1, input: unknown) => Promise<unknown>;
+/** "リリース準備の設計見直し" has no space, so the parent name only shows up as a prefix of the label; matchScore can't see that. */
+function labelStartsWithName(label: string, name: string): boolean {
+  const compactName = compactForMatch(name);
+  return compactName.length >= 2 && compactForMatch(label).startsWith(compactName);
+}
 /** Daily work-log entry: resolve each line to a subtask/project/event, then propose actual hours as ordinary approval cards. */
 export function worklogTools(service: OperationService, context: RequestContext, emit: Emit): ToolSet {
   const top = <T extends { score: number }>(rows: T[], max: number) => {
@@ -22,7 +27,7 @@ export function worklogTools(service: OperationService, context: RequestContext,
     worklog_candidates: validatedTool("日報の各行（作業名）に対する候補を一度に取得。日付dateの実績時間付きで、親(プロジェクト)・サブタスク・イベントの類似候補を返す。labelsには1作業=1要素（例:「プロジェクト2 設計」）。結果から対象を選び worklog_propose へ。候補が無い行は、親がありサブタスクが無ければ新規サブタスク、親も無ければイベントとして登録する。", candidatesSchema, async ({ date, labels }) => {
       const snapshot = await service.contextPort.snapshot();
       const results = labels.map((label) => {
-        const parents = top(snapshot.parents.map((parent) => ({ score: matchScore(label, [parent.displayName || parent.title]), parentId: parent.id, name: parent.displayName || parent.title, childCount: parent.subtasks?.size ?? 0 })).filter((row) => row.score > 0), 3);
+        const parents = top(snapshot.parents.map((parent) => ({ score: Math.max(matchScore(label, [parent.displayName || parent.title]), labelStartsWithName(label, parent.displayName || parent.title) ? 2 : 0), parentId: parent.id, name: parent.displayName || parent.title, childCount: parent.subtasks?.size ?? 0 })).filter((row) => row.score > 0), 3);
         const subtasks = top(snapshot.parents.flatMap((parent) => [...parent.subtasks?.values() ?? []].map((child) => ({
           score: matchScore(label, [child.displayName || child.title, `${parent.displayName} ${child.displayName}`]), subtaskId: child.id, name: child.displayName || child.title, parentName: parent.displayName || parent.title, parentId: parent.id,
           completed: child.completed, actualOnDate: child.workloadActual?.[date] ?? 0, planOnDate: child.workloadPlan?.[date] ?? 0 }))).filter((row) => row.score > 0), 5);

@@ -168,7 +168,7 @@ describe("independent AgentView", () => {
     expect(findAll(fake, (el) => el.tagName === "TABLE")).toHaveLength(1);
     expect(findAll(fake, (el) => el.tagName === "TH").map((el) => deepText(el))).toEqual(["タスク", "状態"]);
     const cells = findAll(fake, (el) => el.tagName === "TD").map((el) => deepText(el));
-    expect(cells).toEqual(["画面設計", "作業中", "経費", "進行中"]);
+    expect(cells).toEqual(["画面設計", "進行中", "経費", "未着手"]);
     expect(findAll(fake, (el) => el.className === "vg-ai-heading")).toHaveLength(1);
     expect(findAll(fake, (el) => el.className === "vg-ai-li").map((el) => deepText(el))).toEqual(["• 一つ目".replace("•", "1."), "• 二つ目"]);
     expect(findAll(fake, (el) => el.className === "vg-ai-quote")).toHaveLength(1);
