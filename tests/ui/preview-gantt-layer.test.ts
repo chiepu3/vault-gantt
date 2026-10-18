@@ -7,6 +7,7 @@ import { deriveHighlights, displayedHours, eventWorkloadKey, hoursChangeText } f
 import { createFakeDocument, makeFakeEl, byClass } from "../stubs/fake-dom";
 import { FakePreviewPort } from "./preview-fakes";
 
+const inConversation = (preview: any, conversationId: string): any => ({ ...preview, origin: { kind: "chat", conversationId } });
 beforeEach(() => { vi.stubGlobal("document", createFakeDocument()); });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -91,7 +92,7 @@ describe("deriveHighlights (what the real chart marks)", () => {
     expect(marks.workload.get(eventWorkloadKey("e-new"))!.get("2026-10-17")).toBeTruthy();
   });
   it("places created rows (proposal) or deleted rows (saved) as preview-only bars, never rows the chart already holds", () => {
-    const port = new FakePreviewPort([CREATE_PREVIEW, DELETE_PREVIEW]); const layer = new PreviewGanttLayer(port);
+    const port = new FakePreviewPort([CREATE_PREVIEW, inConversation(DELETE_PREVIEW, "conversation-other")]); const layer = new PreviewGanttLayer(port);
     port.focus("create-fixture");
     expect(layer.phantomBars(PARENT)).toEqual([{ id: "s-eeeeee", name: "新しい子", start: expect.any(String), end: expect.any(String), state: "created" }]);
     port.focus("delete-fixture"); expect(layer.phantomBars(PARENT)).toEqual([]);
@@ -119,7 +120,7 @@ describe("deriveHighlights (what the real chart marks)", () => {
 
 describe("PreviewGanttLayer", () => {
   it("projects only the focused preview, as a proposal; nothing without focus", () => {
-    const port = new FakePreviewPort([OUTSIDE_RANGE_PREVIEW, CREATE_PREVIEW]);
+    const port = new FakePreviewPort([OUTSIDE_RANGE_PREVIEW, inConversation(CREATE_PREVIEW, "conversation-other")]);
     const layer = new PreviewGanttLayer(port); const onChange = vi.fn(); layer.subscribe(onChange);
     expect(layer.active).toBe(false); expect(layer.fingerprint(PARENT_ID)).toBe(""); expect(layer.highlights).toBeUndefined(); expect(layer.markKey).toBe("");
     port.focus("outside-fixture");
@@ -132,6 +133,23 @@ describe("PreviewGanttLayer", () => {
     expect(layer.scheduleGhost(CHILD_ID)).toBeUndefined(); expect(layer.fingerprint(PARENT_ID)).not.toBe(fingerprint);
     expect(layer.isDeleted("x")).toBe(false);
     port.focus(null); expect(layer.active).toBe(false); expect(onChange).toHaveBeenCalledTimes(3);
+    layer.dispose();
+  });
+  it("shows the other pending proposals of the same conversation together with the focused one", () => {
+    const eventPreview = (id: string, key: string, title: string) => {
+      const projection = structuredClone(WORKLOAD_PREVIEW.projection!) as any;
+      projection.after.events = [{ key, title, date: DATE, hours: [{ date: DATE, plan: 0, actual: 0 }] }];
+      return { ...WORKLOAD_PREVIEW, previewId: id, status: "pending", projection } as any;
+    };
+    const first = eventPreview("ev-1", "event-1", "会議A"), second = eventPreview("ev-2", "event-2", "会議B");
+    const port = new FakePreviewPort([first, second, inConversation(eventPreview("ev-3", "event-3", "別の会話"), "conversation-other")]); const layer = new PreviewGanttLayer(port);
+    port.focus("ev-1");
+    expect([...layer.eventChanges.keys()].sort()).toEqual(["event-1", "event-2"]);
+    expect(layer.phantomEvents().map((phantom) => phantom.event.title).sort()).toEqual(["会議A", "会議B"]);
+    expect(layer.markKey).toContain("ev-1");
+    const before = layer.markKey;
+    port.set({ ...second, status: "rejected" }); expect([...layer.eventChanges.keys()]).toEqual(["event-1"]); expect(layer.markKey).not.toBe(before);
+    port.focus("ev-3"); expect([...layer.eventChanges.keys()]).toEqual(["event-3"]);
     layer.dispose();
   });
   it("uses the actual projection after saving and treats a null one as no Gantt impact", () => {

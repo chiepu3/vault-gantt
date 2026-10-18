@@ -34,6 +34,7 @@ const GANTT_ORDER_FALLBACK = 999999;
 
 
 
+let lastEventStamp = 0;
 export function addGanttEvent(
   settings: TaskWorkbenchSettings,
   title: string,
@@ -44,9 +45,12 @@ export function addGanttEvent(
   }
 
   const existingKeys = new Set(settings.ganttEvents.map((event) => event.key));
-  let key = `event-${Date.now()}`;
+  // Never hand out the same key twice in this session: several previews are planned against their own settings copies.
+  lastEventStamp = Math.max(Date.now(), lastEventStamp + 1);
+  let key = `event-${lastEventStamp}`;
   while (existingKeys.has(key)) {
-    key = `event-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    lastEventStamp += 1;
+    key = `event-${lastEventStamp}`;
   }
 
   const event: GanttEvent = {

@@ -6,7 +6,7 @@ import {
   type OperationOutcomeV1, type OperationPreviewV1, type ProjectionPageV1,
 } from "../contracts/preview";
 import type { PointGhost } from "./ghost-layer";
-import { deriveHighlights, type CellChange, type DailyChange, type EventChange, type Highlights, type HlState, type PhantomBar, type TotalsChange } from "./preview-highlights";
+import { deriveHighlights, type HoursPair, type CellChange, type DailyChange, type EventChange, type Highlights, type HlState, type PhantomBar, type TotalsChange } from "./preview-highlights";
 import { periodText } from "./schedule-summary";
 
 export interface PointChange extends PointGhost { readonly taskId: string }
@@ -80,7 +80,29 @@ export function deriveOverlay(projection: GanttProjectionV1): Overlay {
   return { ghosts, points, deleted, created, parents, unplaced };
 }
 
-interface LayerSource { readonly key: string; readonly preview: OperationPreviewV1; readonly outcome?: OperationOutcomeV1; readonly kind: "planned" | "actual"; readonly projection: GanttProjectionV1 | null }
+interface LayerSource { readonly key: string; readonly preview: OperationPreviewV1; readonly outcome?: OperationOutcomeV1; readonly kind: "planned" | "actual"; readonly projection: GanttProjectionV1 | null; /** Other pending proposals of the same conversation, shown together with the focused one. */ readonly siblings: readonly OperationPreviewV1[] }
+
+const addHours = (a: HoursPair, b: HoursPair, sign: 1 | -1): HoursPair => ({ plan: a.plan + sign * b.plan, actual: a.actual + sign * b.actual });
+/** Adds the marks of a sibling proposal to the focused one's; where both mark the same thing the focused proposal wins, and daily totals add up. */
+export function mergeOverlays(main: Overlay, extra: Overlay): Overlay {
+  const ghosts = new Map(extra.ghosts); for (const [id, ghost] of main.ghosts) ghosts.set(id, ghost);
+  const points = new Map(extra.points); for (const [id, list] of main.points) points.set(id, list);
+  const known = new Set(main.parents.map((parent) => parent.id));
+  return { ghosts, points, deleted: new Set([...main.deleted, ...extra.deleted]), created: new Set([...main.created, ...extra.created]),
+    parents: [...main.parents, ...extra.parents.filter((parent) => !known.has(parent.id))], unplaced: [...main.unplaced, ...extra.unplaced.filter((item) => !main.unplaced.some((other) => other.id === item.id))] };
+}
+export function mergeHighlights(main: Highlights, extra: Highlights): Highlights {
+  const rows = new Map(extra.rows); for (const [id, state] of main.rows) rows.set(id, state);
+  const workload = new Map(extra.workload);
+  for (const [key, cells] of main.workload) { const other = workload.get(key); workload.set(key, other ? new Map([...other, ...cells]) : cells); }
+  const totals = new Map(main.totals);
+  for (const [date, change] of extra.totals) { const own = totals.get(date); totals.set(date, own ? { date, before: own.before, after: addHours(addHours(own.after, change.after, 1), change.before, -1) } : change); }
+  const daily = new Map(extra.daily); for (const [date, change] of main.daily) daily.set(date, change);
+  const events = new Map(extra.events); for (const [key, change] of main.events) events.set(key, change);
+  const phantoms = new Map<string, readonly PhantomBar[]>(main.phantoms);
+  for (const [parent, bars] of extra.phantoms) { const own = phantoms.get(parent) ?? []; phantoms.set(parent, [...own, ...bars.filter((bar) => !own.some((other) => other.id === bar.id))]); }
+  return { rows, workload, totals, daily, events, phantoms, firstTaskId: main.firstTaskId ?? extra.firstTaskId, firstDate: main.firstDate ?? extra.firstDate };
+}
 
 /** Projects the one focused preview/outcome onto the Gantt. Holds only display state; never touches live rows. */
 export class PreviewGanttLayer {
@@ -111,7 +133,8 @@ export class PreviewGanttLayer {
   /** Rows re-render when this changes: previewId + status + kind + affected revisions. */
   fingerprint(parentPath: string): string {
     const source = this.source; const projection = this.merged;
-    if (!source || !projection || !projection.affectedParentIds.includes(parentPath)) return "";
+    if (!source || !projection) return "";
+    if (!projection.affectedParentIds.includes(parentPath) && !source.siblings.some((sibling) => sibling.projection?.affectedParentIds.includes(parentPath))) return "";
     return `|pv:${source.key}:${projection.coverage.includedCount}`;
   }
   /** Which side the dashed band stands for on the live chart. */
@@ -165,8 +188,15 @@ export class PreviewGanttLayer {
     const outcome = this.port.inspectOutcome(id);
     const projection = outcome ? outcome.actualProjection : preview.projection;
     // Descriptor version: status + base revision. A re-preview gets a new previewId.
-    const key = [preview.previewId, outcome?.status ?? preview.status, outcome ? "actual" : "planned", projection?.baseRevision ?? "none", projection?.coverage.targetCount ?? 0].join(":");
-    return { key, preview, outcome, kind: outcome ? "actual" : "planned", projection };
+    const siblings = outcome ? [] : this.siblingsOf(preview);
+    const key = [preview.previewId, outcome?.status ?? preview.status, outcome ? "actual" : "planned", projection?.baseRevision ?? "none", projection?.coverage.targetCount ?? 0, ...siblings.map((sibling) => sibling.previewId + "@" + (sibling.projection?.baseRevision ?? "none"))].join(":");
+    return { key, preview, outcome, kind: outcome ? "actual" : "planned", projection, siblings };
+  }
+  /** The other pending proposals of the focused chat proposal's conversation: they are shown on the Gantt together. */
+  private siblingsOf(focused: OperationPreviewV1): OperationPreviewV1[] {
+    if (focused.status !== "pending" || focused.origin.kind !== "chat") return [];
+    const conversation = focused.origin.conversationId;
+    return (this.port.list?.() ?? []).filter((other) => other.previewId !== focused.previewId && other.status === "pending" && other.origin.kind === "chat" && other.origin.conversationId === conversation && !!other.projection);
   }
   refresh(notify = true): void {
     this.focusNewChatPreview();
@@ -211,6 +241,12 @@ export class PreviewGanttLayer {
   private recompute(): void {
     this.derived = this.merged ? deriveOverlay(this.merged) : undefined;
     this.marks = this.merged && this.derived ? deriveHighlights(this.merged, this.derived) : undefined;
+    for (const sibling of this.source?.siblings ?? []) {
+      if (!sibling.projection || !this.derived || !this.marks) continue;
+      const overlay = deriveOverlay(sibling.projection);
+      this.marks = mergeHighlights(this.marks, deriveHighlights(sibling.projection, overlay));
+      this.derived = mergeOverlays(this.derived, overlay);
+    }
   }
   /** A chat proposal created while the Gantt is open is shown right away, unless the person is looking at something else. */
   private focusNewChatPreview(): void {
