@@ -109,3 +109,54 @@ it("does not silently ignore an unsupported overview date range", async () => {
   const result = await service.contextPort.query("context.overview", { dateRange: { from: "2026-10-13", to: "2026-10-15" } }, context);
   expect(result).toMatchObject({ status: "error", error: { code: "INVALID_INPUT", field: "dateRange", nextAction: expect.stringContaining("tasks.search") } });
 });
+
+describe("snapshot caching", () => {
+  it("unchanged stat signature reuses rows and revision but hands out independent maps and settings", async () => {
+    const { service } = await runtimeFixture();
+    const first = await service.contextPort.snapshot(), second = await service.contextPort.snapshot();
+    expect(second.revision).toBe(first.revision);
+    expect(second.parents).toEqual(first.parents);
+    expect(second.contents).not.toBe(first.contents);
+    expect(second.settings).not.toBe(first.settings);
+    first.contents.clear(); first.settings.taskFolder = "mutated";
+    const third = await service.contextPort.snapshot();
+    expect(third.contents.size).toBe(second.contents.size); expect(third.settings.taskFolder).toBe("tasks");
+  });
+  it("changed settings, files or the parent order invalidate the cached snapshot", async () => {
+    const { service, vault, parent, settings } = await runtimeFixture();
+    const a = await service.contextPort.snapshot();
+    settings.ganttManualHolidays = ["2026-12-31"];
+    const b = await service.contextPort.snapshot();
+    expect(b.revision).not.toBe(a.revision); expect(b.settings.ganttManualHolidays).toEqual(["2026-12-31"]);
+    settings.ganttParentOrder = [PARENT_ID];
+    const c = await service.contextPort.snapshot();
+    expect(c.parents[0].ganttOrder).toBe(1000);
+    settings.ganttParentOrder = ["other.md", PARENT_ID];
+    const d = await service.contextPort.snapshot();
+    expect(d.parents[0].ganttOrder).toBe(2000);
+    expect(c.parents[0].ganttOrder).toBe(1000);
+    parent.title = "再読込みです"; parent.displayName = "再読込みです"; await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    const e = await service.contextPort.snapshot();
+    expect(e.revision).not.toBe(d.revision);
+  });
+  it("retains old revisions without file bytes and still answers context.changes", async () => {
+    const { service, context, vault, parent } = await runtimeFixture();
+    const overview = await service.contextPort.query("context.overview", { scope: {} }, context);
+    if (overview.status !== "success") throw new Error("overview");
+    const since = overview.result.snapshotRevision;
+    const stored = (service.contextPort as unknown as { snapshots: Map<string, { contents?: unknown }> }).snapshots;
+    expect(stored.get(since)).toBeDefined(); expect(stored.get(since)!.contents).toBeUndefined();
+    parent.subtasks!.get("review")!.title = "変更後です"; parent.subtasks!.get("review")!.displayName = "変更後です";
+    await vault.modify(vault.getFileByPath(PARENT_ID)!, buildFullNote(parent, parent.subtasks));
+    const changes = await service.contextPort.query("context.changes", { sinceRevision: since, scope: {} }, context);
+    expect(changes).toMatchObject({ status: "success", result: { data: { kind: "changes", changed: expect.arrayContaining([expect.objectContaining({ id: CHILD_ID, name: "変更後です" })]), added: [], deletedIds: [] } } });
+  });
+  it("covers() is true only for task-folder and daily-source markdown", async () => {
+    const { service } = await runtimeFixture();
+    const index = service.contextPort;
+    expect(index.covers(PARENT_ID)).toBe(true);
+    expect(index.covers("daily/2026-10-13.md")).toBe(true);
+    expect(index.covers("notes/other.md")).toBe(false);
+    expect(index.covers("tasks/image.png")).toBe(false);
+  });
+});
