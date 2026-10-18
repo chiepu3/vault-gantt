@@ -236,7 +236,12 @@ describe("cleanLegacyBody", () => {
     expect(cleanLegacyBody(`前\n${header}\n${fields}\n後`)).toBe("前\n後");
   });
   it("drops a known-titled callout and a hidden button, keeps genuine callouts and bare text", () => {
-    const body = "a\n> [!note] ダッシュボード\n> x\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n```meta-bind-button\nid: a\n```\n本文 `VIEW[x]` あり\nb";
+    const body = "a\n> [!note] ダッシュボード\n> **作成日**: 2026-10-01\n> **期限**: `INPUT[datePicker:dueDate]`\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n```meta-bind-button\nid: a\n```\n本文 `VIEW[x]` あり\nb";
     expect(cleanLegacyBody(body)).toBe("a\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n本文 `VIEW[x]` あり\nb");
+  });
+
+  it("keeps a known-titled callout that holds user text", () => {
+    const body = "> [!info]- タスク情報\n> 先方の担当は田中さん\n> **期限**: `INPUT[datePicker:dueDate]`";
+    expect(cleanLegacyBody(body)).toBe(body);
   });
 });

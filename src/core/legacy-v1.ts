@@ -26,10 +26,16 @@ const isFieldLine = (line: string): boolean => FIELD_LINE.test(line.trim());
 /** Outside a callout only the plugin's own shape (bold label or none) counts, so ordinary text with inline code stays. */
 const isBareFieldLine = (line: string): boolean => isFieldLine(line) && /^(?:\*\*[^*]*\*\*\s*[:：]?\s*)?`/.test(line.trim());
 
-/** True for a callout the plugin generated: a known header, or nothing but Meta Bind field lines. */
+/** A `**label**: value` line, as older dashboards wrote plain values next to the fields. */
+const isLabelLine = (line: string): boolean => /^\*\*[^*]+\*\*\s*[:：]/.test(line);
+
+/**
+ * True for a callout the plugin generated: nothing but Meta Bind field lines, or a known header with only
+ * field or label lines. A known header around anything else is kept so user text is never dropped.
+ */
 function isDashboardCallout(block: string[]): boolean {
-  if (DASHBOARD_TITLE.test(CALLOUT_HEADER.exec(block[0])?.[1].trim() ?? "")) return true;
   const content = block.slice(1).map((line) => line.replace(/^>\s?/, "").trim()).filter(Boolean);
+  if (DASHBOARD_TITLE.test(CALLOUT_HEADER.exec(block[0])?.[1].trim() ?? "")) return content.every((line) => isFieldLine(line) || isLabelLine(line));
   return content.length > 0 && content.every(isFieldLine);
 }
 
