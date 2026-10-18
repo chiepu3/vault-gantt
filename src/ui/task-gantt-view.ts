@@ -45,6 +45,7 @@ import {
   collectWorkloadEntriesForDate,
   computeRowHeight,
   computeLaneWindow,
+  laneWindowCoversViewport,
   filterSubtasksInWindow,
   dateFromClientX,
   dateFromPointer,
@@ -981,6 +982,8 @@ export class TaskGanttView extends ItemView {
    *  (null = compactRowsToViewport off: all subtasks participate). */
   private laneWindow: { start: string; end: string } | null = null;
   private laneRelayoutTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+  /** Last pointer position over the wrap (null when outside); anchors relayouts. */
+  private lastPointer: { x: number; y: number } | null = null;
   /** Extra scrollLeft (px) to assume while a left range extension is mid-flight. */
   private pendingScrollShiftPx = 0;
 
@@ -1439,6 +1442,12 @@ export class TaskGanttView extends ItemView {
     this.wrapEl.addEventListener("scroll", () => {
       this.onScroll();
     });
+    this.wrapEl.addEventListener(
+      "pointermove",
+      (e) => { this.lastPointer = { x: e.clientX, y: e.clientY }; },
+      { passive: true }
+    );
+    this.wrapEl.addEventListener("pointerleave", () => { this.lastPointer = null; });
 
     // Create the shared drag tooltip element.
 
@@ -1753,7 +1762,7 @@ export class TaskGanttView extends ItemView {
       ...this.host.settings.ganttSpecialHolidays,
     ]);
     this.todayForRender = todayStr();
-    this.laneWindow = this.computeCurrentLaneWindow();
+    this.laneWindow = this.computeCurrentLaneWindow(this.laneWindow);
 
     // Get the visible Gantt parents in display order.
     const parents = getGanttParentRows(this.tasks);
@@ -5413,22 +5422,31 @@ export class TaskGanttView extends ItemView {
     return excluded.length === 0 ? base : `${base}|x:${excluded.join(",")}`;
   }
 
-  /** Buffered window from the live scroll position, or null when disabled. */
-  private computeCurrentLaneWindow(): { start: string; end: string } | null {
+  /**
+   * Buffered window from the live scroll position, or null when disabled.
+   * With `keep`, that window is returned as-is while it still covers the
+   * viewport (plus margin) so row heights do not change needlessly.
+   */
+  private computeCurrentLaneWindow(
+    keep: { start: string; end: string } | null = null
+  ): { start: string; end: string } | null {
     if (this.host.settings.compactRowsToViewport === false) return null;
-    return computeLaneWindow({
+    const input = {
       scrollLeft: this.wrapEl.scrollLeft + this.pendingScrollShiftPx,
       clientWidth: this.wrapEl.clientWidth || 1200,
       dayWidth: this.dayWidth,
       rangeStart: this.rangeStart,
-    });
+    };
+    if (keep && laneWindowCoversViewport(keep, input)) return keep;
+    return computeLaneWindow(input);
   }
 
   /**
-   * Debounced re-layout after horizontal scrolling settles: when the buffered
-   * window (7-day grid) differs from the one the rows were built with,
-   * rebuild the rows whose in-window subtask set changed (row fingerprints
-   * include that set) while keeping the first visible parent row anchored.
+   * Debounced re-layout after horizontal scrolling settles: only when the
+   * current window no longer covers the viewport (plus margin) is a fresh
+   * buffered window (7-day grid) computed, rebuilding the rows whose
+   * in-window subtask set changed (row fingerprints include that set) while
+   * keeping the row under the pointer (else the first visible row) anchored.
    */
   private scheduleLaneRelayout(delayMs = 150): void {
     if (this.host.settings.compactRowsToViewport === false) return;
@@ -5448,10 +5466,10 @@ export class TaskGanttView extends ItemView {
       return;
     }
     if (!this.wrapEl.isConnected || this.wrapEl.offsetParent === null) return;
-    const next = this.computeCurrentLaneWindow();
     const cur = this.laneWindow;
+    const next = this.computeCurrentLaneWindow(cur);
+    if (next === cur) return; // still covered (or disabled both ways): keep it
     if (next && cur && next.start === cur.start && next.end === cur.end) return;
-    if (!next && !cur) return;
     const anchor = this.captureRowAnchor();
     this.renderChart();
     this.restoreRowAnchor(anchor);
@@ -5466,7 +5484,18 @@ export class TaskGanttView extends ItemView {
     for (const el of [this.wrapEl.firstElementChild as HTMLElement | null, this.workloadSummaryRowEl, this.eventRowEl, this.dailyTodoRowEl]) {
       if (el && el.isConnected) stickyBottom = Math.max(stickyBottom, el.getBoundingClientRect().bottom);
     }
-    // Prefer the first row fully below the sticky block so what the user is
+    // Prefer the row under the pointer: that is what the user is looking at.
+    const ptr = this.lastPointer;
+    if (ptr && ptr.y >= stickyBottom) {
+      const wrapRect = this.wrapEl.getBoundingClientRect();
+      if (ptr.x >= wrapRect.left && ptr.x <= wrapRect.right && ptr.y <= wrapRect.bottom) {
+        for (const [path, el] of cache.rowEls) {
+          const rect = el.getBoundingClientRect();
+          if (ptr.y >= rect.top && ptr.y < rect.bottom) return { path, offset: rect.top - wrapTop };
+        }
+      }
+    }
+    // Otherwise prefer the first row fully below the sticky block so what the user is
     // looking at stays put even when a partially hidden row above changes
     // height; fall back to the partially visible row for a very tall row.
     let partial: { path: string; offset: number } | null = null;
