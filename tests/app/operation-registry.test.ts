@@ -210,6 +210,32 @@ describe("serialization guard", () => {
   });
 });
 
+describe("registry row lookup", () => {
+  it("get resolves parents and subtasks of any parent, and rejects unknown ids", async () => {
+    const a = setup();
+    const p1 = await createTask(a.vault, a.settings, "One"); const p2 = await createTask(a.vault, a.settings, "Two");
+    const c1 = await addSubtask(a.vault, a.settings, p1, "A"); const c2 = await addSubtask(a.vault, a.settings, p2, "A");
+    expect((await a.registry.get(p2.id)).id).toBe(p2.id);
+    expect((await a.registry.get(c1.id)).id).toBe(c1.id);
+    expect((await a.registry.get(c2.id)).id).toBe(c2.id);
+    expect(c1.id).not.toBe(c2.id);
+    await expect(a.registry.get(`${p1.id}::missing`)).rejects.toThrow("Task not found");
+    await expect(a.registry.get("nope")).rejects.toThrow("Task not found");
+  });
+  it("a single-subtask update changes only that subtask and verifies it in the round trip", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "Parent");
+    const first = await addSubtask(a.vault, a.settings, parent, "First");
+    const second = await addSubtask(a.vault, a.settings, parent, "Second");
+    const plan = await a.registry.plan("update", { taskId: second.id, patch: { plannedStartDate: "2026-03-01", plannedEndDate: "2026-03-04" } });
+    expect(plan.diffs).toHaveLength(1);
+    expect(plan.diffs[0].taskId).toBe(second.id);
+    expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
+    expect((await a.registry.get(second.id)).plannedStartDate).toBe("2026-03-01");
+    expect((await a.registry.get(first.id)).plannedStartDate ?? "").toBe("");
+  });
+});
+
 describe("registry task cache", () => {
   function cachedSetup() {
     const a = setup();

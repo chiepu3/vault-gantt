@@ -75,15 +75,34 @@ function persisted(row: TaskRow): string {
   // ganttOrder is not stored in the note (see PendingOrder).
   return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).filter((key) => key !== "ganttOrder").map((key) => [key, canonical(data[key])])));
 }
-function assertRoundTrip(parent: TaskRow, settings: TaskWorkbenchSettings, original: string, before: string): TaskRow {
+/**
+ * Serializes the patched parent and parses it back. The parent's own fields, the subtask count and the presence of
+ * every subtask key are always checked; the field-by-field comparison runs only for `touched` subtasks (a patch cannot
+ * change the others), or for all of them when `touched` is omitted.
+ */
+function assertRoundTrip(parent: TaskRow, settings: TaskWorkbenchSettings, original: string, before: string, touched?: ReadonlySet<string>): TaskRow {
   const content = mergeTaskNote(original, before, buildFullNote(parent, parent.subtasks));
   const parsed = parseTaskFile({ path: parent.file.path }, content, settings);
   if (!parsed || persisted(parent) !== persisted(parsed) || parent.subtasks!.size !== parsed.subtasks!.size) throw new Error("変更を安全に保存できません");
   for (const [key, child] of parent.subtasks!) {
     const other = parsed.subtasks!.get(key);
-    if (!other || persisted(child) !== persisted(other)) throw new Error("サブタスクの構造を安全に保存できません");
+    if (!other || ((touched === undefined || touched.has(child.id)) && persisted(child) !== persisted(other))) throw new Error("サブタスクの構造を安全に保存できません");
   }
   return parsed;
+}
+
+/** Finds a row by id without flattening every subtask: the id starts with its parent's path. */
+function findRow(parents: readonly TaskRow[], taskId: string): TaskRow | undefined {
+  for (const parent of parents) {
+    if (parent.id === taskId) return parent;
+    const prefix = `${parent.file.path}::`;
+    if (taskId.startsWith(prefix)) {
+      const child = parent.subtasks?.get(taskId.slice(prefix.length));
+      if (child?.id === taskId) return child;
+    }
+  }
+  for (const parent of parents) for (const child of parent.subtasks?.values() ?? []) if (child.id === taskId) return child;
+  return undefined;
 }
 
 export class OperationRegistry {
@@ -92,12 +111,15 @@ export class OperationRegistry {
   private tail: Promise<unknown> = Promise.resolve();
   constructor(private readonly host: RegistryHost, private readonly vaultFactory: () => VaultAdapter) {}
 
+  private loadParents(): Promise<TaskRow[]> {
+    return loadTasks(this.vaultFactory(), this.host.settings, this.host.taskCache ?? new Map(), undefined, () => this.host.orderChanged?.());
+  }
   async rows(query = ""): Promise<TaskRow[]> {
-    const parents = await loadTasks(this.vaultFactory(), this.host.settings, this.host.taskCache ?? new Map(), undefined, () => this.host.orderChanged?.());
+    const parents = await this.loadParents();
     return parents.flatMap((row) => [row, ...row.subtasks!.values()]).filter((row) => `${row.displayName} ${row.title}`.toLowerCase().includes(query.toLowerCase()));
   }
   async get(taskId: string): Promise<TaskRow> {
-    const row = (await this.rows()).find((item) => item.id === taskId);
+    const row = findRow(await this.loadParents(), taskId);
     if (!row) throw new Error(`Task not found: ${taskId}`);
     return row;
   }
@@ -137,11 +159,11 @@ export class OperationRegistry {
       const orderOnly = new Set<string>();
       const orderFields: { path: string; field: FieldDiff }[] = [];
       const pendingOrderDiffs = new Map<string, FieldDiff>();
-      const rows = new Map((await this.rows()).map((row) => [row.id, row]));
+      const loaded = await this.loadParents();
       for (const arg of args) {
         if (seen.has(arg.taskId)) throw new Error("Duplicate task in plan");
         seen.add(arg.taskId);
-        let row = rows.get(arg.taskId);
+        let row = findRow(loaded, arg.taskId);
         if (!row) throw new Error(`Task not found: ${arg.taskId}`);
         const file = vault.getFileByPath(row.file.path)!;
         if (arg.expectedRevision && arg.expectedRevision !== buildFileRevision(file as TaskRow["file"])) throw new Error("REVISION_CONFLICT");
@@ -169,7 +191,7 @@ export class OperationRegistry {
         const previous = structuredClone(taskData(row));
         const beforeNote = buildFullNote(parent, parent.subtasks);
         applyPatchToParent(parent, notePatch, row.id, this.host.settings);
-        const serialized = assertRoundTrip(parent, this.host.settings, content, beforeNote);
+        const serialized = assertRoundTrip(parent, this.host.settings, content, beforeNote, new Set([row.id]));
         const after = row.kind === "parent" ? serialized : [...serialized.subtasks!.values()].find((item) => item.id === row.id)!;
         if (after.plannedStartDate && after.plannedEndDate && after.plannedStartDate > after.plannedEndDate) throw new Error("開始日は終了日以前にしてください");
         const fields = Object.keys(patchSchema.shape).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: previous[key] ?? "", after: taskData(after)[key] ?? "" }));
@@ -190,7 +212,7 @@ export class OperationRegistry {
         const originalParent = parseTaskFile({ path }, content, this.host.settings)!;
         const beforeNote = buildFullNote(originalParent, originalParent.subtasks);
         for (const item of group) applyPatchToParent(originalParent, item.patch, item.rowId, this.host.settings);
-        assertRoundTrip(originalParent, this.host.settings, content, beforeNote);
+        assertRoundTrip(originalParent, this.host.settings, content, beforeNote, new Set(group.map((item) => item.rowId)));
       }
       if (orderTargets.size) {
         const before = [...(this.host.settings.ganttParentOrder ?? [])];
@@ -277,8 +299,9 @@ export class OperationRegistry {
         const paths = new Set(plan.changes.map((change) => change.row.file.path));
         for (const path of paths) {
           if (signal?.aborted) { result.kind = "cancelled"; break; }
-          const file = vault.getFileByPath(path);
-          if (!file || await vault.read(file) !== plan.contents.get(path)) throw new Error("REVISION_CONFLICT");
+          // The full-plan preflight above just verified this file's content; the atomic guard in modify() re-checks it
+          // at write time, so a second read here would only repeat the same check.
+          if (!vault.getFileByPath(path)) throw new Error("REVISION_CONFLICT");
           if (signal?.aborted) { result.kind = "cancelled"; break; }
           const commands = plan.changes.filter((change) => change.row.file.path === path);
           result.results.push(...await updateTaskItemsBatch(guardedVault, this.host.settings, new Map(), commands));

@@ -2690,32 +2690,29 @@ export class TaskGanttView extends ItemView {
     parents: TaskRow[],
     dates: string[]
   ): string {
-    const serializeWorkloadMap = (
-      values: Record<string, number> | undefined
-    ): Array<[string, number]> =>
-      Object.entries(values ?? {}).sort(([dateA], [dateB]) =>
-        dateA.localeCompare(dateB)
-      );
-
-    return JSON.stringify({
-      preview: this.previewLayer?.markKey ?? "",
-      dates,
-      capacityHours: getCapacityHours(this.host.settings),
-      holidays: Array.from(this.holidaySet).sort(),
-      today: this.todayForRender,
-      parents: parents.map((parent) => ({
-        path: parent.file.path,
-        subtasks: Array.from(parent.subtasks?.values() ?? [])
-          .map((subtask) => ({
-            id: subtask.id,
-            plannedStartDate: subtask.plannedStartDate ?? "",
-            plannedEndDate: subtask.plannedEndDate ?? "",
-            workloadPlan: serializeWorkloadMap(subtask.workloadPlan),
-            workloadActual: serializeWorkloadMap(subtask.workloadActual),
-          }))
-          .sort((subtaskA, subtaskB) => subtaskA.id.localeCompare(subtaskB.id)),
-      })),
-    });
+    // A flat string instead of nested objects + JSON.stringify: this runs on every incremental render, once per
+    // subtask. Key order inside a workload map is not normalized; a different order only costs a recompute.
+    const mapKey = (values: Record<string, number> | undefined): string => {
+      if (values === undefined) return "";
+      let out = "";
+      for (const date of Object.keys(values)) out += `${date}=${values[date]};`;
+      return out;
+    };
+    const parts: string[] = [
+      this.previewLayer?.markKey ?? "",
+      dates.join(","),
+      String(getCapacityHours(this.host.settings)),
+      Array.from(this.holidaySet).sort().join(","),
+      this.todayForRender,
+    ];
+    for (const parent of parents) {
+      parts.push(`#${parent.file.path}`);
+      if (parent.subtasks === undefined) continue;
+      for (const subtask of parent.subtasks.values()) {
+        parts.push(subtask.id, subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
+      }
+    }
+    return parts.join("\u0001");
   }
 
   /** The only O(visible dates × subtasks) workload aggregation in this view. */
@@ -2724,42 +2721,44 @@ export class TaskGanttView extends ItemView {
     dates: string[]
   ): Map<string, WorkloadSummaryTotals> {
     const totalsByDate = new Map<string, WorkloadSummaryTotals>();
-    for (const date of dates) {
-      let plan = 0;
-      let actual = 0;
-      for (const parent of parents) {
-        for (const subtask of parent.subtasks?.values() ?? []) {
-          if (
-            !hasPlannedDates(subtask) ||
-            date < subtask.plannedStartDate ||
-            date > subtask.plannedEndDate
-          ) {
-            continue;
+    const dateIndex = new Map<string, number>();
+    dates.forEach((date, index) => dateIndex.set(date, index));
+    const plans = new Array<number>(dates.length).fill(0);
+    const actuals = new Array<number>(dates.length).fill(0);
+    // Walk each subtask's own workload entries instead of probing every visible date: a date without an entry adds
+    // exactly 0, and parents/subtasks are still visited in the old order, so every date's sum is bit-identical.
+    for (const parent of parents) {
+      for (const subtask of parent.subtasks?.values() ?? []) {
+        if (!hasPlannedDates(subtask)) continue;
+        const start = subtask.plannedStartDate;
+        const end = subtask.plannedEndDate;
+        const add = (values: Record<string, number> | undefined, into: number[]): void => {
+          if (values === undefined) return;
+          for (const date of Object.keys(values)) {
+            const index = dateIndex.get(date);
+            if (index === undefined || date < start || date > end) continue;
+            into[index] += values[date] ?? 0;
           }
-          const values = dayValues(subtask, date);
-          plan += values.plan;
-          actual += values.actual;
-        }
+        };
+        add(subtask.workloadPlan, plans);
+        add(subtask.workloadActual, actuals);
       }
-
-
-      // weekly schedules are plan-only and match indefinitely
-      // by calendar weekday, regardless of any subtask date range.
-      const schedules: WeeklyWorkSchedule[] = Array.isArray(
-        this.host.settings.weeklyWorkSchedules
-      )
-        ? this.host.settings.weeklyWorkSchedules
-        : [];
-      const dayOfWeek = moment(date, "YYYY-MM-DD").day();
-      for (const schedule of schedules) {
-        if (dayOfWeek === schedule.dayOfWeek) {
-          plan += schedule.minutesPerWeek / 60;
-        }
-      }
-
-
-      totalsByDate.set(date, { plan, actual });
     }
+    // weekly schedules are plan-only and match indefinitely
+    // by calendar weekday, regardless of any subtask date range.
+    const schedules: WeeklyWorkSchedule[] = Array.isArray(this.host.settings.weeklyWorkSchedules)
+      ? this.host.settings.weeklyWorkSchedules
+      : [];
+    dates.forEach((date, index) => {
+      let plan = plans[index];
+      if (schedules.length > 0) {
+        const dayOfWeek = moment(date, "YYYY-MM-DD").day();
+        for (const schedule of schedules) {
+          if (dayOfWeek === schedule.dayOfWeek) plan += schedule.minutesPerWeek / 60;
+        }
+      }
+      totalsByDate.set(date, { plan, actual: actuals[index] });
+    });
     return totalsByDate;
   }
 

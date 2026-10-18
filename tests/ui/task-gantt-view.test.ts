@@ -1295,6 +1295,45 @@ describe("TaskGanttView", () => {
     });
   });
 
+  describe("workload summary totals", () => {
+    it("equal the per-date brute-force sum (entries outside the subtask range or the visible dates are ignored)", async () => {
+      const dates = Array.from({ length: 20 }, (_, i) => dateOffset(i));
+      const mk = (i: number, start: number, end: number, plan: Record<string, number>, actual: Record<string, number>) =>
+        makeSubtask(`w${i}`, { id: `tasks/p0.md::w${i}`, plannedStartDate: dateOffset(start), plannedEndDate: dateOffset(end), workloadPlan: plan, workloadActual: actual });
+      const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
+        mk(0, 2, 6, { [dateOffset(2)]: 1.5, [dateOffset(5)]: 0.25, [dateOffset(9)]: 4 }, { [dateOffset(3)]: 2 }),
+        mk(1, 4, 8, { [dateOffset(5)]: 0.5, [dateOffset(-3)]: 7, [dateOffset(40)]: 7 }, { [dateOffset(5)]: 1 }),
+        makeSubtask("nodates", { id: "tasks/p0.md::nodates", workloadPlan: { [dateOffset(5)]: 9 } }),
+      ]);
+      const { view } = await openView([parent]);
+      const totals = (view as any).computeWorkloadSummaryValues([parent], dates) as Map<string, { plan: number; actual: number }>;
+      for (const date of dates) {
+        let plan = 0, actual = 0;
+        for (const s of parent.subtasks!.values()) {
+          if (!s.plannedStartDate || !s.plannedEndDate || date < s.plannedStartDate || date > s.plannedEndDate) continue;
+          plan += s.workloadPlan?.[date] ?? 0; actual += s.workloadActual?.[date] ?? 0;
+        }
+        const got = totals.get(date)!;
+        expect(got.plan).toBe(plan);
+        expect(got.actual).toBe(actual);
+      }
+      expect(totals.get(dateOffset(5))!.plan).toBe(0.75);
+    });
+
+    it("changes the input fingerprint when a subtask's workload entry changes", async () => {
+      const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
+        makeSubtask("a", { id: "tasks/p0.md::a", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 1 } }),
+      ]);
+      const { view } = await openView([parent]);
+      const dates = [dateOffset(0), dateOffset(1)];
+      const fp = () => (view as any).workloadSummaryInputsFingerprint([parent], dates) as string;
+      const before = fp();
+      expect(fp()).toBe(before);
+      parent.subtasks!.values().next().value!.workloadPlan = { [dateOffset(1)]: 2 };
+      expect(fp()).not.toBe(before);
+    });
+  });
+
   describe("setZoom", () => {
     it("updates dayWidth, persists, scales scroll, re-renders", async () => {
       const { view, container, h } = await openView([]);
