@@ -671,7 +671,7 @@ describe("Task Operations - Integration Tests", () => {
 
       expect(historyManager.canUndo()).toBe(false);
       expect(historyManager.canRedo()).toBe(false);
-      expect(batchVault.getFileContent(first.file.path)).toContain("First changed");
+      expect(batchVault.getFileContentById(first.id)).toContain("First changed");
       expect(batchVault.getFileContent(second.file.path)).toContain("Second");
       expect(batchVault.getFileContent(second.file.path)).not.toContain("Second changed");
     });

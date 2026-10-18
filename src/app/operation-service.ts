@@ -11,7 +11,7 @@ import { applyStoredOrder, computeParentOrder, orderValue } from "../core/parent
 import { todayStr, buildFileRevision } from "../core/utils";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { collectTaskIds, getAvailableSubtaskPath, getAvailableTaskPath, newNoteText, newParentRow, newSubtaskRow, type VaultAdapter } from "./task-operations";
-import { applyNoteChange, diffTasks, NoteConflictError, roundTripRow, type AppliedNote, type NoteChange } from "./note-changes";
+import { applyNoteChange, byApplyOrder, diffTasks, flattenApplied, mergeApplied, NoteConflictError, roundTripRow, type AppliedNote, type NoteChange } from "./note-changes";
 import { HistoryManager } from "./history-manager";
 import { OperationCatalog, IMPLEMENTED_OPERATION_IDS } from "./operation-catalog";
 import { ContextIndex } from "./context-index";
@@ -358,6 +358,7 @@ export class OperationService implements OperationServicePort {
     this.pending.delete(id);
     return this.host.coordinator.coordinate(async () => {
       const vault = this.vaultFactory(), history: AppliedNote[] = [];
+      let renamed = false;
       const committed = new Set<string>(), failed = new Set<string>(), actualEffects = new Map<string, PreviewEntry["effects"]>();
       let status: OperationOutcomeV1["status"] = "success", errorCode: string | undefined, orderPersisted = false;
       try {
@@ -384,18 +385,19 @@ export class OperationService implements OperationServicePort {
           for (const entry of stored.preview.entries) actualEffects.set(entry.actionId, entry.effects.map((effect) => effect.kind === "diagnostic" ? { ...effect, recording: result.recording } : effect));
           stored.preview.entries.forEach((entry) => committed.add(entry.actionId)); this.host.historyManager.discardRedo();
         }
-        for (const write of stored.daily || stored.history || stored.diagnostic ? [] : stored.writes) {
+        for (const write of stored.daily || stored.history || stored.diagnostic ? [] : byApplyOrder(stored.writes, (item) => item.change!)) {
           if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
           try {
             let applied: AppliedNote;
             try { applied = await applyNoteChange(vault, write.change!, write.before); }
             catch (error) { throw error instanceof NoteConflictError ? new Error("REVISION_CONFLICT") : error; }
-            history.push(applied);
+            history.push(...flattenApplied(applied));
+            if (applied.afterPath) renamed = true;
             // The body after our write must be the body we meant to write; anything else is a concurrent edit.
             if (write.change!.kind === "update" && applied.before !== null && applied.after !== null && splitFrontmatter(applied.after).body !== splitFrontmatter(replaceSections(applied.before, write.change!.sections ?? {})).body) this.clearSavedProjection();
             if (write.change!.kind === "create") this.host.historyManager.discardRedo();
             write.actionIds.forEach((action) => committed.add(action));
-            this.ownWrites.set(write.path, { content: applied.after, until: Date.now() + 60_000 });
+            for (const note of flattenApplied(applied)) for (const path of [note.path, ...(note.afterPath ? [note.afterPath] : [])]) this.ownWrites.set(path, { content: note.after, until: Date.now() + 60_000 });
           } catch (error) { write.actionIds.forEach((action) => failed.add(action)); throw error; }
         }
         if (!stored.daily && !stored.history && !stored.diagnostic) stored.noopActions.forEach((action) => committed.add(action));
@@ -432,7 +434,7 @@ export class OperationService implements OperationServicePort {
       }
       // The parent order (settings) is undoable together with the file changes; other settings are not.
       const undoable = (history.length > 0 || orderPersisted) && stored.settingKeys.every((key) => key === "ganttParentOrder") && !stored.writes.some((write) => write.before === null && !write.change && write.actionIds.some((action) => committed.has(action)));
-      if (undoable) this.host.historyManager.push({ label: `タスク変更 ${id}`, files: history, ...(orderPersisted ? { order: { before: stored.snapshot.settings.ganttParentOrder ?? [], after: stored.afterSettings.ganttParentOrder ?? [] } } : {}) });
+      if (undoable) this.host.historyManager.push({ label: `タスク変更 ${id}`, files: mergeApplied(history), ...(orderPersisted ? { order: { before: stored.snapshot.settings.ganttParentOrder ?? [], after: stored.afterSettings.ganttParentOrder ?? [] } } : {}) });
       for (const write of stored.writes) {
         if (!write.actionIds.some((action) => committed.has(action))) { this.ownWrites.delete(write.path); if (write.afterPath) this.ownWrites.delete(write.afterPath); }
         else if (stored.daily && !stored.history) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
@@ -457,7 +459,7 @@ export class OperationService implements OperationServicePort {
       const actualEntries = stored.preview.entries.filter((entry) => committed.has(entry.actionId)).map((entry) => ({ ...entry, effects: actualEffects.get(entry.actionId) ?? entry.effects }));
       const outcome: OperationOutcomeV1 = { previewId: id, status, actions: stored.preview.entries.map((entry) => ({ actionId: entry.actionId, state: committed.has(entry.actionId) ? "committed" : failed.has(entry.actionId) ? "failed" : "not-attempted", actual: committed.has(entry.actionId) ? actualEffects.get(entry.actionId) ?? entry.effects : [], ...(committed.has(entry.actionId) ? {} : { errorCode: errorCode ?? "NOT_ATTEMPTED" }) })),
         ...(undoable ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, orderPersisted || stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
-      if (committed.size && !this.disposed) { try { await this.host.invalidate(stored.settingKeys.length || stored.daily || stored.history || stored.diagnostic ? undefined : stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).flatMap((write) => [write.path, ...(write.afterPath ? [write.afterPath] : [])])); } catch { /* Saved bytes remain authoritative. */ } }
+      if (committed.size && !this.disposed) { try { await this.host.invalidate(renamed || stored.settingKeys.length || stored.daily || stored.history || stored.diagnostic ? undefined : stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).flatMap((write) => [write.path, ...(write.afterPath ? [write.afterPath] : [])])); } catch { /* Saved bytes remain authoritative. */ } }
       const validated = validatePreviewOutcome(stored.preview, outcome);
       if (!this.disposed) {
         // An external change while applying cannot clear an outcome that

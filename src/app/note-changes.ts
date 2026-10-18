@@ -1,3 +1,4 @@
+import { datePrefixOf, MAX_FILE_STEM, parentFileStem, sanitizeFileStem, uniqueFileStem } from "../core/file-names";
 import { applyFrontmatterChanges, bodiesOfRow, diffFrontmatter, managedFrontmatter, newNoteFrontmatter, parseNote, replaceSections, type Frontmatter } from "../core/note-v2";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import type { VaultAdapter as NoteVault } from "./task-operations";
@@ -25,7 +26,42 @@ export interface AppliedNote {
   after: string | null;
   /** Where the note lives afterwards, when it was renamed. */
   afterPath?: string;
+  /** Other notes the rename moved or fixed (a parent's subtasks, links in siblings). */
+  extra?: AppliedNote[];
 }
+
+/** The note itself plus whatever its rename changed, as history entries. */
+export const flattenApplied = (applied: AppliedNote): AppliedNote[] => [applied, ...applied.extra ?? []];
+
+/**
+ * Subtask changes go before parent title changes: a parent rename moves its subtasks' folder,
+ * which would leave the paths of later subtask changes stale.
+ */
+export function byApplyOrder<T>(items: readonly T[], change: (item: T) => NoteChange): T[] {
+  const rank = (item: T): number => { const c = change(item); return c.kind === "update" && c.taskId.startsWith("t-") ? 1 : 0; };
+  return items.map((item, index) => ({ item, index })).sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index).map(({ item }) => item);
+}
+
+/** One history entry per note: a note that was edited and then moved (or moved twice) keeps its first path and last state. */
+export function mergeApplied(list: readonly AppliedNote[]): AppliedNote[] {
+  const merged: AppliedNote[] = [];
+  for (const note of list) {
+    const earlier = merged.find((item) => (item.afterPath ?? item.path) === note.path && item.after !== null);
+    if (!earlier) { merged.push({ ...note }); continue; }
+    earlier.after = note.after;
+    if (note.afterPath !== undefined) earlier.afterPath = note.afterPath;
+    if (earlier.afterPath === earlier.path) delete earlier.afterPath;
+  }
+  return merged;
+}
+
+let notifier: (message: string) => void = () => {};
+/** Where rename problems are shown to the user (main.ts wires this to a Notice). */
+export function setNoteNotifier(fn: (message: string) => void): void { notifier = fn; }
+
+const dirOf = (path: string): string => path.slice(0, path.lastIndexOf("/") + 1);
+const stemOf = (path: string): string => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/i, "");
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export class NoteConflictError extends Error {
   readonly code = "REVISION_CONFLICT";
@@ -98,9 +134,82 @@ export async function applyNoteChange(vault: NoteVault, change: NoteChange, expe
     if (vault.process) await vault.process(file, (content) => replaceSections(content, sections));
     else await vault.modify(file, replaceSections(await vault.read(file), sections));
   }
-  const after = await vault.read(file);
+  let after = await vault.read(file);
   await vault.afterWrite(file, after !== before);
-  return { path: change.path, before, after };
+  const applied: AppliedNote = { path: change.path, before, after };
+  if (change.title !== undefined) {
+    try {
+      const moved = await renameForTitle(vault, change, change.title);
+      if (moved) {
+        applied.afterPath = moved.path;
+        applied.extra = moved.extra;
+        after = await vault.read(vault.getFileByPath(moved.path) ?? file);
+        applied.after = after;
+      }
+    } catch (error) {
+      // The title and data are saved; only the file name stays as it was.
+      notifier(`ファイル名を変更できませんでした(${stemOf(change.path)}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return applied;
+}
+
+/** The stem a note should have for its title. A parent keeps the date prefix it already has. */
+export function wantedStem(path: string, taskId: string, title: string): string {
+  const stem = stemOf(path);
+  if (!taskId.startsWith("t-")) return sanitizeFileStem(title);
+  const prefix = datePrefixOf(stem);
+  return prefix ? parentFileStem(title, prefix, true) : sanitizeFileStem(title, MAX_FILE_STEM);
+}
+
+async function renameForTitle(vault: NoteVault, change: NoteChange, title: string): Promise<{ path: string; extra: AppliedNote[] } | null> {
+  const dir = dirOf(change.path), stem = stemOf(change.path), isParent = change.taskId.startsWith("t-");
+  const all = vault.getFiles();
+  const taken = (candidate: string): boolean => {
+    const path = `${dir}${candidate}.md`;
+    if (path === change.path) return false;
+    const lower = path.toLowerCase();
+    return all.some((f) => f.path.toLowerCase() === lower || (isParent && f.path.toLowerCase().startsWith(`${dir}${candidate}/`.toLowerCase())));
+  };
+  const next = uniqueFileStem(wantedStem(change.path, change.taskId, title), taken);
+  if (next === stem) return null;
+  const newPath = `${dir}${next}.md`;
+  const subs = isParent ? all.filter((f) => f.path.startsWith(`${dir}${stem}/`)) : [];
+  const subBefore = new Map<string, string>();
+  for (const sub of subs) subBefore.set(sub.path, await vault.read(sub));
+
+  await vault.rename(change.path, newPath);
+  if (subs.length) {
+    try { await vault.rename(`${dir}${stem}`, `${dir}${next}`); }
+    catch (error) {
+      try { await vault.rename(newPath, change.path); } catch { /* the original error is the one to report */ }
+      throw error;
+    }
+  }
+
+  const extra: AppliedNote[] = [];
+  const fixLinks = async (path: string, key: "parent" | "dependsOn"): Promise<void> => {
+    const file = vault.getFileByPath(path);
+    if (!file) return;
+    const text = await vault.read(file);
+    if (!text.includes(`[[${stem}]]`) && !text.includes(`[[${stem}|`)) return;
+    const swap = (value: unknown): unknown => typeof value === "string" ? value.replace(new RegExp(`\\[\\[${escapeRe(stem)}(\\||\\]\\])`), (_m, tail: string) => `[[${next}${tail}`) : value;
+    await vault.processFrontMatter(file, (fm) => { fm[key] = Array.isArray(fm[key]) ? (fm[key] as unknown[]).map(swap) : swap(fm[key]); });
+    await vault.afterWrite(file, true);
+    const fixed = await vault.read(file);
+    if (key === "dependsOn") extra.push({ path, before: text, after: fixed });
+  };
+  for (const sub of subs) {
+    const to = `${dir}${next}/${sub.path.slice(`${dir}${stem}/`.length)}`;
+    await fixLinks(to, "parent");
+    const moved = vault.getFileByPath(to);
+    extra.push({ path: sub.path, before: subBefore.get(sub.path)!, after: moved ? await vault.read(moved) : subBefore.get(sub.path)!, afterPath: to });
+  }
+  if (!isParent) {
+    for (const sibling of vault.getFiles()) if (sibling.path !== newPath && dirOf(sibling.path) === dir && sibling.path.endsWith(".md")) await fixLinks(sibling.path, "dependsOn");
+  }
+  await vault.afterWrite(vault.getFileByPath(newPath) ?? { path: newPath }, true);
+  return { path: newPath, extra };
 }
 
 /**

@@ -18,7 +18,7 @@ import { parentFileStem, sanitizeFileStem, uniqueFileStem } from "../core/file-n
 import { applyPatchToRow } from "../core/task-patch";
 import { computeParentOrder } from "../core/parent-order";
 import type { HistoryManager } from "./history-manager";
-import { applyNoteChange, diffRow, type AppliedNote } from "./note-changes";
+import { applyNoteChange, diffRow, flattenApplied, mergeApplied, type AppliedNote } from "./note-changes";
 import { linkTextFor } from "./note-vault";
 import { isUnderRoot, loadNoteTasks, readNote, taskRoot, type TaskCache } from "./note-store";
 
@@ -356,7 +356,7 @@ export async function updateTaskItemsBatch(
   let orderChange: { before: string[]; after: string[] } | undefined;
 
   try {
-    for (const noteCommands of groups.values()) {
+    for (const noteCommands of [...groups.values()].sort((a, b) => Number(a[0].row.kind === "parent") - Number(b[0].row.kind === "parent"))) {
       const target = noteCommands[0].row;
       const path = target.file.path;
       const file = vault.getFileByPath(path);
@@ -391,12 +391,15 @@ export async function updateTaskItemsBatch(
         applyPatchToRow(updated, cmd.patch, settings);
       }
       const change = diffRow(current.row, updated);
+      let newPath = path;
       if (change) {
-        appliedChanges.push(await applyNoteChange(vault, change, content));
+        const applied = await applyNoteChange(vault, change, content);
+        appliedChanges.push(...flattenApplied(applied));
+        if (applied.afterPath) newPath = applied.afterPath;
       }
       cache.delete(path);
 
-      const newRevision = buildFileRevision(vault.getFileByPath(path) as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      const newRevision = buildFileRevision(vault.getFileByPath(newPath) as any); // eslint-disable-line @typescript-eslint/no-explicit-any
       for (const cmd of noteCommands) {
         const changed = changedFields(
           cmd.row as unknown as Record<string, unknown>,
@@ -443,7 +446,7 @@ export async function updateTaskItemsBatch(
   }
 
   if ((appliedChanges.length > 0 || orderChange) && historyManager) {
-    historyManager.push({ label: "タスク更新", files: appliedChanges, ...(orderChange ? { order: orderChange } : {}) });
+    historyManager.push({ label: "タスク更新", files: mergeApplied(appliedChanges), ...(orderChange ? { order: orderChange } : {}) });
   }
 
   return results;

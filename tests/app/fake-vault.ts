@@ -174,6 +174,17 @@ export class FakeVault implements NoteVault {
     await this.modify(file, `---\n${stringifyYaml(fm)}---\n${body}`);
   }
 
+  /** The note whose frontmatter carries this id, wherever a rename has put it. */
+  getFileById(id: string): VaultFile | null {
+    for (const [path, file] of this.files) if (new RegExp(`^id: ${id}$`, "m").test(file.content)) return this.getFileByPath(path);
+    return null;
+  }
+
+  getFileContentById(id: string): string | null {
+    const file = this.getFileById(id);
+    return file ? this.getFileContent(file.path) : null;
+  }
+
   async rename(path: string, newPath: string): Promise<void> {
     if (this.failRename?.(path, newPath)) throw new Error("rename failed");
     const moves: [string, string][] = [];

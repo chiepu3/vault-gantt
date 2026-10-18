@@ -62,6 +62,7 @@ import {
   loadTasks,
 } from "./app/task-operations";
 import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
+import { setNoteNotifier } from "./app/note-changes";
 import {
   createRequestUrlNationalHolidayFetcher,
   HolidayService,
@@ -667,6 +668,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   async onload(): Promise<void> {
+    setNoteNotifier((message) => new Notice(message));
 
     const startedAt = Date.now();
 

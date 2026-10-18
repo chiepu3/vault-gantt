@@ -52,7 +52,7 @@ describe("final review operation regressions", () => {
     const approved = f.service.humanApprovalPort.approve(preview.previewId); await writing;
     expect(f.service.previewPort.inspect(preview.previewId)?.status).toBe("applying");
     expect(f.service.previewPort.inspectOutcome(preview.previewId)).toBeUndefined();
-    await original(f.vault.getFileByPath(CHILD_PATH)!, f.vault.getFileContent(CHILD_PATH)! + "\nexternal edit\n");
+    await original(f.vault.getFileById(CHILD_ID)!, f.vault.getFileContentById(CHILD_ID)! + "\nexternal edit\n");
     await f.service.handleVaultChange(CHILD_PATH, "modify");
     release(); const outcome = await approved;
     expect(f.service.previewPort.focusedPreviewId()).toBeNull();
@@ -66,7 +66,7 @@ describe("final review operation regressions", () => {
     const modify = vi.spyOn(f.vault, "modify").mockRejectedValueOnce(new Error("disk"));
     expect((await f.service.humanApprovalPort.approve(next.previewId)).status).toBe("failed");
     const plannedBytes = modify.mock.calls[0][1];
-    await f.vault.modify(f.vault.getFileByPath(CHILD_PATH)!, plannedBytes);
+    await f.vault.modify(f.vault.getFileById(CHILD_ID)!, plannedBytes);
     await f.service.handleVaultChange(CHILD_PATH, "modify"); expect(f.service.previewPort.focusedPreviewId()).toBeNull(); f.service.dispose();
   });
   it("own save events preserve the focused result, while external edits clear it", async () => {
@@ -77,9 +77,9 @@ describe("final review operation regressions", () => {
     vi.spyOn(f.vault, "modify").mockImplementation(async (file, content) => { await original(file, content); await f.service.handleVaultChange(file.path, "modify"); });
     await f.service.humanApprovalPort.approve(preview.previewId);
     expect(f.service.previewPort.focusedPreviewId()).toBe(preview.previewId);
-    await f.service.handleVaultChange(CHILD_PATH, "modify");
+    await f.service.handleVaultChange(f.vault.getFileById(CHILD_ID)!.path, "modify");
     expect(f.service.previewPort.focusedPreviewId()).toBe(preview.previewId);
-    await f.vault.modify(f.vault.getFileByPath(CHILD_PATH)!, f.vault.getFileContent(CHILD_PATH)! + "\nexternal\n");
+    await f.vault.modify(f.vault.getFileById(CHILD_ID)!, f.vault.getFileContentById(CHILD_ID)! + "\nexternal\n");
     expect(f.service.previewPort.focusedPreviewId()).toBeNull();
     expect(f.service.previewPort.inspectOutcome(preview.previewId)?.status).toBe("success"); f.service.dispose();
   });
@@ -123,12 +123,12 @@ describe("final review operation regressions", () => {
   });
   it("M03 refuses unscheduled markers instead of persisting an unbounded drag", async () => {
     const f = await runtimeFixture(); f.child.plannedStartDate = ""; f.child.plannedEndDate = "";
-    await f.vault.modify(f.vault.getFileByPath(CHILD_PATH)!, newNoteText(f.vault, f.child, f.parent));
+    await f.vault.modify(f.vault.getFileById(CHILD_ID)!, newNoteText(f.vault, f.child, f.parent));
     await expect(f.service.propose("M03", { subtaskId: CHILD_ID, markerKey: "確認", date: "2026-10-14" }, f.context)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } }); f.service.dispose();
   });
   it("Friday to Monday is a three-calendar-day delta even though planning preserves working-day duration", async () => {
     const f = await runtimeFixture(); f.child.plannedStartDate = "2026-10-09"; f.child.plannedEndDate = "2026-10-09";
-    await f.vault.modify(f.vault.getFileByPath(CHILD_PATH)!, newNoteText(f.vault, f.child, f.parent));
+    await f.vault.modify(f.vault.getFileById(CHILD_ID)!, newNoteText(f.vault, f.child, f.parent));
     const preview = await f.service.propose("T20", { subtaskId: CHILD_ID, calendarDelta: 3 }, f.context);
     const effect = preview.entries.flatMap((entry) => entry.effects).find((effect) => effect.kind === "schedule");
     expect(effect).toMatchObject({ before: { start: "2026-10-09" }, after: { start: "2026-10-12" }, unit: "calendar-day" });

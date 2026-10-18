@@ -7,7 +7,7 @@ import { buildFileRevision, todayStr } from "../core/utils";
 import { computeParentOrder, orderValue } from "../core/parent-order";
 import { collectTaskIds, getAvailableSubtaskPath, getAvailableTaskPath, loadTasks, newNoteText, newParentRow, newSubtaskRow } from "./task-operations";
 import type { TaskCache, VaultAdapter } from "./task-operations";
-import { applyNoteChange, diffRow, NoteConflictError, roundTripRow, type AppliedNote, type NoteChange } from "./note-changes";
+import { applyNoteChange, byApplyOrder, diffRow, flattenApplied, mergeApplied, NoteConflictError, roundTripRow, type AppliedNote, type NoteChange } from "./note-changes";
 import { readNote } from "./note-store";
 import { HistoryManager } from "./history-manager";
 
@@ -244,17 +244,17 @@ export class OperationRegistry {
       }
       if (plan.create?.parent && !vault.getFileByPath(plan.create.parent.file.path)) throw new Error("REVISION_CONFLICT");
       if (plan.order && JSON.stringify(this.host.settings.ganttParentOrder ?? []) !== JSON.stringify(plan.order.before)) throw new Error("REVISION_CONFLICT");
-      for (const write of plan.writes) {
+      for (const write of byApplyOrder(plan.writes, (item) => item.change)) {
         if (signal?.aborted) { result.kind = "cancelled"; break; }
         let applied: AppliedNote;
         try { applied = await applyNoteChange(vault, write.change, write.before); }
         catch (error) { throw error instanceof NoteConflictError ? new Error("REVISION_CONFLICT") : error; }
-        history.push(applied);
+        history.push(...flattenApplied(applied));
         this.host.taskCache?.delete(write.change.path);
         committed.add(write.change.taskId);
         if (write.change.kind === "create") this.host.historyManager.discardRedo();
         else {
-          const file = vault.getFileByPath(write.change.path);
+          const file = vault.getFileByPath(applied.afterPath ?? write.change.path);
           const diff = plan.public.diffs.find((item) => item.taskId === write.change.taskId);
           result.results.push({ taskId: write.change.taskId, parentPath: write.parentPath, revisionBefore: write.revisionBefore, revisionAfter: buildFileRevision(file as TaskRow["file"]), changedFields: diff?.fields.map((field) => field.field) ?? [] });
         }
@@ -290,7 +290,7 @@ export class OperationRegistry {
       result.diffs = plan.public.diffs.filter((diff) => committed.has(diff.taskId));
       if (history.length || orderApplied) {
         result.undoLabel = "タスク変更 " + plan.public.previewId;
-        this.host.historyManager.push({ label: result.undoLabel, files: history, ...(orderApplied ? { order: { before: plan.order!.before, after: plan.order!.after } } : {}) });
+        this.host.historyManager.push({ label: result.undoLabel, files: mergeApplied(history), ...(orderApplied ? { order: { before: plan.order!.before, after: plan.order!.after } } : {}) });
       }
       if (result.committed) {
         try { await this.host.invalidate(history.flatMap((change) => [change.path, ...(change.afterPath ? [change.afterPath] : [])])); }

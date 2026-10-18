@@ -102,7 +102,7 @@ describe("P3 merged operation wiring", () => {
     const f = await runtimeFixture(), other = structuredClone(f.parent);
     other.id = "t-second"; other.file.path = "tasks/ンの二.md"; other.subtasks = new Map();
     await f.vault.create(other.file.path, newNoteText(f.vault, other));
-    const changed = await f.service.propose("T27", { changes: [{ taskId: PARENT_ID, patch: { displayName: "親変更" } }, { taskId: other.id, patch: { displayName: "別変更" } }] }, f.context);
+    const changed = await f.service.propose("T27", { changes: [{ taskId: PARENT_ID, patch: { notes: "親変更" } }, { taskId: other.id, patch: { notes: "別変更" } }] }, f.context);
     await f.service.humanApprovalPort.approve(changed.previewId);
     const undo = await f.service.propose("V20", {}, f.context);
     let calls = 0;

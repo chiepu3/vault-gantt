@@ -15,7 +15,7 @@ describe("frozen catalog operation runtime", () => {
     it(`${id}: plan is side effect free; commit passes frozen outcome contract`, async () => {
       const { service, context: baseContext, vault, settings, parent, persistSettings, logger } = await runtimeFixture();
       const context = { ...baseContext, capabilities: ["read", "propose", "ui", "external", "diagnostic", "chat-control"] as import("../../src/contracts/context").Capability[] };
-      if (id === "T23") { const child = parent.subtasks!.get(CHILD_ID)!; child.plannedStartDate = undefined; child.plannedEndDate = undefined; await vault.modify(vault.getFileByPath(CHILD_PATH)!, newNoteText(vault, child, parent)); }
+      if (id === "T23") { const child = parent.subtasks!.get(CHILD_ID)!; child.plannedStartDate = undefined; child.plannedEndDate = undefined; await vault.modify(vault.getFileById(CHILD_ID)!, newNoteText(vault, child, parent)); }
       let input = structuredClone(INPUT_FIXTURES[id]) as unknown as Record<string, unknown>;
       if (["D04", "D05", "D06", "D07"].includes(id)) {
         const path = "daily/2026-10-13.md", content = "# Daily\n\n- [ ] 確認\n";
@@ -61,7 +61,7 @@ describe("frozen catalog operation runtime", () => {
     for (const kind of ["content", "settings", "date"]) {
       const { service, context, vault, settings } = await runtimeFixture();
       const preview = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context);
-      if (kind === "content") { const file = vault.getFileByPath(CHILD_PATH)!; const stat = { ...file.stat! }; await vault.modify(file, vault.getFileContent(CHILD_PATH)!.replace("レビュー", "レビュ一")); Object.assign(file.stat!, stat); }
+      if (kind === "content") { const file = vault.getFileById(CHILD_ID)!; const stat = { ...file.stat! }; await vault.modify(file, vault.getFileContentById(CHILD_ID)!.replace("レビュー", "レビュ一")); Object.assign(file.stat!, stat); }
       if (kind === "settings") settings.ganttManualHolidays.push("2026-10-13");
       if (kind === "date") { vi.useFakeTimers(); vi.setSystemTime(Date.now() + 86400000); }
       vault.resetCounters(); const outcome = await service.humanApprovalPort.approve(preview.previewId);
@@ -76,12 +76,12 @@ describe("frozen catalog operation runtime", () => {
       vi.spyOn(vault, "read").mockImplementation(async (file) => {
         const text = await read(file);
         if (file.path !== CHILD_PATH || ++count !== injectAt) return text;
-        injected = true; await vault.modify(file, vault.getFileContent(CHILD_PATH)! + "外部編集\n"); return text;
+        injected = true; await vault.modify(file, vault.getFileContentById(CHILD_ID)! + "外部編集\n"); return text;
       });
       const outcome = await service.humanApprovalPort.approve(preview.previewId);
       if (!injected) continue;
-      expect(vault.getFileContent(CHILD_PATH), `injectAt ${injectAt} ${outcome.status}`).toContain("外部編集");
-      if (outcome.status === "success") expect(vault.getFileContent(CHILD_PATH)).toContain("改名");
+      expect(vault.getFileContentById(CHILD_ID), `injectAt ${injectAt} ${outcome.status}`).toContain("外部編集");
+      if (outcome.status === "success") expect(vault.getFileContentById(CHILD_ID)).toContain("改名");
     }
   });
   it("child and parent changes are written to their own notes with normalized dependent effects", async () => {
@@ -108,10 +108,10 @@ describe("frozen catalog operation runtime", () => {
   it("rejects unsafe Markdown and merged inverted ranges before any writes", async () => {
     const { service, context, vault } = await runtimeFixture();
     await expect(service.propose("T19", { subtaskId: CHILD_ID, start: "2026-10-16" }, context)).rejects.toThrow("plannedStartDate");
-    const file = vault.getFileByPath(CHILD_PATH)!;
-    await vault.modify(file, vault.getFileContent(CHILD_PATH)! + "\n#### 参考資料\n保持する本文\n"); vault.resetCounters();
+    const file = vault.getFileById(CHILD_ID)!;
+    await vault.modify(file, vault.getFileContentById(CHILD_ID)! + "\n#### 参考資料\n保持する本文\n"); vault.resetCounters();
     const preview = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context); await service.humanApprovalPort.approve(preview.previewId);
-    expect(vault.getFileContent(CHILD_PATH)).toContain("#### 参考資料\n保持する本文\n");
+    expect(vault.getFileContentById(CHILD_ID)).toContain("#### 参考資料\n保持する本文\n");
   });
   it("ownership/capability/request-approval cannot forge an approval", async () => {
     const { service, context, vault } = await runtimeFixture();
@@ -126,7 +126,7 @@ describe("frozen catalog operation runtime", () => {
     const { service, vault } = await runtimeFixture();
     const rows = await service.invoke("search", { query: "レビュー" }); expect(Array.isArray(rows) && rows[0]).toMatchObject({ id: CHILD_ID, kind: "subtask" });
     expect(await service.invoke("get", { taskId: CHILD_ID })).toMatchObject({ id: CHILD_ID });
-    const plan = await service.plan("update", { taskId: CHILD_ID, patch: { completed: true }, expectedRevision: buildFileRevision(vault.getFileByPath(CHILD_PATH) as never) });
+    const plan = await service.plan("update", { taskId: CHILD_ID, patch: { completed: true }, expectedRevision: buildFileRevision(vault.getFileById(CHILD_ID) as never) });
     expect(plan.operation).toBe("update"); expect(await service.commit(plan.previewId)).toMatchObject({ kind: "success", committed: 1, total: 1 });
     const created = await service.plan("create", { name: "子追加", parentTaskId: PARENT_ID }); expect((await service.commit(created.previewId)).created?.kind).toBe("subtask");
   });
@@ -182,12 +182,12 @@ describe("operation meaning and lifecycle boundaries", () => {
     child.dueDate = "2001-01-01"; child.priority = 0;
     const other = { ...structuredClone(child), id: "s-other1", key: "s-other1", title: "別", displayName: "別", file: { path: "tasks/リリース/別.md", parentPath: parent.file.path } as typeof child.file };
     parent.subtasks!.set(other.id, other);
-    await vault.modify(vault.getFileByPath(CHILD_PATH)!, newNoteText(vault, child, parent)); await vault.create(other.file.path, newNoteText(vault, other, parent)); vault.resetCounters();
+    await vault.modify(vault.getFileById(CHILD_ID)!, newNoteText(vault, child, parent)); await vault.create(other.file.path, newNoteText(vault, other, parent)); vault.resetCounters();
     const read = await service.contextPort.query("tasks.get-many", { taskIds: [CHILD_ID], include: ["priority"] }, context);
     expect(read).toMatchObject({ status: "success", result: { data: { items: [expect.objectContaining({ priority: { stored: 0, effective: 5, mode: "auto" } })] } } });
     const before = vault.getFileContent(other.file.path);
     const preview = await service.propose("T29", { taskId: CHILD_ID, patch: { currentStatus: "確認中" } }, context); await service.humanApprovalPort.approve(preview.previewId);
-    expect(vault.getFileContent(CHILD_PATH)).not.toMatch(/^priority:/m); expect(vault.getFileContent(CHILD_PATH)).toContain("確認中");
+    expect(vault.getFileContentById(CHILD_ID)).not.toMatch(/^priority:/m); expect(vault.getFileContentById(CHILD_ID)).toContain("確認中");
     expect(vault.getFileContent(other.file.path)).toBe(before);
     const stored = (await loadNoteTasks(vault, { ...settings, autoPriorityEnabled: false }, new Map())).find((row) => row.id === PARENT_ID)!;
     expect(stored.subtasks!.get(CHILD_ID)!.priority).toBe(0);
@@ -205,7 +205,7 @@ describe("operation meaning and lifecycle boundaries", () => {
     const { service, context, vault, parent } = await runtimeFixture();
     const preview = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context), listener = vi.fn();
     service.previewPort.subscribe(listener); service.previewPort.focus(preview.previewId);
-    const file = vault.getFileByPath(CHILD_PATH)!; const child = parent.subtasks!.get(CHILD_ID)!; child.displayName = "外部改名"; child.title = "外部改名";
+    const file = vault.getFileById(CHILD_ID)!; const child = parent.subtasks!.get(CHILD_ID)!; child.displayName = "外部改名"; child.title = "外部改名";
     await vault.modify(file, newNoteText(vault, child, parent));
     await service.invalidatePreviews(); expect(service.previewPort.inspect(preview.previewId)!.status).toBe("stale"); expect(service.previewPort.focusedPreviewId()).toBeNull(); expect(listener).toHaveBeenCalled();
     const fresh = await service.request("Q08", { previewId: preview.previewId }, context); expect(fresh.previewId).not.toBe(preview.previewId); expect(fresh.origin).toEqual(context.origin);
@@ -235,7 +235,7 @@ it("HistoryPort publishes live conflict/barrier eligibility for each outcome ent
   const listener = vi.fn(); historyManager.subscribe(listener);
   const preview = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context); const outcome = await service.humanApprovalPort.approve(preview.previewId);
   await historyManager.refreshEligibility(); expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("available");
-  await vault.modify(vault.getFileByPath(CHILD_PATH)!, vault.getFileContent(CHILD_PATH)! + "外部編集\n"); await historyManager.refreshEligibility();
+  await vault.modify(vault.getFileById(CHILD_ID)!, vault.getFileContentById(CHILD_ID)! + "外部編集\n"); await historyManager.refreshEligibility();
   expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("conflict"); expect(listener).toHaveBeenCalled();
   historyManager.clear(); expect(historyManager.inspectUndo(outcome.undoEntryId!).state).toBe("missing");
 });
@@ -246,7 +246,7 @@ describe("preserving AI writers", () => {
   const withExtras = (text: string) => text.replace("type:", "custom: keep\ntype:") + "\n## 参考資料\n保持する本文\n";
   for (const id of ids) it(`${id} preserves custom YAML and Markdown; preview matches saved tasks`, async () => {
     const { service, context, vault, parent, settings } = await runtimeFixture();
-    if (id === "T23") { const child = parent.subtasks!.get(CHILD_ID)!; child.plannedStartDate = undefined; child.plannedEndDate = undefined; await vault.modify(vault.getFileByPath(CHILD_PATH)!, newNoteText(vault, child, parent)); }
+    if (id === "T23") { const child = parent.subtasks!.get(CHILD_ID)!; child.plannedStartDate = undefined; child.plannedEndDate = undefined; await vault.modify(vault.getFileById(CHILD_ID)!, newNoteText(vault, child, parent)); }
     for (const path of [PARENT_PATH, CHILD_PATH]) await vault.modify(vault.getFileByPath(path)!, withExtras(vault.getFileContent(path)!));
     const preview = await service.propose(id, operationInputSchemas[id].parse(INPUT_FIXTURES[id]) as OperationInputMap[typeof id], context);
     const outcome = await service.humanApprovalPort.approve(preview.previewId);
@@ -266,13 +266,13 @@ describe("preserving AI writers", () => {
   });
   it("Undo/Redo restores exact preserved bytes and supports its preview", async () => {
     const { service, context, vault } = await runtimeFixture();
-    const original = withExtras(vault.getFileContent(CHILD_PATH)!);
-    await vault.modify(vault.getFileByPath(CHILD_PATH)!, original);
+    const original = withExtras(vault.getFileContentById(CHILD_ID)!);
+    await vault.modify(vault.getFileById(CHILD_ID)!, original);
     const change = await service.propose("T07", { taskId: CHILD_ID, name: "改名" }, context); await service.humanApprovalPort.approve(change.previewId);
-    const saved = vault.getFileContent(CHILD_PATH)!;
+    const saved = vault.getFileContentById(CHILD_ID)!;
     Object.assign(vault, { process: async (file: { path: string }, transform: (current: string) => string) => { const content = transform(await vault.read(file)); await vault.modify(file, content); return content; } });
-    const undo = await service.propose("V20", {}, context); expect((await service.humanApprovalPort.approve(undo.previewId)).status).toBe("success"); expect(vault.getFileContent(CHILD_PATH)).toBe(original);
-    const redo = await service.propose("V21", {}, context); expect((await service.humanApprovalPort.approve(redo.previewId)).status).toBe("success"); expect(vault.getFileContent(CHILD_PATH)).toBe(saved);
+    const undo = await service.propose("V20", {}, context); expect((await service.humanApprovalPort.approve(undo.previewId)).status).toBe("success"); expect(vault.getFileContentById(CHILD_ID)).toBe(original);
+    const redo = await service.propose("V21", {}, context); expect((await service.humanApprovalPort.approve(redo.previewId)).status).toBe("success"); expect(vault.getFileContentById(CHILD_ID)).toBe(saved);
   });
   it("creating and deleting task notes can be undone and redone", async () => {
     const { service, context, vault, historyManager } = await runtimeFixture();
@@ -286,9 +286,9 @@ describe("preserving AI writers", () => {
     const redo = await service.propose("V21", {}, context); expect((await service.humanApprovalPort.approve(redo.previewId)).status).toBe("success");
     expect(vault.getFileContent(path)).toContain("title: 追加する子");
     const remove = await service.propose("T26", { subtaskId: CHILD_ID }, context); await service.humanApprovalPort.approve(remove.previewId);
-    expect(vault.getFileContent(CHILD_PATH)).toBeNull();
+    expect(vault.getFileContentById(CHILD_ID)).toBeNull();
     const restore = await service.propose("V20", {}, context); expect((await service.humanApprovalPort.approve(restore.previewId)).status).toBe("success");
-    expect(vault.getFileContent(CHILD_PATH)).toContain("id: s-bbbbbb"); expect(historyManager.inspectTransition("redo").entry).not.toBeNull();
+    expect(vault.getFileContentById(CHILD_ID)).toContain("id: s-bbbbbb"); expect(historyManager.inspectTransition("redo").entry).not.toBeNull();
   });
   for (const id of ["D03", "S01", "V23"] as const) it(`${id} keeps preceding Undo entries`, async () => {
     const { service, context: base, historyManager, logger } = await runtimeFixture();

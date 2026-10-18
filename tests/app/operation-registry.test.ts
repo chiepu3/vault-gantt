@@ -72,8 +72,10 @@ describe("OperationRegistry contract", () => {
     expect(plan.diffs[0].fields).toContainEqual({ field: "displayName", before: "Child", after: "変更" });
     expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
     expect((await a.registry.get(child.id)).displayName).toBe("変更");
-    expect(await a.vault.read(file)).toContain("custom: keep");
-    expect(await a.vault.read(file)).toContain("## 参考資料\n保持する本文\n");
+    const saved = a.vault.getFileContentById(child.id)!;
+    expect(saved).toContain("custom: keep");
+    expect(saved).toContain("## 参考資料\n保持する本文\n");
+    expect(a.vault.getFileById(child.id)!.path.endsWith("/変更.md")).toBe(true);
   });
   it("content revisions reject same-stat external changes without writing", async () => {
     const a = setup();
@@ -108,8 +110,8 @@ describe("OperationRegistry contract", () => {
     const plan = await a.registry.plan("update-batch", { changes: [first, second].map((row) => ({ taskId: row.id, patch: { displayName: `Renamed ${row.displayName}` } })) });
     expect((await a.registry.commit(plan.previewId)).committed).toBe(2);
     expect(a.vault.getFileContent(parent.file.path)).toBe(parentBefore);
-    expect(a.vault.getFileContent(first.file.path)).toContain("title: Renamed First");
-    expect(a.vault.getFileContent(second.file.path)).toContain("title: Renamed Second");
+    expect(a.vault.getFileContentById(first.id)).toContain("title: Renamed First");
+    expect(a.vault.getFileContentById(second.id)).toContain("title: Renamed Second");
   });
   it("batch writes each note once and records subtask-specific diffs", async () => {
     const a = setup();
