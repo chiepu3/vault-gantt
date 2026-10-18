@@ -10,10 +10,10 @@ describe("aggregates", () => {
     settings.weeklyWorkSchedules = [{ key: "w1", title: "a", dayOfWeek: 2, minutesPerWeek: 60 }, { key: "w2", title: "b", dayOfWeek: 2, minutesPerWeek: 30 }];
     const child = { workloadPlan: { "2026-10-13": 2, "2026-10-14": 3 }, workloadActual: { "2026-10-14": 4 } } as unknown as TaskRow;
     const parent = { subtasks: new Map([["c", child]]) } as unknown as TaskRow;
-    const days = aggregates([parent], settings, ["2026-10-13", "2026-10-14", "2026-10-17", "2026-10-20"]);
-    // 2026-10-13 and 2026-10-20 are Tuesdays: weekly 1.5h is added to plan.
+    const days = aggregates([parent], settings, ["2026-10-13", "2026-10-14", "2026-10-17", "2026-10-20"], "2026-10-14");
+    // 2026-10-13 and 2026-10-20 are Tuesdays: weekly 1.5h is added to plan, and to actual up to today (2026-10-14).
     expect(days.map(({ date, plan, actual }) => ({ date, plan, actual }))).toEqual([
-      { date: "2026-10-13", plan: 2 + 1.5 + 1.5, actual: 1 },
+      { date: "2026-10-13", plan: 2 + 1.5 + 1.5, actual: 1 + 1.5 },
       { date: "2026-10-14", plan: 3, actual: 4 },
       { date: "2026-10-17", plan: 0, actual: 0 },
       { date: "2026-10-20", plan: 1.5, actual: 0 },

@@ -8385,7 +8385,7 @@ describe("marker tag badges, workload labels, and summary popovers", () => {
     });
 
 
-    it("a matching weekly schedule adds plan hours without changing actual hours", async () => {
+    it("a matching weekly schedule adds hours to both plan and actual up to today", async () => {
       const matchingDate = dateOffset(0);
       const { container } = await openView([], {
         weeklyWorkSchedules: [
@@ -8404,7 +8404,53 @@ describe("marker tag badges, workload labels, and summary popovers", () => {
       ).toBe("0.5h");
       expect(
         byClass(cell, "task-gantt-workload-summary-actual")[0].textContent
+      ).toBe("0.5h");
+    });
+
+    it("a weekly schedule adds plan but not actual on future dates", async () => {
+      const futureDate = dateOffset(7);
+      const { container } = await openView([], {
+        weeklyWorkSchedules: [
+          {
+            key: "schedule-1",
+            title: "習字",
+            dayOfWeek: moment(futureDate, "YYYY-MM-DD").day(),
+            minutesPerWeek: 30,
+          },
+        ],
+      });
+      const cell = summaryCellAt(container, futureDate);
+
+      expect(
+        byClass(cell, "task-gantt-workload-summary-plan")[0].textContent
+      ).toBe("0.5h");
+      expect(
+        byClass(cell, "task-gantt-workload-summary-actual")[0].textContent
       ).toBe("");
+    });
+
+    it("changing weekly schedules and re-rendering updates the cached totals", async () => {
+      const matchingDate = dateOffset(0);
+      const { view, container, h } = await openView([], {
+        weeklyWorkSchedules: [
+          {
+            key: "schedule-1",
+            title: "習字",
+            dayOfWeek: moment(matchingDate, "YYYY-MM-DD").day(),
+            minutesPerWeek: 30,
+          },
+        ],
+      });
+      expect(
+        byClass(summaryCellAt(container, matchingDate), "task-gantt-workload-summary-plan")[0].textContent
+      ).toBe("0.5h");
+
+      h.host.settings.weeklyWorkSchedules[0].minutesPerWeek = 90;
+      (view as any).renderChart();
+
+      const cell = summaryCellAt(container, matchingDate);
+      expect(byClass(cell, "task-gantt-workload-summary-plan")[0].textContent).toBe("1.5h");
+      expect(byClass(cell, "task-gantt-workload-summary-actual")[0].textContent).toBe("1.5h");
     });
 
     it("a weekly schedule on another weekday contributes nothing", async () => {
@@ -8732,7 +8778,7 @@ describe("marker tag badges, workload labels, and summary popovers", () => {
     });
 
 
-    it("adds matching weekly schedules to the plan section and keeps the shared sort order", async () => {
+    it("adds matching weekly schedules to the plan and actual sections and keeps the shared sort order", async () => {
       const matchingDate = dateOffset(0);
       const sub = makeSubtask("sub1", {
         displayName: "Sub A",
@@ -8770,8 +8816,10 @@ describe("marker tag badges, workload labels, and summary popovers", () => {
         sections[1],
         "task-gantt-workload-day-summary-popover-entry"
       );
-      expect(actualEntries).toHaveLength(0);
-      expect(byClass(sections[0], "task-gantt-workload-day-summary-popover-empty")).toHaveLength(1);
+      expect(actualEntries.map((entry) => entry.textContent)).toEqual([
+        "週次定例 / 習字: 2h",
+      ]);
+      expect(byClass(sections[0], "task-gantt-workload-day-summary-popover-empty")).toHaveLength(0);
       expect(planEntries.map((entry) => entry.textContent)).toEqual([
         "Parent A / Sub A: 3h",
         "週次定例 / 習字: 2h",

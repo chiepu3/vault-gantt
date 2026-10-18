@@ -184,7 +184,7 @@ export async function dailyProjection(plan: DailyPlan, snapshot: TaskSnapshot, e
   const targets = [...new Map(entries.map((entry) => [entityRefKey(entry.entity), entry.entity])).values()];
   const taskProjection = project(snapshot, afterParents, snapshot.settings, entries.filter((entry) => entry.entity.kind === "task"));
   const affectedDates = [...new Set([...plan.files.map((file) => file.date), ...(taskProjection?.affectedDates ?? [])])].sort();
-  const base = ganttState(snapshot.parents, snapshot.settings, affectedDates);
+  const base = ganttState(snapshot.parents, snapshot.settings, affectedDates, snapshot.today);
   const summary = async (side: "before" | "after") => {
     const days = new Map<string, DailyItem[]>();
     for (const file of plan.files) {
@@ -196,7 +196,7 @@ export async function dailyProjection(plan: DailyPlan, snapshot: TaskSnapshot, e
   };
   return ganttProjectionSchema.parse({ schemaVersion: 1, baseRevision: snapshot.revision, settingsRevision: snapshot.settingsRevision, calendarRevision: snapshot.calendarRevision, evaluatedDate: snapshot.today, timezone: snapshot.timezone,
     before: { ...base, daily: await summary("before"), dailyFiles: plan.files.map((file) => ({ path: file.path, sourceKey: file.sourceKey, exists: file.before !== null })) },
-    after: { ...ganttState(afterParents, snapshot.settings, affectedDates), daily: await summary("after"), dailyFiles: plan.files.map((file) => ({ path: file.path, sourceKey: file.sourceKey, exists: file.after !== null })) },
+    after: { ...ganttState(afterParents, snapshot.settings, affectedDates, snapshot.today), daily: await summary("after"), dailyFiles: plan.files.map((file) => ({ path: file.path, sourceKey: file.sourceKey, exists: file.after !== null })) },
     targets, affectedDates, affectedParentIds: taskProjection?.affectedParentIds ?? [], coverage: { targetCount: targets.length, offset: 0, includedCount: targets.length, truncated: false, nextCursor: null },
     visibility: targets.map((entity) => taskProjection?.visibility.find((item) => entityRefKey(item.entity) === entityRefKey(entity)) ?? ({ entity, state: snapshot.settings.ganttFeatureDailyTodoEnabled ? "visible" : "feature-disabled", reason: snapshot.settings.ganttFeatureDailyTodoEnabled ? "Dailyの確定内容を投影します。" : "Daily表示が無効です。" })),
   });

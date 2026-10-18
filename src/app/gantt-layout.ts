@@ -484,6 +484,23 @@ export interface WorkloadDaySummaryEntry {
  * which would not be equivalent once more than two entries share an hours
  * value).
  */
+/** Shared popover ordering: hours descending, then parentName, then subtaskName ascending. */
+export function compareWorkloadEntries(
+  a: WorkloadDaySummaryEntry,
+  b: WorkloadDaySummaryEntry
+): number {
+  if (a.hours !== b.hours) {
+    return b.hours - a.hours;
+  }
+  if (a.parentName !== b.parentName) {
+    return a.parentName < b.parentName ? -1 : 1;
+  }
+  if (a.subtaskName !== b.subtaskName) {
+    return a.subtaskName < b.subtaskName ? -1 : 1;
+  }
+  return 0;
+}
+
 export function collectWorkloadEntriesForDate(
   date: string,
   tasks: TaskRow[],
@@ -505,18 +522,7 @@ export function collectWorkloadEntriesForDate(
       entries.push({ parentName, subtaskName, hours });
     }
   }
-  entries.sort((a, b) => {
-    if (a.hours !== b.hours) {
-      return b.hours - a.hours; // hours DESCENDING.
-    }
-    if (a.parentName !== b.parentName) {
-      return a.parentName < b.parentName ? -1 : 1;
-    }
-    if (a.subtaskName !== b.subtaskName) {
-      return a.subtaskName < b.subtaskName ? -1 : 1;
-    }
-    return 0;
-  });
+  entries.sort(compareWorkloadEntries);
   return entries;
 }
 
