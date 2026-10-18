@@ -42,7 +42,7 @@ export interface VaultAdapter {
   // Obsidian provides atomic read/transform/write for revision guards.
   process?(file: VaultFile, transform: (content: string) => string): Promise<string>;
 
-  // Read file content
+  // Read file content from disk
   read(file: VaultFile): Promise<string>;
 
   // Get all files in vault
@@ -57,6 +57,7 @@ export interface VaultAdapter {
  */
 export interface VaultFile {
   path: string;
+  basename?: string;
   stat?: {
     mtime: number;
     size: number;

@@ -7,6 +7,7 @@ import { detectConfiguredDailyNoteSettings } from "./app/daily-note-creation";
 import type { PreviewUiHostPorts } from "./contracts/ports";
 import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
+import { linkTarget, type NoteVault } from "./app/note-vault";
 import { SettingsPersistence } from "./app/settings-persistence";
 import { renameInParentOrder } from "./core/parent-order";
 import { canonical } from "./app/operations/runtime";
@@ -146,7 +147,7 @@ interface EmbedTableState {
 /**
  * Thin bridge from Obsidian's Vault to the testable VaultAdapter interface.
  */
-export class ObsidianVaultAdapter implements VaultAdapter {
+export class ObsidianVaultAdapter implements NoteVault {
   constructor(private readonly app: App) {}
 
   /**
@@ -206,6 +207,10 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     return this.app.vault.read(this.requireTFile(file.path));
   }
 
+  async cachedRead(file: VaultFile): Promise<string> {
+    return this.app.vault.cachedRead(this.requireTFile(file.path));
+  }
+
   getFiles(): VaultFile[] {
     return this.app.vault.getMarkdownFiles().map(toVaultFile);
   }
@@ -216,6 +221,59 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       return null;
     }
     return toVaultFile(abstract);
+  }
+
+  getFrontmatter(file: VaultFile): Record<string, unknown> | null | undefined {
+    const cache = this.app.metadataCache.getFileCache(this.requireTFile(file.path));
+    return cache ? cache.frontmatter ?? null : undefined;
+  }
+
+  async processFrontMatter(file: VaultFile, update: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+    await this.app.fileManager.processFrontMatter(this.requireTFile(file.path), update);
+  }
+
+  async rename(path: string, newPath: string): Promise<void> {
+    const abstract = this.app.vault.getAbstractFileByPath(path);
+    if (!abstract) throw new Error(`Task file not found: ${path}`);
+    await this.ensureParentFolder(newPath);
+    await this.app.fileManager.renameFile(abstract, newPath);
+  }
+
+  async trash(file: VaultFile): Promise<void> {
+    await this.app.fileManager.trashFile(this.requireTFile(file.path));
+  }
+
+  resolveLink(link: string, fromPath: string): VaultFile | null {
+    const linkpath = linkTarget(link);
+    if (!linkpath) return null;
+    const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, fromPath);
+    return file ? toVaultFile(file) : null;
+  }
+
+  whenIndexed(files: readonly VaultFile[], timeoutMs = 5000): Promise<void> {
+    const cache = this.app.metadataCache;
+    const pending = () => files.some((file) => {
+      const abstract = this.app.vault.getAbstractFileByPath(file.path);
+      return abstract instanceof TFile && !cache.getFileCache(abstract);
+    });
+    if (!pending()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const finish = () => { cache.offref(changed); cache.offref(resolved); clearTimeout(timer); resolve(); };
+      const check = () => { if (!pending()) finish(); };
+      const changed = cache.on("changed", check);
+      const resolved = cache.on("resolved", check);
+      const timer = setTimeout(finish, timeoutMs);
+    });
+  }
+
+  afterWrite(file: VaultFile, contentChanged: boolean): Promise<void> {
+    if (!contentChanged) return Promise.resolve();
+    const cache = this.app.metadataCache;
+    return new Promise<void>((resolve) => {
+      const finish = () => { cache.offref(ref); clearTimeout(timer); resolve(); };
+      const ref = cache.on("changed", (changed) => { if (changed.path === file.path) finish(); });
+      const timer = setTimeout(finish, 2000);
+    });
   }
 
   private requireTFile(path: string): TFile {
@@ -231,6 +289,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
 function toVaultFile(file: TFile): VaultFile {
   return {
     path: file.path,
+    basename: file.basename,
     stat: file.stat
       ? { mtime: file.stat.mtime, size: file.stat.size }
       : undefined,

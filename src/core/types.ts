@@ -63,12 +63,13 @@ export interface WorkloadMap {
 export interface TaskRow {
   // Hierarchy and ID
   kind: "parent" | "subtask";
-  id: string; // filepath for parent, {parentPath}::{key} for subtask
-  key?: string; // slug for subtasks only
+  id: string; // note format v2: frontmatter `id` (t-xxxxxx / s-xxxxxx), never changes
+  key?: string; // subtasks only: same as id (Map key inside parent.subtasks)
+  parentId?: string; // subtasks only: id of the parent task
   file: TFile & {
-    path: string;
-    parentPath?: string; // for subtasks
-    heading?: string; // for subtasks, the ### markdown heading text
+    path: string; // the task's own note
+    parentPath?: string; // subtasks: the parent note's path
+    heading?: string; // v1 migration parser only: the ### heading of the subtask section
   };
 
   // Display and naming
@@ -111,6 +112,8 @@ export interface TaskRow {
   workloadPlan?: WorkloadMap;
   workloadActual?: WorkloadMap;
   ganttMarkers?: GanttMarker[];
+  /** Subtask only: raw `dependsOn` links ("[[note]]"). Kept and written back as is; no feature uses it yet. */
+  dependsOn?: string[];
 }
 
 
@@ -157,8 +160,10 @@ export interface DailyTodoSourceConfig {
 export interface TaskWorkbenchSettings {
   /** MCP credentials are references only; token values stay in secret storage or memory. */
   mcp?: McpSettings;
-  /** Gantt parent order as note paths. undefined = not migrated from notes' ganttOrder yet. */
+  /** Gantt parent order as task ids (older versions stored note paths; migrated on load). undefined = not created yet. */
   ganttParentOrder?: string[];
+  /** Subtask order per parent: parent id -> subtask ids. Subtasks missing here are appended (created, then title). */
+  subtaskOrder?: Record<string, string[]>;
   // Task Storage
   taskFolder: string;
   filenameUsesDatePrefix: boolean;

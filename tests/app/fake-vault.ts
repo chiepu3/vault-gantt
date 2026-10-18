@@ -1,13 +1,28 @@
-import { VaultAdapter, VaultFile } from "../../src/app/task-operations";
+import { parseYaml, stringifyYaml } from "obsidian";
+import { linkTarget, type NoteVault } from "../../src/app/note-vault";
+import { splitFrontmatter } from "../../src/core/note-v2";
+import type { VaultFile } from "../../src/app/task-operations";
 
 /**
  * In-memory fake vault implementation for testing.
  * Maintains file content by path, mtime/size on every write, and write call counters.
  */
-export class FakeVault implements VaultAdapter {
+export class FakeVault implements NoteVault {
   private files: Map<string, VaultFile & { content: string }> = new Map();
   private createCallCount: number = 0;
   private modifyCallCount: number = 0;
+  private clock = 0;
+  /** Like Obsidian's "automatically update internal links": [[old]] becomes [[new]] in other notes after a rename. */
+  updateLinksOnRename = true;
+  /** Make rename() throw for matching paths (tests of the failure path). */
+  failRename?: (path: string, newPath: string) => boolean;
+  readonly renames: { from: string; to: string }[] = [];
+  readonly trashed: string[] = [];
+
+  private tick(): number {
+    this.clock = Math.max(Date.now(), this.clock + 1);
+    return this.clock;
+  }
 
   /**
  * Get the number of times create has been called.
@@ -37,7 +52,7 @@ export class FakeVault implements VaultAdapter {
  */
   async create(path: string, content: string): Promise<VaultFile> {
     this.createCallCount++;
-    const now = Date.now();
+    const now = this.tick();
     const file: VaultFile & { content: string } = {
       path,
       content,
@@ -56,7 +71,7 @@ export class FakeVault implements VaultAdapter {
  */
   async modify(file: VaultFile, content: string): Promise<void> {
     this.modifyCallCount++;
-    const now = Date.now();
+    const now = this.tick();
     const existing = this.files.get(file.path);
     if (existing) {
       existing.content = content;
@@ -101,6 +116,7 @@ export class FakeVault implements VaultAdapter {
   getFiles(): VaultFile[] {
     return Array.from(this.files.values()).map((f) => ({
       path: f.path,
+      basename: f.path.split("/").pop()!.replace(/\.md$/i, ""),
       stat: f.stat,
     }));
   }
@@ -114,6 +130,7 @@ export class FakeVault implements VaultAdapter {
     if (!file) return null;
     return {
       path: file.path,
+      basename: file.path.split("/").pop()!.replace(/\.md$/i, ""),
       stat: file.stat,
     };
   }
@@ -131,5 +148,84 @@ export class FakeVault implements VaultAdapter {
   clear(): void {
     this.files.clear();
     this.resetCounters();
+  }
+
+  // ---- note format v2 (a tiny metadataCache + fileManager) ----
+
+  async cachedRead(file: VaultFile): Promise<string> {
+    return this.read(file);
+  }
+
+  getFrontmatter(file: VaultFile): Record<string, unknown> | null | undefined {
+    const existing = this.files.get(file.path);
+    if (!existing) return undefined;
+    const { front } = splitFrontmatter(existing.content);
+    if (!front) return null;
+    const yaml = front.replace(/^---[ \t]*\r?\n/, "").replace(/\r?\n---[ \t]*\r?\n?$/, "");
+    return (parseYaml(yaml) as Record<string, unknown> | null) ?? {};
+  }
+
+  async processFrontMatter(file: VaultFile, update: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+    const existing = this.files.get(file.path);
+    if (!existing) throw new Error(`File not found: ${file.path}`);
+    const fm = structuredClone(this.getFrontmatter(file) ?? {});
+    update(fm);
+    const { body } = splitFrontmatter(existing.content);
+    await this.modify(file, `---\n${stringifyYaml(fm)}---\n${body}`);
+  }
+
+  async rename(path: string, newPath: string): Promise<void> {
+    if (this.failRename?.(path, newPath)) throw new Error("rename failed");
+    const moves: [string, string][] = [];
+    if (this.files.has(path)) moves.push([path, newPath]);
+    else for (const key of this.files.keys()) if (key.startsWith(path + "/")) moves.push([key, newPath + key.slice(path.length)]);
+    if (!moves.length) throw new Error(`File not found: ${path}`);
+    for (const [, to] of moves) if (this.files.has(to)) throw new Error(`Destination file already exists: ${to}`);
+    for (const [from, to] of moves) {
+      const file = this.files.get(from)!;
+      this.files.delete(from);
+      file.path = to;
+      file.stat = { mtime: this.tick(), size: file.content.length };
+      this.files.set(to, file);
+      this.renames.push({ from, to });
+    }
+    if (this.updateLinksOnRename) {
+      const base = (p: string) => p.split("/").pop()!.replace(/\.md$/i, "");
+      for (const [from, to] of moves) {
+        if (base(from) === base(to)) continue;
+        for (const other of this.files.values()) {
+          if (other.content.includes(`[[${base(from)}]]`)) {
+            other.content = other.content.split(`[[${base(from)}]]`).join(`[[${base(to)}]]`);
+            other.stat = { mtime: this.tick(), size: other.content.length };
+          }
+        }
+      }
+    }
+  }
+
+  async trash(file: VaultFile): Promise<void> {
+    if (!this.files.delete(file.path)) throw new Error(`File not found: ${file.path}`);
+    this.trashed.push(file.path);
+  }
+
+  resolveLink(link: string, fromPath: string): VaultFile | null {
+    const target = linkTarget(link);
+    if (!target) return null;
+    const exact = this.files.get(target.endsWith(".md") ? target : `${target}.md`);
+    if (exact && target.includes("/")) return this.getFileByPath(exact.path);
+    const name = target.split("/").pop()!.replace(/\.md$/i, "").toLowerCase();
+    const matches = [...this.files.keys()].filter((path) => path.split("/").pop()!.replace(/\.md$/i, "").toLowerCase() === name).sort();
+    const folder = fromPath.includes("/") ? fromPath.slice(0, fromPath.lastIndexOf("/") + 1) : "";
+    const path = matches.find((candidate) => candidate.startsWith(folder)) ?? matches[0];
+    return path ? this.getFileByPath(path) : null;
+  }
+
+  async whenIndexed(): Promise<void> {}
+
+  async afterWrite(): Promise<void> {}
+
+  /** Test helper: all files, as path -> content. */
+  snapshot(): Record<string, string> {
+    return Object.fromEntries([...this.files.entries()].map(([path, file]) => [path, file.content]));
   }
 }
