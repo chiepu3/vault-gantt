@@ -228,6 +228,8 @@ export async function runMigration(vault: VaultAdapter, settings: TaskWorkbenchS
   const unplaced = report.converted.filter((entry) => !placed.has(entry.parentId));
   if (unplaced.length) {
     const legacyOrder = new Map<string, number>();
+    const nameOf = new Map(plan.items.map((item) => [item.path, item.title] as const));
+    const nameById = new Map(unplaced.map((entry) => [entry.parentId, nameOf.get(entry.path) ?? ""] as const));
     await Promise.all(unplaced.map(async (entry) => {
       const text = await vault.adapterRead?.(`${plan.backupRoot}/${entry.path}`).catch(() => undefined);
       const order = text === undefined ? NaN : parseFloat(/^ganttOrder:\s*(.+)$/m.exec(text)?.[1] ?? "");
@@ -236,7 +238,9 @@ export async function runMigration(vault: VaultAdapter, settings: TaskWorkbenchS
     const candidate = structuredClone(settings);
     candidate.ganttParentOrder = [
       ...(settings.ganttParentOrder ?? []),
-      ...unplaced.map((entry) => entry.parentId).sort((a, b) => (legacyOrder.get(a) ?? 999999) - (legacyOrder.get(b) ?? 999999)),
+      // Same order as the v1 Gantt: ganttOrder, then display name.
+      ...unplaced.map((entry) => entry.parentId).sort((a, b) =>
+        (legacyOrder.get(a) ?? 999999) - (legacyOrder.get(b) ?? 999999) || (nameById.get(a) ?? "").localeCompare(nameById.get(b) ?? "")),
     ];
     await deps.persist(candidate, ["subtaskOrder", "ganttParentOrder"]);
     settings.ganttParentOrder = candidate.ganttParentOrder;

@@ -194,4 +194,16 @@ describe("v1 to v2 conversion", () => {
     expect(notices).toHaveLength(1);
     setNoteNotifier(() => {});
   });
+
+  it("orders parents with equal ganttOrder by name, like the v1 gantt", async () => {
+    const C = "tasks/2026/06/2026-06-03 カ.md", D = "tasks/2026/06/2026-06-04 イ.md", E = "tasks/2026/06/2026-06-05 ウ.md";
+    await vault.create(C, v1Note(C, "カ", 0));
+    await vault.create(D, v1Note(D, "イ", 0));
+    await vault.create(E, v1Note(E, "ウ", 0));
+    settings.ganttParentOrder = undefined;
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const name = (id: string) => rows.find((row) => row.id === id)!.displayName;
+    expect(settings.ganttParentOrder!.map(name)).toEqual(["イ", "ウ", "カ", "アルファ", "ベータ"]);
+  });
 });

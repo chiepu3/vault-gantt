@@ -29,19 +29,21 @@ const today = iso(new Date());
 const base = { completed: false, ganttEnabled: false, tags: [], currentStatus: "", notes: "", priority: 0, priorityMode: "auto", createdAt: today, updatedAt: today, dueDate: undefined, statusLabel: "active" };
 const row = (p) => ({ ...base, title: p.displayName, file: { path: "" }, ...p });
 const parentsSpec = [
-  { name: "アルファ案件", subs: [["設計", day(0), day(2)], ["実装", day(3), day(8)]] },
-  { name: "ベータ案件", subs: [["調査", day(1), day(4)], ["報告", day(7), day(9)]] },
-  { name: "ガンマ案件", subs: [["準備", day(2), day(3)], ["本番", day(10), day(12)]] },
+  { name: "アルファ案件", ord: 1, subs: [["設計", day(0), day(2)], ["実装", day(3), day(8)]] },
+  { name: "ベータ案件", ord: 2, subs: [["調査", day(1), day(4)], ["報告", day(7), day(9)]] },
+  { name: "ガンマ案件", ord: 3, subs: [["準備", day(2), day(3)], ["本番", day(10), day(12)]] },
+  // same ganttOrder as ガンマ案件: the v1 gantt put ties in name order (localeCompare), file-path order would put this one first
+  { name: "イプシロン案件", tie: true, ord: 3, subs: [["検討", day(4), day(5)], ["決定", day(6), day(7)]] },
 ];
 const v1Files = {};
 await withRunner(async (load) => {
   const { buildFullNote } = await load("src/core/note-format.ts");
   parentsSpec.forEach((spec, pi) => {
-    const p = `tasks/${today} ${spec.name}.md`;
+    const p = `tasks/${spec.tie ? "zz/" : ""}${today} ${spec.name}.md`;
     const subs = new Map(spec.subs.map(([title, s, e], i) => [`k${i}`, row({ kind: "subtask", id: `${p}::k${i}`, key: `k${i}`, displayName: title, statusLabel: i ? "in_progress" : "active", plannedStartDate: s, plannedEndDate: e, workloadPlan: { [s]: 2 }, notes: `${title}のメモ` })]));
     const parent = row({ kind: "parent", id: p, displayName: spec.name, ganttEnabled: true, file: { path: p }, notes: "親のメモ", tags: ["a"], currentStatus: "進行中" });
     parent.subtasks = subs;
-    let text = buildFullNote(parent, subs).replace("ganttEnabled: true", `ganttEnabled: true\nganttOrder: ${(pi + 1) * 1000}`).replace("type: task\n", "type: task\nproject: 顧客A\n");
+    let text = buildFullNote(parent, subs).replace("ganttEnabled: true", `ganttEnabled: true\nganttOrder: ${(spec.tie ? pi : pi + 1) * 1000}`).replace("type: task\n", "type: task\nproject: 顧客A\n");
     text += "\n## 参考資料\n[資料](https://example.com)\n";
     v1Files[p] = text;
   });
@@ -114,13 +116,13 @@ try {
   assert.equal(d.changed.length, parentsSpec.length);
   assert.equal(d.added.length, parentsSpec.reduce((n, s) => n + s.subs.length, 0));
   for (const spec of parentsSpec) {
-    const pRel = `tasks/${today} ${spec.name}.md`;
+    const pRel = `tasks/${spec.tie ? "zz/" : ""}${today} ${spec.name}.md`;
     const fm = fmOf(pRel);
     assert.match(fm, /formatVersion: 2/); assert.ok(!/ganttEnabled|ganttOrder/.test(fm), "no v1 keys in parent"); assert.match(fm, /gantt: true/); assert.match(fm, /project: 顧客A/);
     const body = fs.readFileSync(path.join(vaultDir, pRel), "utf8");
     assert.ok(body.includes("## 参考資料") && body.includes("https://example.com"), "user section kept");
     for (const [title, s, e] of spec.subs) {
-      const sRel = `tasks/${today} ${spec.name}/${title}.md`;
+      const sRel = `tasks/${spec.tie ? "zz/" : ""}${today} ${spec.name}/${title}.md`;
       assert.ok(fs.existsSync(path.join(vaultDir, sRel)), sRel);
       const sf = fmOf(sRel);
       assert.match(sf, new RegExp(`start: ${s}`)); assert.match(sf, new RegExp(`end: ${e}`)); assert.match(sf, /type: subtask/); assert.match(sf, new RegExp(`parent: .*\\[\\[${today} ${spec.name}\\]\\]`));
@@ -135,7 +137,7 @@ try {
   const expectedTitles = parentsSpec.flatMap((s) => s.subs.map((x) => x[0])).sort();
   assert.deepEqual(titles, expectedTitles);
   const parentTitles = JSON.parse(await cdp.evaluate(`JSON.stringify([...document.querySelectorAll(".task-gantt-parent-title")].map(b => b.textContent.trim()))`));
-  assert.deepEqual(parentTitles, parentsSpec.map((s) => s.name), "parents in the v1 ganttOrder");
+  assert.deepEqual(parentTitles, [...parentsSpec].sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0) || a.name.localeCompare(b.name)).map((s) => s.name), "parents in the v1 order (ganttOrder, then name)");
   ok("gantt shows the same data", `bars=${titles.join(",")} parents=${parentTitles.join(",")}`);
   const trust = await dismissTrustDialogIfPresent(cdp);
 
