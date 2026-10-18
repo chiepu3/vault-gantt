@@ -21,7 +21,7 @@ export const idSchema = z.string().min(1).max(1000);
 export const timestampSchema = z.iso.datetime({ offset: true });
 export const countSchema = z.number().int().nonnegative();
 export const statusSchema = z.enum(["active", "in_progress", "waiting", "hold", "done"]);
-export const tagNamesSchema = z.array(z.string().max(200).regex(/^[^\r\n\0]*$/)).max(100);
+export const tagNamesSchema = z.array(z.string().max(200).regex(/^[^\r\n\u0000]*$/)).max(100);
 export const capabilitySchema = z.enum(["read", "propose", "ui", "external", "diagnostic", "chat-control"]);
 export type Capability = z.infer<typeof capabilitySchema>;
 export const DEFAULT_CAPABILITIES = ["read", "propose"] as const satisfies readonly Capability[];
@@ -63,7 +63,7 @@ export const workloadContributionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("weekly"), id: idSchema, cells: z.array(contributionHoursCellSchema) }).strict(),
 ]);
 export type WorkloadContributionV1 = DeepReadonly<z.infer<typeof workloadContributionSchema>>;
-export const markerStateSchema = z.object({ key: idSchema, title: z.string().trim().min(1).max(20000).regex(/^[^\r\n\0]*$/), date: dateOnlySchema, tags: tagNamesSchema }).strict();
+export const markerStateSchema = z.object({ key: idSchema, title: z.string().trim().min(1).max(20000).regex(/^[^\r\n\u0000]*$/), date: dateOnlySchema, tags: tagNamesSchema }).strict();
 export type MarkerState = DeepReadonly<z.infer<typeof markerStateSchema>>;
 export const namedDefinitionSchema = z.object({ key: idSchema, name: z.string().max(200), color: z.string().max(200), order: z.number().finite() }).strict();
 export type NamedDefinition = DeepReadonly<z.infer<typeof namedDefinitionSchema>>;
