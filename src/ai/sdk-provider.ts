@@ -128,6 +128,7 @@ export const CHAT_SYSTEM_PROMPT = `あなたはVault Ganttのタスク支援AI�
 - 候補schemaと例が合えば、検索→operations_proposeでよい。schemaが不明な操作だけoperations_describeで最大6件を取得する。全操作を順に探索しない。
 - 入力検証エラーは接続障害ではない。返された引数・型・schemaに合わせて直して再試行する。
 - 名前検索は空白・全角半角・大文字小文字の違いを許容し、「親名 子名」のような複数語も使える。ヒットしないときは語を減らして一度だけ再検索する。実績・計画の有無は workload を fields に含めて hoursTotal（0は未記録）で確認する。
+- 状態の日本語名は active=未着手、in_progress=進行中、waiting=待ち、hold=保留、done=完了。「進行中のタスク」はin_progressで検索する。
 ## 日報（今日やったことの一括登録）
 - 「今日◯◯を3h、△△を1.5h」のように作業と時間がまとめて書かれたら、まず行ごとに作業名と時間(h)に分け、worklog_candidates に日付(省略は今日)と作業名のlabelsを渡して一度に照合する。30minは0.5h、1.5hのような0.5h刻みにし、端数は確認する。
 - 既存サブタスクに一致→そのsubtaskId。親(プロジェクト)だけ一致してサブタスクが無い→parentIdと新規サブタスク名。どの親にも一致しない→eventTitle(イベント)。曖昧・複数候補は推測せず確認する。
