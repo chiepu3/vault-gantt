@@ -20,6 +20,6 @@ export async function start({ before = null, parents = 50, subtasks = 100, minif
   if (throttle > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle });
   if (before) await before({ page, cdp });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  if (wait) await page.waitForFunction((n) => document.querySelectorAll(".task-gantt-bar").length >= n, Math.min(parents * subtasks, 200), { timeout: 120000 });
+  if (wait) await page.waitForFunction((n) => document.querySelectorAll(".task-gantt-bar").length >= n, Math.min(parents * subtasks, 40), { timeout: 120000 });
   return { page, cdp, browser, files, paths, vault, close: async () => { await browser.close(); server.close(); fs.rmSync(work, { recursive: true, force: true }); } };
 }

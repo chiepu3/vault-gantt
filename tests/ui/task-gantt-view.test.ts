@@ -1792,7 +1792,7 @@ describe("TaskGanttView", () => {
       expect(bar.style.width).toBe(`${Math.max(8, right - left)}px`);
     });
 
-    it("renders invisible resize-edge cursor targets on every bar", async () => {
+    it("has no per-bar resize handle elements (the edge cursors are CSS pseudo-elements)", async () => {
       const parent = withChildren(makeParent({ ganttEnabled: true }), [
         makeSubtask("s1", {
           displayName: "A",
@@ -1803,8 +1803,8 @@ describe("TaskGanttView", () => {
       const { container } = await openView([parent]);
       const bar = byClass(timelineOf(parentRows(container)[0]), "task-gantt-bar")[0];
 
-      expect(byClass(bar, "task-gantt-resize-start")).toHaveLength(1);
-      expect(byClass(bar, "task-gantt-resize-end")).toHaveLength(1);
+      expect(byClass(bar, "task-gantt-resize-start")).toHaveLength(0);
+      expect(byClass(bar, "task-gantt-resize-end")).toHaveLength(0);
     });
 
     it("renders a subtask tag badge with the resolved tag color", async () => {
@@ -5047,10 +5047,10 @@ describe("TaskGanttView", () => {
       expect(patch).toEqual({ plannedEndDate: dateOffset(6) });
     });
 
-    it("uses the bar geometry when pointerdown targets the resize-end child span", async () => {
+    it("resizes by the pointer's offset inside the bar when pointerdown targets a child of the bar", async () => {
       const { timeline, h, sub } = await openViewWithBar();
       const bar = barElOf(timeline);
-      const resizeEnd = byClass(bar, "task-gantt-resize-end")[0];
+      const resizeEnd = bar.children[bar.children.length - 1];
       const width = parseFloat(bar.style.width);
       setBarRect(bar, 100);
 

@@ -466,8 +466,9 @@ describe("part 1 — file rules and prohibitions", () => {
     const violations: string[] = [];
     for (const [className, forbidden] of PROTECTED) {
       for (const rule of getRules()) {
+        // Pseudo-elements are separate boxes; the element's inline geometry does not apply to them.
         const applies = rule.selectors.some((sel) =>
-          selectorHasClass(sel, className)
+          selectorHasClass(sel, className) && !/::(before|after)\s*$/.test(sel)
         );
         if (!applies) continue;
         for (const decl of rule.decls) {
@@ -1139,18 +1140,17 @@ describe("part 4 — Gantt structure", () => {
   it("bar move and resize drag affordances", () => {
     expectDecl(".task-gantt-bar", "cursor", "grab");
     expectDecl(".task-gantt-bar:active", "cursor", "grabbing");
-    expectDecl(".task-gantt-resize-start", "position", "absolute");
-    expectDecl(".task-gantt-resize-start", "top", "0");
-    expectDecl(".task-gantt-resize-start", "height", "100%");
-    expectDecl(".task-gantt-resize-start", "width", "6px");
-    expectDecl(".task-gantt-resize-start", "left", "0");
-    expectDecl(".task-gantt-resize-start", "cursor", "ew-resize");
-    expectDecl(".task-gantt-resize-end", "position", "absolute");
-    expectDecl(".task-gantt-resize-end", "top", "0");
-    expectDecl(".task-gantt-resize-end", "height", "100%");
-    expectDecl(".task-gantt-resize-end", "width", "6px");
-    expectDecl(".task-gantt-resize-end", "right", "0");
-    expectDecl(".task-gantt-resize-end", "cursor", "ew-resize");
+    // The 6px edge zones are the bar's pseudo-elements, not child elements.
+    for (const selector of [".task-gantt-bar::before", ".task-gantt-bar::after"]) {
+      expectDecl(selector, "content", '""');
+      expectDecl(selector, "position", "absolute");
+      expectDecl(selector, "top", "0");
+      expectDecl(selector, "height", "100%");
+      expectDecl(selector, "width", "6px");
+      expectDecl(selector, "cursor", "ew-resize");
+    }
+    expectDecl(".task-gantt-bar::before", "left", "0");
+    expectDecl(".task-gantt-bar::after", "right", "0");
   });
 
   it("bulk-move anchor and follower bars have distinct style declarations", () => {

@@ -410,8 +410,11 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-bar.is-completed .task-gantt-bar-tag-badge { opacity: .86; }
 
-.task-gantt-resize-start { position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; left: 0; }
-.task-gantt-resize-end { position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; right: 0; }
+/* Resize-edge cursor zones: the bar's own pseudo-elements (no extra DOM nodes). The drag itself is decided by the pointer's
+   offset in onBarPointerDown (RESIZE_EDGE_HIT_ZONE_PX), so these only supply the cursor. */
+.task-gantt-bar::before, .task-gantt-bar::after { content: ""; position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; }
+.task-gantt-bar::before { left: 0; }
+.task-gantt-bar::after { right: 0; }
 
 /* Left colour band from the registry-order primary tag (renderer sets --vg-tag-accent). */
 .task-gantt-parent-left.has-tag-accent { border-left-color: var(--vg-tag-accent); }

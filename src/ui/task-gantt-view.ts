@@ -4920,12 +4920,7 @@ export class TaskGanttView extends ItemView {
         }
         barEl.appendChild(badge);
       }
-      const resizeStart = document.createElement("span");
-      resizeStart.classList.add("task-gantt-resize-start");
-      barEl.appendChild(resizeStart);
-      const resizeEnd = document.createElement("span");
-      resizeEnd.classList.add("task-gantt-resize-end");
-      barEl.appendChild(resizeEnd);
+      // Resize-edge cursors are the bar's ::before/::after (styles.css); no per-bar handle elements.
       timeline.appendChild(barEl);
       stickyBars.push({ el: barEl, title: titleEl, left, width });
       const savedGhost = this.host.ghosts?.entries.get(bar.task.id);
