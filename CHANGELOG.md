@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.8.0 (2026-10-18)
+
+### 新機能
+
+- ノート形式 v2（サブタスク1件1ノート）と全体の性能改善 ([#59](https://github.com/chiepu3/vault-gantt/pull/59))
+
 ## v0.7.3 (2026-10-18)
 
 ### 修正
