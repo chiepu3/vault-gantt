@@ -89,7 +89,7 @@ for (let i = 0; i < samples + 1; i++) {
   const before = await page.evaluate(() => performance.now()); await page.mouse.up(); await settle(); drags.push((await page.evaluate(() => performance.now())) - before);
   await page.waitForTimeout(300);
 }
-out.singleEditMs = med(drags.slice(1)); out.singleEditP90 = p90(drags.slice(1));
+out.singleEditAll = drags.map((x) => +x.toFixed(0)); out.singleEditMs = med(drags.slice(1)); out.singleEditP90 = p90(drags.slice(1));
 out.rerenderMs = med(await page.evaluate(async () => { const r = []; for (let i = 0; i < 6; i++) { const t = performance.now(); await window.__v.render(); await new Promise((x) => requestAnimationFrame(() => requestAnimationFrame(x))); r.push(performance.now() - t); } return r.slice(1); }));
 out.fullRebuildMs = med(await page.evaluate(async () => { const v = window.__v; const r = []; for (let i = 0; i < 6; i++) { const t = performance.now(); v._ganttRowCache = undefined; v.renderChart(); await new Promise((x) => requestAnimationFrame(() => requestAnimationFrame(x))); r.push(performance.now() - t); } return r.slice(1); }));
 await cdp.send("HeapProfiler.enable"); await cdp.send("HeapProfiler.collectGarbage"); await cdp.send("HeapProfiler.collectGarbage");

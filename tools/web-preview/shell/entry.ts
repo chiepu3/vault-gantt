@@ -36,7 +36,7 @@ async function boot(): Promise<void> {
   let blocked = false, timer: any;
   preview.persist = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => { if (!blocked) safe(() => localStorage.setItem(STORE_KEY, JSON.stringify({ files: app.vault.dump(), data: app.pluginData, secrets: preview.secrets })), undefined); }, 250);
+    timer = setTimeout(() => { if (!blocked && app.vault.textSize() < 4_000_000) safe(() => localStorage.setItem(STORE_KEY, JSON.stringify({ files: app.vault.dump(), data: app.pluginData, secrets: preview.secrets })), undefined); }, 250);
   };
   if (!stored) preview.persist();
 

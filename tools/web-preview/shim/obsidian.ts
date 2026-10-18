@@ -108,6 +108,8 @@ export class Vault extends Events {
   adapter: any = new Adapter(this);
   configDir = ".obsidian";
   load(files: Record<string, string>): void { for (const [p, c] of Object.entries(files)) this.put(p, c); }
+  /** Total characters of all notes: stored vaults above the localStorage cap are not worth serialising. */
+  textSize(): number { let n = 0; for (const c of this.content.values()) n += c.length; return n; }
   dump(): Record<string, string> { return Object.fromEntries(this.content); }
   allPaths(): string[] { return [...this.folders, ...this.content.keys()]; }
   private put(path: string, data: string): TFile {
@@ -192,24 +194,21 @@ export class MetadataCache extends Events {
     super();
     // Like Obsidian, the cache catches up shortly after a file changes and then announces it.
     const changed = (f: any) => { if (f instanceof TFile && f.extension === "md") setTimeout(() => this.trigger("changed", f, "", this.getFileCache(f)), 0); };
-    vault.on("create", changed); vault.on("modify", changed);
-    vault.on("delete", (f: any) => { this.cache.delete(f.path); this.trigger("deleted", f, null); });
-    vault.on("rename", (f: any, old: string) => { this.cache.delete(old); });
+    vault.on("create", (f: any) => { this.nameIndex = null; changed(f); }); vault.on("modify", changed);
+    vault.on("delete", (f: any) => { this.nameIndex = null; this.cache.delete(f.path); this.trigger("deleted", f, null); });
+    vault.on("rename", (f: any, old: string) => { this.nameIndex = null; this.cache.delete(old); });
   }
   resolvedLinks: Record<string, Record<string, number>> = {};
   unresolvedLinks: Record<string, Record<string, number>> = {};
-  private nameIndex: { size: number; keys: string; map: Map<string, TFile[]> } | null = null;
-  /** Markdown files by basename; rebuilt when the set of paths changes (cheap check: count plus first/last path). */
+  private nameIndex: Map<string, TFile[]> | null = null;
+  /** Markdown files by basename; dropped whenever the set of paths changes (create/delete/rename), rebuilt on the next lookup. */
   private byBasename(name: string): TFile[] {
-    const content = (this.vault as any).content as Map<string, string>;
-    const keys = [...content.keys()];
-    const stamp = `${keys[0]}|${keys[keys.length - 1]}`;
-    if (!this.nameIndex || this.nameIndex.size !== keys.length || this.nameIndex.keys !== stamp) {
+    if (!this.nameIndex) {
       const map = new Map<string, TFile[]>();
       for (const f of this.vault.getMarkdownFiles()) { const list = map.get(f.basename); if (list) list.push(f); else map.set(f.basename, [f]); }
-      this.nameIndex = { size: keys.length, keys: stamp, map };
+      this.nameIndex = map;
     }
-    return this.nameIndex.map.get(name) ?? [];
+    return this.nameIndex.get(name) ?? [];
   }
   /** The note nearest to the one linking (same folder first, then shorter paths), like Obsidian's link resolution. */
   getFirstLinkpathDest(link: string, sourcePath = ""): TFile | null {
