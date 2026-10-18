@@ -76,7 +76,15 @@ const PLUGIN_FILES = ["main.js", "manifest.json", "styles.css"];
 // package-lock hash -> directory holding an installed node_modules
 const installed = new Map();
 
-for (const t of plan.targets) {
+// The preview tools (build.mjs, shim/, shell/...) bundle the app's own src/, so they are versioned with it: a target is built with the tools from
+// its OWN checkout. Using one copy for every target (e.g. a PR's) breaks all others whenever the shim imports a module only that branch has.
+// Targets from before the tools existed fall back to a copy of the main target's tools (else --tools). Main is therefore built first.
+const hasPreviewTools = (dir) => existsSync(join(dir, "tools/web-preview/build.mjs"));
+const mainToolsDir = join(work, "_main-tools");
+rmSync(mainToolsDir, { recursive: true, force: true }); // never trust a stale copy from an earlier run
+const order = [...plan.targets].sort((a, b) => (b.kind === "main") - (a.kind === "main")); // stable; plan.targets keeps its order for targets.json
+
+for (const t of order) {
   const dest = join(out, "b", t.slug);
   const app = join(work, t.slug);
   const hit = reusable(t);
@@ -108,10 +116,19 @@ for (const t of plan.targets) {
       step("npm ci", run("npm", ["ci", "--no-audit", "--no-fund"], app));
       if (key) installed.set(key, app);
     }
+    // Which tools build this target (the checkout is deleted after the loop, so main's are copied out for later fallbacks).
+    let toolsDir;
+    if (hasPreviewTools(app)) {
+      toolsDir = app;
+      if (t.kind === "main") cpSync(join(app, "tools"), join(mainToolsDir, "tools"), { recursive: true });
+    } else toolsDir = hasPreviewTools(mainToolsDir) ? mainToolsDir : tools;
+    const toolsLabel = toolsDir === app ? "own checkout" : toolsDir === mainToolsDir ? "main target's checkout (no tools of its own)" : "--tools (no tools of its own, no main fallback)";
+    log += `preview tools: ${toolsLabel}\n`;
+    console.log(`[${t.branch}] preview tools: ${toolsLabel}`);
     mkdirSync(dest, { recursive: true });
     const infoFile = join(work, `${t.slug}.info.json`);
     writeFileSync(infoFile, JSON.stringify(t.info));
-    step("preview build", run("node", [join(tools, "tools/web-preview/build.mjs"), "--app", app, "--out", dest, "--label", t.branch, "--sha", t.sha, "--info", infoFile], app));
+    step("preview build", run("node", [join(toolsDir, "tools/web-preview/build.mjs"), "--app", app, "--out", dest, "--label", t.branch, "--sha", t.sha, "--info", infoFile], app));
     if (!existsSync(join(dest, "index.html"))) throw new Error("build produced no index.html");
     t.status = "success";
     // Built plugin files for the in-plugin updater (src/app/self-update.ts reads <site>/b/<slug>/plugin/).
@@ -140,7 +157,9 @@ for (const t of plan.targets) {
       // Isolated: any failure here only means "no screenshot gallery" for this target.
       const shotsDir = join(dest, "shots");
       try {
-        const r = spawnSync("node", [join(tools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", tools, "--label", t.branch, "--info", infoFile],
+        // Same tools as the build, if they ship the shots script; --tools has it otherwise.
+        const shotsTools = existsSync(join(toolsDir, "tools/web-preview-site/obsidian-shots.mjs")) ? toolsDir : tools;
+        const r = spawnSync("node", [join(shotsTools, "tools/web-preview-site/obsidian-shots.mjs"), "--app", app, "--out", shotsDir, "--tools", shotsTools, "--label", t.branch, "--info", infoFile],
           { cwd: app, encoding: "utf8", timeout: 240000, killSignal: "SIGKILL", maxBuffer: 16 << 20 });
         log += `obsidian-shots: status ${r.status}\n${r.stdout || ""}${r.stderr || ""}\n`;
         console.log(`[${t.branch}] obsidian-shots exit ${r.status}\n${tail(`${r.stdout || ""}${r.stderr || ""}`, 25)}`);
