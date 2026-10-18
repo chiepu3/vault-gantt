@@ -1069,6 +1069,13 @@ export class TaskGanttView extends ItemView {
   private barElsByTaskId = new Map<string, HTMLElement>();
   /** Offsets the titles of bars that overlap the sticky name column (see gantt-sticky-titles.ts). */
   private readonly stickyTitles = new StickyTitleTracker();
+  /**
+   * Parent rows whose timeline contents are not built yet, with the function that builds them. Rows far outside the
+   * viewport stay empty shells of exactly their final size until they come near (see populateNearRows).
+   */
+  private readonly pendingRowFills = new Map<HTMLElement, () => void>();
+  /** Whether this render defers row contents; false when nothing is laid out (hidden tab, tests without layout). */
+  private lazyRowContents = false;
 
 
 
@@ -1382,7 +1389,7 @@ export class TaskGanttView extends ItemView {
         this.bulkMoveState = { parentKey: parent.id, anchorKey: anchor?.id ?? "", anchorStart: anchor?.plannedStartDate ?? todayStr() };
       }
     } else if (id === "V17") {
-      const target = args as OperationInputMap["V17"], anchorEl = this.barElsByTaskId.get(target.target) ?? this.wrapEl;
+      const target = args as OperationInputMap["V17"], anchorEl = this.barElFor(target.target) ?? this.wrapEl;
       if (target.kind === "weekly") {
         const button = this.wrapEl.querySelector<HTMLButtonElement>(".task-gantt-workload-settings-button"); if (!button) throw new Error("UI_UNAVAILABLE"); button.click();
       } else if (target.kind === "workload") { if (!this.host.settings.ganttFeatureWorkloadEnabled || !this.dates.includes(target.target)) throw new Error("UI_UNAVAILABLE"); this.showWorkloadDaySummaryPopup(target.target, anchorEl); }
@@ -1755,6 +1762,7 @@ export class TaskGanttView extends ItemView {
     // the visible date and derive a month from the range's far-left edge.
     if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
     this.chartNeedsVisibleRender = false;
+    this.lazyRowContents = this.wrapEl.clientHeight > 0;
     this.coveredBarCandidates = undefined;
     this.dateClassesCache.clear();
     if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
@@ -1832,10 +1840,44 @@ export class TaskGanttView extends ItemView {
       this.renderChartFull(parents, dates, headerFingerprint);
     }
     this.syncStickyHeaderHeight();
+    this.populateNearRows();
     this.updateStickyTitles();
   }
 
-  /** Marks the bars whose title can overlap the sticky name column; see gantt-sticky-titles.ts. */
+  /** Builds one row's deferred timeline contents (no-op once built). */
+  private populateRow(row: HTMLElement): void {
+    const fill = this.pendingRowFills.get(row);
+    if (fill === undefined) return;
+    this.pendingRowFills.delete(row);
+    fill();
+  }
+
+  /**
+   * Builds the deferred contents of every row within one viewport height of the scroll viewport. Row shells already
+   * have their final height, so nothing shifts when a row fills in; filling runs before the row can scroll into view.
+   */
+  private populateNearRows(): void {
+    if (this.pendingRowFills.size === 0) return;
+    const wrap = this.wrapEl.getBoundingClientRect();
+    const margin = Math.max(this.wrapEl.clientHeight, 400);
+    const top = wrap.top - margin, bottom = wrap.bottom + margin;
+    const due: HTMLElement[] = [];
+    for (const row of this.pendingRowFills.keys()) {
+      if (!row.isConnected) { this.pendingRowFills.delete(row); continue; }
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > top && rect.top < bottom) due.push(row);
+    }
+    for (const row of due) this.populateRow(row);
+  }
+
+  /** The bar element for a subtask, building its parent row first when that row has not been filled in yet. */
+  private barElFor(taskId: string): HTMLElement | undefined {
+    const row = this._ganttRowCache?.rowEls.get(taskId.split("::")[0]);
+    if (row !== undefined) this.populateRow(row);
+    return this.barElsByTaskId.get(taskId);
+  }
+
+  /** Offsets the titles of bars that overlap the sticky name column; see gantt-sticky-titles.ts. */
   private updateStickyTitles(): void {
     const wrap = this.wrapEl;
     const rect = wrap.getBoundingClientRect();
@@ -1880,6 +1922,7 @@ export class TaskGanttView extends ItemView {
     // Restore them after rebuilding, before deriving the visible month.
     const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
+    this.pendingRowFills.clear();
 
     // header, then the fixed rows — rendered even when
     // the parent list turns out empty below.
@@ -1999,6 +2042,7 @@ export class TaskGanttView extends ItemView {
     for (const [path, oldEl] of cache.rowEls) {
       if (!currentPaths.has(path)) {
         oldEl.remove();
+        this.pendingRowFills.delete(oldEl);
       }
     }
 
@@ -2014,6 +2058,7 @@ export class TaskGanttView extends ItemView {
       if (!this.isGanttParentVisible(parent)) {
         if (oldEl !== undefined) {
           oldEl.remove();
+          this.pendingRowFills.delete(oldEl);
         }
         continue;
       }
@@ -2046,6 +2091,7 @@ export class TaskGanttView extends ItemView {
 
       if (oldEl !== undefined) {
         oldEl.remove();
+        this.pendingRowFills.delete(oldEl);
       }
 
       const newEl = this.renderParentRow(parent, dates);
@@ -4589,9 +4635,17 @@ export class TaskGanttView extends ItemView {
       row.classList.add("vg-hl-parent-row");
     }
     row.appendChild(leftEl);
-    const stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = [];
-    row.appendChild(
+    // The row's shell (left cell, exact height, timeline box) is built now; the bars and everything inside the
+    // timeline are built when the row nears the viewport, so a rebuild only pays for what can be seen.
+    const timeline = document.createElement("div");
+    timeline.classList.add("task-gantt-parent-timeline");
+    timeline.style.width = `${dates.length * dayWidth}px`;
+    timeline.style.height = `${rowHeight}px`;
+    row.appendChild(timeline);
+    const fill = (): void => {
+      const stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = [];
       this.renderParentTimeline(
+        timeline,
         parent,
         dates,
         dayWidth,
@@ -4606,9 +4660,11 @@ export class TaskGanttView extends ItemView {
         hasDeadlineMarker,
         phantomLanes,
         stickyBars
-      )
-    );
-    this.stickyTitles.register(row, stickyBars);
+      );
+      this.stickyTitles.register(row, stickyBars);
+    };
+    if (this.lazyRowContents) this.pendingRowFills.set(row, fill);
+    else fill();
 
     return row;
   }
@@ -4734,12 +4790,14 @@ export class TaskGanttView extends ItemView {
   /**
  *
  *
- * The timeline half of a parent row: per-date background cells, then bars /
+ * Fills the timeline half of a parent row: per-date background cells, then bars /
  * markers / external labels positioned from the precomputed layout, then
  * the deadline marker. Bars are never clamped to the visible range
- * — overflow is the CSS layer's job.
+ * — overflow is the CSS layer's job. Runs when the row is populated (see
+ * populateNearRows), not when its shell is built.
  */
   private renderParentTimeline(
+    timeline: HTMLElement,
     parent: TaskRow,
     dates: string[],
     dayWidth: number,
@@ -4754,12 +4812,7 @@ export class TaskGanttView extends ItemView {
     hasDeadlineMarker: boolean,
     phantomLanes: PhantomLayout = { laneCount: 0, bars: [] },
     stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = []
-  ): HTMLElement {
-    const timeline = document.createElement("div");
-    timeline.classList.add("task-gantt-parent-timeline");
-    timeline.style.width = `${dates.length * dayWidth}px`;
-    timeline.style.height = `${rowHeight}px`;
-
+  ): void {
     // Only days that actually look different (weekend / holiday / today) get a
     // background cell, positioned at index × dayWidth and classified via the
     // shared dateClasses helper. Plain days are transparent, so a single hit
@@ -5222,7 +5275,6 @@ export class TaskGanttView extends ItemView {
       }
     }
 
-    return timeline;
   }
 
 
@@ -5387,6 +5439,7 @@ export class TaskGanttView extends ItemView {
  * the visible position stable after prepending 60 days.
  */
   private onScroll(): void {
+    this.populateNearRows();
     this.updateStickyTitles();
     this.scheduleLaneRelayout();
 
@@ -5643,7 +5696,6 @@ export class TaskGanttView extends ItemView {
     this.dayWidth = newDayWidth;
 
     this.host.settings.ganttZoom = newDayWidth;
-    await this.host.saveSettings();
 
     // Preserve the visible date in range after zooming.
 
@@ -5664,6 +5716,9 @@ export class TaskGanttView extends ItemView {
 
 
     this.updateFloatingMonth();
+
+    // Persist after the chart shows the new zoom: the settings write is disk I/O the user should not wait on.
+    await this.host.saveSettings();
   }
 
 
@@ -6841,7 +6896,7 @@ export class TaskGanttView extends ItemView {
     const targets = subtasks.filter((t) => targetKeys.has(t.id));
 
     const barEls = targets
-      .map((task) => this.barElsByTaskId.get(task.id))
+      .map((task) => this.barElFor(task.id))
       .filter((el): el is HTMLElement => el !== undefined);
     const originalLefts = barEls.map((el) =>
       parseFloat(el.style.left || "0")
@@ -6849,7 +6904,7 @@ export class TaskGanttView extends ItemView {
 
     const dayWidth = this.dayWidth;
     let movedPastThreshold = false;
-    const anchorEl = this.barElsByTaskId.get(anchorKey);
+    const anchorEl = this.barElFor(anchorKey);
 
     barEls.forEach((el) => {
       el.classList.add("is-dragging");

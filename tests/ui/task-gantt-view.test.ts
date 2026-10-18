@@ -1228,6 +1228,73 @@ describe("TaskGanttView", () => {
 
 
 
+  describe("row contents are built only for rows near the viewport", () => {
+    const rect = (top: number, bottom: number) => () => ({ left: 0, top, right: 1000, bottom, width: 1000, height: bottom - top });
+
+    async function openLaidOut() {
+      const parents = [0, 1, 2].map((i) => withChildren(makeParent({ id: `p${i}`, file: { path: `tasks/p${i}.md` }, ganttEnabled: true, ganttOrder: i }), [
+        makeSubtask(`s${i}`, { id: `tasks/p${i}.md::s${i}`, plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), file: { path: `tasks/p${i}.md`, parentPath: `tasks/p${i}.md`, heading: `s${i}` } }),
+      ]));
+      const { view, container, h } = await openView(parents);
+      const wrap = wrapOf(container);
+      return { view, container, h, wrap, parents };
+    }
+    const barsIn = (container: FakeEl) => byClass(container, "task-gantt-bar");
+
+    it("builds everything immediately when nothing is laid out (hidden tab, no layout engine)", async () => {
+      const { container } = await openLaidOut();
+      expect(barsIn(container)).toHaveLength(3);
+    });
+
+    it("leaves rows far from the viewport as shells and fills them in when they scroll near", async () => {
+      const { view, container, wrap } = await openLaidOut();
+      // A viewport thousands of pixels away from every (zero-rect) row.
+      (wrap as any).clientHeight = 800;
+      wrap.getBoundingClientRect = rect(10000, 10800) as any;
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      expect(parentRows(container)).toHaveLength(3);
+      expect(barsIn(container)).toHaveLength(0);
+      // The shell already has the row's final timeline size.
+      expect(timelineOf(parentRows(container)[0]).style.height).toMatch(/px$/);
+      expect((view as any).pendingRowFills.size).toBe(3);
+
+      // Scrolling the viewport onto the rows builds them.
+      wrap.getBoundingClientRect = rect(-100, 700) as any;
+      dispatch(wrap, "scroll", {});
+      expect(barsIn(container)).toHaveLength(3);
+      expect((view as any).pendingRowFills.size).toBe(0);
+    });
+
+    it("builds a row on demand when something needs one of its bars", async () => {
+      const { view, container, wrap, parents } = await openLaidOut();
+      (wrap as any).clientHeight = 800;
+      wrap.getBoundingClientRect = rect(10000, 10800) as any;
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      expect(barsIn(container)).toHaveLength(0);
+      const subtask = [...parents[1].subtasks!.values()][0];
+      const bar = (view as any).barElFor(subtask.id);
+      expect(bar).toBeDefined();
+      expect(barsIn(container)).toHaveLength(1);
+      expect(bar.classList.contains("task-gantt-bar")).toBe(true);
+    });
+
+    it("drops the pending fill of a row that a rebuild replaced", async () => {
+      const { view, wrap } = await openLaidOut();
+      (wrap as any).clientHeight = 800;
+      wrap.getBoundingClientRect = rect(10000, 10800) as any;
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      const before = [...(view as any).pendingRowFills.keys()];
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      const after = [...(view as any).pendingRowFills.keys()];
+      expect(after).toHaveLength(3);
+      expect(after.some((row: unknown) => before.includes(row))).toBe(false);
+    });
+  });
+
   describe("setZoom", () => {
     it("updates dayWidth, persists, scales scroll, re-renders", async () => {
       const { view, container, h } = await openView([]);
@@ -1246,6 +1313,27 @@ describe("TaskGanttView", () => {
       // Header cells were re-rendered at the new width.
       const monthCell = rowOf(wrapOf(container), "task-gantt-month-row").children[0];
       expect(monthCell.style.width).toBe("56px");
+    });
+
+    it("shows the new zoom before the settings write finishes, then resolves after it", async () => {
+      const { view, container, h } = await openView([]);
+      let finishWrite!: () => void;
+      h.saveSettings.mockImplementationOnce(() => new Promise<void>((resolve) => { finishWrite = resolve; }));
+
+      let settled = false;
+      const zooming = (view as any).setZoom(56).then(() => { settled = true; });
+      await flush();
+
+      // The chart and label already show the new zoom while the write is still pending.
+      const monthCell = rowOf(wrapOf(container), "task-gantt-month-row").children[0];
+      expect(monthCell.style.width).toBe("56px");
+      expect(((view as any).zoomLabelEl as FakeEl).textContent).toBe("56px/日");
+      expect(h.saveSettings).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+
+      finishWrite();
+      await zooming;
+      expect(settled).toBe(true);
     });
 
     it("renders a default zoom label in the toolbar", async () => {
