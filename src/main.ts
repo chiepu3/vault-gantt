@@ -846,6 +846,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
     void this.offerNoteFormatConversion().catch((error: unknown) => this.logger.error("TaskWorkbenchPlugin", "legacy note check failed", error));
   }
 
+  private legacyNotice: Notice | null = null;
+
   /** Tells the user (once per start) that v1 notes exist, with a button that starts the conversion. */
   private async offerNoteFormatConversion(): Promise<void> {
     const legacy = await findLegacyNotes(this.vaultAdapter(), this.settings);
@@ -856,6 +858,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     button.textContent = "変換する";
     fragment.append(button);
     const notice = new Notice(fragment, 0);
+    this.legacyNotice = notice;
     button.addEventListener("click", () => { notice.hide(); void this.convertNoteFormat(); });
   }
 
@@ -877,6 +880,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
         this.taskCache.clear();
         await this.operationService.invalidatePreviews();
         await this.refreshOpenViews();
+        // The start-up notice says v1 notes exist: take it down once nothing is left to convert.
+        if (this.legacyNotice && !(await findLegacyNotes(vault, this.settings)).length) { this.legacyNotice.hide(); this.legacyNotice = null; }
       }
     })).open();
   }
