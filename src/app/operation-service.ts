@@ -364,8 +364,13 @@ export class OperationService implements OperationServicePort {
       try {
         if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
         if (Date.parse(stored.preview.expiresAt) <= Date.now()) throw new Error("PLAN_EXPIRED");
-        if ((await this.contextPort.snapshot()).revision !== stored.snapshot.revision) throw new Error("REVISION_CONFLICT");
-        if (todayStr() !== stored.snapshot.today || (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC") !== stored.snapshot.timezone || await contentRevision(this.host.settings) !== stored.snapshot.settingsRevision) throw new Error("REVISION_CONFLICT");
+        const fresh = await this.contextPort.snapshot();
+        if (fresh.revision !== stored.snapshot.revision) throw new Error("REVISION_CONFLICT");
+        // The snapshot's settings revision already covers the stored settings plus the completed parent order, so a
+        // plain re-hash of the live settings is not comparable (the order may not be persisted yet). It is kept only
+        // to detect a settings change while this approval is being applied.
+        if (todayStr() !== stored.snapshot.today || (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC") !== stored.snapshot.timezone || fresh.settingsRevision !== stored.snapshot.settingsRevision) throw new Error("REVISION_CONFLICT");
+        const liveSettingsRevision = await contentRevision(this.host.settings);
         for (const write of stored.writes) { const file = vault.getFileByPath(write.path); if (write.before === null ? !!file : !file || await vault.read(file) !== write.before) throw new Error("REVISION_CONFLICT"); }
         if (stored.history) this.clearSavedProjectionFocus();
         for (const [path, write] of this.ownWrites) if (write.until <= Date.now()) this.ownWrites.delete(path);
@@ -403,7 +408,7 @@ export class OperationService implements OperationServicePort {
         if (!stored.daily && !stored.history && !stored.diagnostic) stored.noopActions.forEach((action) => committed.add(action));
         if (stored.settingKeys.length) {
           if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
-          if (await contentRevision(this.host.settings) !== stored.snapshot.settingsRevision) throw new Error("REVISION_CONFLICT");
+          if (await contentRevision(this.host.settings) !== liveSettingsRevision) throw new Error("REVISION_CONFLICT");
           const candidate = structuredClone(this.host.settings);
           for (const key of stored.settingKeys) Object.assign(candidate, { [key]: structuredClone(stored.afterSettings[key]) });
           const settingsActions = stored.preview.entries.filter((entry) => entry.entity.kind !== "task" && !entry.effects.some((effect) => effect.kind === "external-send"));

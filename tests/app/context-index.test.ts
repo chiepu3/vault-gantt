@@ -142,6 +142,18 @@ describe("snapshot caching", () => {
     const e = await service.contextPort.snapshot();
     expect(e.revision).not.toBe(d.revision);
   });
+  it("persisting the completed parent order does not change the revision (pending previews stay valid)", async () => {
+    const { service, settings } = await runtimeFixture();
+    settings.ganttParentOrder = undefined;
+    const before = await service.contextPort.snapshot();
+    expect(before.settings.ganttParentOrder).toEqual([PARENT_ID]);
+    settings.ganttParentOrder = [...before.settings.ganttParentOrder!];
+    const after = await service.contextPort.snapshot();
+    expect(after.settingsRevision).toBe(before.settingsRevision);
+    expect(after.revision).toBe(before.revision);
+    settings.ganttParentOrder = [PARENT_ID, "other"];
+    expect((await service.contextPort.snapshot()).revision).not.toBe(before.revision);
+  });
   it("retains old revisions without file bytes and still answers context.changes", async () => {
     const { service, context, vault, parent, child } = await runtimeFixture();
     const overview = await service.contextPort.query("context.overview", { scope: {} }, context);

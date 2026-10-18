@@ -113,13 +113,14 @@ export class ContextIndex implements ContextReadPort {
     for (const path of this.fileBytes.keys()) if (!contents.has(path)) this.fileBytes.delete(path);
     const parents: TaskRow[] = assembleTasks(vault, entries, parseSettings, this.assembled, undefined, parseFailures);
     const sources = parents;
-    // The revision covers the stored settings as they are; the snapshot copy then gets the parent order
-    // completed from the loaded notes (read-only: live settings are not touched here).
-    const settingsRevision = await contentRevision(settings), calendarRevision = await contentRevision([...holidaySet(settings)].sort());
-    const revision = await contentRevision({ files: [...revisions], settingsRevision, today, timezone, parseFailures });
     // Order is applied to shallow stand-ins first so cached copies of unchanged parents can be reused as they are.
     const stubs = parents.map((parent) => ({ ...parent }));
+    // The snapshot copy gets the parent order completed from the loaded notes (read-only: live settings are not
+    // touched here). The settings revision is taken AFTER that completion, so persisting the very same order
+    // later (opening the Gantt writes it once) does not change the revision and make pending previews stale.
     reconcileParentOrder(settings, stubs);
+    const settingsRevision = await contentRevision(settings), calendarRevision = await contentRevision([...holidaySet(settings)].sort());
+    const revision = await contentRevision({ files: [...revisions], settingsRevision, today, timezone, parseFailures });
     const cloned = stubs.map((stub, index) => {
       const source = sources[index], seen = this.clones.get(source.id);
       if (seen?.source === source && seen.clone.ganttOrder === stub.ganttOrder) return seen.clone;
