@@ -222,25 +222,29 @@ export async function runMigration(vault: VaultAdapter, settings: TaskWorkbenchS
     }
   }
 
-  // Converted parents that are not in the stored order yet (it never existed, or it was completed while the v1 notes
-  // were still hidden, so it is empty or lacks them) are appended in the v1 notes' own ganttOrder.
-  const placed = new Set(settings.ganttParentOrder ?? []);
-  const unplaced = report.converted.filter((entry) => !placed.has(entry.parentId));
-  if (unplaced.length) {
+  // Parent order. The v1 notes' own ganttOrder is the source of truth for the converted parents: a stored order
+  // may be stale (leftovers of earlier runs/views holding only some of them), and keeping it would pull those few
+  // to the top. So unless the stored order already holds every converted parent (a reorder made once the order
+  // store existed), all converted parents are rebuilt in the v1 Gantt's order: ganttOrder, then display name.
+  // Stored entries of parents that were not converted (already v2, or v1 notes that failed) keep their stored
+  // relative order and stay in front of the converted block, the same place reconcileParentOrder appends newcomers.
+  const stored = settings.ganttParentOrder ?? [];
+  const storedSet = new Set(stored);
+  if (report.converted.length && !report.converted.every((entry) => storedSet.has(entry.parentId))) {
     const legacyOrder = new Map<string, number>();
     const nameOf = new Map(plan.items.map((item) => [item.path, item.title] as const));
-    const nameById = new Map(unplaced.map((entry) => [entry.parentId, nameOf.get(entry.path) ?? ""] as const));
-    await Promise.all(unplaced.map(async (entry) => {
+    const nameById = new Map(report.converted.map((entry) => [entry.parentId, nameOf.get(entry.path) ?? ""] as const));
+    await Promise.all(report.converted.map(async (entry) => {
       const text = await vault.adapterRead?.(`${plan.backupRoot}/${entry.path}`).catch(() => undefined);
       const order = text === undefined ? NaN : parseFloat(/^ganttOrder:\s*(.+)$/m.exec(text)?.[1] ?? "");
       legacyOrder.set(entry.parentId, Number.isFinite(order) ? order : 999999);
     }));
+    const convertedIds = new Set(report.converted.map((entry) => entry.parentId));
     const candidate = structuredClone(settings);
     candidate.ganttParentOrder = [
-      ...(settings.ganttParentOrder ?? []),
-      // Same order as the v1 Gantt: ganttOrder, then display name.
-      ...unplaced.map((entry) => entry.parentId).sort((a, b) =>
-        (legacyOrder.get(a) ?? 999999) - (legacyOrder.get(b) ?? 999999) || (nameById.get(a) ?? "").localeCompare(nameById.get(b) ?? "")),
+      ...stored.filter((entry) => !convertedIds.has(entry)),
+      ...report.converted.map((entry) => entry.parentId).sort((x, y) =>
+        (legacyOrder.get(x) ?? 999999) - (legacyOrder.get(y) ?? 999999) || (nameById.get(x) ?? "").localeCompare(nameById.get(y) ?? "")),
     ];
     await deps.persist(candidate, ["subtaskOrder", "ganttParentOrder"]);
     settings.ganttParentOrder = candidate.ganttParentOrder;

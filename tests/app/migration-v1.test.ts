@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { buildFullNote } from "../../src/core/note-format";
 import type { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
+import { reconcileParentOrder } from "../../src/core/parent-order";
 import { cleanLegacyBody } from "../../src/core/legacy-v1";
 import { backupStamp, findLegacyNotes, planMigration, runMigration } from "../../src/app/migration-v1";
 import { setNoteNotifier } from "../../src/app/note-changes";
@@ -232,6 +233,41 @@ describe("v1 to v2 conversion", () => {
     const rows = await loadNoteTasks(vault, settings, new Map());
     const name = (id: string) => rows.find((row) => row.id === id)!.displayName;
     expect(settings.ganttParentOrder!.map(name)).toEqual(["イ", "ウ", "カ", "アルファ", "ベータ"]);
+  });
+
+  it("rebuilds the v1 display order when the stored order only holds a few stale path entries", async () => {
+    for (const path of [A, B]) await vault.trash(vault.getFileByPath(path)!);
+    const names = ["E0001", "あいうえお", "テスト", "M0", "E0002", "M1", "perftest-048", "perftest-049", "M2"];
+    const orders = [0, 0, 0, 0, 1, 1, 2, 2, 3];
+    const paths = names.map((name, index) => `tasks/2026/06/2026-06-${String(index + 1).padStart(2, "0")} ${name}.md`);
+    // created in an order unrelated to the display order
+    for (const index of [8, 3, 6, 0, 5, 2, 7, 1, 4]) await vault.create(paths[index], v1Note(paths[index], names[index], orders[index]));
+    // stale leftovers: only some parents, and by path
+    settings.ganttParentOrder = [paths[1], paths[2], paths[6], paths[7]];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const name = (id: string) => rows.find((row) => row.id === id)!.displayName;
+    const v1Display = names.map((n, i) => ({ n, o: orders[i] })).sort((x, y) => x.o - y.o || x.n.localeCompare(y.n)).map((x) => x.n);
+    expect(settings.ganttParentOrder!.map(name)).toEqual(v1Display);
+    // the next load keeps it
+    const loaded = { ganttParentOrder: [...settings.ganttParentOrder!] };
+    expect(reconcileParentOrder(loaded, rows)).toBe(false);
+    expect(loaded.ganttParentOrder).toEqual(settings.ganttParentOrder);
+  });
+
+  it("keeps a stored order that already holds every converted parent", async () => {
+    settings.ganttParentOrder = [B, A];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    expect(settings.ganttParentOrder!.map((id) => rows.find((row) => row.id === id)!.displayName)).toEqual(["ベータ", "アルファ"]);
+  });
+
+  it("keeps already-v2 parents' stored order in front of the rebuilt converted ones", async () => {
+    settings.ganttParentOrder = ["t-keep02", A, "t-keep01"];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const label = (id: string) => rows.find((row) => row.id === id)?.displayName ?? id;
+    expect(settings.ganttParentOrder!.map(label)).toEqual(["t-keep02", "t-keep01", "アルファ", "ベータ"]);
   });
 
   it("drops every real-world dashboard callout shape from subtask memos", async () => {

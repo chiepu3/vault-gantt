@@ -44,13 +44,27 @@ await withRunner(async (load) => {
     const parent = row({ kind: "parent", id: p, displayName: spec.name, ganttEnabled: true, file: { path: p }, notes: "親のメモ", tags: ["a"], currentStatus: "進行中" });
     parent.subtasks = subs;
     let text = buildFullNote(parent, subs).replace("ganttEnabled: true", `ganttEnabled: true\nganttOrder: ${(spec.tie ? pi : pi + 1) * 1000}`).replace("type: task\n", "type: task\nproject: 顧客A\n");
-    // an old-version dashboard shape inside a subtask section (must not become memo text)
-    text = text.replace("#### Current Status", "> [!info]- サブタスク情報\n> \n> **ステータス**: `INPUT[text:subtask__k0__statusLabel]`\n\n#### Current Status");
+    // dashboard callouts as they really appear in v1 vaults (`- ` bullets, several pairs joined by " / ", plain values): none may become memo text
+    const dash = [
+      "> [!info]- サブタスクダッシュボード",
+      "> - 優先度: `INPUT[select(option(0), option(1)):subtask__k0__priority]` / モード: `INPUT[select(option(auto), option(manual)):subtask__k0__priorityMode]`",
+      "> - 計画開始: `INPUT[datePicker:subtask__k0__plannedStartDate]` / 計画終了: `INPUT[datePicker:subtask__k0__plannedEndDate]` / 期限: `INPUT[datePicker:subtask__k0__dueDate]`",
+      "> - 作成日: `VIEW[{subtask__k0__createdAt}]` / 更新日: `VIEW[{subtask__k0__updatedAt}]`",
+      "> - タグ: `INPUT[inlineList:subtask__k0__tags]`", "",
+      "> [!info]- サブタスク情報", "> - 予定: 2026-08-26 ～ 2026-08-29", "",
+      "> [!info]- タスク情報", "> - 状態: active", "",
+      "> [!info] タスクダッシュボード", "> - 優先度: `INPUT[select(option(0)):priority]` / モード: `INPUT[select(option(auto)):priorityMode]`", "",
+      "> [!note] ダッシュボード", "> **ステータス**: `INPUT[text:subtask__k0__statusLabel]`", "",
+    ].join("\n");
+    text = text.replace("#### Current Status", `${dash}\n#### Current Status`);
     text += "\n## 参考資料\n[資料](https://example.com)\n";
     v1Files[p] = text;
   });
 });
 for (const [p, text] of Object.entries(v1Files)) { fs.mkdirSync(path.dirname(path.join(vaultDir, p)), { recursive: true }); fs.writeFileSync(path.join(vaultDir, p), text); }
+// data.json left over from earlier runs/views: a partial, path-based parent order that must not decide the converted order
+const stalePaths = Object.keys(v1Files).filter((p) => /ガンマ|イプシロン/.test(p));
+fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ ganttNationalHolidays: ["2000-01-01"], ganttNationalHolidaysUpdatedAt: new Date().toISOString(), taskFolder: "tasks", ganttParentOrder: stalePaths.reverse() }));
 console.log("v1 vault:", Object.keys(v1Files).join(", "));
 
 const sha = (s) => crypto.createHash("sha1").update(s).digest("hex");
@@ -127,7 +141,7 @@ try {
       const sRel = `tasks/${spec.tie ? "zz/" : ""}${today} ${spec.name}/${title}.md`;
       assert.ok(fs.existsSync(path.join(vaultDir, sRel)), sRel);
       const sf = fmOf(sRel);
-      assert.match(sf, new RegExp(`start: ${s}`)); assert.match(sf, new RegExp(`end: ${e}`)); assert.match(sf, /type: subtask/); assert.ok(!/INPUT\[|サブタスク情報/.test(fs.readFileSync(path.join(vaultDir, sRel), "utf8")), "no dashboard text in subtask note"); assert.match(sf, new RegExp(`parent: .*\\[\\[${today} ${spec.name}\\]\\]`));
+      assert.match(sf, new RegExp(`start: ${s}`)); assert.match(sf, new RegExp(`end: ${e}`)); assert.match(sf, /type: subtask/); assert.ok(!/INPUT\[|VIEW\[|\[!info\]|サブタスク情報/.test(fs.readFileSync(path.join(vaultDir, sRel), "utf8")), "no dashboard text in subtask note"); assert.match(sf, new RegExp(`parent: .*\\[\\[${today} ${spec.name}\\]\\]`));
     }
   }
   ok("conversion verified on disk", "parents rewritten (formatVersion 2, gantt: true, no v1 keys, user key/section kept), subtask notes carry start/end/parent");
