@@ -24,11 +24,16 @@ export function progress(parent: TaskRow): number { const children = [...parent.
 export function aggregates(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[]): DailyAggregateV1[] {
   const children = parents.flatMap((parent) => [...parent.subtasks?.values() ?? []]);
   const holidays = holidaySet(settings);
+  const all = [...children, ...settings.ganttEvents], weeklyHours = new Map<number, number>();
+  const weekly = (dayOfWeek: number) => {
+    let total = weeklyHours.get(dayOfWeek);
+    if (total === undefined) weeklyHours.set(dayOfWeek, total = settings.weeklyWorkSchedules.filter((entry) => entry.dayOfWeek === dayOfWeek).reduce((sum, entry) => sum + entry.minutesPerWeek / 60, 0));
+    return total;
+  };
   return dates.map((date) => {
-    const all = [...children, ...settings.ganttEvents];
     let plan = all.reduce((total, entity) => total + (entity.workloadPlan?.[date] ?? 0), 0);
     const actual = all.reduce((total, entity) => total + (entity.workloadActual?.[date] ?? 0), 0);
-    plan += settings.weeklyWorkSchedules.filter((weekly) => weekly.dayOfWeek === new Date(date + "T00:00:00Z").getUTCDay()).reduce((total, weekly) => total + weekly.minutesPerWeek / 60, 0);
+    plan += weekly(new Date(date + "T00:00:00Z").getUTCDay());
     const capacity = isBusinessDay(date, holidays) ? settings.ganttWorkloadDailyCapacityHours : 0;
     return { date, plan, actual, capacity, overCapacity: plan > capacity || actual > capacity };
   });
