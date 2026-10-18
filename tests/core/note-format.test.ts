@@ -758,11 +758,11 @@ subtask__alpha__plannedStartDate: 2026-01-01
         "completed:",
         'displayName: "Parent"',
         "ganttEnabled:",
-        "ganttOrder:",
         "subtaskOrder:",
       ]) {
         expect(fm).toContain(field);
       }
+      expect(fm).not.toContain("ganttOrder");
     });
 
     it("buildFrontmatter prefixes subtask fields with subtask__{key}__{field}", () => {

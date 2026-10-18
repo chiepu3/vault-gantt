@@ -43,6 +43,7 @@ export async function historyPlan(id: "V20" | "V21", input: OperationInputMap["V
   const direction = id === "V20" ? "undo" : "redo", transition = history.inspectTransition(direction);
   if (transition.busy) fail("POLICY_DENIED", "履歴操作の完了後に再プレビューしてください。");
   if (!transition.entry) fail("NOT_FOUND", "対象のUndo/Redo履歴がありません。");
+  if (transition.entry.order) fail("INVALID_INPUT", "並び順の変更を含む履歴はAIから実行できません。画面のUndo/Redoを使用してください。");
   const plan: HistoryPlan = { direction, historyRevision: transition.historyRevision, label: transition.entry.label, entries: [], afterParents: structuredClone(snapshot.parents), writes: [] };
   for (const file of transition.entry.files) {
     const before = direction === "undo" ? file.after : file.before, after = direction === "undo" ? file.before : file.after;

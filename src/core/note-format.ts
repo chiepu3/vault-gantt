@@ -666,7 +666,6 @@ export function buildFrontmatter(
   lines.push(`completed: ${task.completed ? "true" : "false"}`);
   lines.push(`displayName: "${yamlEscape(task.displayName)}"`);
   lines.push(`ganttEnabled: ${task.ganttEnabled ? "true" : "false"}`);
-  lines.push(`ganttOrder: ${task.ganttOrder || 0}`);
 
   // Subtask order
   const subtaskKeys = subtaskMap ? Array.from(subtaskMap.keys()) : [];

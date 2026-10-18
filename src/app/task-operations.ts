@@ -21,6 +21,7 @@ import {
 } from "../core/note-format";
 import { mergeTaskNote } from "../core/note-update";
 import { applyPatchToParent } from "../core/task-patch";
+import { computeParentOrder, reconcileParentOrder } from "../core/parent-order";
 import type { HistoryFileChange, HistoryManager } from "./history-manager";
 
 
@@ -164,7 +165,6 @@ export async function createTask(
     notes: "",
     tags: [],
     ganttEnabled: false,
-    ganttOrder: Date.now(),
     subtasks: new Map(),
   };
 
@@ -210,7 +210,8 @@ export async function loadTasks(
   settings: TaskWorkbenchSettings,
 
   cache: Map<string, { revision: string; taskRow: TaskRow | null }>,
-  logger?: Logger
+  logger?: Logger,
+  onOrderChanged?: () => void
 
 ): Promise<TaskRow[]> {
 
@@ -315,6 +316,9 @@ export async function loadTasks(
   }
 
 
+  // Parent order lives in settings: migrate/complete it and set row.ganttOrder.
+  if (reconcileParentOrder(settings, result)) onOrderChanged?.();
+
   logger?.debug("loadTasks", "load completed", {
     durationMs: Date.now() - startedAt,
     fileCount,
@@ -378,7 +382,7 @@ export async function updateTaskItemsBatch(
   settings: TaskWorkbenchSettings,
   cache: Map<string, { revision: string; taskRow: TaskRow | null }>,
   commands: unknown,
-  options?: { expectedRevision?: string },
+  options?: { expectedRevision?: string; persistParentOrder?: (order: string[]) => Promise<void> },
   historyManager?: HistoryManager
 ): Promise<TaskUpdateResult[]> {
   // Non-array or empty commands returns []
@@ -387,7 +391,27 @@ export async function updateTaskItemsBatch(
   }
 
   // Type guard
-  const typedCommands = commands as TaskUpdateCommand[];
+  const allCommands = commands as TaskUpdateCommand[];
+
+  // ganttOrder goes to settings.ganttParentOrder, never to the note.
+  const orderTargets = new Map<string, number>();
+  const orderOnly: TaskUpdateCommand[] = [];
+  const typedCommands: TaskUpdateCommand[] = [];
+  for (const cmd of allCommands) {
+    if (cmd.row && cmd.row.kind === "parent" && cmd.patch && cmd.patch.ganttOrder !== undefined) {
+      const { ganttOrder, ...rest } = cmd.patch;
+      const num = typeof ganttOrder === "number" ? ganttOrder : parseFloat(String(ganttOrder));
+      if (!isFinite(num)) throw new Error("ganttOrder must be a finite number");
+      orderTargets.set(cmd.row.file.path, num);
+      if (Object.values(rest).every((value) => value === undefined)) {
+        orderOnly.push(cmd);
+        continue;
+      }
+      typedCommands.push({ ...cmd, patch: rest });
+      continue;
+    }
+    typedCommands.push(cmd);
+  }
 
   // Group commands by parent file path
   const groupedByPath = new Map<string, TaskUpdateCommand[]>();
@@ -406,6 +430,7 @@ export async function updateTaskItemsBatch(
 
   const results: TaskUpdateResult[] = [];
   const appliedChanges: HistoryFileChange[] = [];
+  let orderChange: { before: string[]; after: string[] } | undefined;
 
   // Process each file
   try {
@@ -478,6 +503,27 @@ export async function updateTaskItemsBatch(
         });
       }
     }
+
+    if (orderTargets.size > 0) {
+      const before = settings.ganttParentOrder ?? [];
+      const after = computeParentOrder(before, orderTargets);
+      if (after.join("\n") !== before.join("\n")) {
+        await options?.persistParentOrder?.(after);
+        settings.ganttParentOrder = after;
+        orderChange = { before: [...before], after };
+      }
+      for (const cmd of orderOnly) {
+        const file = vault.getFileByPath(cmd.row.file.path);
+        const revision = file ? buildFileRevision(file as any) : ""; // eslint-disable-line @typescript-eslint/no-explicit-any
+        results.push({
+          taskId: cmd.row.id,
+          parentPath: cmd.row.file.path,
+          revisionBefore: revision,
+          revisionAfter: revision,
+          changedFields: ["ganttOrder"],
+        });
+      }
+    }
   } catch (error) {
     // A batch may span multiple parent files. If a later file fails, earlier
     // files may already be written but the requested operation did not finish
@@ -491,8 +537,8 @@ export async function updateTaskItemsBatch(
     throw error;
   }
 
-  if (appliedChanges.length > 0 && historyManager) {
-    historyManager.push({ label: "タスク更新", files: appliedChanges });
+  if ((appliedChanges.length > 0 || orderChange) && historyManager) {
+    historyManager.push({ label: "タスク更新", files: appliedChanges, ...(orderChange ? { order: orderChange } : {}) });
   }
 
   return results;

@@ -147,13 +147,11 @@ describe("Task Operations - Integration Tests", () => {
       expect(task.ganttEnabled).toBe(false);
     });
 
-    it("sets ganttOrder to Date.now", async () => {
+    it("does not write ganttOrder into the note (order lives in settings)", async () => {
       vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
-      const beforeNow = Date.now();
-      const task = await createTask(vault, settings, "Test Task");
-      const afterNow = Date.now();
-      expect(task.ganttOrder).toBeGreaterThanOrEqual(beforeNow);
-      expect(task.ganttOrder).toBeLessThanOrEqual(afterNow);
+      await createTask(vault, settings, "Test Task");
+      const file = vault.getFiles()[0];
+      expect(await vault.read(file)).not.toContain("ganttOrder");
     });
 
     it("sets empty tags array", async () => {

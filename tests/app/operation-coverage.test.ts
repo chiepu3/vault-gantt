@@ -228,8 +228,11 @@ describe("patch categories and parent/subtask boundaries", () => {
 
   it.each(["ganttEnabled", "ganttOrder"])("allows parent %s and rejects it on a subtask", async (field) => {
     const a = await setup(); const patch = field === "ganttEnabled" ? { ganttEnabled: false } : { ganttOrder: 42 };
+    a.vault.resetCounters();
     expect((await a.update(a.parent.id, patch)).kind).toBe("success");
-    expect(await a.registry.get(a.parent.id)).toMatchObject(patch);
+    // ganttOrder is stored in settings, so an order-only patch never writes the note.
+    if (field === "ganttOrder") expect(a.vault.getModifyCallCount()).toBe(0);
+    else expect(await a.registry.get(a.parent.id)).toMatchObject(patch);
     a.vault.resetCounters();
     await expect(a.registry.plan("update", { taskId: a.child.id, patch })).rejects.toThrow(`field is not writable for subtask: ${field}`);
     expect(a.vault.getModifyCallCount()).toBe(0);

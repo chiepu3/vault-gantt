@@ -8,10 +8,26 @@ export interface HistoryFileChange {
   after: string;
 }
 
+/** Gantt parent order (kept in plugin settings, not in notes) before/after an action. */
+export interface HistoryOrderChange {
+  before: string[];
+  after: string[];
+}
+
 export interface HistoryEntry {
   label: string;
   files: HistoryFileChange[];
+  order?: HistoryOrderChange;
 }
+
+/** Access to the stored Gantt parent order, supplied by the plugin. */
+export interface ParentOrderStore {
+  get(): readonly string[] | undefined;
+  set(order: string[]): Promise<void>;
+}
+
+const sameOrder = (a: readonly string[] | undefined, b: readonly string[]): boolean =>
+  JSON.stringify(a ?? []) === JSON.stringify(b);
 
 export type HistoryOpResult =
   | { kind: "empty" }
@@ -46,6 +62,8 @@ export class HistoryManager implements HistoryPort {
   private checking = false;
   private checkGeneration = 0;
   private vaultReader?: () => VaultAdapter;
+  private orderStore?: ParentOrderStore;
+  attachOrderStore(store: ParentOrderStore): void { this.orderStore = store; }
   attachVault(reader: () => VaultAdapter): void { this.vaultReader = reader; void this.refreshEligibility(); }
   subscribe(listener: (change: HistoryChangeV1) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   inspectUndo(entryId: string): HistoryEntryUndoStateV1 {
@@ -78,6 +96,7 @@ export class HistoryManager implements HistoryPort {
     const generation = this.checkGeneration;
     const entry = this.undoStack.at(-1), vault = this.vaultReader!();
     let conflict = false;
+    if (entry?.order && !(this.orderStore && sameOrder(this.orderStore.get(), entry.order.after))) conflict = true;
     if (entry) for (const change of entry.files) { try { const file = vault.getFileByPath(change.path); if (!file || await vault.read(file) !== change.after) conflict = true; } catch { conflict = true; } }
     if (generation !== this.checkGeneration) return;
     if (entry === this.undoStack.at(-1)) { if (entry) { if (conflict) this.conflicts.add(entry.label); else this.conflicts.delete(entry.label); } }
@@ -103,13 +122,15 @@ export class HistoryManager implements HistoryPort {
  */
   push(entry: HistoryEntry): void {
     const files = entry.files.filter((file) => file.before !== file.after);
-    if (files.length === 0) {
+    const order = entry.order && !sameOrder(entry.order.before, entry.order.after) ? entry.order : undefined;
+    if (files.length === 0 && !order) {
       return;
     }
 
     const clonedEntry: HistoryEntry = {
       label: entry.label,
       files: files.map((file) => ({ ...file })),
+      ...(order ? { order: { before: [...order.before], after: [...order.after] } } : {}),
     };
 
     if (this.operationDepth > 0) {
@@ -184,7 +205,7 @@ export class HistoryManager implements HistoryPort {
   inspectTransition(direction: "undo" | "redo"): { historyRevision: string; busy: boolean; entry: HistoryEntry | null } {
     const stack = direction === "undo" ? this.undoStack : this.redoStack;
     const entry = stack[stack.length - 1];
-    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map((file) => ({ ...file })) } : null };
+    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map((file) => ({ ...file })), ...(entry.order ? { order: { before: [...entry.order.before], after: [...entry.order.after] } } : {}) } : null };
   }
 
   undo(vault: Vault): Promise<HistoryOpResult> {
@@ -298,6 +319,10 @@ export class HistoryManager implements HistoryPort {
   ): Promise<HistoryOpResult> {
     const preparedFiles: PreparedFileChange[] = [];
     const conflictingPaths: string[] = [];
+    const orderChange = entry.order;
+    if (orderChange && !(this.orderStore && sameOrder(this.orderStore.get(), orderChange[expectField]))) {
+      conflictingPaths.push("Gantt並び順");
+    }
 
     for (const change of entry.files) {
       const vaultFile = vault.getFileByPath(change.path);
@@ -336,7 +361,13 @@ export class HistoryManager implements HistoryPort {
 
     const appliedFiles: PreparedFileChange[] = [];
     let failedPath: string | undefined;
+    let orderApplied = false;
     try {
+      if (orderChange) {
+        failedPath = "Gantt並び順";
+        await this.orderStore!.set([...orderChange[targetField]]);
+        orderApplied = true;
+      }
       for (const prepared of preparedFiles) {
         failedPath = prepared.change.path;
         await vault.process(prepared.vaultFile, (current) => {
@@ -350,6 +381,18 @@ export class HistoryManager implements HistoryPort {
         appliedFiles.push(prepared);
       }
     } catch (error: unknown) {
+      if (orderApplied && orderChange) {
+        try {
+          await this.orderStore!.set([...orderChange[expectField]]);
+        } catch (compensationError: unknown) {
+          this.clear();
+          return {
+            kind: "invalidated",
+            label: entry.label,
+            reason: `履歴の補償に失敗しました（Gantt並び順）: ${this.getErrorMessage(compensationError)}`,
+          };
+        }
+      }
       for (let index = appliedFiles.length - 1; index >= 0; index -= 1) {
         const applied = appliedFiles[index];
         try {

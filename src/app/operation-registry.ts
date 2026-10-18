@@ -4,6 +4,7 @@ import { applyPatchToParent } from "../core/task-patch";
 import { buildFullNote, parseTaskFile } from "../core/note-format";
 import { mergeTaskNote, NotePreservationError } from "../core/note-update";
 import { buildFileRevision, todayStr } from "../core/utils";
+import { computeParentOrder, orderValue } from "../core/parent-order";
 import { addSubtask, createTask, getAvailableTaskPath, loadTasks, updateTaskItemsBatch } from "./task-operations";
 import type { VaultAdapter } from "./task-operations";
 import { HistoryManager, HistoryFileChange } from "./history-manager";
@@ -43,8 +44,16 @@ export interface FieldDiff { field: string; before: unknown; after: unknown }
 export interface TaskDiff { taskId: string; name: string; fields: FieldDiff[]; schedule?: { before: { start: string; end: string }; after: { start: string; end: string } } }
 export interface OperationPlan { previewId: string; operation: OperationName; summary: string; diffs: TaskDiff[]; count: number }
 export interface OperationResult { kind: "success" | "partial" | "failed" | "cancelled" | "stale"; committed: number; total: number; diffs: TaskDiff[]; results: TaskUpdateResult[]; message: string; created?: TaskRow; undoLabel?: string }
-interface PendingPlan { public: OperationPlan; changes: TaskUpdateCommand[]; contents: Map<string, string>; create?: { name: string; parent?: TaskRow; path?: string }; expires: number }
-export interface RegistryHost { readonly settings: TaskWorkbenchSettings; readonly historyManager: HistoryManager; readonly taskCache?: Map<string, { revision: string; taskRow: TaskRow | null }>; invalidate(paths?: string[]): Promise<void> | void }
+// Parent order is kept in settings.ganttParentOrder; orderOnly = tasks whose patch only changes the order (no note write).
+interface PendingOrder { before: string[]; after: string[]; orderOnly: Set<string> }
+interface PendingPlan { public: OperationPlan; changes: TaskUpdateCommand[]; contents: Map<string, string>; create?: { name: string; parent?: TaskRow; path?: string }; order?: PendingOrder; expires: number }
+export interface RegistryHost {
+  readonly settings: TaskWorkbenchSettings; readonly historyManager: HistoryManager; readonly taskCache?: Map<string, { revision: string; taskRow: TaskRow | null }>; invalidate(paths?: string[]): Promise<void> | void;
+  /** Persists settings keys (inside the operation queue). Without it the live settings are updated in memory only. */
+  persistSettings?(candidate: TaskWorkbenchSettings, keys: readonly (keyof TaskWorkbenchSettings)[]): Promise<void>;
+  /** Called when loading created or extended settings.ganttParentOrder. */
+  orderChanged?(): void;
+}
 export function taskData(row: TaskRow): Record<string, unknown> {
   const { file, subtasks: _subtasks, ...data } = row;
   void _subtasks;
@@ -63,7 +72,8 @@ function canonical(value: unknown): unknown {
 }
 function persisted(row: TaskRow): string {
   const data = taskData(row);
-  return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).map((key) => [key, canonical(data[key])])));
+  // ganttOrder is not stored in the note (see PendingOrder).
+  return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).filter((key) => key !== "ganttOrder").map((key) => [key, canonical(data[key])])));
 }
 function assertRoundTrip(parent: TaskRow, settings: TaskWorkbenchSettings, original: string, before: string): TaskRow {
   const content = mergeTaskNote(original, before, buildFullNote(parent, parent.subtasks));
@@ -83,7 +93,7 @@ export class OperationRegistry {
   constructor(private readonly host: RegistryHost, private readonly vaultFactory: () => VaultAdapter) {}
 
   async rows(query = ""): Promise<TaskRow[]> {
-    const parents = await loadTasks(this.vaultFactory(), this.host.settings, this.host.taskCache ?? new Map());
+    const parents = await loadTasks(this.vaultFactory(), this.host.settings, this.host.taskCache ?? new Map(), undefined, () => this.host.orderChanged?.());
     return parents.flatMap((row) => [row, ...row.subtasks!.values()]).filter((row) => `${row.displayName} ${row.title}`.toLowerCase().includes(query.toLowerCase()));
   }
   async get(taskId: string): Promise<TaskRow> {
@@ -104,6 +114,7 @@ export class OperationRegistry {
     const changes: TaskUpdateCommand[] = [];
     let creation: PendingPlan["create"];
     const diffs: TaskDiff[] = [];
+    let order: PendingOrder | undefined;
     if (name === "create") {
       const args = parsed as { name: string; parentTaskId?: string };
       let parent = args.parentTaskId ? await this.get(args.parentTaskId) : undefined;
@@ -122,6 +133,10 @@ export class OperationRegistry {
       if (!args) throw new Error("Mutation operation required");
       const grouped = new Map<string, { patch: TaskPatch; rowId: string }[]>();
       const seen = new Set<string>();
+      const orderTargets = new Map<string, number>();
+      const orderOnly = new Set<string>();
+      const orderFields: { path: string; field: FieldDiff }[] = [];
+      const pendingOrderDiffs = new Map<string, FieldDiff>();
       const rows = new Map((await this.rows()).map((row) => [row.id, row]));
       for (const arg of args) {
         if (seen.has(arg.taskId)) throw new Error("Duplicate task in plan");
@@ -130,6 +145,21 @@ export class OperationRegistry {
         if (!row) throw new Error(`Task not found: ${arg.taskId}`);
         const file = vault.getFileByPath(row.file.path)!;
         if (arg.expectedRevision && arg.expectedRevision !== buildFileRevision(file as TaskRow["file"])) throw new Error("REVISION_CONFLICT");
+        let notePatch = arg.patch as TaskPatch;
+        if (row.kind === "parent" && arg.patch.ganttOrder !== undefined) {
+          const { ganttOrder, ...rest } = arg.patch;
+          orderTargets.set(file.path, ganttOrder);
+          const field: FieldDiff = { field: "ganttOrder", before: row.ganttOrder ?? "", after: ganttOrder };
+          orderFields.push({ path: file.path, field });
+          notePatch = rest;
+          if (Object.keys(rest).length === 0) {
+            // Order-only: the note is not touched at all.
+            orderOnly.add(row.id);
+            diffs.push({ taskId: row.id, name: row.displayName, fields: [field] });
+            continue;
+          }
+          pendingOrderDiffs.set(row.id, field);
+        }
         const content = contents.get(file.path) ?? await vault.read(file);
         contents.set(file.path, content);
         const parent = parseTaskFile({ path: file.path }, content, this.host.settings)!;
@@ -138,17 +168,19 @@ export class OperationRegistry {
         const rowBefore = structuredClone(row);
         const previous = structuredClone(taskData(row));
         const beforeNote = buildFullNote(parent, parent.subtasks);
-        applyPatchToParent(parent, arg.patch as TaskPatch, row.id, this.host.settings);
+        applyPatchToParent(parent, notePatch, row.id, this.host.settings);
         const serialized = assertRoundTrip(parent, this.host.settings, content, beforeNote);
         const after = row.kind === "parent" ? serialized : [...serialized.subtasks!.values()].find((item) => item.id === row.id)!;
         if (after.plannedStartDate && after.plannedEndDate && after.plannedStartDate > after.plannedEndDate) throw new Error("開始日は終了日以前にしてください");
         const fields = Object.keys(patchSchema.shape).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(taskData(after)[key])).map((key) => ({ field: key, before: previous[key] ?? "", after: taskData(after)[key] ?? "" }));
+        const orderField = pendingOrderDiffs.get(row.id);
+        if (orderField) fields.push(orderField as typeof fields[number]);
         diffs.push({ taskId: row.id, name: row.displayName, fields, schedule: { before: { start: String(previous.plannedStartDate ?? ""), end: String(previous.plannedEndDate ?? "") }, after: { start: after.plannedStartDate ?? "", end: after.plannedEndDate ?? "" } } });
-        changes.push({ row: rowBefore, patch: arg.patch as TaskPatch });
+        changes.push({ row: rowBefore, patch: notePatch });
         // Match updateTaskItemsBatch: apply all commands to one original parent,
         // then merge once per file, without intermediate serialization.
         const group = grouped.get(file.path) ?? [];
-        group.push({ patch: arg.patch as TaskPatch, rowId: rowBefore.id });
+        group.push({ patch: notePatch, rowId: rowBefore.id });
         grouped.set(file.path, group);
       }
       for (const [path, group] of grouped) {
@@ -160,10 +192,23 @@ export class OperationRegistry {
         for (const item of group) applyPatchToParent(originalParent, item.patch, item.rowId, this.host.settings);
         assertRoundTrip(originalParent, this.host.settings, content, beforeNote);
       }
+      if (orderTargets.size) {
+        const before = [...(this.host.settings.ganttParentOrder ?? [])];
+        const after = computeParentOrder(before, orderTargets);
+        const changed = JSON.stringify(after) !== JSON.stringify(before);
+        // Show the rank-derived value that will actually result; drop no-op fields.
+        for (const { path, field } of orderFields) {
+          field.after = orderValue(after.indexOf(path));
+          if (!changed || field.before === field.after) {
+            for (const diff of diffs) { const at = diff.fields.indexOf(field); if (at >= 0) diff.fields.splice(at, 1); }
+          }
+        }
+        if (changed) order = { before, after, orderOnly };
+      }
     }
     this.prune();
     const publicPlan: OperationPlan = { previewId: `operation-${++this.counter}`, operation: name, summary: `${diffs.length}件の変更`, count: diffs.length, diffs };
-    this.pending.set(publicPlan.previewId, { public: structuredClone(publicPlan), changes, contents, create: creation, expires: Date.now() + 10 * 60 * 1000 });
+    this.pending.set(publicPlan.previewId, { public: structuredClone(publicPlan), changes, contents, create: creation, order, expires: Date.now() + 10 * 60 * 1000 });
     return publicPlan;
   }
   discard(previewId: string): void { this.pending.delete(previewId); }
@@ -187,6 +232,7 @@ export class OperationRegistry {
     const vault = this.vaultFactory();
     const result: OperationResult = { kind: "success", committed: 0, total: plan.public.count, diffs: [], results: [], message: "変更を保存しました" };
     const history: HistoryFileChange[] = [];
+    let orderApplied = false;
     const guardedVault: VaultAdapter = {
       create: async (path, content) => {
         if (signal?.aborted) throw new Error("CANCELLED");
@@ -221,6 +267,7 @@ export class OperationRegistry {
         const file = vault.getFileByPath(path);
         if (!file || await vault.read(file) !== content) throw new Error("REVISION_CONFLICT");
       }
+      if (plan.order && JSON.stringify(this.host.settings.ganttParentOrder ?? []) !== JSON.stringify(plan.order.before)) throw new Error("REVISION_CONFLICT");
       if (plan.create) {
         if (signal?.aborted) { result.kind = "cancelled"; return result; }
         const { name, parent, path } = plan.create;
@@ -236,15 +283,29 @@ export class OperationRegistry {
           const commands = plan.changes.filter((change) => change.row.file.path === path);
           result.results.push(...await updateTaskItemsBatch(guardedVault, this.host.settings, new Map(), commands));
         }
+        if (plan.order && !signal?.aborted && result.kind !== "cancelled") {
+          const candidate = structuredClone(this.host.settings);
+          candidate.ganttParentOrder = [...plan.order.after];
+          if (this.host.persistSettings) await this.host.persistSettings(candidate, ["ganttParentOrder"]);
+          else this.host.settings.ganttParentOrder = candidate.ganttParentOrder;
+          orderApplied = true;
+          for (const taskId of plan.order.orderOnly) {
+            const file = vault.getFileByPath(taskId);
+            const revision = file ? buildFileRevision(file as TaskRow["file"]) : "";
+            result.results.push({ taskId, parentPath: taskId, revisionBefore: revision, revisionAfter: revision, changedFields: ["ganttOrder"] });
+          }
+          result.committed += plan.order.orderOnly.size;
+          result.diffs.push(...plan.public.diffs.filter((diff) => plan.order!.orderOnly.has(diff.taskId)));
+        }
       }
     } catch (error) {
       result.kind = error instanceof Error && error.message === "CANCELLED" ? "cancelled" : result.committed ? "partial" : (error instanceof Error && error.message === "REVISION_CONFLICT" ? "stale" : "failed");
       result.message = result.kind === "stale" ? "元データが変わりました。再試行で再プレビューしてください。" : "保存に失敗しました。保存済みの変更は残ります。再試行は再プレビューが必要です。";
       if (error instanceof NotePreservationError) result.message = `${error.message} 保存済みの変更は残ります。`;
     } finally {
-      if (history.length) {
+      if (history.length || orderApplied) {
         result.undoLabel = "タスク変更 " + plan.public.previewId;
-        this.host.historyManager.push({ label: result.undoLabel, files: history });
+        this.host.historyManager.push({ label: result.undoLabel, files: history, ...(orderApplied ? { order: { before: plan.order!.before, after: plan.order!.after } } : {}) });
       }
       if (result.committed) {
         try { await this.host.invalidate(history.map((change) => change.path)); }

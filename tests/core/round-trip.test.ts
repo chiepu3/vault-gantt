@@ -42,7 +42,7 @@ describe("round-trip", () => {
     expect(b.priorityMode).toBe(parent.priorityMode);
     expect(b.tags).toEqual(parent.tags);
     expect(b.ganttEnabled).toBe(true);
-    expect(b.ganttOrder).toBe(12345);
+    expect(note).not.toContain("ganttOrder"); // order lives in settings
     expect(b.currentStatus).toBe("現状");
     expect(b.notes).toBe("メモ");
     const bs = b.subtasks as Map<string, TaskRow>;

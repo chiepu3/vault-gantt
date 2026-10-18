@@ -97,7 +97,7 @@ export interface TaskRow {
 
   // Gantt fields - parent only
   ganttEnabled: boolean; // default false
-  ganttOrder?: number; // set to Date.now at creation, defaults to 999999 during load if non-finite
+  ganttOrder?: number; // in-memory rank from settings.ganttParentOrder ((index+1)*1000); see core/parent-order.ts. Notes' own `ganttOrder:` line is only read for migration.
 
   // Subtasks (parent only)
   subtasks?: Map<string, TaskRow>;
@@ -157,6 +157,8 @@ export interface DailyTodoSourceConfig {
 export interface TaskWorkbenchSettings {
   /** MCP credentials are references only; token values stay in secret storage or memory. */
   mcp?: McpSettings;
+  /** Gantt parent order as note paths. undefined = not migrated from notes' ganttOrder yet. */
+  ganttParentOrder?: string[];
   // Task Storage
   taskFolder: string;
   filenameUsesDatePrefix: boolean;

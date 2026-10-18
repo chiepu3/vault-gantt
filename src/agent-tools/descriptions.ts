@@ -758,7 +758,7 @@ const PARAMETER_DOCS: Record<string, string> = {
   completed: "完了boolean。単独trueはdone、falseはactiveへ連動。",
   dueDate: "親/子の期限YYYY-MM-DD。空文字で解除。自動priority対象は期限により再計算。",
   createdAt: "作成日YYYY-MM-DD。空はschema上受理するがparseで今日になる場合は安全な保存を拒否。",
-  orderedParentIds: "親IDの指定順に1000刻みganttOrderを採番。保存は親file単位で一部成功があり得る。",
+  orderedParentIds: "親IDの指定順に1000刻みで並び順を設定。並び順は設定に保存され、ノートは変更しない。",
   anchorId: "指定親に属する子ID。開始・終了・名前順でこの子以降が対象。",
   eventKey: "workload.get(detail=true)のevent寄与id、または既存プレビューのevents.key。名前/dateを取得する専用read DTOは未提供のため既存UIで照合する。",
   scheduleKey: "workload.get(detail=true)のweekly寄与id、または既存プレビューのweekly.key。定例の名前/曜日詳細を取得する専用read DTOは未提供。",

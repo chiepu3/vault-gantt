@@ -5,6 +5,7 @@ import type { RequestContext } from "../contracts/context";
 import { operationPreviewSchema, validatePreviewOutcome, type OperationPreviewV1, type OperationOutcomeV1, type PreviewEntry } from "../contracts/preview";
 import { adaptLegacyOperationInput } from "../contracts/legacy-operation-plan";
 import { applyPatchToParent } from "../core/task-patch";
+import { applyStoredOrder, computeParentOrder, orderValue } from "../core/parent-order";
 import { buildFullNote, parseTaskFile } from "../core/note-format";
 import { mergeTaskNote, NotePreservationError } from "../core/note-update";
 import { todayStr, buildFileRevision } from "../core/utils";
@@ -237,7 +238,9 @@ export class OperationService implements OperationServicePort {
         afterParents[afterParents.findIndex((row) => row.id === parent.id)] = reparsed;
       } else {
         created = await createTask(virtual, parseSettings, args.name);
-        if (id === "T05") { created.ganttEnabled = true; created.ganttOrder = Math.max(0, ...snapshot.parents.filter((parent) => parent.ganttEnabled).map((parent) => parent.ganttOrder ?? 999999)) + 1000; createdContents.set(created.file.path, buildFullNote(created, created.subtasks)); }
+        if (id === "T05") { created.ganttEnabled = true; createdContents.set(created.file.path, buildFullNote(created, created.subtasks));
+          // The new parent goes to the end of the stored order (not written to the note).
+          afterSettings.ganttParentOrder = [...(afterSettings.ganttParentOrder ?? []), created.file.path]; settingKeys = ["ganttParentOrder"]; created.ganttOrder = orderValue(afterSettings.ganttParentOrder.length - 1); }
         afterParents.push(created);
       }
       if (created.displayName !== args.name.trim()) fail("INVALID_INPUT", "作成名を安全に保存できません。見出し・記号を確認してください。");
@@ -251,18 +254,31 @@ export class OperationService implements OperationServicePort {
     } else {
       changes = id.startsWith("M") ? markerWorkloadChanges(id, parsed, snapshot) : id >= "T19" && id <= "T25" ? scheduleChanges(id, parsed, snapshot) : taskChanges(id, parsed, snapshot);
       const changedPaths = new Set<string>();
+      const orderTargets = new Map<string, number>();
       for (const change of changes) {
         const before = findTask(snapshot, change.taskId); checkRevision(snapshot, before, change.expectedRevision);
         const parent = afterParents.find((row) => row.file.path === before.file.path)!;
         changedPaths.add(parent.id);
-        applyPatchToParent(parent, change.patch, change.taskId, snapshot.settings);
+        // ganttOrder is kept in settings.ganttParentOrder, not in the note: order-only changes never touch the note.
+        const { ganttOrder, ...notePatch } = change.patch as Record<string, unknown>;
+        if (before.kind === "parent" && ganttOrder !== undefined) {
+          orderTargets.set(parent.id, Number(ganttOrder));
+          if (Object.keys(notePatch).length) applyPatchToParent(parent, notePatch as typeof change.patch, change.taskId, snapshot.settings);
+        } else applyPatchToParent(parent, change.patch, change.taskId, snapshot.settings);
         if (["T20", "T21", "T22", "T25"].includes(id) && hasWorkloadActual(before)) warnings.push({ code: "HAS_ACTUAL_WORKLOAD", detail: `${before.id}: 実績があります。${id === "T25" ? "実績mapも移動します。" : "実績mapは移動しません。"}` });
+      }
+      if (orderTargets.size) {
+        const order = computeParentOrder(afterSettings.ganttParentOrder ?? [], orderTargets);
+        if (JSON.stringify(order) !== JSON.stringify(afterSettings.ganttParentOrder ?? [])) { afterSettings.ganttParentOrder = order; settingKeys = ["ganttParentOrder"]; }
+        applyStoredOrder(afterSettings, afterParents);
       }
       // Validate the final combined parent, including changes to multiple children in one file.
       for (const path of changedPaths) {
         const index = afterParents.findIndex((parent) => parent.id === path), parent = afterParents[index];
         const reparsed = parseTaskFile({ path }, buildFullNote(parent, parent.subtasks), parseSettings);
+        if (reparsed) applyStoredOrder(afterSettings, [reparsed]);
         if (!reparsed || canonical(flatten([parent]).map(taskPublicState)) !== canonical(flatten([reparsed]).map(taskPublicState))) fail("INVALID_INPUT", "正規化後の内容を安全に保存できません。入力の記号・見出しを確認してください。");
+        applyStoredOrder(afterSettings, [reparsed]);
         afterParents[index] = reparsed;
       }
       entries = changes.map((change, index) => { const before = findTask(snapshot, change.taskId), after = flatten(afterParents).find((row) => row.id === change.taskId)!;
@@ -271,6 +287,7 @@ export class OperationService implements OperationServicePort {
       });
     }
     const writes: WriteUnit[] = [];
+    applyStoredOrder(afterSettings, afterParents);
     for (const parent of afterParents) {
       const actions = entries.filter((entry) => entry.entity.kind === "task" && entry.entity.taskId.split("::")[0] === parent.id).map((entry) => entry.actionId);
       if (!actions.length) continue;
@@ -288,6 +305,7 @@ export class OperationService implements OperationServicePort {
       }
       // Validate the exact frozen bytes used by the executor against the preview model.
       const reparsed = parseTaskFile({ path: parent.file.path }, after, parseSettings);
+      if (reparsed) applyStoredOrder(afterSettings, [reparsed]);
       if (!reparsed || canonical(flatten([parent]).map(taskPublicState)) !== canonical(flatten([reparsed]).map(taskPublicState))) fail("INVALID_INPUT", "保存する本文とプレビューが一致しません。入力の記号・見出しを確認してください。");
       afterParents[afterParents.findIndex((row) => row.id === parent.id)] = reparsed;
       writes.push({ path: parent.file.path, before, after, actionIds: actions });
@@ -296,7 +314,7 @@ export class OperationService implements OperationServicePort {
     const now = Date.now();
     const preview = operationPreviewSchema.parse({ schemaVersion: 1, previewId, vaultInstanceId: this.vaultInstanceId, operationId: id, operationLabel: this.catalog.get(id).description.purpose, origin: context.origin, status: "pending", createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 600000).toISOString(),
       summary: { targetCount: entries.length, actionCount: entries.length }, entries, warnings,
-      undo: settingKeys.length || historyPlanData || diagnostic || daily?.unresolvedTemplates.length || writes.some((write) => write.before === null) ? { support: "none", reason: "設定保存・親の新規ファイル作成はUndo対象外です。" } : { support: "full", reason: "履歴先頭かつ内容一致時にMarkdown差分を戻せます。" },
+      undo: settingKeys.some((key) => key !== "ganttParentOrder") || historyPlanData || diagnostic || daily?.unresolvedTemplates.length || writes.some((write) => write.before === null) ? { support: "none", reason: "設定保存・親の新規ファイル作成はUndo対象外です。" } : { support: "full", reason: "履歴先頭かつ内容一致時にMarkdown差分を戻せます。" },
       projection: daily ? await dailyProjection(daily, snapshot, entries, afterParents) : project(snapshot, afterParents, afterSettings, entries) });
     if (this.disposed || context.signal?.aborted) fail("POLICY_DENIED", "停止した要求の計画は破棄しました。");
     if (new TextEncoder().encode(JSON.stringify(preview)).length > 12 * 1024 * 1024) fail("INVALID_INPUT", "提案が12MiBを超えます。対象を分けて再提案してください。");
@@ -359,7 +377,7 @@ export class OperationService implements OperationServicePort {
     return this.host.coordinator.coordinate(async () => {
       const vault = this.vaultFactory(), history: HistoryFileChange[] = [];
       const committed = new Set<string>(), failed = new Set<string>(), actualEffects = new Map<string, PreviewEntry["effects"]>();
-      let status: OperationOutcomeV1["status"] = "success", errorCode: string | undefined;
+      let status: OperationOutcomeV1["status"] = "success", errorCode: string | undefined, orderPersisted = false;
       try {
         if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
         if (Date.parse(stored.preview.expiresAt) <= Date.now()) throw new Error("PLAN_EXPIRED");
@@ -407,6 +425,7 @@ export class OperationService implements OperationServicePort {
           try { await this.host.persistSettings!(candidate, stored.settingKeys); } catch (error) { settingsActions.forEach((entry) => failed.add(entry.actionId)); throw error; }
           if (!this.host.publishesSettings) for (const key of stored.settingKeys) if (canonical(this.host.settings[key]) === canonical(beforeSettings[key])) Object.assign(this.host.settings, { [key]: structuredClone(candidate[key]) });
           this.host.historyManager.discardRedo(); settingsActions.forEach((entry) => committed.add(entry.actionId));
+          orderPersisted = stored.settingKeys.includes("ganttParentOrder");
           if (stored.integration?.restartSync) this.host.restartSync!();
         }
         if (stored.integration?.externalSend) {
@@ -427,20 +446,23 @@ export class OperationService implements OperationServicePort {
         }
         status = committed.size ? errorCode === "CANCELLED" ? "cancelled" : "partial" : errorCode === "CANCELLED" ? "cancelled" : ["REVISION_CONFLICT", "PLAN_EXPIRED"].includes(errorCode) ? "stale" : "failed";
       }
-      if (history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action)))) this.host.historyManager.push({ label: `タスク変更 ${id}`, files: history });
+      // The parent order (settings) is undoable together with the file changes; other settings are not.
+      const undoable = (history.length > 0 || orderPersisted) && stored.settingKeys.every((key) => key === "ganttParentOrder") && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action)));
+      if (undoable) this.host.historyManager.push({ label: `タスク変更 ${id}`, files: history, ...(orderPersisted ? { order: { before: stored.snapshot.settings.ganttParentOrder ?? [], after: stored.afterSettings.ganttParentOrder ?? [] } } : {}) });
       for (const write of stored.writes) {
         if (write.actionIds.some((action) => committed.has(action))) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
         else this.ownWrites.delete(write.path);
       }
       // Only apply committed file/settings states to the original before snapshot.
       const parents = structuredClone(stored.snapshot.parents);
+      if (orderPersisted) applyStoredOrder(stored.afterSettings, parents);
       for (const write of stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action)))) {
         const parent = stored.afterParents.find((parent) => parent.id === write.path); if (!parent) continue;
         const index = parents.findIndex((parent) => parent.id === write.path); if (index < 0) parents.push(parent); else parents[index] = parent;
       }
       const actualEntries = stored.preview.entries.filter((entry) => committed.has(entry.actionId)).map((entry) => ({ ...entry, effects: actualEffects.get(entry.actionId) ?? entry.effects }));
       const outcome: OperationOutcomeV1 = { previewId: id, status, actions: stored.preview.entries.map((entry) => ({ actionId: entry.actionId, state: committed.has(entry.actionId) ? "committed" : failed.has(entry.actionId) ? "failed" : "not-attempted", actual: committed.has(entry.actionId) ? actualEffects.get(entry.actionId) ?? entry.effects : [], ...(committed.has(entry.actionId) ? {} : { errorCode: errorCode ?? "NOT_ATTEMPTED" }) })),
-        ...(history.length && !stored.settingKeys.length && !stored.writes.some((write) => write.before === null && write.actionIds.some((action) => committed.has(action))) ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
+        ...(undoable ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, orderPersisted || stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
       if (committed.size && !this.disposed) { try { await this.host.invalidate(stored.settingKeys.length || stored.daily || stored.history || stored.diagnostic ? undefined : stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).map((write) => write.path)); } catch { /* Saved bytes remain authoritative. */ } }
       const validated = validatePreviewOutcome(stored.preview, outcome);
       if (!this.disposed) {

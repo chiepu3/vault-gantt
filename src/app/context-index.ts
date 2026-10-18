@@ -2,6 +2,7 @@ import { contextQueryInputSchemas, contextQueryOutputSchemas, publicSettingsSche
 import type { ContextReadPort } from "../contracts/ports";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { parseTaskFile } from "../core/note-format";
+import { reconcileParentOrder } from "../core/parent-order";
 import { matchScore } from "../core/fuzzy-match";
 import { todayStr, getEffectivePriority, buildFileRevision } from "../core/utils";
 import type { VaultAdapter } from "./task-operations";
@@ -74,8 +75,11 @@ export class ContextIndex implements ContextReadPort {
     }
     for (const path of this.parsed.keys()) if (!contents.has(path)) this.parsed.delete(path);
     for (const path of this.fileBytes.keys()) if (!contents.has(path)) this.fileBytes.delete(path);
+    // The revision covers the stored settings as they are; the snapshot copy then gets the parent order
+    // completed from the loaded notes (read-only: live settings are not touched here).
     const settingsRevision = await contentRevision(settings), calendarRevision = await contentRevision([...holidaySet(settings)].sort());
     const revision = await contentRevision({ files: [...revisions], settingsRevision, today, timezone, parseFailures });
+    reconcileParentOrder(settings, parents);
     const snapshot = { parents, contents, revisions, statRevisions, settings, revision, settingsRevision, calendarRevision, today, timezone, parseFailures };
     this.snapshots.set(revision, structuredClone(snapshot));
     while (this.snapshots.size > 5) this.snapshots.delete(this.snapshots.keys().next().value!);

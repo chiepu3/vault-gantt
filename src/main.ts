@@ -8,6 +8,7 @@ import type { PreviewUiHostPorts } from "./contracts/ports";
 import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
 import { SettingsPersistence } from "./app/settings-persistence";
+import { renameInParentOrder } from "./core/parent-order";
 import { canonical } from "./app/operations/runtime";
 import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
@@ -278,6 +279,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
     get settings() { return settings(); },
     historyManager: this.historyManager,
     taskCache: this.taskCache,
+    persistSettings: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
+    orderChanged: () => this.persistParentOrder(),
     invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter());
   }
@@ -286,6 +289,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private settingsWriter(): SettingsPersistence {
     return this.settingsPersistence ??= new SettingsPersistence({ settings: () => this.settings,
       coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData({ ...settings, ai: this.aiStore }), read: () => this.loadData() });
+  }
+  /** Saves settings after the parent order was created/extended from loaded notes (fire and forget). */
+  private persistParentOrder(): void {
+    void this.settingsWriter().save().catch((error: unknown) => this.logger?.error("TaskWorkbenchPlugin", "failed to save Gantt parent order", error));
+  }
+  /** A task note moved or was deleted: keep the stored parent order pointing at real paths. */
+  private updateParentOrderPath(oldPath: string, newPath?: string): void {
+    const order = this.settings?.ganttParentOrder;
+    if (!order?.includes(oldPath)) return;
+    this.settings.ganttParentOrder = newPath ? renameInParentOrder(order, oldPath, newPath) : order.filter((path) => path !== oldPath);
+    this.persistParentOrder();
   }
   private createOperationService(): OperationService {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
@@ -614,6 +628,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.loadSettings();
     this.unloading = false;
     this.historyManager.attachVault(() => this.vaultAdapter());
+    this.historyManager.attachOrderStore({
+      get: () => this.settings.ganttParentOrder,
+      set: async (order) => { const candidate = structuredClone(this.settings); candidate.ganttParentOrder = order; await this.settingsWriter().persist(candidate, ["ganttParentOrder"]); },
+    });
 
     this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === aiSecretId(this.aiSettings.id) ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
@@ -720,6 +738,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("create", (file) => clear(file as TFile, "create")));
       this.registerEvent(this.app.vault.on("delete", (file) => clear(file as TFile, "delete")));
       this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
+      this.registerEvent(this.app.vault.on("delete", (file) => this.updateParentOrderPath(file.path)));
+      this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.updateParentOrderPath(oldPath, file.path)));
     }
     this.registerCommands();
     for (const [position, label] of [["tab", "タブ"], ["left", "左サイドバー"], ["right", "右サイドバー"]] as const) {
@@ -847,7 +867,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     try {
 
-      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger);
+      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder());
 
       const synced = await syncReadonlyGanttSnapshot(
         tasks,
@@ -897,7 +917,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     try {
 
-      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger);
+      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder());
 
       const synced = await syncReadonlyGanttSnapshot(
         tasks,
@@ -1037,7 +1057,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.settings,
 
       this.taskCache,
-      this.logger
+      this.logger,
+      () => this.persistParentOrder()
 
     );
 
@@ -1693,7 +1714,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       settings: this.settings,
       loadTasks: (): Promise<TaskRow[]> =>
 
-        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder()),
 
       getDisplayRows: (tasks: TaskRow[], opts: DisplayRowsOptions) =>
         getDisplayRows(tasks, opts),
@@ -1756,7 +1777,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       settings: this.settings,
       loadTasks: (): Promise<TaskRow[]> =>
 
-        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder()),
 
 
       loadDailyTodoSummaries: (): Promise<DailyTodoSummary[]> =>
@@ -1863,7 +1884,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
           this.settings,
 
           this.taskCache,
-          this.logger
+          this.logger,
+          () => this.persistParentOrder()
 
         );
         const parents = getGanttParentRows(tasks);

@@ -220,18 +220,23 @@ describe("ToolAdapter (Agent Tools API)", () => {
 
     it("previewMoveTask previews a ganttOrder change; confirm applies it", async () => {
       const { parent } = await seedParentAndSubtask();
+      const second = await createTask(vault, settings, "Zeta Task");
+      await loadTasks(vault, settings, cache);
+      expect(settings.ganttParentOrder).toEqual([parent.id, second.id]);
       vault.resetCounters();
 
-      const preview = await adapter.previewMoveTask(parent.id, 42);
+      const preview = await adapter.previewMoveTask(second.id, 500);
 
       expect(preview.kind).toBe("moveTask");
       expect(preview.details.changedFields).toContain("ganttOrder");
       expect(vault.getModifyCallCount()).toBe(0);
 
       await adapter.confirmChange(preview.previewId);
-      expect(vault.getModifyCallCount()).toBe(1);
+      // The order goes to settings; no note is written.
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(settings.ganttParentOrder).toEqual([second.id, parent.id]);
       const rows = await loadTasks(vault, settings, cache);
-      expect(rows[0].ganttOrder).toBe(42);
+      expect(rows.find((row) => row.id === second.id)!.ganttOrder).toBe(1000);
     });
 
     it("previewUpdateTasksBatch previews multiple commands; confirm applies them atomically per file", async () => {
