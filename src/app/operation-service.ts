@@ -373,6 +373,7 @@ export class OperationService implements OperationServicePort {
   }
   private async repreview(id: string): Promise<OperationPreviewV1> {
     const stored = this.stored.get(id); if (!stored) fail("NOT_FOUND", "対象を再取得して新しく提案してください。");
+    const newer = this.previewPort.supersededBy(id); if (newer) fail("PLAN_CONSUMED", `再プレビュー済みです。新しい提案 ${newer} を使ってください。`);
     const outcome = this.previewPort.inspectOutcome(id);
     if (outcome?.actions.some((action) => action.state === "committed") && !["T27", "T28"].includes(stored.preview.operationId)) fail("POLICY_DENIED", "保存済みがあるため、未保存対象を指定した新規提案を作成してください。");
     let input = structuredClone(stored.input) as Record<string, unknown>;
@@ -382,7 +383,7 @@ export class OperationService implements OperationServicePort {
       input.changes = (input.changes as Record<string, unknown>[]).filter((change) => !committed.has(String(change.taskId))).map(({ expectedRevision: _expected, ...change }) => { void _expected; return change; });
     }
     const preview = await this.proposeBound(stored.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], { ...stored.context, callerIntentId: undefined, requestId: `repreview-${++this.counter}` }, stored.copyFrom);
-    this.discard(id); return preview;
+    this.discard(id); this.previewPort.markSuperseded(id, preview.previewId); return preview;
   }
   private executeApproved(id: string, signal?: AbortSignal): Promise<OperationOutcomeV1> {
     signal = signal ? AbortSignal.any([signal, this.lifecycle.signal]) : this.lifecycle.signal;

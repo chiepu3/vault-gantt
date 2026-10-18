@@ -73,6 +73,8 @@ export interface PreviewCardOptions {
   readonly loadError?: string;
   /** Last approve/reject/undo failure shown on the card. */
   readonly actionError?: string;
+  /** Already re-previewed into a newer card: it cannot be re-previewed again. */
+  readonly superseded?: boolean;
   readonly handlers?: PreviewCardHandlers;
   readonly entryLimit?: number;
 }
@@ -189,8 +191,9 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
     const parts = [["保存済み", count("committed")], ["失敗", count("failed")], ["未実行", count("not-attempted")]].filter(([, n]) => n).map(([label, n]) => `${label} ${n}件`);
     if (outcome.actions.some((action) => action.state !== "committed")) h(card, "div", "vg-pv-result", parts.join(" · "));
   }
-  if (state === "stale") h(card, "p", "vg-pv-note is-warn", "元のデータが変わったため、この変更案は使えません。再プレビューしてください。");
-  if (state === "expired") h(card, "p", "vg-pv-note is-warn", "承認の期限が過ぎました。再プレビューしてください。");
+  if (options.superseded) h(card, "p", "vg-pv-note", "再プレビュー済みです。新しい変更案を使ってください。");
+  else if (state === "stale") h(card, "p", "vg-pv-note is-warn", "元のデータが変わったため、この変更案は使えません。再プレビューしてください。");
+  else if (state === "expired") h(card, "p", "vg-pv-note is-warn", "承認の期限が過ぎました。再プレビューしてください。");
 
   const projection = outcome ? outcome.actualProjection : (options.projection !== undefined ? options.projection : preview.projection);
   const ctx: RenderContext = { operationId: preview.operationId, projection, names: buildNameMap(projection ?? preview.projection) };
@@ -224,7 +227,7 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
     }, id, !open || !!options.busy || !handlers.onApprove);
     approve.classList.add("mod-cta");
     if (!open) approve.title = state === "applying" ? "保存中です" : "期限切れまたは失効のため保存できません";
-    if (state === "stale" || state === "expired") button(actions, "再プレビュー", "repreview", handlers.onRepreview, id);
+    if ((state === "stale" || state === "expired") && !options.superseded) button(actions, "再プレビュー", "repreview", handlers.onRepreview, id, !!options.busy);
     if (state !== "applying") button(actions, "却下", "reject", handlers.onReject, id, !!options.busy);
   }
   if ((state === "success" || state === "partial" || state === "cancelled") && outcome?.undoEntryId) {
@@ -237,7 +240,7 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
     const redo = button(actions, "元に戻すを取り消す", "redo", () => handlers.onRedo?.(entryId), id);
     redo.title = "元に戻した変更をもう一度保存します";
   }
-  if ((state === "partial" || state === "cancelled" || state === "failed") && handlers.onRepreview) button(actions, state === "failed" ? "再プレビュー" : "未保存分を再プレビュー", "repreview", handlers.onRepreview, id);
+  if ((state === "partial" || state === "cancelled" || state === "failed") && handlers.onRepreview && !options.superseded) button(actions, state === "failed" ? "再プレビュー" : "未保存分を再プレビュー", "repreview", handlers.onRepreview, id, !!options.busy);
   if (!actions.children.length) actions.remove();
   return card;
 }
@@ -364,7 +367,7 @@ export class PreviewCardController {
       outcome, focused, busy: this.busy.has(id), now: Date.now(),
       undoState: outcome?.undoEntryId ? historyPort.inspectUndo(outcome.undoEntryId) : undefined,
       projection: this.pager.projectionFor(preview, outcome), loadingMore: this.pager.loading(id),
-      loadError: this.pager.error(id), actionError: this.errors.get(id),
+      loadError: this.pager.error(id), actionError: this.errors.get(id), superseded: !!previewPort.supersededBy?.(id),
       handlers: {
         // Always shows the change on the Gantt and scrolls to it; the Gantt's own button turns the highlight off.
         onFocus: () => { if (!focused) previewPort.focus(id); void this.extras.openGantt?.(); },

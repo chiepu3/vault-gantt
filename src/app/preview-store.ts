@@ -8,6 +8,8 @@ export class PreviewStore implements PreviewPort {
   private readonly eventListeners = new Set<(event: PreviewEventV1) => void>();
   private eventCounter = 0;
   private focused: string | null = null;
+  /** Previews already re-planned into a newer one: they cannot be re-previewed again. */
+  private readonly superseded = new Map<string, string>();
   private expiryTimer?: ReturnType<typeof setTimeout>;
   private savedFocusTimer?: ReturnType<typeof setTimeout>;
   private scheduleSavedFocusExpiry(): void {
@@ -29,6 +31,8 @@ export class PreviewStore implements PreviewPort {
     this.previews.set(id, structuredClone(operationPreviewSchema.parse({ ...preview, previewId: id, status: old.status, ...(old.approvedEvent ? { approvedEvent: old.approvedEvent } : {}) })));
     this.scheduleExpiry(); this.emit();
   }
+  markSuperseded(id: string, next: string): void { this.superseded.set(id, next); while (this.superseded.size > 100) this.superseded.delete(this.superseded.keys().next().value!); this.emit(); }
+  supersededBy(id: string): string | undefined { return this.superseded.get(id); }
   private scheduleExpiry(): void {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     const pending = [...this.previews.values()].filter((preview) => preview.status === "pending");

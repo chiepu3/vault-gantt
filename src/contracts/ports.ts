@@ -27,6 +27,8 @@ export interface PreviewPort extends ProjectionDetailPort {
   invalidate?(previewId: string, reason: "expired" | "revoked"): Promise<void>;
   subscribeEvents?(listener: (event: PreviewEventV1) => void): () => void;
   requestRepreview(previewId: string): Promise<OperationPreviewV1>;
+  /** The newer preview a re-preview created from `previewId`, if any. */
+  supersededBy?(previewId: string): string | undefined;
 }
 /** Only passed to Obsidian human UI. SDK/MCP consumers receive no approval port. */
 export interface HumanApprovalPort {

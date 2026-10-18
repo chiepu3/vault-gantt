@@ -243,6 +243,10 @@ describe("operation meaning and lifecycle boundaries", () => {
     await vault.modify(file, newNoteText(vault, child, parent));
     await service.invalidatePreviews(); expect(service.previewPort.inspect(preview.previewId)!.status).toBe("stale"); expect(service.previewPort.focusedPreviewId()).toBeNull(); expect(listener).toHaveBeenCalled();
     const fresh = await service.request("Q08", { previewId: preview.previewId }, context); expect(fresh.previewId).not.toBe(preview.previewId); expect(fresh.origin).toEqual(context.origin);
+    // The stale card is used up: a second re-preview from it creates nothing new.
+    expect(service.previewPort.supersededBy(preview.previewId)).toBe(fresh.previewId);
+    const count = service.previewPort.list().length;
+    await expect(service.request("Q08", { previewId: preview.previewId }, context)).rejects.toThrow(); expect(service.previewPort.list()).toHaveLength(count);
   });
   it("retains at most 50 pending plans and unload prevents saving queued work", async () => {
     const { service, context, vault } = await runtimeFixture();
