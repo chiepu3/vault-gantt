@@ -2,6 +2,18 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.7.3 (2026-10-18)
+
+### 修正
+
+- 横スクロール後に見ていたタスクが大きくずれないようにする ([#61](https://github.com/chiepu3/vault-gantt/pull/61))
+
+## v0.7.2 (2026-10-18)
+
+### 修正
+
+- Daily ToDoをホバーで編集ポップオーバー表示にする ([#60](https://github.com/chiepu3/vault-gantt/pull/60))
+
 ## v0.7.1 (2026-10-17)
 
 ### 高速化

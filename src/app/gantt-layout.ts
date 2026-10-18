@@ -724,14 +724,20 @@ export interface LaneWindow {
 /** Grid (in days) the lane window is snapped to so it changes infrequently. */
 export const LANE_WINDOW_SNAP_DAYS = 7;
 /** Minimum buffer (in days) added on each side of the visible dates. */
-export const LANE_WINDOW_MIN_BUFFER_DAYS = 7;
+export const LANE_WINDOW_MIN_BUFFER_DAYS = 14;
+/** Buffer per side as a multiple of the visible day count (whichever is larger wins). */
+export const LANE_WINDOW_BUFFER_VIEWPORTS = 1.5;
+/** Minimum margin (in days) the window must keep around the viewport before a re-layout. */
+export const LANE_WINDOW_MIN_MARGIN_DAYS = 7;
+/** Margin per side as a multiple of the visible day count (whichever is larger wins). */
+export const LANE_WINDOW_MARGIN_VIEWPORTS = 0.5;
 
 /**
  * Buffered date window used to decide which subtasks take part in lane
  * packing. Visible day indices are [scrollLeft/dayWidth, (scrollLeft +
  * clientWidth)/dayWidth] (the sticky name column overlays the left edge, so
  * the timeline x origin is 0 in scroll coordinates). The window is expanded
- * by one viewport width (min 7 days) per side and snapped outward to a
+ * by 1.5 viewport widths (min 14 days) per side and snapped outward to a
  * 7-day grid anchored at `rangeStart`.
  */
 export function computeLaneWindow(input: {
@@ -743,7 +749,10 @@ export function computeLaneWindow(input: {
   const dw = Math.max(1, input.dayWidth);
   const first = Math.floor(Math.max(0, input.scrollLeft) / dw);
   const last = Math.ceil((Math.max(0, input.scrollLeft) + Math.max(0, input.clientWidth)) / dw);
-  const buffer = Math.max(LANE_WINDOW_MIN_BUFFER_DAYS, last - first);
+  const buffer = Math.max(
+    LANE_WINDOW_MIN_BUFFER_DAYS,
+    Math.ceil((last - first) * LANE_WINDOW_BUFFER_VIEWPORTS)
+  );
   const step = LANE_WINDOW_SNAP_DAYS;
   const startIdx = Math.floor((first - buffer) / step) * step;
   const endIdx = Math.ceil((last + buffer) / step) * step;
@@ -751,6 +760,27 @@ export function computeLaneWindow(input: {
     start: addDays(input.rangeStart, startIdx),
     end: addDays(input.rangeStart, endIdx),
   };
+}
+
+/**
+ * Hysteresis for the lane window: true while `win` still covers the visible
+ * days plus a margin of max(7 days, 0.5 viewport) per side, so small scrolls
+ * (and ordinary re-renders) keep the existing window and row heights.
+ */
+export function laneWindowCoversViewport(
+  win: LaneWindow,
+  input: { scrollLeft: number; clientWidth: number; dayWidth: number; rangeStart: string }
+): boolean {
+  const dw = Math.max(1, input.dayWidth);
+  const first = Math.floor(Math.max(0, input.scrollLeft) / dw);
+  const last = Math.ceil((Math.max(0, input.scrollLeft) + Math.max(0, input.clientWidth)) / dw);
+  const margin = Math.max(
+    LANE_WINDOW_MIN_MARGIN_DAYS,
+    Math.ceil((last - first) * LANE_WINDOW_MARGIN_VIEWPORTS)
+  );
+  const startIdx = diffDays(input.rangeStart, win.start);
+  const endIdx = diffDays(input.rangeStart, win.end);
+  return startIdx <= first - margin && endIdx >= last + margin;
 }
 
 /**
