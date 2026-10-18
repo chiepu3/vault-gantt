@@ -70,10 +70,10 @@ export function chatTools(service: OperationService, context: RequestContext, te
   return tools;
 }
 /** Tells the model what to do next when a search comes back empty or cut short, so it does not guess or give up. */
-function withSearchHint(response: Awaited<ReturnType<OperationService["contextPort"]["query"]>>, input: { name?: string; text?: string }) {
+function withSearchHint(response: Awaited<ReturnType<OperationService["contextPort"]["query"]>>, input: { name?: string; text?: string; kind?: string }) {
   if (response.status !== "success" || response.result.data.kind !== "tasks") return response;
   const data = response.result.data;
-  if (!data.items.length) return { ...response, hint: input.name ? "0件です。名前の一部・数字だけ・別の表記で一度だけ再検索してください。親(プロジェクト)名はkind:\"parent\"で確認できます。見つからなければ推測で進めず利用者に確認します。" : "0件です。条件を緩めて再検索してください。" };
+  if (!data.items.length) return { ...response, hint: input.name ? (input.kind ? `0件です。kind:"${input.kind}"に限定した検索です。親か子か分からないときはkindを外して一度だけ再検索してください。` : "0件です。") + "名前の一部・数字だけ・別の表記でも一度だけ再検索できます。見つからなければ推測で進めず利用者に確認します。" : "0件です。条件を緩めて再検索してください。" };
   if (data.truncated) return { ...response, hint: `全${data.totalMatched}件中${data.returned}件のみ返しました。nameを具体的にするかcursorで続きを取得してください。` };
   return response;
 }
