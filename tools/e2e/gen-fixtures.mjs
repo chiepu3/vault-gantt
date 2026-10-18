@@ -48,7 +48,7 @@ export function assertNode22() {
 }
 
 /** Runs a TypeScript source file through vite-node with the same `obsidian` alias vitest.config.ts uses. */
-async function withRunner(run) {
+export async function withRunner(run) {
   const { createServer } = await import("vite");
   const { ViteNodeServer } = await import("vite-node/server");
   const { ViteNodeRunner } = await import("vite-node/client");
