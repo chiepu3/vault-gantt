@@ -198,13 +198,26 @@ export class MetadataCache extends Events {
   }
   resolvedLinks: Record<string, Record<string, number>> = {};
   unresolvedLinks: Record<string, Record<string, number>> = {};
+  private nameIndex: { size: number; keys: string; map: Map<string, TFile[]> } | null = null;
+  /** Markdown files by basename; rebuilt when the set of paths changes (cheap check: count plus first/last path). */
+  private byBasename(name: string): TFile[] {
+    const content = (this.vault as any).content as Map<string, string>;
+    const keys = [...content.keys()];
+    const stamp = `${keys[0]}|${keys[keys.length - 1]}`;
+    if (!this.nameIndex || this.nameIndex.size !== keys.length || this.nameIndex.keys !== stamp) {
+      const map = new Map<string, TFile[]>();
+      for (const f of this.vault.getMarkdownFiles()) { const list = map.get(f.basename); if (list) list.push(f); else map.set(f.basename, [f]); }
+      this.nameIndex = { size: keys.length, keys: stamp, map };
+    }
+    return this.nameIndex.map.get(name) ?? [];
+  }
   /** The note nearest to the one linking (same folder first, then shorter paths), like Obsidian's link resolution. */
   getFirstLinkpathDest(link: string, sourcePath = ""): TFile | null {
     const l = link.split("#")[0].replace(/\.md$/, "");
-    const exact = this.vault.getMarkdownFiles().find((f) => f.path === l + ".md");
+    const exact = this.vault.getFileByPath(l + ".md");
     if (exact) return exact;
     const dir = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
-    const matches = this.vault.getMarkdownFiles().filter((f) => f.basename === l || f.path.endsWith("/" + l + ".md"));
+    const matches = this.byBasename(l.split("/").pop() ?? l).filter((f) => f.basename === l || f.path.endsWith("/" + l + ".md"));
     const near = (f: TFile) => (f.path.startsWith(dir + "/") || dir === "" ? 0 : 1);
     return matches.sort((a, b) => near(a) - near(b) || a.path.length - b.path.length || a.path.localeCompare(b.path))[0] ?? null;
   }
