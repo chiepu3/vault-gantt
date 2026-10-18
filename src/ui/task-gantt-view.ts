@@ -2951,18 +2951,17 @@ export class TaskGanttView extends ItemView {
 
       const saveAndRender = async (): Promise<void> => {
         await this.host.saveSettings();
-        // The incremental renderer caches workload totals independently of
-        // the header fingerprint, so invalidate that cache after schedule CRUD.
-        this.workloadSummaryFingerprint = undefined;
-        this.workloadSummaryTotals = undefined;
-        await this.render();
+        // Settings-only change: the tasks are untouched, so skip refreshTasks and
+        // rebuild just the chart. The workload totals cache is keyed by a
+        // fingerprint that includes the schedules, so totals update.
+        this.renderChart();
       };
 
       const settingsButton = document.createElement("button");
       settingsButton.classList.add("task-gantt-workload-settings-button");
       settingsButton.textContent = "定例作業設定";
       settingsButton.addEventListener("click", () => {
-        new WeeklyWorkScheduleModal(this.app, schedules, {
+        new WeeklyWorkScheduleModal(this.app, () => this.host.settings.weeklyWorkSchedules ?? [], {
           add: (title, dayOfWeek, minutesPerWeek) => {
             addWeeklyWorkSchedule(
               this.host.settings,
