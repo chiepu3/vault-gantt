@@ -260,6 +260,8 @@ interface DailyTodoPopoverState {
   date: string;
   listEl: HTMLElement;
   rows: DailyTodoPopoverRow[];
+  /** Set by a click: a pinned popover stays open until dismissed; a hover-opened one closes when the pointer leaves. */
+  pinned: boolean;
   /** Hint shown while the list has no rows. */
   emptyEl: HTMLElement;
   outsideHandler: (evt: Event) => void;
@@ -1193,8 +1195,7 @@ export class TaskGanttView extends ItemView {
 
   /** The currently open Daily ToDo popover (click to open, editable in place). */
   private dailyTodoPopoverState: DailyTodoPopoverState | undefined = undefined;
-  /** Read-only hover preview of a day's ToDo. */
-  private dailyTodoHoverEl: HTMLElement | undefined = undefined;
+  private dailyTodoHoverCloseTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   private dailyTodoQueue: Promise<void> | undefined = undefined;
   private dailyTodoOpenGeneration = 0;
   private dailyTodoCommandGeneration = 0;
@@ -3529,15 +3530,26 @@ export class TaskGanttView extends ItemView {
         this.dayWidth / 2
       }px`;
       // Clicking a chip opens the inline editor popover for that date.
+      // Hovering opens the same editor; a click pins it open (clicking again closes it).
       chip.addEventListener("click", () => {
-        this.closeDailyTodoHover();
+        const open = this.dailyTodoPopoverState;
+        if (open?.date === summary.date && !open.pinned) {
+          this.cancelDailyTodoHoverClose();
+          open.pinned = true;
+          return;
+        }
+        this.openDailyTodoPopover(summary.date, chip);
+        if (this.dailyTodoPopoverState?.date === summary.date) this.dailyTodoPopoverState.pinned = true;
+      });
+      chip.addEventListener("mouseenter", () => {
+        this.cancelDailyTodoHoverClose();
+        const open = this.dailyTodoPopoverState;
+        if (open?.date === summary.date) return;
+        if (open !== undefined && this.isDailyTodoPopoverEngaged(open)) return;
+        if (open === undefined && this.activeContextMenu !== undefined) return;
         this.openDailyTodoPopover(summary.date, chip);
       });
-      // Hovering a chip previews the day's ToDo (read-only); click still opens the editor.
-      chip.addEventListener("mouseenter", () => {
-        if (!this.hoverPopoversBlocked()) this.showDailyTodoHover(summary.date, chip);
-      });
-      chip.addEventListener("mouseleave", () => this.closeDailyTodoHover());
+      chip.addEventListener("mouseleave", () => this.scheduleDailyTodoHoverClose());
       anchors.set(summary.date, chip);
       timeline.appendChild(chip);
     }
@@ -3681,6 +3693,7 @@ export class TaskGanttView extends ItemView {
       date,
       listEl,
       rows: [],
+      pinned: false,
       emptyEl,
       keyHandler: (evt: KeyboardEvent): void => {
         // An Escape that only cancels an IME composition must not close it.
@@ -3726,45 +3739,38 @@ export class TaskGanttView extends ItemView {
       }
     });
 
+    el.addEventListener("mouseenter", () => this.cancelDailyTodoHoverClose());
+    el.addEventListener("mouseleave", () => this.scheduleDailyTodoHoverClose());
     document.body.appendChild(el);
     window.addEventListener("mousedown", state.outsideHandler, true);
     window.addEventListener("keydown", state.keyHandler, true);
     this.positionDailyTodoPopover(anchorEl);
   }
 
-  /** Read-only hover preview of a day's ToDo; independent of the click-driven editor. */
-  private showDailyTodoHover(date: string, anchorEl: HTMLElement): void {
-    this.closeDailyTodoHover();
-    const items = this.dailyTodoSummaries.find((s) => s.date === date)?.items ?? [];
-    if (items.length === 0 || !anchorEl.isConnected) return;
-    const el = document.createElement("div");
-    el.classList.add("task-gantt-daily-todo-hover", "vg-surface", "vg-popover");
-    const title = document.createElement("div");
-    title.classList.add("task-gantt-daily-todo-popover-title");
-    title.textContent = `Daily ToDo ${moment(date, "YYYY-MM-DD").format("M/D")}`;
-    el.appendChild(title);
-    for (const item of items) {
-      const row = document.createElement("div");
-      row.classList.add("task-gantt-daily-todo-hover-row");
-      if (item.completed) row.classList.add("is-completed");
-      row.textContent = `${item.completed ? "☑" : "☐"} ${item.text}`;
-      el.appendChild(row);
-    }
-    document.body.appendChild(el);
-    const rect = anchorEl.getBoundingClientRect();
-    const margin = DAILY_TODO_POPOVER_VIEWPORT_MARGIN_PX;
-    const width = Math.max(DAILY_TODO_POPOVER_MIN_WIDTH_PX, el.offsetWidth);
-    const height = Math.max(1, el.offsetHeight);
-    const left = Math.min(Math.max(margin, rect.left + rect.width / 2 - width / 2), Math.max(margin, window.innerWidth - width - margin));
-    const above = rect.top - DAILY_TODO_POPOVER_GAP_PX - height;
-    el.style.left = `${left}px`;
-    el.style.top = `${above >= margin ? above : rect.bottom + DAILY_TODO_POPOVER_GAP_PX}px`;
-    this.dailyTodoHoverEl = el;
+  /** True while the popover is pinned, focused, or holds unsaved edits, so hover-out must not close it. */
+  private isDailyTodoPopoverEngaged(state: DailyTodoPopoverState): boolean {
+    return (
+      state.pinned ||
+      state.rows.some(isDailyTodoRowDirty) ||
+      (document.activeElement !== null && isNodeInside(document.activeElement, state.el))
+    );
   }
 
-  private closeDailyTodoHover(): void {
-    this.dailyTodoHoverEl?.remove();
-    this.dailyTodoHoverEl = undefined;
+  private cancelDailyTodoHoverClose(): void {
+    if (this.dailyTodoHoverCloseTimer !== undefined) {
+      clearTimeout(this.dailyTodoHoverCloseTimer);
+      this.dailyTodoHoverCloseTimer = undefined;
+    }
+  }
+
+  /** Closes a hover-opened popover shortly after the pointer leaves chip and popover, so the pointer can travel between them. */
+  private scheduleDailyTodoHoverClose(): void {
+    this.cancelDailyTodoHoverClose();
+    this.dailyTodoHoverCloseTimer = setTimeout(() => {
+      this.dailyTodoHoverCloseTimer = undefined;
+      const state = this.dailyTodoPopoverState;
+      if (state !== undefined && !this.isDailyTodoPopoverEngaged(state)) this.closeDailyTodoPopover();
+    }, 200);
   }
 
   /** Shows the 「まだToDoはありません」 hint only while the popover has no rows. */
@@ -4129,7 +4135,7 @@ export class TaskGanttView extends ItemView {
    * committed is saved first (a removed input never fires `change`).
    */
   private closeDailyTodoPopover(): void {
-    this.closeDailyTodoHover();
+    this.cancelDailyTodoHoverClose();
     this.dailyTodoOpenGeneration += 1;
     const state = this.dailyTodoPopoverState;
     if (state === undefined) {

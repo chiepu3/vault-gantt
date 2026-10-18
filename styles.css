@@ -481,9 +481,6 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-daily-todo-input { flex: 1 1 auto; min-width: 0; }
 .task-gantt-daily-todo-more { flex: none; }
 .task-gantt-daily-todo-add { margin-top: var(--vg-space-1); }
-.task-gantt-daily-todo-hover { position: fixed; min-width: 180px; padding: var(--vg-space-3); pointer-events: none; max-width: 320px; }
-.task-gantt-daily-todo-hover-row { font-size: var(--vg-font-s); overflow-wrap: anywhere; }
-.task-gantt-daily-todo-hover-row.is-completed { color: var(--text-muted); text-decoration: line-through; }
 .task-gantt-daily-todo-empty { padding: var(--vg-space-2) 0; color: var(--text-faint); font-size: var(--vg-font-s); }
 .task-gantt-daily-todo-empty.is-hidden { display: none; }
 .task-gantt-daily-row .task-gantt-fixed-bg { cursor: pointer; }

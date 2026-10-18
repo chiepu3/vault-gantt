@@ -3087,20 +3087,24 @@ describe("TaskGanttView", () => {
         expect(Notice).toHaveBeenCalledWith("設定で「Daily ToDoを表示」を有効にしてください。");
       });
 
-      it("opens an editor popover on chip click with [check][input][…] rows and a trailing +; hover only previews", async () => {
+      it("opens an editor popover on chip hover/click with [check][input][…] rows and a trailing +", async () => {
         const { chip, date } = await openWithItems([
           todo(3, "資料を確認する"),
           todo(4, "議事録を送る", true),
         ]);
 
-        // Hover shows a read-only preview, not the editor.
+        // Hover opens the editor; leaving closes it after a short delay.
+        vi.useFakeTimers();
         dispatch(chip, "mouseenter");
-        expect(popoverEl()).toBeUndefined();
-        expect(byClass(popoverBody(), "task-gantt-daily-todo-hover")).toHaveLength(1);
+        expect(popoverEl()).toBeTruthy();
         dispatch(chip, "mouseleave");
-        expect(byClass(popoverBody(), "task-gantt-daily-todo-hover")).toHaveLength(0);
+        vi.advanceTimersByTime(300);
+        expect(popoverEl()).toBeUndefined();
+        vi.useRealTimers();
 
+        // A click pins it: leaving no longer closes it.
         dispatch(chip, "click");
+        dispatch(chip, "mouseleave");
         const pop = popoverEl()!;
         expect(pop).toBeTruthy();
         expect(pop.parentNode).toBe(popoverBody());
