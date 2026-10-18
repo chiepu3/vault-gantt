@@ -589,6 +589,15 @@ describe("TaskWorkbenchPlugin", () => {
       callback({ path: "external.md" }); await flush();
       expect(h.plugin.previewPort.focusedPreviewId()).toBeNull(); expect(h.plugin.previewPort.inspectOutcome(preview.previewId)).toBeDefined();
     });
+    it("daily-note candidates are invalidated by create/delete/rename but not by modify", async () => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      (h.plugin as any).registerEvent = vi.fn(); h.vaultApi.on = vi.fn(); await h.plugin.onload();
+      const invalidate = vi.spyOn(h.plugin.dailyTodos, "invalidateCandidates");
+      const fire = (event: string) => h.vaultApi.on.mock.calls.find(([name]: [string]) => name === event)[1]({ path: "daily/x.md" });
+      fire("modify"); expect(invalidate).not.toHaveBeenCalled();
+      for (const event of ["create", "delete", "rename"]) { invalidate.mockClear(); fire(event); expect(invalidate).toHaveBeenCalledTimes(1); }
+      await flush();
+    });
     it("does not republish the AI setting over UI changes that returned to the original value", async () => {
       const h = createHarness({ autoPriorityEnabled: false, currentStatusRows: 28 }); await h.plugin.onload();
       const service = h.plugin.operationService;

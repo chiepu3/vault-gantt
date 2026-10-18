@@ -293,6 +293,32 @@ interface DailyTodoFileCacheEntry {
  */
 export class DailyTodoService {
   private readonly fileCache = new Map<string, DailyTodoFileCacheEntry>();
+  /**
+   * Daily-note files with their resolved source/date. Valid until the sources change or the owner calls
+   * `invalidateCandidates()`. Only used after `trackVaultChanges()`: without create/delete/rename
+   * notifications the vault must be re-enumerated on every call.
+   */
+  private candidates?: { key: string; entries: Array<{ file: TFile; source: DailyTodoSourceConfig; date: string }> };
+  private tracking = false;
+
+  /** Opt in to candidate caching; the caller must then call `invalidateCandidates()` on vault create/delete/rename. */
+  trackVaultChanges(): void { this.tracking = true; }
+  invalidateCandidates(): void { this.candidates = undefined; }
+
+  private resolveCandidates(vault: Vault, settings: TaskWorkbenchSettings) {
+    const key = this.tracking ? JSON.stringify(getDailyTodoSources(settings)) : null;
+    if (key !== null && this.candidates?.key === key) return this.candidates.entries;
+    const entries: Array<{ file: TFile; source: DailyTodoSourceConfig; date: string }> = [];
+    for (const file of vault.getMarkdownFiles()) {
+      // isDailyNoteFile already guarantees a source resolves for this
+      // path, so this is never null in practice; the guard is defensive.
+      const source = getDailyTodoSourceForPath(file.path, settings);
+      if (!source) continue;
+      entries.push({ file, source, date: extractDateFromDailyPath(file.path, settings) });
+    }
+    if (key !== null) this.candidates = { key, entries };
+    return entries;
+  }
 
   /**
  * Scans every daily-note file in the vault, parses its ToDo checkboxes,
@@ -313,12 +339,10 @@ export class DailyTodoService {
     const startedAt = Date.now();
 
     // enumerate all markdown files, filter to daily-note ones.
-    const files = vault
-      .getMarkdownFiles()
-      .filter((file) => isDailyNoteFile(file, settings));
+    const candidates = this.resolveCandidates(vault, settings);
 
     // drop cache entries for files that no longer exist.
-    const currentPaths = new Set(files.map((file) => file.path));
+    const currentPaths = new Set(candidates.map((entry) => entry.file.path));
     for (const cachedPath of this.fileCache.keys()) {
       if (!currentPaths.has(cachedPath)) {
         this.fileCache.delete(cachedPath);
@@ -327,15 +351,7 @@ export class DailyTodoService {
 
     const byDate = new Map<string, DailyTodoItem[]>();
 
-    for (const file of files) {
-      // isDailyNoteFile already guarantees a source resolves for this
-      // path, so this is never null in practice; the guard is defensive.
-      const source = getDailyTodoSourceForPath(file.path, settings);
-      if (!source) {
-        continue;
-      }
-
-      const date = extractDateFromDailyPath(file.path, settings);
+    for (const { file, source, date } of candidates) {
       if (!date) {
         continue;
       }
