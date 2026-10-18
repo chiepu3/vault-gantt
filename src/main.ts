@@ -63,6 +63,8 @@ import {
 } from "./app/task-operations";
 import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
 import { setNoteNotifier } from "./app/note-changes";
+import { findLegacyNotes, planMigration, runMigration } from "./app/migration-v1";
+import { MigrationModal } from "./ui/migration-modal";
 import {
   createRequestUrlNationalHolidayFetcher,
   HolidayService,
@@ -237,6 +239,33 @@ export class ObsidianVaultAdapter implements NoteVault {
     if (!abstract) throw new Error(`Task file not found: ${path}`);
     await this.ensureParentFolder(newPath);
     await this.app.fileManager.renameFile(abstract, newPath);
+  }
+
+  async copyFolder(from: string, to: string): Promise<number> {
+    const adapter = this.app.vault.adapter;
+    const ensure = async (folder: string) => {
+      let current = "";
+      for (const part of folder.split("/")) {
+        current = current ? `${current}/${part}` : part;
+        if (!(await adapter.exists(current))) await adapter.mkdir(current);
+      }
+    };
+    const copy = async (source: string, target: string): Promise<number> => {
+      await ensure(target);
+      const listing = await adapter.list(source);
+      let count = 0;
+      for (const file of listing.files) {
+        await adapter.writeBinary(`${target}/${file.slice(file.lastIndexOf("/") + 1)}`, await adapter.readBinary(file));
+        count += 1;
+      }
+      for (const folder of listing.folders) count += await copy(folder, `${target}/${folder.slice(folder.lastIndexOf("/") + 1)}`);
+      return count;
+    };
+    return copy(from, to);
+  }
+
+  adapterRead(path: string): Promise<string> {
+    return this.app.vault.adapter.read(path);
   }
 
   async trash(file: VaultFile): Promise<void> {
@@ -799,6 +828,42 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     // timer start failures are logged by the caller's rejection handler
     if (!this.unloading) this.startGanttSyncTimer();
+    void this.offerNoteFormatConversion().catch((error: unknown) => this.logger.error("TaskWorkbenchPlugin", "legacy note check failed", error));
+  }
+
+  /** Tells the user (once per start) that v1 notes exist, with a button that starts the conversion. */
+  private async offerNoteFormatConversion(): Promise<void> {
+    const legacy = await findLegacyNotes(this.vaultAdapter(), this.settings);
+    if (!legacy.length || this.unloading) return;
+    const fragment = document.createDocumentFragment();
+    fragment.append(`旧形式(v1)のタスクノートが ${legacy.length} 件あります。v2 に変換するまで、これらは表示されません。 `);
+    const button = document.createElement("button");
+    button.textContent = "変換する";
+    fragment.append(button);
+    const notice = new Notice(fragment, 0);
+    button.addEventListener("click", () => { notice.hide(); void this.convertNoteFormat(); });
+  }
+
+  /** 「ノート形式を v2 に変換」: preview, backup, per-parent conversion with verification. */
+  async convertNoteFormat(): Promise<void> {
+    const vault = this.vaultAdapter();
+    const plan = await planMigration(vault, this.settings);
+    if (!plan.items.length && !plan.skipped.length) { new Notice("v2 に変換が必要なノートはありません"); return; }
+    if (!plan.items.length) { new Notice(`変換できるノートがありません(${plan.skipped.length} 件は読み取れません)`); return; }
+    new MigrationModal(this.app, plan, () => this.operations.coordinate(async () => {
+      try {
+        return await runMigration(vault, this.settings, plan, {
+          persist: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
+        });
+      } finally {
+        this.historyManager.clear();
+        this.operationService.clearSavedProjection();
+        this.scheduleGhosts.clear();
+        this.taskCache.clear();
+        await this.operationService.invalidatePreviews();
+        await this.refreshOpenViews();
+      }
+    })).open();
   }
 
   /**
@@ -1606,6 +1671,12 @@ export default class TaskWorkbenchPlugin extends Plugin {
       callback: () => {
         void this.redoLastAction();
       },
+    });
+
+    this.addCommand({
+      id: "convert-note-format-v2",
+      name: "ノート形式を v2 に変換",
+      callback: () => { void this.convertNoteFormat(); },
     });
   }
 

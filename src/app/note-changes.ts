@@ -63,6 +63,11 @@ const dirOf = (path: string): string => path.slice(0, path.lastIndexOf("/") + 1)
 const stemOf = (path: string): string => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/i, "");
 const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** A v2 note that has v1 keys again (an old plugin version or a sync wrote it): saving would mix two formats. */
+export class LegacyWriteError extends Error {
+  constructor(readonly path: string) { super(`v1 形式の書き込みを検出したため保存を中止しました: ${path}`); }
+}
+
 export class NoteConflictError extends Error {
   readonly code = "REVISION_CONFLICT";
   constructor(readonly path: string) { super(`Revision conflict on ${path}`); }
@@ -125,6 +130,11 @@ export async function applyNoteChange(vault: NoteVault, change: NoteChange, expe
   if (change.kind === "delete") {
     await vault.trash(file);
     return { path: change.path, before, after: null };
+  }
+  const present = vault.getFrontmatter(file);
+  if (present && Object.keys(present).some((key) => key.startsWith("subtask__") || key === "subtaskOrder")) {
+    notifier(`${stemOf(change.path)} に v1 形式の書き込みが見つかりました。保存を止めました。古いバージョンのプラグインや同期が原因の可能性があります。「ノート形式を v2 に変換」を実行してください。`);
+    throw new LegacyWriteError(change.path);
   }
   if (change.fm && Object.keys(change.fm).length) {
     await vault.processFrontMatter(file, (fm) => applyFrontmatterChanges(fm, change.fm!));

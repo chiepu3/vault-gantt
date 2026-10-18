@@ -696,7 +696,7 @@ describe("TaskWorkbenchPlugin", () => {
 
       await expect(h.plugin.onload()).resolves.toBeUndefined();
 
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
 
       expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
@@ -724,7 +724,7 @@ describe("TaskWorkbenchPlugin", () => {
       h.workspace.onLayoutReady = vi.fn((cb: () => void) => { ready = cb; });
       await h.plugin.onload();
       expect(h.views.size).toBe(4);
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
       expect(refresh).not.toHaveBeenCalled();
       ready!();
       await h.plugin.deferredStartup;
@@ -768,7 +768,7 @@ describe("TaskWorkbenchPlugin", () => {
 
       expect(refresh).toHaveBeenCalledTimes(1);
 
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
 
       expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
@@ -861,6 +861,7 @@ describe("TaskWorkbenchPlugin", () => {
 
         "undo-last-action",
         "redo-last-action",
+        "convert-note-format-v2",
         "open-ai-chat-tab",
         "open-ai-chat-left",
         "open-ai-chat-right",
@@ -879,6 +880,7 @@ describe("TaskWorkbenchPlugin", () => {
 
         "元に戻す",
         "やり直す",
+        "ノート形式を v2 に変換",
         "AI チャットを開く（タブ）",
         "AI チャットを開く（左サイドバー）",
         "AI チャットを開く（右サイドバー）",
@@ -1548,7 +1550,7 @@ describe("TaskWorkbenchPlugin", () => {
 
       // startup registrations all happened
 
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
 
       expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);

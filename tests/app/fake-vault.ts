@@ -214,6 +214,23 @@ export class FakeVault implements NoteVault {
     }
   }
 
+  /** Files copied by copyFolder, as the adapter would see them (hidden folders are not vault files). */
+  readonly adapterFiles = new Map<string, string>();
+  failCopy = false;
+
+  async copyFolder(from: string, to: string): Promise<number> {
+    if (this.failCopy) throw new Error("backup failed");
+    let count = 0;
+    for (const [path, file] of this.files) if (path.startsWith(`${from}/`)) { this.adapterFiles.set(`${to}${path.slice(from.length)}`, file.content); count += 1; }
+    return count;
+  }
+
+  async adapterRead(path: string): Promise<string> {
+    const text = this.adapterFiles.get(path);
+    if (text === undefined) throw new Error(`File not found: ${path}`);
+    return text;
+  }
+
   async trash(file: VaultFile): Promise<void> {
     if (!this.files.delete(file.path)) throw new Error(`File not found: ${file.path}`);
     this.trashed.push(file.path);

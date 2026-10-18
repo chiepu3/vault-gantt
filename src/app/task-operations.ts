@@ -75,6 +75,12 @@ export interface VaultAdapter {
 
   /** After writing: resolves when the metadataCache has caught up with the file (or after a timeout). */
   afterWrite(file: VaultFile, contentChanged: boolean): Promise<void>;
+
+  /** vault.adapter: copies a folder (hidden target folders included). Returns the number of files copied. */
+  copyFolder?(from: string, to: string): Promise<number>;
+
+  /** vault.adapter: reads a file by path, also inside folders the vault does not index. */
+  adapterRead?(path: string): Promise<string>;
 }
 
 /**
