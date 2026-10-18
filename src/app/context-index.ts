@@ -6,7 +6,7 @@ import { reconcileParentOrder } from "../core/parent-order";
 import { matchScore } from "../core/fuzzy-match";
 import { todayStr, getEffectivePriority, buildFileRevision } from "../core/utils";
 import type { VaultAdapter } from "./task-operations";
-import { canonical, contentRevision, fail, flatten, findTask, OperationFailure, type TaskSnapshot } from "./operations/runtime";
+import { canonical, contentRevision, fail, flatten, findTask, rowIndex, OperationFailure, type TaskSnapshot } from "./operations/runtime";
 import { publicSettings, period, progress, hours, aggregates } from "./preview-projector";
 import { holidaySet } from "./gantt-actions";
 import { addDays } from "./gantt-layout";
@@ -41,19 +41,7 @@ export function compactTask(row: TaskRow, snapshot: Pick<TaskSnapshot, "revision
 interface Cursor { binding: string; revision: string; offset: number }
 /** What `context.changes` needs from an older revision; file bytes are deliberately not retained. */
 type StoredSnapshot = Pick<TaskSnapshot, "parents" | "revisions" | "settings">;
-interface RowIndex { rows: Map<string, TaskRow>; parents: Map<string, TaskRow> }
-const rowIndexes = new WeakMap<readonly TaskRow[], RowIndex>();
-/** Id lookup for one parents array, built once (snapshots share the array while the vault is unchanged). */
-function rowIndex(parents: readonly TaskRow[]): RowIndex {
-  let index = rowIndexes.get(parents);
-  if (!index) {
-    index = { rows: new Map(), parents: new Map() };
-    for (const row of flatten(parents)) if (!index.rows.has(row.id)) index.rows.set(row.id, row);
-    for (const parent of parents) if (!index.parents.has(parent.id)) index.parents.set(parent.id, parent);
-    rowIndexes.set(parents, index);
-  }
-  return index;
-}
+
 export class ContextIndex implements ContextReadPort {
   private readonly parsed = new Map<string, { revision: string; parent: TaskRow | null }>();
   private readonly snapshots = new Map<string, StoredSnapshot>();

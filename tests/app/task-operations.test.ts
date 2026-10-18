@@ -415,6 +415,19 @@ describe("Task Operations - Integration Tests", () => {
       expect(cache.has("tasks/2026/07/deleted-task.md")).toBe(false);
     });
 
+    it("keeps cache entries of existing files outside the task root and drops only vanished ones", async () => {
+      vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
+      await createTask(vault, settings, "Test Task");
+      await vault.create("elsewhere/note.md", "x");
+      await loadTasks(vault, settings, cache);
+      cache.set("elsewhere/note.md", { revision: "1:1", taskRow: null });
+      cache.set("tasks/2026/07/gone.md", { revision: "1:1", taskRow: null });
+      await loadTasks(vault, settings, cache);
+      expect(cache.has("elsewhere/note.md")).toBe(true);
+      expect(cache.has("tasks/2026/07/gone.md")).toBe(false);
+      expect(cache.size).toBe(2);
+    });
+
     it("reuses cached tasks when mtime and size are unchanged", async () => {
       vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
 

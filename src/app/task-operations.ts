@@ -225,17 +225,9 @@ export async function loadTasks(
 
   const files = vault.getFiles();
 
-  // Delete old cache entries for files that no longer exist
-  const currentFilePaths = new Set<string>();
-  for (const file of files) {
-    currentFilePaths.add(file.path);
-  }
-
-  for (const cachedPath of cache.keys()) {
-    if (!currentFilePaths.has(cachedPath)) {
-      cache.delete(cachedPath);
-    }
-  }
+  // Only files under the task root can be cached, so a vault-wide path Set is not needed
+  // to find stale entries: they are pruned (with a Set) only when the counts disagree.
+  const rootPaths: string[] = [];
 
   // Process all files
   for (const file of files) {
@@ -246,6 +238,7 @@ export async function loadTasks(
     if (!file.path.startsWith(root + "/") && file.path !== root) {
       continue;
     }
+    rootPaths.push(file.path);
 
     // Unchanged files need neither a read nor a parse. Only trust a revision
     // when the adapter supplies file stats; stat-less adapters still read.
@@ -313,6 +306,21 @@ export async function loadTasks(
 
     // Update cache
     cache.set(file.path, { revision, taskRow });
+  }
+
+  // Delete old cache entries for files that no longer exist
+  if (cache.size > 0) {
+    let cachedPresent = 0;
+    for (const path of rootPaths) if (cache.has(path)) cachedPresent += 1;
+    if (cache.size !== cachedPresent) {
+      const currentFilePaths = new Set<string>();
+      for (const file of files) currentFilePaths.add(file.path);
+      for (const cachedPath of [...cache.keys()]) {
+        if (!currentFilePaths.has(cachedPath)) {
+          cache.delete(cachedPath);
+        }
+      }
+    }
   }
 
 
