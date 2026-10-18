@@ -41,6 +41,32 @@ function v1Note(path: string, name: string, order?: number): string {
   return `${text}\n## 参考資料\n[資料](https://example.com)\n`;
 }
 
+/** The dashboard callouts as they really appear in v1 vaults: `- ` bullets and several `label: value` pairs joined by " / ". */
+const REAL_DASHBOARDS = [
+  "> [!info]- サブタスクダッシュボード",
+  "> - 優先度: `INPUT[select(option(0), option(1), option(2)):subtask__design__priority]` / モード: `INPUT[select(option(auto), option(manual)):subtask__design__priorityMode]`",
+  "> - 状態: `INPUT[select(option(active), option(done)):subtask__design__statusLabel]` / 完了: `INPUT[toggle:subtask__design__completed]`",
+  "> - 計画開始: `INPUT[datePicker:subtask__design__plannedStartDate]` / 計画終了: `INPUT[datePicker:subtask__design__plannedEndDate]` / 期限: `INPUT[datePicker:subtask__design__dueDate]`",
+  "> - 作成日: `VIEW[{subtask__design__createdAt}]` / 更新日: `VIEW[{subtask__design__updatedAt}]`",
+  "> - タグ: `INPUT[inlineList:subtask__design__tags]`",
+  "",
+  "> [!info] タスクダッシュボード",
+  "> - 優先度: `INPUT[select(option(0)):priority]` / モード: `INPUT[select(option(auto)):priorityMode]`",
+  "> - 期限: `INPUT[datePicker:dueDate]` / 完了: `INPUT[toggle:completed]`",
+  "",
+  "> [!info]- タスク情報",
+  "> - 状態: active",
+  "> - 期限: 2026-07-31 / 完了: false",
+  "",
+  "> [!info]- サブタスク情報",
+  "> - 予定: 2026-08-26 ～ 2026-08-29",
+  "> - 作成日: 2026-06-01 / 更新日: 2026-06-10",
+  "",
+  "> [!note] ダッシュボード",
+  "> **作成日**: `VIEW[{createdAt}]`",
+  "> **期限**: `INPUT[datePicker:dueDate]`",
+].join("\n");
+
 describe("v1 to v2 conversion", () => {
   let vault: FakeVault;
   let settings: TaskWorkbenchSettings;
@@ -208,6 +234,22 @@ describe("v1 to v2 conversion", () => {
     expect(settings.ganttParentOrder!.map(name)).toEqual(["イ", "ウ", "カ", "アルファ", "ベータ"]);
   });
 
+  it("drops every real-world dashboard callout shape from subtask memos", async () => {
+    let text = vault.getFileContent(A)!;
+    text = text.replace("#### Current Status\n設計中", `${REAL_DASHBOARDS}\n\n#### Current Status\n設計中`);
+    text = text.replace("#### Notes\n設計のメモ", `#### Notes\n設計のメモ\n\n${REAL_DASHBOARDS}`);
+    text = text.replace("#### Notes\n実装メモ", `#### Notes\n${REAL_DASHBOARDS}\n\n実装メモ`);
+    await vault.modify(vault.getFileByPath(A)!, text);
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const subs = [...rows.find((row) => row.displayName === "アルファ")!.subtasks!.values()];
+    // what the v1 parser showed: it skipped these callouts entirely
+    expect(subs[0].currentStatus).toBe("設計中");
+    expect(subs[0].notes).toBe("設計のメモ\n\n#### 参考\n補足の文章");
+    expect(subs[1].notes).toBe("実装メモ");
+    for (const file of vault.getFiles()) expect(vault.getFileContent(file.path)).not.toMatch(/INPUT\[|VIEW\[|\[!info\]|\[!note\] ダッシュボード/);
+  });
+
   it("removes plugin dashboards from converted notes but keeps user callouts and text", async () => {
     const dash = (title: string) => `${title}\n> \n> **ステータス**: \`INPUT[select(option(a)):subtask__design__statusLabel]\`\n> \n> **作成日**: \`VIEW[{subtask__design__createdAt}]\``;
     let text = vault.getFileContent(A)!;
@@ -238,6 +280,21 @@ describe("cleanLegacyBody", () => {
   it("drops a known-titled callout and a hidden button, keeps genuine callouts and bare text", () => {
     const body = "a\n> [!note] ダッシュボード\n> **作成日**: 2026-10-01\n> **期限**: `INPUT[datePicker:dueDate]`\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n```meta-bind-button\nid: a\n```\n本文 `VIEW[x]` あり\nb";
     expect(cleanLegacyBody(body)).toBe("a\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n本文 `VIEW[x]` あり\nb");
+  });
+
+  it.each([
+    ["> [!info] タスクダッシュボード", "> - 優先度: `INPUT[a:p]` / モード: `INPUT[b:m]`"],
+    ["> [!info]- タスク情報", "> - 状態: active"],
+    ["> [!info]- サブタスク情報", "> - 予定: 2026-08-26 ～ 2026-08-29"],
+    ["> [!tip] 別の名前", "> - 優先度: `INPUT[a:p]` / モード: `VIEW[{m}]`"],
+  ])("drops bulleted and joined pairs under %s", (header, line) => {
+    expect(cleanLegacyBody(`前\n${header}\n${line}\n後`)).toBe("前\n後");
+  });
+  it("keeps bulleted prose under a known heading, and plain values under an unknown one", () => {
+    const prose = "> [!info]- タスク情報\n> - 状態: active\n> - 先方の担当は田中さん";
+    expect(cleanLegacyBody(prose)).toBe(prose);
+    const plain = "> [!info]- 自分の情報\n> - 状態: active";
+    expect(cleanLegacyBody(plain)).toBe(plain);
   });
 
   it("keeps a known-titled callout that holds user text", () => {

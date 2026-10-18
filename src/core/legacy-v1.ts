@@ -19,15 +19,21 @@ export function isLegacyFrontmatter(fm: Record<string, unknown> | null | undefin
 const CALLOUT_HEADER = /^>\s*\[![^\]\s]+\][+-]?\s*(.*)$/;
 /** Titles of the callouts the plugin generated itself (`ダッシュボード`; `(サブ)タスクダッシュボード` / `(サブ)タスク情報` from older versions). */
 const DASHBOARD_TITLE = /^(?:(?:サブ|親)?タスク(?:ダッシュボード|情報)|ダッシュボード|Dashboard)\s*$/i;
-/** A Meta Bind field line: only a bold/plain label and `INPUT[...]` / `VIEW[...]` inline code, nothing else. */
-const FIELD_LINE = /^(?:\*\*[^*]*\*\*|[^`]*?)\s*[:：]?\s*(?:`(?:INPUT|VIEW)\[[^`]*\]`\s*)+$/;
+const LABEL = String.raw`(?:\*\*[^*]+\*\*|[^\s\`:：*/][^\`:：*/]{0,29}?)`;
+const FIELD_CODE = String.raw`(?:\`(?:INPUT|VIEW)\[[^\`]*\]\`\s*)+`;
+/** One Meta Bind pair: an optional bold/plain label, then only `INPUT[...]` / `VIEW[...]` inline code. */
+const FIELD_PAIR = new RegExp(`^(?:${LABEL}\\s*[:：]\\s*)?${FIELD_CODE}$`);
+/** One `label: value` pair of a known dashboard heading: Meta Bind code or a plain value. */
+const LABEL_PAIR = new RegExp(`^${LABEL}\\s*[:：]\\s*(?:${FIELD_CODE}|[^\\s].*)$`);
 
-const isFieldLine = (line: string): boolean => FIELD_LINE.test(line.trim());
+/** A dashboard line is an optional `- ` bullet and one or more pairs joined by ` / `. */
+const pairsOf = (line: string): string[] => line.trim().replace(/^[-*+]\s+/, "").split(/\s+\/\s+/).map((part) => part.trim());
+const isFieldLine = (line: string): boolean => pairsOf(line).every((pair) => FIELD_PAIR.test(pair));
 /** Outside a callout only the plugin's own shape (bold label or none) counts, so ordinary text with inline code stays. */
 const isBareFieldLine = (line: string): boolean => isFieldLine(line) && /^(?:\*\*[^*]*\*\*\s*[:：]?\s*)?`/.test(line.trim());
 
-/** A `**label**: value` line, as older dashboards wrote plain values next to the fields. */
-const isLabelLine = (line: string): boolean => /^\*\*[^*]+\*\*\s*[:：]/.test(line);
+/** A `label: value` line (older dashboards wrote plain values next to or instead of the fields). */
+const isLabelLine = (line: string): boolean => pairsOf(line).every((pair) => LABEL_PAIR.test(pair));
 
 /**
  * True for a callout the plugin generated: nothing but Meta Bind field lines, or a known header with only
