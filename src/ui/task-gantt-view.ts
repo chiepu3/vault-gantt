@@ -115,6 +115,7 @@ import {
 } from "../app/gantt-task-service";
 import { WeeklyWorkScheduleModal } from "./modals";
 import { registerHistoryHotkeys } from "./history-hotkeys";
+import { StickyTitleTracker } from "./gantt-sticky-titles";
 
 
 /**
@@ -1059,6 +1060,8 @@ export class TaskGanttView extends ItemView {
  * query helper.
  */
   private barElsByTaskId = new Map<string, HTMLElement>();
+  /** Offsets the titles of bars that overlap the sticky name column (see gantt-sticky-titles.ts). */
+  private readonly stickyTitles = new StickyTitleTracker();
 
 
 
@@ -1794,6 +1797,14 @@ export class TaskGanttView extends ItemView {
       this.renderChartFull(parents, dates, headerFingerprint);
     }
     this.syncStickyHeaderHeight();
+    this.updateStickyTitles();
+  }
+
+  /** Marks the bars whose title can overlap the sticky name column; see gantt-sticky-titles.ts. */
+  private updateStickyTitles(): void {
+    const wrap = this.wrapEl;
+    const rect = wrap.getBoundingClientRect();
+    this.stickyTitles.update({ scrollLeft: wrap.scrollLeft, scrollTop: wrap.scrollTop, top: rect.top, bottom: rect.bottom });
   }
 
   /**
@@ -4526,6 +4537,8 @@ export class TaskGanttView extends ItemView {
     const row = document.createElement("div");
     row.classList.add("task-gantt-parent-row");
     row.style.height = `${rowHeight}px`;
+    // The exact size of the row while the browser skips its off-screen contents (content-visibility: auto).
+    setStyleVar(row, "contain-intrinsic-size", `${PARENT_COL_WIDTH + dates.length * dayWidth}px ${rowHeight}px`);
 
     const leftEl = this.renderParentLeft(parent);
     const parentMark = this.previewLayer?.rowState(parent.file.path);
@@ -4534,6 +4547,7 @@ export class TaskGanttView extends ItemView {
       row.classList.add("vg-hl-parent-row");
     }
     row.appendChild(leftEl);
+    const stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = [];
     row.appendChild(
       this.renderParentTimeline(
         parent,
@@ -4548,9 +4562,11 @@ export class TaskGanttView extends ItemView {
         laneOffsets,
         rowHeight,
         hasDeadlineMarker,
-        phantomLanes
+        phantomLanes,
+        stickyBars
       )
     );
+    this.stickyTitles.register(row, stickyBars);
 
     return row;
   }
@@ -4694,7 +4710,8 @@ export class TaskGanttView extends ItemView {
     laneOffsets: number[],
     rowHeight: number,
     hasDeadlineMarker: boolean,
-    phantomLanes: PhantomLayout = { laneCount: 0, bars: [] }
+    phantomLanes: PhantomLayout = { laneCount: 0, bars: [] },
+    stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = []
   ): HTMLElement {
     const timeline = document.createElement("div");
     timeline.classList.add("task-gantt-parent-timeline");
@@ -4782,11 +4799,13 @@ export class TaskGanttView extends ItemView {
       barEl.style.height = `${BAR_HEIGHT}px`;
       // Do not set a native title attribute; browser tooltips would duplicate
       // the label shown inside or beside the bar.
+      let titleEl: HTMLElement | undefined;
       if (!needsLabel) {
         const title = document.createElement("span");
         title.classList.add("task-gantt-bar-title");
         title.textContent = labelText;
         barEl.appendChild(title);
+        titleEl = title;
       }
       const primaryBadgeTag = getPrimaryGanttTagDefinition(
         this.host.settings,
@@ -4814,6 +4833,7 @@ export class TaskGanttView extends ItemView {
       resizeEnd.classList.add("task-gantt-resize-end");
       barEl.appendChild(resizeEnd);
       timeline.appendChild(barEl);
+      stickyBars.push({ el: barEl, title: titleEl, left, width });
       const savedGhost = this.host.ghosts?.entries.get(bar.task.id);
       const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(bar.task.id);
       if (ghost) {
@@ -5325,6 +5345,7 @@ export class TaskGanttView extends ItemView {
  * the visible position stable after prepending 60 days.
  */
   private onScroll(): void {
+    this.updateStickyTitles();
     this.scheduleLaneRelayout();
 
 
@@ -5836,6 +5857,8 @@ export class TaskGanttView extends ItemView {
         )}px`;
       }
 
+      // The sticky title follows the live preview geometry, as the old sticky positioning did.
+      this.stickyTitles.setGeometry(barEl, Number.parseFloat(barEl.style.left), Number.parseFloat(barEl.style.width));
       if (!movedPastThreshold) {
         return;
       }
@@ -5900,6 +5923,7 @@ export class TaskGanttView extends ItemView {
       barEl.classList.remove("is-dragging");
       barEl.style.left = `${originalLeft}px`;
       barEl.style.width = `${originalWidth}px`;
+      this.stickyTitles.setGeometry(barEl, originalLeft, originalWidth);
       markerEls.forEach((el, i) => {
         el.style.left = `${originalMarkerLefts[i]}px`;
       });
@@ -6787,6 +6811,7 @@ export class TaskGanttView extends ItemView {
 
     barEls.forEach((el) => {
       el.classList.add("is-dragging");
+
       el.classList.add(
         el === anchorEl
           ? "is-bulk-move-anchor"
@@ -6805,6 +6830,7 @@ export class TaskGanttView extends ItemView {
       // Preview every target bar together.
       barEls.forEach((el, i) => {
         el.style.left = `${originalLefts[i] + dxPx}px`;
+        this.stickyTitles.setGeometry(el, originalLefts[i] + dxPx, Number.parseFloat(el.style.width));
       });
 
       if (!movedPastThreshold) {
@@ -6828,8 +6854,10 @@ export class TaskGanttView extends ItemView {
       window.removeEventListener("pointerup", onUp);
       barEls.forEach((el, i) => {
         el.classList.remove("is-dragging");
+
         el.classList.remove("is-bulk-move-anchor", "is-bulk-move-follower");
         el.style.left = `${originalLefts[i]}px`;
+        this.stickyTitles.setGeometry(el, originalLefts[i], Number.parseFloat(el.style.width));
       });
       this.hideDragTooltip();
       this.armRichPopoverSuppress();

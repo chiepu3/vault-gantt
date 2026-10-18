@@ -1074,6 +1074,10 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(".task-gantt-parent-left.is-drag-over", "background", "linear-gradient(hsla(var(--interactive-accent-hsl), 0.12), hsla(var(--interactive-accent-hsl), 0.12)), var(--background-primary)");
   });
 
+  it("parent rows let the browser skip off-screen rows (content-visibility: auto)", () => {
+    expectDecl(".task-gantt-parent-row", "content-visibility", "auto");
+  });
+
   it("parent timeline is positioned and clips overflow", () => {
     expectDecl(".task-gantt-parent-timeline", "position", "relative");
     // clip (not hidden): no scroll container, so bar titles can stick to the wrap edge.
@@ -1081,8 +1085,8 @@ describe("part 4 — Gantt structure", () => {
   });
 
   it("bar titles stick to the visible left edge past the 320px name column", () => {
-    expectDecl(".task-gantt-bar-title", "position", "sticky");
-    expectDecl(".task-gantt-bar-title", "left", "326px");
+    // Not position: sticky (a compositor layer per title); gantt-sticky-titles.ts shifts only the titles that overlap the edge.
+    expectDecl(".task-gantt-bar-title", "width", "max-content");
   });
 
   it("month labels overflow into following cells instead of being clipped", () => {
