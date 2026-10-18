@@ -1,5 +1,5 @@
 // Browser stand-in for the "obsidian" module: just enough of the API for the plugin to load and its views to work
-// on an in-memory vault. Not emulated: CodeMirror editor, metadataCache contents, Node-only APIs (MCP server), real network.
+// on an in-memory vault. Not emulated: CodeMirror editor, metadataCache beyond frontmatter, Node-only APIs (MCP server), real network.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import "./globals";
 import momentLib from "moment";
@@ -10,8 +10,9 @@ import { iconSvg } from "./icons";
 momentLib.locale("ja");
 export const moment: any = momentLib;
 export type Moment = any;
-export const parseYaml = (s: string): any => jsyaml.load(s);
-export const stringifyYaml = (o: any): string => jsyaml.dump(o);
+// Obsidian parses YAML 1.2 core schema: dates stay strings.
+export const parseYaml = (s: string): any => jsyaml.load(s, { schema: jsyaml.CORE_SCHEMA });
+export const stringifyYaml = (o: any): string => jsyaml.dump(o, { lineWidth: -1 });
 export const normalizePath = (p: string): string => p.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
 export const debounce = <T extends (...a: any[]) => any>(fn: T, ms = 0, reset = false) => {
   let t: any;
@@ -153,23 +154,73 @@ export class Vault extends Events {
     this.trigger("delete", f); preview.persist();
   }
   trash(f: TAbstractFile): Promise<void> { return this.delete(f); }
+  /** Renames a file or a folder (with everything in it). Like Obsidian's "automatically update internal links", [[old]] becomes [[new]] in other notes. */
   async rename(f: TAbstractFile, newPath: string): Promise<void> {
     const old = f.path; newPath = newPath.replace(/^\/+/, "");
     if (this.getAbstractFileByPath(newPath)) throw new Error("Destination file already exists!");
-    if (f instanceof TFile) { const c = this.content.get(old)!; this.content.delete(old); this.objs.delete(old); f.path = newPath; this.objs.set(newPath, f); this.put(newPath, c); }
-    else throw new Error("Folder rename is not supported in the preview");
-    this.trigger("rename", f, old); preview.persist();
+    const moves: Array<[string, string]> = f instanceof TFile ? [[old, newPath]] : [...this.content.keys()].filter((p) => p.startsWith(old + "/")).map((p) => [p, newPath + p.slice(old.length)] as [string, string]);
+    if (f instanceof TFolder) {
+      for (const dir of [...this.folders]) if (dir === old || dir.startsWith(old + "/")) { this.folders.delete(dir); this.objs.delete("dir:" + dir); }
+      f.path = newPath; this.objs.set("dir:" + newPath, f);
+      const parts = newPath.split("/"); for (let i = 1; i <= parts.length; i++) this.folders.add(parts.slice(0, i).join("/"));
+    }
+    const base = (p: string) => p.split("/").pop()!.replace(/\.md$/, "");
+    for (const [from, to] of moves) {
+      const file = this.objs.get(from) as TFile; const c = this.content.get(from)!;
+      this.content.delete(from); this.objs.delete(from); file.path = to; this.objs.set(to, file); this.put(to, c);
+      const dir = to.includes("/") ? to.slice(0, to.lastIndexOf("/")) : ""; const segs = dir.split("/");
+      for (let i = 1; i <= segs.length; i++) this.folders.add(segs.slice(0, i).join("/"));
+    }
+    for (const [from, to] of moves) {
+      if (base(from) !== base(to)) for (const [p, text] of [...this.content]) {
+        if (!p.endsWith(".md") || !text.includes(`[[${base(from)}`)) continue;
+        const next = text.split(`[[${base(from)}]]`).join(`[[${base(to)}]]`).split(`[[${base(from)}|`).join(`[[${base(to)}|`);
+        if (next !== text) { this.put(p, next); this.trigger("modify", this.objs.get(p)); }
+      }
+      this.trigger("rename", this.objs.get(to), from);
+    }
+    if (f instanceof TFolder) this.trigger("rename", f, old);
+    preview.persist();
   }
   async copy(f: TFile, p: string): Promise<TFile> { return this.create(p, await this.read(f)); }
   getConfig(): any { return undefined; }
 }
 
 export class MetadataCache extends Events {
-  constructor(private vault: Vault) { super(); }
+  private cache = new Map<string, { text: string; value: any }>();
+  constructor(private vault: Vault) {
+    super();
+    // Like Obsidian, the cache catches up shortly after a file changes and then announces it.
+    const changed = (f: any) => { if (f instanceof TFile && f.extension === "md") setTimeout(() => this.trigger("changed", f, "", this.getFileCache(f)), 0); };
+    vault.on("create", changed); vault.on("modify", changed);
+    vault.on("delete", (f: any) => { this.cache.delete(f.path); this.trigger("deleted", f, null); });
+    vault.on("rename", (f: any, old: string) => { this.cache.delete(old); });
+  }
   resolvedLinks: Record<string, Record<string, number>> = {};
   unresolvedLinks: Record<string, Record<string, number>> = {};
-  getFirstLinkpathDest(link: string): TFile | null { const l = link.split("#")[0].replace(/\.md$/, ""); return this.vault.getMarkdownFiles().find((f) => f.path === l + ".md" || f.basename === l) ?? null; }
-  getFileCache(f: TFile): any { return null; }
+  /** The note nearest to the one linking (same folder first, then shorter paths), like Obsidian's link resolution. */
+  getFirstLinkpathDest(link: string, sourcePath = ""): TFile | null {
+    const l = link.split("#")[0].replace(/\.md$/, "");
+    const exact = this.vault.getMarkdownFiles().find((f) => f.path === l + ".md");
+    if (exact) return exact;
+    const dir = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
+    const matches = this.vault.getMarkdownFiles().filter((f) => f.basename === l || f.path.endsWith("/" + l + ".md"));
+    const near = (f: TFile) => (f.path.startsWith(dir + "/") || dir === "" ? 0 : 1);
+    return matches.sort((a, b) => near(a) - near(b) || a.path.length - b.path.length || a.path.localeCompare(b.path))[0] ?? null;
+  }
+  /** Frontmatter only (that is all the plugin reads from the cache). Parsed from the file text, memoized per text. */
+  getFileCache(f: TFile): any {
+    const text = (this.vault as any).content.get(f.path) as string | undefined;
+    if (text === undefined) return null;
+    const hit = this.cache.get(f.path);
+    if (hit && hit.text === text) return hit.value;
+    const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
+    let frontmatter: any;
+    if (m) { try { const v = parseYaml(m[1]); if (v && typeof v === "object") frontmatter = v; } catch { /* invalid YAML: no frontmatter */ } }
+    const value = frontmatter ? { frontmatter } : {};
+    this.cache.set(f.path, { text, value });
+    return value;
+  }
   getCache(): any { return null; }
   fileToLinktext(f: TFile): string { return f.basename; }
 }

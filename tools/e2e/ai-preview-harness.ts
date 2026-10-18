@@ -83,22 +83,24 @@ function rerender(root: HTMLElement, name: string): HTMLElement {
   const options = { now: NOW, handlers: { onFocus: () => undefined, onApprove: () => undefined, onReject: () => undefined, onRepreview: () => undefined, onUndo: () => undefined, onLoadMore: () => undefined }, outcome: item.outcome, undoState: item.outcome?.undoEntryId ? { entryId: "undo-1", historyRevision: "h", state: "available" as const, reason: null } : undefined, ...(item.options ?? {}) };
   return renderOperationPreviewCard(section, item.preview, options);
 }
+/** Ids of the synthetic Vault's notes (parent and its "design" subtask). */
+interface NoteIds { parent: string; child: string }
 /** Same ids as the synthetic Vault so the real Gantt rows line up with fixtures. */
-function mapIds<T>(value: T, notePath: string): T {
-  return JSON.parse(JSON.stringify(value).split(CHILD_ID).join(`${notePath}::design`).split(PARENT_ID).join(notePath));
+function mapIds<T>(value: T, ids: NoteIds): T {
+  return JSON.parse(JSON.stringify(value).split(CHILD_ID).join(ids.child).split(PARENT_ID).join(ids.parent));
 }
-function movedPreview(notePath: string): OperationPreviewV1 {
-  const base = mapIds(fixtures.OUTSIDE_RANGE_PREVIEW, notePath) as any;
+function movedPreview(ids: NoteIds): OperationPreviewV1 {
+  const base = mapIds(fixtures.OUTSIDE_RANGE_PREVIEW, ids) as any;
   const after = { start: "2026-10-16", end: "2026-10-18" };
   base.previewId = "moved"; base.projection.after.parents[0].children[0].period = after; base.projection.after.parents[0].period = after;
   base.projection.visibility[0] = { entity: base.projection.targets[0], state: "visible", reason: "表示条件に一致" };
   base.entries[0].effects[0].after = after;
   return base;
 }
-function ganttCases(notePath: string): Record<string, { preview: OperationPreviewV1; outcome?: OperationOutcomeV1 }> {
+function ganttCases(ids: NoteIds): Record<string, { preview: OperationPreviewV1; outcome?: OperationOutcomeV1 }> {
   const f = fixtures.PREVIEW_FIXTURES;
-  const m = <T>(v: T) => mapIds(v, notePath);
-  const moved = movedPreview(notePath);
+  const m = <T>(v: T) => mapIds(v, ids);
+  const moved = movedPreview(ids);
   const markerMoved = m(f.marker); const created = m(f.create); const deleted = m(f.delete); const workload = m(f.workload);
   return {
     moved: { preview: moved },
@@ -110,9 +112,9 @@ function ganttCases(notePath: string): Record<string, { preview: OperationPrevie
 }
 (window as any).__vgp = {
   caseNames: () => Object.keys(cases()), rerender,
-  ganttNames: (notePath: string) => Object.entries(ganttCases(notePath)).map(([name, item]) => [name, item.preview.previewId]),
-  makeGanttPort(notePath: string) {
-    const port = new FakePreviewPort(); const all = ganttCases(notePath);
+  ganttNames: (ids: NoteIds) => Object.entries(ganttCases(ids)).map(([name, item]) => [name, item.preview.previewId]),
+  makeGanttPort(ids: NoteIds) {
+    const port = new FakePreviewPort(); const all = ganttCases(ids);
     for (const item of Object.values(all)) port.set(item.preview, item.outcome);
     return port;
   },

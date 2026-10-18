@@ -23,6 +23,7 @@ import {
   writeDragFixture,
   waitForFrontmatterField,
   readFrontmatterField,
+  readNoteText,
   loadGanttDragModules,
 } from "./drag-fixture.mjs";
 import {
@@ -151,8 +152,8 @@ export async function run({ cdp, vaultDir }) {
   });
   details.push(`dragged +${DRAG_DELTA_DAYS} day-widths (${DRAG_DELTA_DAYS * DAY_WIDTH_PX}px)`);
 
-  const startKey = `subtask__${subtaskKey}__plannedStartDate`;
-  const endKey = `subtask__${subtaskKey}__plannedEndDate`;
+  const startKey = "start";
+  const endKey = "end";
 
   let actualStart;
   try {
@@ -161,7 +162,7 @@ export async function run({ cdp, vaultDir }) {
     });
     details.push(`plannedStartDate on disk: ${actualStart} (expected ${expectedStart})`);
   } catch (err) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     failures.push(
       `${err.message}\n    on-disk plannedEndDate at time of failure: ${readFrontmatterField(content, endKey)}`
     );

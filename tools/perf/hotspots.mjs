@@ -37,9 +37,20 @@ try {
     return { path: p, stat: { mtime: stat.mtimeMs, size: stat.size } };
   });
   let reads = 0;
+  // Frontmatter comes from the (simulated) metadataCache and bodies from cachedRead, like the plugin reads notes.
+  const { parseYaml } = await load("tests/stubs/obsidian.ts");
+  const texts = new Map(paths.map(p => [p, fs.readFileSync(path.join(vaultDir, p), "utf8")]));
+  const frontmatter = new Map([...texts].map(([p, text]) => [p, parseYaml(/^---\n([\s\S]*?)\n---/.exec(text)[1])]));
+  const byPath = new Map(files.map(file => [file.path, file]));
+  const byName = new Map(files.map(file => [file.path.split("/").pop().replace(/\.md$/, ""), file]));
   const vault = {
     getFiles: () => files,
-    read: file => { reads++; return fs.promises.readFile(path.join(vaultDir, file.path), "utf8"); },
+    getFileByPath: p => byPath.get(p) ?? null,
+    getFrontmatter: file => frontmatter.get(file.path),
+    whenIndexed: async () => {},
+    resolveLink: link => byName.get(link.replace(/^\[\[|\]\]$/g, "").split("|")[0]) ?? null,
+    read: file => { reads++; return Promise.resolve(texts.get(file.path)); },
+    cachedRead: file => { reads++; return Promise.resolve(texts.get(file.path)); },
   };
   const metrics = {};
   async function measure(name, fn, { setup = () => {}, batch = 1 } = {}) {

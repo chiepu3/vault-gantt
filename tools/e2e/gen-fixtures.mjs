@@ -1,26 +1,28 @@
 
 // tools/e2e/gen-fixtures.mjs
 
-// Generate valid mock task notes with the real buildFullNote serializer from
-// src/core/note-format.ts via vite-node. The `obsidian` import resolves to the
+// Generate valid mock task notes (note format v2: one note per task) with the real
+// serializer from src/core/note-v2.ts via vite-node. The `obsidian` import resolves to the
 // same test stub used by Vitest. Using the serializer keeps fixtures aligned
 // with the saved note format.
 
-// Fixture shape (verified against src/app/task-operations.ts and
+// Fixture shape (verified against src/app/note-store.ts and
 // src/app/gantt-layout.ts hasPlannedDates):
-// - parent: ganttEnabled: true, NO plannedStartDate/plannedEndDate on the
-// parent itself (those are never stored on parents)
-// - each parent gets one or more subtasks carrying
-// plannedStartDate/plannedEndDate — Gantt bars render ONLY from subtask
-// dates, so a parent without dated subtasks renders an empty timeline.
+// - parent note: gantt: true, NO start/end on the parent itself
+// - each parent gets one or more subtask NOTES (in a folder named like the parent) carrying
+// start/end — Gantt bars render ONLY from subtask dates, so a parent without dated
+// subtasks renders an empty timeline.
+// - ids are stable (derived from the path), so fixtures are reproducible.
 
 // `count` is the number of parent notes. `subtasksPerParent` defaults to 1,
 // so callers that omit it receive one subtask per parent. Generation uses no randomness: given the same parent count,
 // subtasks-per-parent count, and calendar date, the output is deterministic, so
 // there is no seed parameter to maintain.
 
-// Files are written under tasks/YYYY/MM/ (same layout getTaskFolderForDate
-// produces) with plain fs — this is fixture setup, not the code under test.
+// Files are written under tasks/ (parent: tasks/<date> <title>.md, subtasks:
+// tasks/<date> <title>/<subtask title>.md) with plain fs — this is fixture setup, not the code under test.
+// generateFixtures returns every written path (each parent first, then its subtasks) and
+// attaches the settings the order stores need as `.settings` ({ ganttParentOrder, subtaskOrder }).
 
 // Requires Node >= 22 (vite/vite-node need crypto.getRandomValues).
 
@@ -45,11 +47,8 @@ export function assertNode22() {
   }
 }
 
-/**
- * Loads src/core/note-format.ts through vite-node's programmatic API with
- * the same `obsidian` alias vitest.config.ts uses. Returns the module.
- */
-export async function loadNoteFormatModule() {
+/** Runs a TypeScript source file through vite-node with the same `obsidian` alias vitest.config.ts uses. */
+async function withRunner(run) {
   const { createServer } = await import("vite");
   const { ViteNodeServer } = await import("vite-node/server");
   const { ViteNodeRunner } = await import("vite-node/client");
@@ -76,10 +75,62 @@ export async function loadNoteFormatModule() {
       fetchModule: (id) => node.fetchModule(id),
       resolveId: (id, importer) => node.resolveId(id, importer),
     });
-    return await runner.executeFile(path.resolve(REPO_ROOT, "src/core/note-format.ts"));
+    return await run((file) => runner.executeFile(path.resolve(REPO_ROOT, file)));
   } finally {
     await server.close();
   }
+}
+
+/** The v2 note module (src/core/note-v2.ts) plus the stub's YAML writer. */
+export async function loadNoteFormatModule() {
+  return withRunner(async (load) => ({ ...(await load("src/core/note-v2.ts")), stringifyYaml: (await load("tests/stubs/obsidian.ts")).stringifyYaml }));
+}
+
+const hash = (text) => {
+  let h = 5381;
+  for (const ch of text) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+  return h.toString(36).padStart(6, "0").slice(-6);
+};
+/** Stable task id derived from a seed string: t-xxxxxx / s-xxxxxx. */
+export const stableId = (kind, seed) => `${kind}-${hash(seed)}`;
+const stemOf = (p) => p.split("/").pop().replace(/\.md$/, "");
+
+/**
+ * Renders one parent note and one note per subtask (v2) without writing them. `parent` and its
+ * `subtasks` Map are TaskRow-shaped objects with file.path set for the parent; ids are derived from the
+ * parent path and the subtask key (so they can be computed ahead of time with stableId).
+ * Returns { files: { path: text }, parentId, parentPath, subs: Map(key -> { id, path }), subIds }.
+ */
+export function renderTaskNotes(mod, parent, subtasks = parent.subtasks ?? new Map()) {
+  const parentPath = parent.file.path;
+  const stem = stemOf(parentPath);
+  const dir = parentPath.includes("/") ? parentPath.slice(0, parentPath.lastIndexOf("/") + 1) : "";
+  const parentId = parent.id && /^t-[0-9a-z]{6}$/.test(parent.id) ? parent.id : stableId("t", parentPath);
+  const files = {};
+  const subs = new Map(), taken = new Set();
+  for (const [key, sub] of subtasks) {
+    const id = stableId("s", `${parentPath}::${key}`);
+    let name = (sub.displayName || sub.title).replace(/[\\/:*?"<>|#^[\]]/g, "_"), n = 2;
+    for (const base = name; taken.has(name.toLowerCase()); n += 1) name = `${base} ${n}`;
+    taken.add(name.toLowerCase());
+    const subPath = `${dir}${stem}/${name}.md`;
+    const row = { ...sub, id, key: id, parentId, file: { path: subPath, parentPath } };
+    files[subPath] = mod.buildNewNote(row, mod.stringifyYaml, { parentLink: `[[${stem}]]` });
+    subs.set(key, { id, path: subPath });
+  }
+  files[parentPath] = mod.buildNewNote({ ...parent, id: parentId, subtasks: new Map() }, mod.stringifyYaml);
+  return { files, parentId, parentPath, subs, subIds: [...subs.values()].map((sub) => sub.id) };
+}
+
+/** renderTaskNotes, then writes the notes under vaultDir (parent last). */
+export function writeTaskNotes(mod, vaultDir, parent, subtasks = parent.subtasks ?? new Map()) {
+  const notes = renderTaskNotes(mod, parent, subtasks);
+  for (const [rel, text] of Object.entries(notes.files)) {
+    const abs = path.join(vaultDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, text, "utf8");
+  }
+  return notes;
 }
 
 function localDateStr(d) {
@@ -98,11 +149,11 @@ function addDays(dateStr, days) {
 
 /**
  * Builds one parent TaskRow plus its dated subtasks (plain objects —
- * buildFullNote only reads properties, no class instances needed).
+ * the serializer only reads properties, no class instances needed).
  */
-function buildFixtureTask(buildFullNote, { parentIndex, subtasksPerParent, today }) {
+function buildFixtureTask({ parentIndex, subtasksPerParent, today }) {
   const name = `E2E Fixture Task ${String(parentIndex + 1).padStart(4, "0")}`;
-  const parentPath = `tasks/${today.slice(0, 4)}/${today.slice(5, 7)}/${today} ${name}.md`;
+  const parentPath = `tasks/${today} ${name}.md`;
   const subtasks = new Map();
 
   // Spread planned windows across about 125 days so many parents and subtasks
@@ -124,11 +175,8 @@ function buildFixtureTask(buildFullNote, { parentIndex, subtasksPerParent, today
     const title = subtasksPerParent === 1
       ? "Planned work"
       : `Planned work ${String(subtaskIndex + 1).padStart(3, "0")}`;
-    const subtask = {
+    subtasks.set(subtaskKey, {
       kind: "subtask",
-      id: `${parentPath}::${subtaskKey}`,
-      key: subtaskKey,
-      file: { path: parentPath, parentPath: parentPath, heading: title },
       title,
       displayName: title,
       statusLabel: "active",
@@ -141,16 +189,14 @@ function buildFixtureTask(buildFullNote, { parentIndex, subtasksPerParent, today
       currentStatus: "",
       notes: "",
       tags: [],
-      ganttEnabled: false, // subtasks never carry ganttEnabled (note-format.ts)
+      ganttEnabled: false,
       plannedStartDate: start,
       plannedEndDate: end,
-    };
-    subtasks.set(subtaskKey, subtask);
+    });
   }
 
   const parent = {
     kind: "parent",
-    id: parentPath,
     file: { path: parentPath },
     title: name,
     displayName: name,
@@ -165,19 +211,17 @@ function buildFixtureTask(buildFullNote, { parentIndex, subtasksPerParent, today
     notes: "",
     tags: [],
     ganttEnabled: true,
-    ganttOrder: parentIndex,
     subtasks,
   };
-
-  const content = buildFullNote(parent, parent.subtasks);
-  return { parentPath, content, name };
+  return { parent, subtasks };
 }
 
 /**
- * Generates `count` parent fixture notes inside `<vaultDir>/tasks/YYYY/MM/`.
- * Each parent receives `subtasksPerParent` dated subtasks. The value defaults
+ * Generates `count` parent fixture notes inside `<vaultDir>/tasks/`.
+ * Each parent receives `subtasksPerParent` dated subtask notes. The value defaults
  * to one, keeping the standard fixture shape for callers that omit it.
- * Returns the list of vault-relative parent paths written.
+ * Returns the vault-relative paths written (each parent first, then its subtasks);
+ * `.settings` holds { ganttParentOrder, subtaskOrder } for the plugin settings.
  */
 export async function generateFixtures({ vaultDir, count, subtasksPerParent = 1 }) {
   assertNode22();
@@ -194,24 +238,22 @@ export async function generateFixtures({ vaultDir, count, subtasksPerParent = 1 
   }
 
   const mod = await loadNoteFormatModule();
-  if (typeof mod.buildFullNote !== "function") {
-    throw new Error("buildFullNote not found in src/core/note-format.ts — module shape changed?");
+  if (typeof mod.buildNewNote !== "function") {
+    throw new Error("buildNewNote not found in src/core/note-v2.ts — module shape changed?");
   }
 
   const today = localDateStr(new Date());
   const written = [];
+  const settings = { ganttParentOrder: [], subtaskOrder: {} };
 
   for (let parentIndex = 0; parentIndex < count; parentIndex++) {
-    const { parentPath, content } = buildFixtureTask(mod.buildFullNote, {
-      parentIndex,
-      subtasksPerParent,
-      today,
-    });
-    const absPath = path.join(vaultDir, parentPath);
-    fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    fs.writeFileSync(absPath, content, "utf8");
-    written.push(parentPath);
+    const { parent, subtasks } = buildFixtureTask({ parentIndex, subtasksPerParent, today });
+    const notes = writeTaskNotes(mod, vaultDir, parent, subtasks);
+    written.push(notes.parentPath, ...[...notes.subs.values()].map((sub) => sub.path));
+    settings.ganttParentOrder.push(notes.parentId);
+    settings.subtaskOrder[notes.parentId] = notes.subIds;
   }
+  written.settings = settings;
 
   return written;
 }
@@ -249,12 +291,12 @@ if (isMain) {
     const written = await generateFixtures({ vaultDir, count, subtasksPerParent });
     if (args.includes("--subtasks-per-parent")) {
       console.log(
-        `[gen-fixtures] wrote ${written.length} task notes under ${vaultDir}/tasks/ ` +
+        `[gen-fixtures] wrote ${written.length} notes (${count} parents) under ${vaultDir}/tasks/ ` +
           `(${subtasksPerParent} subtasks per parent)`
       );
     } else {
       // Keep the default CLI output for scripts using one subtask per parent.
-      console.log(`[gen-fixtures] wrote ${written.length} task notes under ${vaultDir}/tasks/`);
+      console.log(`[gen-fixtures] wrote ${written.length} notes (${count} parents) under ${vaultDir}/tasks/`);
     }
   } catch (err) {
     console.error(`[gen-fixtures] FAILED: ${err.message}`);

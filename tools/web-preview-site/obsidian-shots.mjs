@@ -61,36 +61,53 @@ const PARENTS = [
 
 async function loadBuildFullNote(scratch) {
   // Bundle the target's own note serializer (obsidian import -> the target's test stub) with the target's esbuild.
+  // v2 targets (src/core/note-v2.ts) write one note per parent and per subtask; older targets write v1 notes.
   const requireFromApp = createRequire(path.join(app, "package.json"));
   const esbuild = requireFromApp("esbuild");
   const stub = path.join(app, "tests/stubs/obsidian.ts");
+  const v2 = fs.existsSync(path.join(app, "src/core/note-v2.ts"));
   const outfile = path.join(scratch, "note-format.cjs");
+  const entry = v2 ? path.join(scratch, "note-entry.ts") : path.join(app, "src/core/note-format.ts");
+  if (v2) fs.writeFileSync(entry, `export { buildNewNote } from ${JSON.stringify(path.join(app, "src/core/note-v2.ts"))};\nexport { stringifyYaml } from ${JSON.stringify(stub)};\n`);
   await esbuild.build({
-    entryPoints: [path.join(app, "src/core/note-format.ts")], bundle: true, platform: "node", format: "cjs", outfile, logLevel: "silent",
+    entryPoints: [entry], bundle: true, platform: "node", format: "cjs", outfile, logLevel: "silent",
     define: { "import.meta.url": JSON.stringify(pathToFileURL(stub).href) },
     alias: fs.existsSync(stub) ? { obsidian: stub } : {}, nodePaths: [path.join(app, "node_modules")],
   });
-  return createRequire(outfile)(outfile).buildFullNote;
+  const mod = createRequire(outfile)(outfile);
+  return v2 ? { v2: true, buildNewNote: mod.buildNewNote, stringifyYaml: mod.stringifyYaml } : { v2: false, buildFullNote: mod.buildFullNote };
 }
 
-function seedVault(vault, buildFullNote) {
+const SETTINGS = { ganttParentOrder: [], subtaskOrder: {} };
+const b36 = (text) => { let h = 5381; for (const ch of text) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0; return h.toString(36).padStart(6, "0").slice(-6); };
+
+function seedVault(vault, mod) {
   const t = ISO(new Date());
   PARENTS.forEach((p, idx) => {
     const created = plus(p.created);
-    const file = `tasks/${created.slice(0, 4)}/${created.slice(5, 7)}/${created} ${p.name}.md`;
+    const file = mod.v2 ? `tasks/${created} ${p.name}.md` : `tasks/${created.slice(0, 4)}/${created.slice(5, 7)}/${created} ${p.name}.md`;
+    const stem = file.split("/").pop().replace(/\.md$/, "");
+    const parentId = `t-${b36(file)}`;
     const common = { createdAt: created, updatedAt: t, completed: false, priority: 0, priorityMode: "auto", currentStatus: "", notes: "", tags: [] };
     const subtasks = new Map();
     for (const s of p.subs) {
-      subtasks.set(s.key, { ...common, kind: "subtask", id: `${file}::${s.key}`, key: s.key, file: { path: file, parentPath: file, heading: s.title }, title: s.title, displayName: s.title,
+      const id = mod.v2 ? `s-${b36(`${file}::${s.key}`)}` : `${file}::${s.key}`;
+      const subFile = mod.v2 ? `tasks/${stem}/${s.title}.md` : file;
+      subtasks.set(s.key, { ...common, kind: "subtask", id, key: mod.v2 ? id : s.key, parentId, file: { path: subFile, parentPath: file, heading: s.title }, title: s.title, displayName: s.title,
         statusLabel: s.status ?? "active", completed: s.status === "done", tags: s.tags ?? [], ganttEnabled: false,
         plannedStartDate: plus(s.from), plannedEndDate: plus(s.to), workloadPlan: s.plan ? range(s.from, s.to, s.plan) : undefined,
         workloadActual: s.actual ? range(s.actual[0], s.actual[1], s.actual[2]) : undefined,
         ganttMarkers: s.markers?.map(([key, title, day]) => ({ key, title, date: plus(day), tags: [] })) });
     }
-    const parent = { ...common, kind: "parent", id: file, file: { path: file }, title: p.name, displayName: p.name, statusLabel: "in_progress",
-      dueDate: plus(p.due), priority: p.prio, priorityMode: "manual", tags: p.tags, ganttEnabled: p.gantt ?? true, ganttOrder: idx, currentStatus: p.current ?? "", subtasks };
-    fs.mkdirSync(path.dirname(path.join(vault, file)), { recursive: true });
-    fs.writeFileSync(path.join(vault, file), buildFullNote(parent, subtasks));
+    const parent = { ...common, kind: "parent", id: mod.v2 ? parentId : file, file: { path: file }, title: p.name, displayName: p.name, statusLabel: "in_progress",
+      dueDate: plus(p.due), priority: p.prio, priorityMode: "manual", tags: p.tags, ganttEnabled: p.gantt ?? true, ganttOrder: idx, currentStatus: p.current ?? "", subtasks: mod.v2 ? new Map() : subtasks };
+    const write = (rel, text) => { fs.mkdirSync(path.dirname(path.join(vault, rel)), { recursive: true }); fs.writeFileSync(path.join(vault, rel), text); };
+    if (mod.v2) {
+      for (const sub of subtasks.values()) write(sub.file.path, mod.buildNewNote(sub, mod.stringifyYaml, { parentLink: `[[${stem}]]` }));
+      write(file, mod.buildNewNote(parent, mod.stringifyYaml));
+      SETTINGS.ganttParentOrder.push(parentId);
+      SETTINGS.subtaskOrder[parentId] = [...subtasks.values()].map((sub) => sub.id);
+    } else write(file, mod.buildFullNote(parent, subtasks));
   });
   fs.mkdirSync(path.join(vault, "メモ"), { recursive: true });
   fs.writeFileSync(path.join(vault, "README.md"), "# Vault Gantt サンプル\n\n実機のObsidianで撮影したスクリーンショット用のサンプルVaultです。\n");
@@ -163,7 +180,7 @@ let fakeLlm = null;
 try { fakeLlm = await startFakeLlm(root); } catch (e) { notes.push("台本AIサーバーを用意できませんでした: " + String(e.message).split("\n")[0].slice(0, 160)); }
 const holidays = []; // offline: no holiday fetch
 fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({
-  taskFolder: "tasks", autoPriorityEnabled: true, ganttZoom: 28, ganttNationalHolidays: holidays, ganttNationalHolidaysUpdatedAt: ISO(new Date()),
+  taskFolder: "tasks", ...SETTINGS, autoPriorityEnabled: true, ganttZoom: 28, ganttNationalHolidays: holidays, ganttNationalHolidaysUpdatedAt: ISO(new Date()),
   ganttTags: [["dev", "開発", "#2563eb"], ["design", "デザイン", "#7c3aed"], ["ops", "運用", "#12883e"], ["research", "調査", "#b16105"]].map(([key, name, color], order) => ({ key, name, color, order })),
   ai: { preset: "custom", baseUrl: `http://127.0.0.1:${fakeLlm?.port ?? 9}/v1`, model: "sample-model", useApiKey: false },
 }));

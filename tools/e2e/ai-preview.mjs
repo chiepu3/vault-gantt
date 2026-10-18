@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { build } from "esbuild";
 import { builtinModules } from "node:module";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "./gen-fixtures.mjs";
 
 const mode = "preview";
 const source = process.cwd();
@@ -61,13 +61,13 @@ for (const file of ["styles.css", "manifest.json"]) fs.copyFileSync(path.join(so
 fs.writeFileSync(path.join(vault, ".obsidian/community-plugins.json"), '["vault-gantt"]');
 fs.writeFileSync(path.join(vault, ".obsidian/appearance.json"), JSON.stringify({ theme: "moonstone" }));
 fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ taskFolder: "tasks", autoPriorityEnabled: false, ganttSyncEnabled: false, ganttFeatureSyncEnabled: false, ganttFeatureWorkloadEnabled: false, ganttFeatureEventsEnabled: false, ganttFeatureDailyTodoEnabled: false, agentToolsEnabled: false, ganttZoom: 36 }));
-const { buildFullNote } = await loadNoteFormatModule();
+const noteModule = await loadNoteFormatModule();
 const notePath = "tasks/合成デザイン確認.md";
 const common = { statusLabel: "active", completed: false, createdAt: "2026-10-01", updatedAt: "2026-10-01", priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const child = { ...common, kind: "subtask", id: notePath + "::design", key: "design", file: { path: notePath, parentPath: notePath, heading: "デザイン確認" }, title: "デザイン確認", displayName: "デザイン確認", ganttEnabled: false, plannedStartDate: "2026-10-13", plannedEndDate: "2026-10-15" };
 const parent = { ...common, kind: "parent", id: notePath, file: { path: notePath }, title: "合成デザイン確認", displayName: "合成デザイン確認", ganttEnabled: true, ganttOrder: 0, subtasks: new Map([["design", child]]) };
 fs.mkdirSync(path.join(vault, "tasks"));
-fs.writeFileSync(path.join(vault, notePath), buildFullNote(parent, parent.subtasks));
+const written = writeTaskNotes(noteModule, vault, parent, parent.subtasks); // v2: parent note + one note per subtask
 fs.writeFileSync(path.join(vault, "合成UIテスト.md"), "# 合成UIテスト\n\n固定FakeProvider / ライブLLM未接続。\n\n新規の合成Vaultと独立プロファイルのみを使用しています。\n");
 const profileConfig = path.join(profile, "obsidian.json");
 fs.writeFileSync(profileConfig, JSON.stringify({ vaults: { a1b2c3d4e5f60718: { path: vault, ts: Date.now(), open: true } } }));
@@ -212,7 +212,7 @@ try {
   })()`);
   await new Promise(r => setTimeout(r, 800));
   const caseNames = await cdp.evaluate("window.__vgp.caseNames()");
-  const notePathJson = JSON.stringify(notePath);
+  const notePathJson = JSON.stringify({ parent: written.parentId, child: written.subs.get("design").id });
   for (const dark of [false, true]) {
     const t = dark ? "dark" : "light";
     await setTheme(dark);

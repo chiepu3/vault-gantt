@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { build } from "esbuild";
 import { builtinModules } from "node:module";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, renderTaskNotes, stableId } from "./gen-fixtures.mjs";
 
 const mode = "highlight";
 const source = process.cwd();
@@ -65,7 +65,7 @@ fs.writeFileSync(path.join(vault, ".obsidian/community-plugins.json"), '["vault-
 fs.writeFileSync(path.join(vault, ".obsidian/appearance.json"), JSON.stringify({ theme: "moonstone" }));
 fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ taskFolder: "tasks", autoPriorityEnabled: false, ganttSyncEnabled: false, ganttFeatureSyncEnabled: false, ganttFeatureWorkloadEnabled: true, ganttFeatureEventsEnabled: true, ganttFeatureDailyTodoEnabled: true, agentToolsEnabled: false, ganttZoom: 44,
   ganttEvents: [{ key: "e1", title: "定例会議", date: "2026-10-15", workloadPlan: { "2026-10-15": 1 } }, { key: "e2", title: "振り返り", date: "2026-10-22" }] }));
-const { buildFullNote } = await loadNoteFormatModule();
+const noteModule = await loadNoteFormatModule();
 const notePath = "tasks/合成リリース.md";
 const common = { statusLabel: "active", completed: false, createdAt: "2026-10-01", updatedAt: "2026-10-01", priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const sub = (key, title, start, end, plan = {}, actual = {}) => ({ ...common, kind: "subtask", id: notePath + "::" + key, key, file: { path: notePath, parentPath: notePath, heading: title }, title, displayName: title, ganttEnabled: false, plannedStartDate: start, plannedEndDate: end, workloadPlan: plan, workloadActual: actual });
@@ -82,11 +82,17 @@ const afterSubs = [
   subs[1],
   sub("new", "追加タスク", "2026-10-19", "2026-10-21", { "2026-10-19": 2 }),
 ];
-const otherParent = (await loadNoteFormatModule());
-fs.mkdirSync(path.join(vault, "tasks"));
-fs.writeFileSync(path.join(vault, notePath), buildFullNote(parent, parent.subtasks));
-const originalNoteText = fs.readFileSync(path.join(vault, notePath), "utf8");
-const savedNoteText = buildFullNote(mkParent(afterSubs), mkParent(afterSubs).subtasks);
+// v2: the parent and every subtask are notes of their own. "Saved" changes design, drops "old" and adds "new".
+const originalNotes = renderTaskNotes(noteModule, parent, parent.subtasks);
+const savedNotes = renderTaskNotes(noteModule, mkParent(afterSubs), mkParent(afterSubs).subtasks);
+for (const [rel, text] of Object.entries(originalNotes.files)) {
+  fs.mkdirSync(path.dirname(path.join(vault, rel)), { recursive: true });
+  fs.writeFileSync(path.join(vault, rel), text);
+}
+const noteIds = { parent: originalNotes.parentId, children: Object.fromEntries(["design", "review", "old", "new"].map((key) => [key, stableId("s", `${notePath}::${key}`)])) };
+const everyNotePath = [...new Set([...Object.keys(originalNotes.files), ...Object.keys(savedNotes.files)])];
+// Expression that makes the vault hold exactly these notes (modify, create or delete as needed).
+const applyNotes = (files) => `(async () => { const files = ${JSON.stringify(files)}; for (const p of ${JSON.stringify(everyNotePath)}) { const f = app.vault.getAbstractFileByPath(p); if (p in files) { if (f) await app.vault.modify(f, files[p]); else await app.vault.create(p, files[p]); } else if (f) await app.vault.delete(f); } })()`;
 fs.mkdirSync(path.join(vault, "デイリー/2026/10"), { recursive: true });
 fs.writeFileSync(path.join(vault, "デイリー/2026/10/261014_デイリー.md"), "# 2026-10-14\n\n- [ ] 資料を確認する\n");
 const savedDaily = { "デイリー/2026/10/261014_デイリー.md": "# 2026-10-14\n\n- [ ] 資料を確認する\n- [ ] 追加のToDo\n", "デイリー/2026/10/261015_デイリー.md": "# 2026-10-15\n\n- [ ] 新しい日のToDo\n" };
@@ -240,7 +246,7 @@ try {
   // Swap in a fake preview port (empty at first) and reopen the real Gantt view.
   await cdp.evaluate(`(async () => {
     const view = app.workspace.getLeavesOfType('task-gantt-view')[0].view;
-    window.__port = window.__vgh.makePort(${JSON.stringify(notePath)});
+    window.__port = window.__vgh.makePort(${JSON.stringify(noteIds)});
     const all = [...window.__port.previews.values()]; window.__previews = all; window.__outcomes = new Map(window.__port.outcomes);
     window.__port.previews.clear(); window.__port.outcomes.clear();
     view.host.previewPort = window.__port; await view.onClose(); await view.onOpen();
@@ -264,7 +270,7 @@ try {
     // Saved outcome: the vault now holds the after state.
     await cdp.evaluate(`(async () => {
       const plugin = app.plugins.plugins['vault-gantt'];
-      await app.vault.modify(app.vault.getAbstractFileByPath(${JSON.stringify(notePath)}), ${JSON.stringify(savedNoteText)});
+      await ${applyNotes(savedNotes.files)};
       plugin.settings.ganttEvents = [{ key: 'e1', title: '定例会議', date: '2026-10-16', workloadPlan: { '2026-10-16': 2 } }, { key: 'e3', title: '新しい予定', date: '2026-10-21' }];
       await plugin.saveSettings();
       for (const [p, text] of Object.entries(${JSON.stringify(savedDaily)})) { const f = app.vault.getAbstractFileByPath(p); if (f) await app.vault.modify(f, text); else await app.vault.create(p, text); }
@@ -277,7 +283,7 @@ try {
     // Back to the before state for the next theme.
     await cdp.evaluate(`(async () => {
       const plugin = app.plugins.plugins['vault-gantt'];
-      await app.vault.modify(app.vault.getAbstractFileByPath(${JSON.stringify(notePath)}), ${JSON.stringify(originalNoteText)});
+      await ${applyNotes(originalNotes.files)};
       plugin.settings.ganttEvents = [{ key: 'e1', title: '定例会議', date: '2026-10-15', workloadPlan: { '2026-10-15': 1 } }, { key: 'e2', title: '振り返り', date: '2026-10-22' }];
       await plugin.saveSettings();
       await app.vault.modify(app.vault.getAbstractFileByPath('デイリー/2026/10/261014_デイリー.md'), '# 2026-10-14\\n\\n- [ ] 資料を確認する\\n');

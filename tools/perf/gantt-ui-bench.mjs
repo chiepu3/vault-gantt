@@ -29,7 +29,7 @@ const site = path.join(work, "site"), vault = path.join(work, "vault");
 execFileSync("node", [path.join(repo, "tools/web-preview/build.mjs"), "--app", appDir, "--out", site, "--label", "bench", "--sha", "bench", "--minify", profileOut ? "false" : "true"], { stdio: "inherit" });
 const paths = await generateFixtures({ vaultDir: vault, count: parents, subtasksPerParent: subtasks });
 const files = Object.fromEntries(paths.map((p) => [p, fs.readFileSync(path.join(vault, p), "utf8")]));
-const store = { files, data: { taskFolder: "tasks", ganttZoom: 28, ganttNationalHolidaysUpdatedAt: "2099-01-01" }, secrets: {} };
+const store = { files, data: { taskFolder: "tasks", ganttZoom: 28, ganttNationalHolidaysUpdatedAt: "2099-01-01", ...paths.settings }, secrets: {} };
 
 const server = http.createServer((req, res) => {
   const p = path.join(site, decodeURIComponent(new URL(req.url, "http://x").pathname).replace(/\/$/, "/index.html"));

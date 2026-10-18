@@ -30,6 +30,7 @@ import {
   writeDragFixture,
   waitForFrontmatterField,
   readFrontmatterField,
+  readNoteText,
   loadGanttDragModules,
 } from "./drag-fixture.mjs";
 import {
@@ -75,8 +76,8 @@ export async function run({ cdp, vaultDir }) {
   });
   details.push(`fixture: ${originalStart} -> ${originalEnd} (subtask ${subtaskKey})`);
 
-  const startKey = `subtask__${subtaskKey}__plannedStartDate`;
-  const endKey = `subtask__${subtaskKey}__plannedEndDate`;
+  const startKey = "start";
+  const endKey = "end";
 
   const hasCommand = await cdp.evaluate(
     `!!app.commands.commands[${JSON.stringify(COMMAND_ID)}]`
@@ -169,7 +170,7 @@ export async function run({ cdp, vaultDir }) {
     });
     details.push(`(1) plannedStartDate on disk: ${start1} (expected ${expectedStartAfterResize1})`);
   } catch (err) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     failures.push(
       `${err.message}\n    on-disk plannedEndDate at time of failure: ${readFrontmatterField(content, endKey)}`
     );
@@ -179,7 +180,7 @@ export async function run({ cdp, vaultDir }) {
     return { ok: false, failures, details: details.join(" | ") };
   }
 
-  const endUnchangedAfter1 = readFrontmatterField(fs.readFileSync(absPath, "utf8"), endKey);
+  const endUnchangedAfter1 = readFrontmatterField(readNoteText(absPath), endKey);
   if (endUnchangedAfter1 !== originalEnd) {
     failures.push(
       `(1) resize-start drag changed plannedEndDate: on-disk=${endUnchangedAfter1}, expected unchanged ${originalEnd}`
@@ -284,13 +285,13 @@ export async function run({ cdp, vaultDir }) {
     });
     details.push(`(2) plannedEndDate on disk: ${end2} (expected ${expectedEndAfterResize2})`);
   } catch (err) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     failures.push(
       `${err.message}\n    on-disk plannedStartDate at time of failure: ${readFrontmatterField(content, startKey)}`
     );
   }
 
-  const startUnchangedAfter2 = readFrontmatterField(fs.readFileSync(absPath, "utf8"), startKey);
+  const startUnchangedAfter2 = readFrontmatterField(readNoteText(absPath), startKey);
   if (startUnchangedAfter2 !== expectedStartAfterResize1) {
     failures.push(
       `(2) resize-end drag changed plannedStartDate: on-disk=${startUnchangedAfter2}, expected unchanged ${expectedStartAfterResize1}`

@@ -11,7 +11,7 @@ export async function start({ before = null, parents = 50, subtasks = 100, minif
   execFileSync("node", [path.join(repo, "tools/web-preview/build.mjs"), "--app", repo, "--out", site, "--label", "bench", "--sha", "bench", "--minify", String(minify)], { stdio: "ignore" });
   const paths = await generateFixtures({ vaultDir: vault, count: parents, subtasksPerParent: subtasks });
   const files = Object.fromEntries(paths.map((p) => [p, fs.readFileSync(path.join(vault, p), "utf8")]));
-  const store = { files, data: { taskFolder: "tasks", ganttZoom: 28, ganttNationalHolidaysUpdatedAt: "2099-01-01", ...settings }, secrets: {} };
+  const store = { files, data: { taskFolder: "tasks", ganttZoom: 28, ganttNationalHolidaysUpdatedAt: "2099-01-01", ...paths.settings, ...settings }, secrets: {} };
   const server = http.createServer((req, res) => { const p = path.join(site, decodeURIComponent(new URL(req.url, "http://x").pathname).replace(/\/$/, "/index.html")); if (!p.startsWith(site) || !fs.existsSync(p)) { res.writeHead(404); res.end(); return; } res.writeHead(200, { "content-type": p.endsWith(".js") ? "text/javascript" : p.endsWith(".css") ? "text/css" : "text/html" }); res.end(fs.readFileSync(p)); }).listen(0);
   const browser = await chromium.launch({ args: ["--enable-precise-memory-info", "--js-flags=--expose-gc"] });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, colorScheme });

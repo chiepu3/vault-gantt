@@ -31,7 +31,7 @@
 
 ### 2.1 データと制約
 
-- Markdownがタスクの正本。対象は `taskFolder` 以下のMarkdownで、frontmatterの `type: task` が必要。親IDはVault相対ファイルパス、子IDは `親パス::subtaskKey`。子は同じ親ファイルの `Subtasks` セクションに存在する。名前変更はファイルパスや子keyの変更を意味しない。
+- Markdownがタスクの正本。対象は `taskFolder` 以下のMarkdownで、frontmatterの `type: task` が必要。ノート形式はv2。親は `<taskFolder>/<[日付 ]タイトル>.md`、子は `<taskFolder>/<親のファイル名>/<タイトル>.md` の独立したノートで、IDはfrontmatterの `id`（親 `t-xxxxxx`、子 `s-xxxxxx`）。子の `parent` リンクが親子関係の正本（なければフォルダーで補う）。タイトルの確定変更はファイル名の変更を伴い、親のリネームは子フォルダーも移す。並び順は設定（`ganttParentOrder` / `subtaskOrder`）に保存する。v1のノートは「ノート形式を v2 に変換」コマンドで一度だけ変換する。
 - 親はGantt表示可否・親順序を持つ。予定開始・終了、作業時間、マーカーは子のみ書き込み可能。親の期間は子から導出する。親に直接予定日をpatchすると拒否される。
 - 日付は実在する `YYYY-MM-DD`。予定日・期限は `""` で解除できる。両端をマージした結果で開始≦終了を検証する。期間は両端を含む。
 - `statusLabel` は `active / in_progress / waiting / hold / done`。`done` は完了をtrueにする。完了だけtrueならdone、falseならactive。非done状態のみ指定すると完了false。矛盾する複合patchの実際の正規化結果もプレビューに含める。
@@ -46,7 +46,7 @@
 
 現行のUIタスク更新・親子作成の多くはregistryを通るが、イベント・定例作業・設定・Daily ToDo・日付付き子作成・子削除・自動優先度更新には別経路がある。これらは同じ直列化・競合検証に統一されていない。
 
-履歴はMarkdownのbefore/afterのみ、メモリ内50件・約12MiBを基準に制限される。設定は履歴対象外。親作成は履歴バリア。registry経由の子作成は親ファイルの差分を記録できるが、直接 `addSubtaskWithPlan` / `deleteSubtaskTaskItem` を呼ぶ経路は履歴を消す。Daily ToDoの書き込みも履歴を消す。Undoは履歴先頭と現在内容が一致するときのみで、外部編集を上書きしない。
+履歴はMarkdownのbefore/afterのみ、メモリ内50件・約12MiBを基準に制限される。設定は履歴対象外。親作成は履歴バリア。子の作成・削除・リネームはノート単位で履歴に記録され、Undo/Redoはリネームにも追従する。以前は、直接 `addSubtaskWithPlan` / `deleteSubtaskTaskItem` を呼ぶ経路は履歴を消す。Daily ToDoの書き込みも履歴を消す。Undoは履歴先頭と現在内容が一致するときのみで、外部編集を上書きしない。
 
 現行のプレビューは次の2つを区別する。
 
@@ -98,8 +98,8 @@
 | T23 | 未配置の子を指定日に配置 | subtaskId, date | UI候補は両端未設定の子、最大20表示。1日予定、営業日snap | ○ | patch update | C+G後 |
 | T24 | 子をGanttから外す | subtaskId | 両予定日を空にする。タスク・時間・マーカーを削除しない | ○ | ○ update | C+G後 |
 | T25 | 親の指定子以降を一括移動／Bulk-Move | parentId, anchorId, shiftDays | 開始・終了・名前でsortしたanchor以降。日程は暦日差、マーカー再配置、計画・実績を営業日相対位置で移動。一括警告 | ○ | patch update-batch、意味ツールなし | C+G後、算出patchのみ |
-| T26 | 子をタスクとして削除 | subtaskId | UI確認あり、親・key検証、親ファイルから該当子を削除。親ファイルは残る | ×、履歴バリア | × | × |
-| T27 | 複数タスクのフィールド一括更新 | changes[{taskId,patch,expectedRevision?}] | LLM1〜100件、同一ID重複禁止、親ファイル単位1回保存、複数ファイルは部分保存あり | ○、保存分 | ○ update-batch | C、日付ならG後 |
+| T26 | 子をタスクとして削除 | subtaskId | UI確認あり、親ID検証、子のノートをゴミ箱へ移動。親ノートは残る | ×、履歴バリア | × | × |
+| T27 | 複数タスクのフィールド一括更新 | changes[{taskId,patch,expectedRevision?}] | LLM1〜100件、同一ID重複禁止、ノート単位1回保存、複数ノートは部分保存あり | ○、保存分 | ○ update-batch | C、日付ならG後 |
 | T28 | 複数タスクの日付一括設定 | changes[{taskId,schedule,expectedRevision?}] | 開始・終了は子、期限は親子。最大100件。Bulk-Moveの意味は持たない | ○、保存分 | ○ schedule-batch | C+G後 |
 | T29 | 1タスクの複合フィールド更新 | taskId, patch, expectedRevision? | strict19キー、種別検証、正規化、暗黙の更新日・priority変化、round trip照合 | ○ | ○ update | C、日付ならG後 |
 | T30 | 全管理タスクの自動優先度再計算 | force?、設定・今日 | 起動時/設定ONで呼ぶ。auto対象のみ、日単位で抑制、force可、専用コマンドなし。registry外の全ノート再構築 | ×、履歴記録なし | × | × |
@@ -206,7 +206,7 @@
 | V01 | Workbenchを開く | position/既存leaf | command/ribbon/埋め込みのopen、既存leaf再利用 | ― | × | ― |
 | V02 | Ganttを開く | position/既存leaf | command/ribbon/一覧、既存leaf再利用 | ― | ×、AIカードにボタンはある | ― |
 | V03 | タスクfinderを開き検索 | query | 5フィールドのfuzzy検索。LLM searchの名前部分一致とは別 | ― | ×、T01は非等価 | ― |
-| V04 | タスクノート・子見出しを開く | taskId | 親path、子headingリンク、失敗時file open fallback | ― | × | ― |
+| V04 | タスクノート・子見出しを開く | taskId | 対象のノート（子は子自身のノート）、失敗時file open fallback | ― | × | ― |
 | V05 | 指定日のDaily ToDo編集modalを開く | date | commandは今日、Ganttはchipのdate。open時点では書込なし、SaveでD07 | ― | × | ― |
 | V06 | AIチャットを開く | tab/left/right | 3コマンド、既存viewがあれば位置より再利用を優先 | ― | × | ― |
 | V07 | 一覧・埋め込みのテキストfilter | viewId, text | ローカル状態。filter時編集中編集を破棄、IME配慮。埋め込みは取得時snapshotのまま | ― | × | ― |
@@ -493,7 +493,7 @@ interface OperationService {
 
 - `tasks.update`: 親/子のwritable fields一覧。省略は不変、日付の `""` は解除、tags/markers/mapsは全置換。updatedAtはサーバー管理。名前変更はファイル移動ではない。
 - `workload.propose`: mode=plan/actual、単位hours、0.5h、0でその日を消す、cell patchは他日を保持。全置換variantだけが省略日を消す。休日の記録を許可するpolicyを明示。
-- `subtasks.delete.propose`: 親ファイルを削除せず、その子の見出し・metadata・時間・markersを除く。「Ganttから外す」と違う効果を説明する。
+- `subtasks.delete.propose`: 親ノートを削除せず、その子のノートをゴミ箱へ移す。「Ganttから外す」と違う効果を説明する。
 - `daily.propose`: sourceKey/path/dateを区別。既存行はfingerprint＋revisionで特定。新規挿入はmain、空文字や一覧からの省略を削除と推定しない。D06削除はexplicit action。
 - `tags.propose`: 定義keyとタスクtagsの名前文字列は異なる。定義のrename/deleteで参照を移行するか保持するかを明示し、影響件数を予測する。
 - `settings.propose`: taskFolder変更はファイル移動でない。機能OFFはデータ削除でない。同期UI flagと同期ONは異なる。同期のON/URL変更による直後送信も副作用。
@@ -608,9 +608,9 @@ searchのtext検索は本文を対象にするか明示し、既定name検索に
   "snapshotRevision": "snapshot-r17",
   "fieldsIncluded": ["identity", "status", "schedule", "priority"],
   "items": [{
-    "id": "tasks/2026/10/2026-10-09 リリース.md::review",
+    "id": "s-a1b2c3",
     "kind": "subtask",
-    "parentId": "tasks/2026/10/2026-10-09 リリース.md",
+    "parentId": "t-d4e5f6",
     "name": "レビュー",
     "status": "in_progress",
     "completed": false,

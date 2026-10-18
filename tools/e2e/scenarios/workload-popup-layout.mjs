@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pickAnchorMonday, toIsoStr, addDaysIso } from "./drag-fixture.mjs";
-import { loadNoteFormatModule } from "../gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "../gen-fixtures.mjs";
 import {
   hoverOnto,
   moveMouse,
@@ -92,12 +92,12 @@ function fixtureHours(date) {
 }
 
 export async function prepare(vaultDir) {
-  const { buildFullNote } = await loadNoteFormatModule();
+  const noteModule = await loadNoteFormatModule();
   const today = toIsoStr(new Date());
   const start = toIsoStr(pickAnchorMonday({ minDaysFromToday: 3 }));
   fixtureStart = start;
-  const folder = `tasks/${today.slice(0, 4)}/${today.slice(5, 7)}`;
-  fs.mkdirSync(path.join(vaultDir, folder), { recursive: true });
+  const folder = "tasks";
+  const settings = { ganttParentOrder: [], subtaskOrder: {} }; // creation order = display order
 
   const makeParent = (name, order, subtaskTitle, days) => {
     const parentPath = `${folder}/${today} ${name}.md`;
@@ -112,9 +112,6 @@ export async function prepare(vaultDir) {
       }
       subtasks.set("subtask-1", {
         kind: "subtask",
-        id: `${parentPath}::subtask-1`,
-        key: "subtask-1",
-        file: { path: parentPath, parentPath, heading: subtaskTitle },
         title: subtaskTitle,
         displayName: subtaskTitle,
         statusLabel: "active",
@@ -135,7 +132,6 @@ export async function prepare(vaultDir) {
     }
     const parent = {
       kind: "parent",
-      id: parentPath,
       file: { path: parentPath },
       title: name,
       displayName: name,
@@ -149,10 +145,12 @@ export async function prepare(vaultDir) {
       notes: "",
       tags: [],
       ganttEnabled: true,
-      ganttOrder: order,
       subtasks,
     };
-    fs.writeFileSync(path.join(vaultDir, parentPath), buildFullNote(parent, subtasks));
+    void order;
+    const notes = writeTaskNotes(noteModule, vaultDir, parent, subtasks);
+    settings.ganttParentOrder.push(notes.parentId);
+    if (notes.subIds.length) settings.subtaskOrder[notes.parentId] = notes.subIds;
     return parentPath;
   };
 
@@ -166,7 +164,7 @@ export async function prepare(vaultDir) {
   for (let i = 0; i < TAIL_PARENTS; i++) {
     makeParent(`Tail${i}`, FILLER_PARENTS + 2 + i, undefined, 0);
   }
-  return { longPath };
+  return { longPath, settings };
 }
 
 /** Measures the open workload popup's graph/scrollbar geometry. */

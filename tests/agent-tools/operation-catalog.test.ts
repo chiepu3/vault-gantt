@@ -15,7 +15,7 @@ describe("124-entry catalog documentation", () => {
       const description = fullDescription(id); expect(description).toContain("Undo:"); expect(description).toContain("例:");
       if (definition.classification === "write") { expect(description).toContain("人間"); expect(description).toContain("保存しない"); }
     }
-    expect(fullDescription("T20")).toContain("計画・実績mapを保持"); expect(fullDescription("T25")).toContain("計画/実績mapは営業日相対位置で移動"); expect(fullDescription("M07")).toContain("0.5h"); expect(fullDescription("T26")).toContain("親ファイルを残し");
+    expect(fullDescription("T20")).toContain("計画・実績mapを保持"); expect(fullDescription("T25")).toContain("計画/実績mapは営業日相対位置で移動"); expect(fullDescription("M07")).toContain("0.5h"); expect(fullDescription("T26")).toContain("親ノートを残し");
     expect(catalog.describe().filter((definition) => !definition.available).every((definition) => definition.denial?.code === "POLICY_DENIED")).toBe(true);
   });
   it("SDK exposes implemented proposal/read tools and never exposes human approval or unimplemented operations", async () => {
