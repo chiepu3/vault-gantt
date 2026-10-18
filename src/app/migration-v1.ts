@@ -222,16 +222,22 @@ export async function runMigration(vault: VaultAdapter, settings: TaskWorkbenchS
     }
   }
 
-  // A gantt order that never existed is built from the v1 notes' own ganttOrder values.
-  if (report.converted.length && !settings.ganttParentOrder) {
+  // Converted parents that are not in the stored order yet (it never existed, or it was completed while the v1 notes
+  // were still hidden, so it is empty or lacks them) are appended in the v1 notes' own ganttOrder.
+  const placed = new Set(settings.ganttParentOrder ?? []);
+  const unplaced = report.converted.filter((entry) => !placed.has(entry.parentId));
+  if (unplaced.length) {
     const legacyOrder = new Map<string, number>();
-    await Promise.all(report.converted.map(async (entry) => {
+    await Promise.all(unplaced.map(async (entry) => {
       const text = await vault.adapterRead?.(`${plan.backupRoot}/${entry.path}`).catch(() => undefined);
       const order = text === undefined ? NaN : parseFloat(/^ganttOrder:\s*(.+)$/m.exec(text)?.[1] ?? "");
       legacyOrder.set(entry.parentId, Number.isFinite(order) ? order : 999999);
     }));
     const candidate = structuredClone(settings);
-    candidate.ganttParentOrder = report.converted.map((entry) => entry.parentId).sort((a, b) => (legacyOrder.get(a) ?? 999999) - (legacyOrder.get(b) ?? 999999));
+    candidate.ganttParentOrder = [
+      ...(settings.ganttParentOrder ?? []),
+      ...unplaced.map((entry) => entry.parentId).sort((a, b) => (legacyOrder.get(a) ?? 999999) - (legacyOrder.get(b) ?? 999999)),
+    ];
     await deps.persist(candidate, ["subtaskOrder", "ganttParentOrder"]);
     settings.ganttParentOrder = candidate.ganttParentOrder;
   }

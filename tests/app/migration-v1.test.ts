@@ -119,6 +119,15 @@ describe("v1 to v2 conversion", () => {
     expect(settings.ganttParentOrder).toEqual([byName("アルファ"), byName("ベータ")]);
   });
 
+  it("uses the notes' own order values when the stored order was completed empty while the v1 notes were hidden", async () => {
+    settings.ganttParentOrder = [];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const byName = (name: string) => rows.find((row) => row.displayName === name)!.id;
+    expect(settings.ganttParentOrder).toEqual([byName("アルファ"), byName("ベータ")]);
+    expect(persist).toHaveBeenLastCalledWith(expect.objectContaining({ ganttParentOrder: [byName("アルファ"), byName("ベータ")] }), ["subtaskOrder", "ganttParentOrder"]);
+  });
+
   it("stops and restores one parent when its result differs, and still converts the others", async () => {
     const plan = await planMigration(vault, settings, new Date(2026, 6, 1, 9, 5, 7));
     const original = vault.getFileContent(A)!;
