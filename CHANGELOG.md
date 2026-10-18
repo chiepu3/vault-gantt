@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.8.1 (2026-10-18)
+
+### 修正
+
+- AIチャットの実機確認で見つかった不具合（日報の親候補・状態表示など） ([#63](https://github.com/chiepu3/vault-gantt/pull/63))
+
 ## v0.8.0 (2026-10-18)
 
 ### 新機能
