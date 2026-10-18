@@ -262,7 +262,7 @@ export async function run({ cdp }) {
   }
   try {
     await cdp.waitForExpression(
-      `(() => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("tasks/") && app.metadataCache.getFileCache(f)?.frontmatter?.ganttEnabled === true).length === ${FILLER_PARENTS + 2 + TAIL_PARENTS})()`,
+      `(() => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("tasks/") && app.metadataCache.getFileCache(f)?.frontmatter?.gantt === true).length === ${FILLER_PARENTS + 2 + TAIL_PARENTS})()`,
       { timeoutMs: 20000, label: "fixtures indexed by metadataCache" }
     );
   } catch (err) {

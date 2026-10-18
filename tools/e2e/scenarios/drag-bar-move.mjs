@@ -101,7 +101,7 @@ export async function run({ cdp, vaultDir }) {
         const f = app.vault.getAbstractFileByPath(${JSON.stringify(parentPath)});
         if (!f) return false;
         const cache = app.metadataCache.getFileCache(f);
-        return !!(cache && cache.frontmatter && cache.frontmatter.ganttEnabled === true);
+        return !!(cache && cache.frontmatter && cache.frontmatter.gantt === true);
       })()`,
       { timeoutMs: 15000, label: "fixture file indexed by metadataCache" }
     );
