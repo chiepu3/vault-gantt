@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { build } from "esbuild";
 import { builtinModules } from "node:module";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "./gen-fixtures.mjs";
 import { startFakeOpenAI } from "./fake-openai-server.mjs";
 
 const source = process.cwd();
@@ -50,13 +50,13 @@ fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({
   taskFolder: "tasks", autoPriorityEnabled: false, ganttSyncEnabled: false, ganttFeatureSyncEnabled: false, ganttFeatureWorkloadEnabled: false, ganttFeatureEventsEnabled: false, ganttFeatureDailyTodoEnabled: false, ganttZoom: 36,
   ai: { preset: "custom", baseUrl: `http://127.0.0.1:${fake.port}/v1`, model: "fake-model", useApiKey: false },
 }));
-const { buildFullNote } = await loadNoteFormatModule();
+const noteModule = await loadNoteFormatModule();
 const notePath = "tasks/合成デザイン確認.md";
 const common = { statusLabel: "active", completed: false, createdAt: "2026-10-01", updatedAt: "2026-10-01", priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const child = { ...common, kind: "subtask", id: notePath + "::design", key: "design", file: { path: notePath, parentPath: notePath, heading: "デザイン確認" }, title: "デザイン確認", displayName: "デザイン確認", ganttEnabled: false, plannedStartDate: "2026-10-10", plannedEndDate: "2026-10-12" };
 const parent = { ...common, kind: "parent", id: notePath, file: { path: notePath }, title: "合成デザイン確認", displayName: "合成デザイン確認", ganttEnabled: true, ganttOrder: 0, subtasks: new Map([["design", child]]) };
 fs.mkdirSync(path.join(vault, "tasks"));
-fs.writeFileSync(path.join(vault, notePath), buildFullNote(parent, parent.subtasks));
+const written = writeTaskNotes(noteModule, vault, parent, parent.subtasks); // v2: parent note + one note per subtask
 fs.writeFileSync(path.join(vault, "合成UIテスト.md"), "# 合成UIテスト\n\n[[tasks/合成デザイン確認]] へのリンクです。\n");
 const profileConfig = path.join(profile, "obsidian.json");
 fs.writeFileSync(profileConfig, JSON.stringify({ vaults: { a1b2c3d4e5f60718: { path: vault, ts: Date.now(), open: true } } }));

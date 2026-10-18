@@ -1,7 +1,7 @@
 import { Modal, Notice, Setting, TFile } from "obsidian";
 import type { App } from "obsidian";
 import { TaskRow, TaskWorkbenchSettings } from "../core/types";
-import { parseTaskFile } from "../core/note-format";
+import { readNote } from "./note-store";
 import { VaultAdapter, addSubtask, createTask } from "./task-operations";
 
 /**
@@ -97,7 +97,7 @@ export class TaskFileService {
 
     const subtask = create ? await create(name, parentRow) : await addSubtask(vault, settings, parentRow, name);
     new Notice(`サブタスクを追加しました: ${subtask.displayName}`);
-    await this.openInEditor(app, parentRow.file.path);
+    await this.openInEditor(app, subtask.file.path);
 
     if (onCreated) {
       onCreated(subtask);
@@ -127,8 +127,8 @@ export class TaskFileService {
     const file = vault.getFileByPath(currentFilePath);
     let parent: TaskRow | null = null;
     if (file) {
-      const content = await vault.read(file);
-      parent = parseTaskFile({ path: file.path }, content, settings);
+      const note = await vault.whenIndexed([file]).then(() => readNote(vault, file, settings));
+      parent = note?.row.kind === "parent" ? note.row : null;
     }
 
     if (!parent) {

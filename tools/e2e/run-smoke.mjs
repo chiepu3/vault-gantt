@@ -43,8 +43,8 @@ async function main() {
     {
       name: "task-creation",
       prepare: async (vaultDir) => {
-        // The task-creation trigger: a tasks/ root folder exists, but the
-        // tasks/YYYY/MM subfolders do not yet.
+        // The task-creation trigger: a tasks/ root folder exists, but no
+        // task notes do not yet.
         fs.mkdirSync(path.join(vaultDir, "tasks"), { recursive: true });
       },
       run: ({ cdp, vaultDir }) => taskCreation.run({ cdp, vaultDir }),
@@ -175,7 +175,12 @@ async function runScenario(scenario) {
   let runtime = null;
   try {
     installPlugin(vaultDir);
-    await scenario.prepare(vaultDir);
+    const prepared = await scenario.prepare(vaultDir);
+    // Order stores (gantt parent order, subtask order) live in the plugin settings, not in the notes.
+    if (prepared?.settings) {
+      const dataPath = path.join(vaultDir, ".obsidian", "plugins", PLUGIN_ID, "data.json");
+      fs.writeFileSync(dataPath, `${JSON.stringify({ ...JSON.parse(fs.readFileSync(dataPath, "utf8")), ...prepared.settings }, null, 2)}\n`);
+    }
 
     runtime = await startObsidian({ vaultDir });
     console.log(

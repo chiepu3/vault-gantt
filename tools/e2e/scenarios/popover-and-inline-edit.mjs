@@ -18,7 +18,7 @@
 
 
 import fs from "node:fs";
-import { pickAnchorMonday, toIsoStr, addDaysIso, writeDragFixture, waitForFrontmatterField, readFrontmatterField } from "./drag-fixture.mjs";
+import { pickAnchorMonday, toIsoStr, addDaysIso, writeDragFixture, waitForFrontmatterField, readFrontmatterField, readNoteText } from "./drag-fixture.mjs";
 import {
   centerOf,
   hoverOnto,
@@ -58,8 +58,8 @@ export async function run({ cdp, vaultDir }) {
   });
   details.push(`fixture: ${startDate} -> ${endDate} (subtask ${subtaskKey})`);
 
-  const statusKey = `subtask__${subtaskKey}__statusLabel`;
-  const titleKey = `subtask__${subtaskKey}__title`;
+  const statusKey = "status";
+  const titleKey = "title";
 
   const hasCommand = await cdp.evaluate(
     `!!app.commands.commands[${JSON.stringify(COMMAND_ID)}]`
@@ -86,7 +86,7 @@ export async function run({ cdp, vaultDir }) {
         const f = app.vault.getAbstractFileByPath(${JSON.stringify(parentPath)});
         if (!f) return false;
         const cache = app.metadataCache.getFileCache(f);
-        return !!(cache && cache.frontmatter && cache.frontmatter.ganttEnabled === true);
+        return !!(cache && cache.frontmatter && cache.frontmatter.gantt === true);
       })()`,
       { timeoutMs: 15000, label: "fixture file indexed by metadataCache" }
     );
@@ -248,7 +248,7 @@ export async function run({ cdp, vaultDir }) {
     });
     details.push(`subtask title on disk: "${onDisk}" (expected "${NEW_TITLE}")`);
   } catch (err) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     failures.push(
       `${err.message}\n    on-disk statusLabel at time of failure: ${readFrontmatterField(content, statusKey)}`
     );

@@ -155,13 +155,13 @@ const LEDGER = {
   "T26": {
     "purpose": "子をタスクとして削除",
     "input": "subtaskId",
-    "constraints": "UI確認あり、親・key検証、親ファイルから該当子を削除。親ファイルは残る",
+    "constraints": "UI確認あり、親ID検証、子のノートをゴミ箱へ移動。親ノートは残る",
     "undo": "×、履歴バリア"
   },
   "T27": {
     "purpose": "複数タスクのフィールド一括更新",
     "input": "changes[{taskId,patch,expectedRevision?}]",
-    "constraints": "LLM1〜100件、同一ID重複禁止、親ファイル単位1回保存、複数ファイルは部分保存あり",
+    "constraints": "LLM1〜100件、同一ID重複禁止、ノート単位1回保存、複数ノートは部分保存あり",
     "undo": "○、保存分"
   },
   "T28": {
@@ -579,7 +579,7 @@ const LEDGER = {
     "undo": "―"
   },
   "V04": {
-    "purpose": "タスクノート・子見出しを開く",
+    "purpose": "タスクのノートを開く",
     "input": "taskId",
     "constraints": "親path、子headingリンク、失敗時file open fallback",
     "undo": "―"
@@ -758,7 +758,7 @@ const PARAMETER_DOCS: Record<string, string> = {
   completed: "完了boolean。単独trueはdone、falseはactiveへ連動。",
   dueDate: "親/子の期限YYYY-MM-DD。空文字で解除。自動priority対象は期限により再計算。",
   createdAt: "作成日YYYY-MM-DD。空はschema上受理するがparseで今日になる場合は安全な保存を拒否。",
-  orderedParentIds: "親IDの指定順に1000刻みganttOrderを採番。保存は親file単位で一部成功があり得る。",
+  orderedParentIds: "親IDの指定順に1000刻みで並び順を設定。並び順は設定に保存され、ノートは変更しない。",
   anchorId: "指定親に属する子ID。開始・終了・名前順でこの子以降が対象。",
   eventKey: "workload.get(detail=true)のevent寄与id、または既存プレビューのevents.key。名前/dateを取得する専用read DTOは未提供のため既存UIで照合する。",
   scheduleKey: "workload.get(detail=true)のweekly寄与id、または既存プレビューのweekly.key。定例の名前/曜日詳細を取得する専用read DTOは未提供。",
@@ -773,7 +773,7 @@ const PARAMETER_DOCS: Record<string, string> = {
   force: "既存サービスの当日/取得間隔抑制を解除するboolean。未実装操作では実行を拒否。",
 
   taskId: "tasks.search/get-manyで取得した実ID。親はVault相対path、子は親path::key。名前で代用しない。",
-  subtaskId: "実在する子ID（親path::key）。親IDは拒否。", parentId: "実在する親ファイルID。", parentTaskId: "実在する親ID。子は1階層のみ。",
+  subtaskId: "実在する子ID（s-で始まる）。親IDは拒否。", parentId: "実在する親ID（t-で始まる）。", parentTaskId: "実在する親ID。子は1階層のみ。",
   expectedRevision: "詳細取得の内容SHA-256（settings操作はsettings.getのsnapshotRevision（投影settingsRevisionも可）、親順はsnapshotRevision）。不一致時は再取得して再提案。省略してもplan後の競合ガードは有効。",
   calendarDelta: "暦日の整数差。営業日差ではない。正は未来、負は過去。", shiftDays: "暦日の整数差。アンカー以降を一括移動。",
   date: "実在するYYYY-MM-DD。TZ変換しない暦日。", start: "子の予定開始日。省略は保持、空文字は解除。", end: "子の予定終了日。省略は保持、空文字は解除。",
@@ -801,7 +801,7 @@ export function operationDescription<K extends OperationId>(id: K): OperationDef
   if (id === "T21" || id === "T22") constraints.push("伸縮は既存Ganttの営業日snapと交差防止に従う。マーカーと時間mapは保持。実績ありは警告。");
   if (id === "T25") constraints.push("開始・終了・名前順のアンカー以降。予定は暦日差、マーカー再配置、計画/実績mapは営業日相対位置で移動。実績を動かすため警告。");
   if (id === "T24") sideEffects.push("予定の両端だけを解除し、タスク・マーカー・時間mapは保持。");
-  if (id === "T26") sideEffects.push("親ファイルを残し、子の見出し・metadata・マーカー・計画/実績を削除。Ganttから外すとは異なる。");
+  if (id === "T26") sideEffects.push("親ノートを残し、子のノート（metadata・マーカー・計画/実績を含む）をゴミ箱へ移動。Ganttから外すとは異なる。");
   if (id.startsWith("E")) constraints.push("イベントはsettings内の独立行。日付移動で時間mapは移動しない。複製は時間mapも独立copy。削除は全時間mapも削除。");
   if (id.startsWith("W")) constraints.push("minutes単位、30分へ丸め。曜日0=日曜〜6=土曜。一致曜日に休日を含めて計画のみ寄与し、24hを超える定例寄与も可能。");
   if (id.startsWith("S")) sideEffects.push("taskFolder変更はファイル移動ではない。機能OFFは保存データ削除ではない。タグ定義rename/deleteで既存タスクのタグ名参照は保持し、一括移行しない。ソースmain削除後はmainへの新規Daily追加はできない。");

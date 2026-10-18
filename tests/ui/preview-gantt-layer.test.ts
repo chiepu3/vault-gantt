@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { BOUNDARY_OUTCOMES, D02_EMPTY_FILE_PREVIEW, CREATE_PREVIEW, DATE, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
+import { PARENT_ID, CHILD_ID, BOUNDARY_OUTCOMES, D02_EMPTY_FILE_PREVIEW, CREATE_PREVIEW, DATE, DELETE_PREVIEW, FILTERED_PREVIEW, MARKER_PREVIEW, MCP_PREVIEW, ONE_SIDED_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARTIAL_OUTCOME, PARTIAL_PREVIEW, PROJECTION_PAGE_FIXTURES, PROJECTION_STALE_ERROR, SETTINGS_PREVIEW, WORKLOAD_PREVIEW } from "../contracts/fixtures";
 import { deriveOverlay, PreviewGanttLayer } from "../../src/ui/preview-gantt-layer";
 import { renderPointGhosts, renderGhost } from "../../src/ui/ghost-layer";
 import { deriveHighlights, displayedHours, eventWorkloadKey, hoursChangeText } from "../../src/ui/preview-highlights";
@@ -20,11 +20,11 @@ describe("deriveOverlay (presentation diff of the projector's snapshots)", () =>
   });
   it("marks created and deleted rows; a deleted row keeps its before state", () => {
     const created = deriveOverlay(CREATE_PREVIEW.projection!);
-    expect([...created.created]).toEqual(["tasks/2026/10/リリース.md::new"]);
+    expect([...created.created]).toEqual(["s-eeeeee"]);
     expect(created.parents[0].children.map((child) => child.state)).toEqual(["context", "created"]);
     expect(created.unplaced).toHaveLength(0);
     const deleted = deriveOverlay(DELETE_PREVIEW.projection!);
-    expect([...deleted.deleted]).toEqual(["tasks/2026/10/リリース.md::review"]);
+    expect([...deleted.deleted]).toEqual([CHILD_ID]);
     expect(deleted.parents[0].children[0].before?.name).toBe("レビュー"); expect(deleted.parents[0].children[0].after).toBeUndefined();
     expect(deleted.parents[0].notes.join()).toContain("集計期間");
   });
@@ -32,12 +32,12 @@ describe("deriveOverlay (presentation diff of the projector's snapshots)", () =>
     const projection = structuredClone(CREATE_PREVIEW.projection!) as any;
     projection.after.parents[0].children[1].period = { start: null, end: null };
     const overlay = deriveOverlay(projection);
-    expect(overlay.unplaced).toEqual([{ id: "tasks/2026/10/リリース.md::new", name: "新しい子", reason: "日程が未設定のため、Ganttには置かれません" }]);
+    expect(overlay.unplaced).toEqual([{ id: "s-eeeeee", name: "新しい子", reason: "日程が未設定のため、Ganttには置かれません" }]);
   });
   it("tracks marker moves as point changes separate from the schedule ghost", () => {
     const overlay = deriveOverlay(MARKER_PREVIEW.projection!);
     expect(overlay.ghosts.size).toBe(0);
-    expect([...overlay.points.values()][0]).toEqual([{ taskId: "tasks/2026/10/リリース.md::review", kind: "marker", key: "review-point", label: "確認", before: DATE, after: "2026-10-14" }]);
+    expect([...overlay.points.values()][0]).toEqual([{ taskId: CHILD_ID, kind: "marker", key: "確認", label: "確認", before: DATE, after: "2026-10-14" }]);
   });
   it("detects deadline changes", () => {
     const projection = structuredClone(MARKER_PREVIEW.projection!) as any;
@@ -47,19 +47,19 @@ describe("deriveOverlay (presentation diff of the projector's snapshots)", () =>
 });
 
 describe("deriveHighlights (what the real chart marks)", () => {
-  const PARENT = "tasks/2026/10/リリース.md";
+  const PARENT = PARENT_ID;
   const withState = (mutate: (projection: any) => void): any => { const projection = structuredClone(WORKLOAD_PREVIEW.projection!) as any; mutate(projection); return projection; };
   const highlights = (projection: any) => deriveHighlights(projection, deriveOverlay(projection));
   it("marks changed rows and the parent that holds them, with created and deleted rows told apart", () => {
     const changed = highlights(OUTSIDE_RANGE_PREVIEW.projection!);
-    expect(changed.rows.get(`${PARENT}::review`)).toBe("changed"); expect(changed.rows.get(PARENT)).toBe("changed");
-    expect(highlights(CREATE_PREVIEW.projection!).rows.get(`${PARENT}::new`)).toBe("created");
-    expect(highlights(DELETE_PREVIEW.projection!).rows.get(`${PARENT}::review`)).toBe("deleted");
-    expect(highlights(CREATE_PREVIEW.projection!).rows.has(`${PARENT}::review`)).toBe(false);
+    expect(changed.rows.get(CHILD_ID)).toBe("changed"); expect(changed.rows.get(PARENT)).toBe("changed");
+    expect(highlights(CREATE_PREVIEW.projection!).rows.get("s-eeeeee")).toBe("created");
+    expect(highlights(DELETE_PREVIEW.projection!).rows.get(CHILD_ID)).toBe("deleted");
+    expect(highlights(CREATE_PREVIEW.projection!).rows.has(CHILD_ID)).toBe(false);
   });
   it("lists changed plan/actual cells per task and date, and the day totals of the workload row", () => {
     const marks = highlights(WORKLOAD_PREVIEW.projection!);
-    const cell = marks.workload.get(`${PARENT}::review`)!.get(DATE)!;
+    const cell = marks.workload.get(CHILD_ID)!.get(DATE)!;
     expect(cell.before).toEqual({ plan: 1.5, actual: 1 }); expect(cell.after).toEqual({ plan: 2, actual: 1 });
     expect(hoursChangeText(cell.before, cell.after)).toBe("計画 1.5h → 2h");
     expect(hoursChangeText({ plan: 0, actual: 0 }, { plan: 3, actual: 1 })).toBe("計画 0h → 3h / 実績 0h → 1h");
@@ -93,7 +93,7 @@ describe("deriveHighlights (what the real chart marks)", () => {
   it("places created rows (proposal) or deleted rows (saved) as preview-only bars, never rows the chart already holds", () => {
     const port = new FakePreviewPort([CREATE_PREVIEW, DELETE_PREVIEW]); const layer = new PreviewGanttLayer(port);
     port.focus("create-fixture");
-    expect(layer.phantomBars(PARENT)).toEqual([{ id: `${PARENT}::new`, name: "新しい子", start: expect.any(String), end: expect.any(String), state: "created" }]);
+    expect(layer.phantomBars(PARENT)).toEqual([{ id: "s-eeeeee", name: "新しい子", start: expect.any(String), end: expect.any(String), state: "created" }]);
     port.focus("delete-fixture"); expect(layer.phantomBars(PARENT)).toEqual([]);
     port.outcomes.set("delete-fixture", { previewId: "delete-fixture", status: "success", actions: [], actualProjection: DELETE_PREVIEW.projection } as any); port.emit();
     expect(layer.ghostMode).toBe("saved"); expect(layer.phantomBars(PARENT).map((bar) => bar.state)).toEqual(["deleted"]);
@@ -113,7 +113,7 @@ describe("deriveHighlights (what the real chart marks)", () => {
   });
   it("tells where to scroll: the first changed row and the earliest changed date", () => {
     const marks = highlights(OUTSIDE_RANGE_PREVIEW.projection!);
-    expect(marks.firstTaskId).toBe(`${PARENT}::review`); expect(marks.firstDate).toBe(DATE);
+    expect(marks.firstTaskId).toBe(CHILD_ID); expect(marks.firstDate).toBe(DATE);
   });
 });
 
@@ -121,15 +121,15 @@ describe("PreviewGanttLayer", () => {
   it("projects only the focused preview, as a proposal; nothing without focus", () => {
     const port = new FakePreviewPort([OUTSIDE_RANGE_PREVIEW, CREATE_PREVIEW]);
     const layer = new PreviewGanttLayer(port); const onChange = vi.fn(); layer.subscribe(onChange);
-    expect(layer.active).toBe(false); expect(layer.fingerprint("tasks/2026/10/リリース.md")).toBe(""); expect(layer.highlights).toBeUndefined(); expect(layer.markKey).toBe("");
+    expect(layer.active).toBe(false); expect(layer.fingerprint(PARENT_ID)).toBe(""); expect(layer.highlights).toBeUndefined(); expect(layer.markKey).toBe("");
     port.focus("outside-fixture");
-    expect(layer.active).toBe(true); expect(layer.ghostMode).toBe("proposed"); expect(layer.scheduleGhost("tasks/2026/10/リリース.md::review")).toBeTruthy();
+    expect(layer.active).toBe(true); expect(layer.ghostMode).toBe("proposed"); expect(layer.scheduleGhost(CHILD_ID)).toBeTruthy();
     expect(layer.legend()!.text).toBe("変更案を表示中"); expect(layer.legend()!.title).not.toContain("表示範囲外");
-    expect(layer.rowState("tasks/2026/10/リリース.md::review")).toBe("changed"); expect(layer.markKey).toContain("outside-fixture");
-    const fingerprint = layer.fingerprint("tasks/2026/10/リリース.md"); expect(fingerprint).toContain("outside-fixture");
+    expect(layer.rowState(CHILD_ID)).toBe("changed"); expect(layer.markKey).toContain("outside-fixture");
+    const fingerprint = layer.fingerprint(PARENT_ID); expect(fingerprint).toContain("outside-fixture");
     expect(layer.fingerprint("tasks/other.md")).toBe("");
     port.focus("create-fixture");
-    expect(layer.scheduleGhost("tasks/2026/10/リリース.md::review")).toBeUndefined(); expect(layer.fingerprint("tasks/2026/10/リリース.md")).not.toBe(fingerprint);
+    expect(layer.scheduleGhost(CHILD_ID)).toBeUndefined(); expect(layer.fingerprint(PARENT_ID)).not.toBe(fingerprint);
     expect(layer.isDeleted("x")).toBe(false);
     port.focus(null); expect(layer.active).toBe(false); expect(onChange).toHaveBeenCalledTimes(3);
     layer.dispose();

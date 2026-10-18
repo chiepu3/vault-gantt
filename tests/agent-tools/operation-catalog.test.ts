@@ -5,6 +5,7 @@ import { OPERATION_IDS, operationInputSchemas } from "../../src/contracts/operat
 import { fullDescription } from "../../src/agent-tools/descriptions";
 import { catalogTools } from "../../src/agent-tools/catalog-tools";
 import { runtimeFixture } from "../app/operation-runtime-fixture";
+import { CHILD_ID } from "../contracts/fixtures";
 describe("124-entry catalog documentation", () => {
   it("every frozen ID has a valid example, schema, explicit availability and sufficient semantics", () => {
     const catalog = new OperationCatalog(); expect(catalog.describe()).toHaveLength(124); expect(catalog.describe().filter((row) => row.available)).toHaveLength(124); expect(new Set(catalog.ids).size).toBe(124);
@@ -14,7 +15,7 @@ describe("124-entry catalog documentation", () => {
       const description = fullDescription(id); expect(description).toContain("Undo:"); expect(description).toContain("例:");
       if (definition.classification === "write") { expect(description).toContain("人間"); expect(description).toContain("保存しない"); }
     }
-    expect(fullDescription("T20")).toContain("計画・実績mapを保持"); expect(fullDescription("T25")).toContain("計画/実績mapは営業日相対位置で移動"); expect(fullDescription("M07")).toContain("0.5h"); expect(fullDescription("T26")).toContain("親ファイルを残し");
+    expect(fullDescription("T20")).toContain("計画・実績mapを保持"); expect(fullDescription("T25")).toContain("計画/実績mapは営業日相対位置で移動"); expect(fullDescription("M07")).toContain("0.5h"); expect(fullDescription("T26")).toContain("親ノートを残し");
     expect(catalog.describe().filter((definition) => !definition.available).every((definition) => definition.denial?.code === "POLICY_DENIED")).toBe(true);
   });
   it("SDK exposes implemented proposal/read tools and never exposes human approval or unimplemented operations", async () => {
@@ -23,7 +24,7 @@ describe("124-entry catalog documentation", () => {
     const tools = catalogTools(service, context, ["tasks", "schedule", "markers", "workload", "events", "weekly", "settings"], (event) => events.push(event));
     expect(Object.keys(tools).some((name) => /approve|commit|confirm/i.test(name))).toBe(false); expect(tools).toHaveProperty("operations_describe"); for (const name of ["search", "get", "create", "update", "schedule-batch", "update-batch"]) expect(tools).toHaveProperty(name); expect(tools).toHaveProperty("daily_get");
     const describeSchema = z.toJSONSchema(tools.operations_describe.inputSchema as z.ZodType); expect(JSON.stringify(describeSchema)).toContain("T30"); expect(JSON.stringify(describeSchema)).toContain("D03");
-    const result = await tools.operations_propose.execute!({ operationId: "M07", input: { subtaskId: "tasks/2026/10/リリース.md::review", workloadPlan: { "2026-10-13": 1.3 } } }, { toolCallId: "test", messages: [], context: undefined });
+    const result = await tools.operations_propose.execute!({ operationId: "M07", input: { subtaskId: CHILD_ID, workloadPlan: { "2026-10-13": 1.3 } } }, { toolCallId: "test", messages: [], context: undefined });
     expect(result).toMatchObject({ status: "pending", operationId: "M07", resultKind: "proposal-summary", projectionOmitted: true }); expect(result).not.toHaveProperty("projection"); expect(events).toHaveLength(1); expect(vault.getModifyCallCount()).toBe(0);
     expect(await tools.operations_propose.execute!({ operationId: "T30", input: {} }, { toolCallId: "test", messages: [], context: undefined })).toMatchObject({ status: "pending", operationId: "T30" });
   });

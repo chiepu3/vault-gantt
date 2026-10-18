@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { App, Vault } from "obsidian";
+import type { App } from "obsidian";
 import type { UiPort } from "../../src/contracts/ports";
 import type { OperationInputMap } from "../../src/contracts/operations";
 import { OPERATION_EXAMPLES } from "../../src/agent-tools/definitions";
@@ -7,8 +7,9 @@ import { viewRequest, diagnosticRequest, diagnosticPlan, executeDiagnosticPlan, 
 import { previewEntrySchema } from "../../src/contracts/preview";
 import { Logger } from "../../src/core/logger";
 import { runtimeFixture } from "./operation-runtime-fixture";
-import * as noteUpdate from "../../src/core/note-update";
-import { buildFullNote } from "../../src/core/note-format";
+import { newNoteText } from "../../src/app/task-operations";
+import { CHILD_ID, CHILD_PATH } from "../contracts/fixtures";
+import type { HistoryVault } from "../../src/app/history-manager";
 
 const ui: UiPort = {
   listViews: () => [],
@@ -36,49 +37,38 @@ describe("view, history and diagnostics operation handlers", () => {
     await expect(viewRequest("D08", { path: "../escape.md" }, context, ui)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
   });
   it("V20/V21 preview the history transition and execute through existing undo/redo", async () => {
-    const f = await runtimeFixture(), file = f.vault.getFileByPath(f.parent.id)!, before = await f.vault.read(file);
-    const copy = structuredClone(f.parent); copy.subtasks!.get("review")!.displayName = "変更"; copy.subtasks!.get("review")!.title = "変更";
-    const historyVault = { getFileByPath: (path: string) => f.vault.getFileByPath(path), read: f.vault.read.bind(f.vault), process: async (file: { path: string }, transform: (current: string) => string) => { await f.vault.modify(file, transform(await f.vault.read(file))); } } as unknown as Vault;
-    const after = buildFullNote(copy, copy.subtasks); await f.vault.modify(file, after); f.historyManager.push({ label: "rename", files: [{ path: f.parent.id, before, after }] });
+    const f = await runtimeFixture(), file = f.vault.getFileByPath(CHILD_PATH)!, before = await f.vault.read(file);
+    const copy = structuredClone(f.child); copy.displayName = "変更"; copy.title = "変更";
+    const historyVault = { getFileByPath: (path: string) => f.vault.getFileByPath(path), read: f.vault.read.bind(f.vault), process: async (file: { path: string }, transform: (current: string) => string) => { const next = transform(await f.vault.read(file)); await f.vault.modify(file, next); return next; } } as unknown as HistoryVault;
+    const after = newNoteText(f.vault, copy, f.parent); await f.vault.modify(file, after); f.historyManager.push({ label: "rename", files: [{ path: CHILD_PATH, before, after }] });
     const undo = await historyPlan("V20", {}, await f.service.contextPort.snapshot(), f.historyManager);
-    entriesValid(undo.entries); expect(undo.writes).toEqual([{ path: f.parent.id, before: after, after: before }]); expect(await f.vault.read(file)).toBe(after);
+    entriesValid(undo.entries); expect(undo.writes).toEqual([{ path: CHILD_PATH, before: after, after: before, taskId: CHILD_ID }]); expect(await f.vault.read(file)).toBe(after);
     await executeHistoryPlan(undo, f.historyManager, historyVault); expect(await f.vault.read(file)).toBe(before);
     const redo = await historyPlan("V21", {}, await f.service.contextPort.snapshot(), f.historyManager); entriesValid(redo.entries);
     await executeHistoryPlan(redo, f.historyManager, historyVault); expect(await f.vault.read(file)).toBe(after);
     await expect(executeHistoryPlan(undo, f.historyManager, historyVault)).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
   });
-  it("history tries the reverse merge after a preservation error", async () => {
-    const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
-    const content = snapshot.contents.get(f.parent.id)!;
-    f.historyManager.push({ label: "preserving", files: [{ path: f.parent.id, before: content + "\n履歴前の本文\n", after: content }] });
-    const merge = vi.spyOn(noteUpdate, "mergeTaskNote")
-      .mockImplementationOnce(() => { throw new noteUpdate.NotePreservationError("保持できない記述"); })
-      .mockReturnValueOnce(content);
-    try {
-      expect((await historyPlan("V20", {}, snapshot, f.historyManager)).writes).toHaveLength(1);
-      expect(merge).toHaveBeenCalledTimes(2);
-    } finally { merge.mockRestore(); }
+  it("history plans cover created and deleted notes", async () => {
+    const f = await runtimeFixture();
+    const created = { ...structuredClone(f.child), id: "s-new001", key: "s-new001", title: "追加", displayName: "追加", file: { path: "tasks/リリース/追加.md", parentPath: f.parent.file.path } as typeof f.child.file };
+    const text = newNoteText(f.vault, created, f.parent); await f.vault.create(created.file.path, text);
+    f.historyManager.push({ label: "create", files: [{ path: created.file.path, before: null, after: text }] });
+    const undo = await historyPlan("V20", {}, await f.service.contextPort.snapshot(), f.historyManager);
+    entriesValid(undo.entries); expect(undo.writes).toEqual([{ path: created.file.path, before: text, after: null, taskId: "s-new001" }]);
+    expect(undo.afterParents[0].subtasks!.has("s-new001")).toBe(false);
+    expect(undo.entries[0].effects.some((effect) => effect.kind === "presence" && effect.action === "delete")).toBe(true);
   });
-  it.each(["exception", "mismatch"])("history returns INVALID_INPUT when both directions fail (%s)", async (failure) => {
+  it("history returns INVALID_INPUT for notes that are not task notes", async () => {
     const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
-    const content = snapshot.contents.get(f.parent.id)!;
-    f.historyManager.push({ label: "unsafe", files: [{ path: f.parent.id, before: content + "\n履歴前の本文\n", after: content }] });
-    const merge = vi.spyOn(noteUpdate, "mergeTaskNote").mockImplementation(() => {
-      if (failure === "exception") throw new noteUpdate.NotePreservationError("保持できない記述");
-      return "different bytes";
-    });
-    try {
-      await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(expect.objectContaining({ error: expect.objectContaining({ code: "INVALID_INPUT" }) }));
-      expect(merge).toHaveBeenCalledTimes(2);
-    } finally { merge.mockRestore(); }
+    const content = snapshot.contents.get(CHILD_PATH)!;
+    f.historyManager.push({ label: "unsafe", files: [{ path: CHILD_PATH, before: "ただのメモ\n", after: content }] });
+    await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(expect.objectContaining({ error: expect.objectContaining({ code: "INVALID_INPUT" }) }));
   });
-  it("history plans reject empty, changed files and unmodeled Markdown", async () => {
+  it("history plans reject empty and changed files", async () => {
     const f = await runtimeFixture(), snapshot = await f.service.contextPort.snapshot();
     await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow();
-    const before = snapshot.contents.get(f.parent.id)!;
-    f.historyManager.push({ label: "bad", files: [{ path: f.parent.id, before: before + "\ntext", after: before }] });
-    await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(/未モデル化|保持できない/);
-    f.historyManager.push({ label: "conflict", files: [{ path: f.parent.id, before, after: before + "changed" }] });
+    const before = snapshot.contents.get(CHILD_PATH)!;
+    f.historyManager.push({ label: "conflict", files: [{ path: CHILD_PATH, before, after: before + "changed" }] });
     await expect(historyPlan("V20", {}, snapshot, f.historyManager)).rejects.toThrow(/一致/);
   });
   it("V22 is diagnostic-gated; V23 previews without stopping and saves only frozen logs", async () => {
@@ -105,7 +95,7 @@ describe("view, history and diagnostics operation handlers", () => {
     const f = await runtimeFixture(), logger = new Logger({} as App);
     logger.startRecording("old"); const plan = diagnosticPlan({}, logger);
     const vault = { getFiles: f.vault.getFiles.bind(f.vault), getFileByPath: f.vault.getFileByPath.bind(f.vault), read: f.vault.read.bind(f.vault), modify: f.vault.modify.bind(f.vault), create: async (path: string, content: string) => { logger.startRecording("new"); return f.vault.create(path, content); } };
-    expect(await executeDiagnosticPlan(plan, logger, vault)).toEqual({ recording: true });
+    expect(await executeDiagnosticPlan(plan, logger, vault as never)).toEqual({ recording: true });
     expect(logger.inspectRecording()).toMatchObject({ recording: true, name: "new" });
   });
 });

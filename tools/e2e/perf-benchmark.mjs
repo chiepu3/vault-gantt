@@ -323,7 +323,7 @@ async function waitForIndexedFixtures(cdp, fixturePaths) {
       return paths.every((fixturePath) => {
         const file = app.vault.getAbstractFileByPath(fixturePath);
         const cache = file ? app.metadataCache.getFileCache(file) : null;
-        return !!(cache && cache.frontmatter && cache.frontmatter.type === "task");
+        return !!(cache && cache.frontmatter && (cache.frontmatter.type === "task" || cache.frontmatter.type === "subtask"));
       });
     })()`,
     { timeoutMs: 60000, intervalMs: 250, label: "benchmark fixtures indexed" }

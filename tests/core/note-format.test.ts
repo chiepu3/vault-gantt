@@ -686,6 +686,60 @@ subtaskOrder: [alpha, beta]
       // incorrectly correlates with "Beta Task" (position-based correlation is broken)
       expect(after?.subtasks?.get("alpha")?.title).toBe("Beta Task");
     });
+
+    describe("subtask matching by stored title", () => {
+      const fmBase = (extra: string) => `---
+type: task
+displayName: "Test"
+subtaskOrder: [alpha, beta, gamma]
+subtask__alpha__title: "Alpha Task"
+subtask__alpha__plannedStartDate: 2026-01-01
+subtask__beta__title: "Beta Task"
+subtask__beta__plannedStartDate: 2026-02-02
+subtask__gamma__title: "Gamma Task"
+subtask__gamma__plannedStartDate: 2026-03-03
+---
+## Subtasks
+${extra}`;
+      const parse = (c: string) => parseTaskFile({ path: "test/file.md" }, c, settings);
+
+      it("swapped headings keep their own data", () => {
+        const r = parse(fmBase("### Beta Task\n### Alpha Task\n### Gamma Task"));
+        expect(r?.subtasks?.get("alpha")?.title).toBe("Alpha Task");
+        expect(r?.subtasks?.get("alpha")?.plannedStartDate).toBe("2026-01-01");
+        expect(r?.subtasks?.get("beta")?.plannedStartDate).toBe("2026-02-02");
+        // Map stays in body order
+        expect([...(r?.subtasks?.keys() ?? [])]).toEqual(["beta", "alpha", "gamma"]);
+      });
+
+      it("deleted middle section does not shift data", () => {
+        const r = parse(fmBase("### Alpha Task\n### Gamma Task"));
+        expect(r?.subtasks?.get("gamma")?.title).toBe("Gamma Task");
+        expect(r?.subtasks?.get("gamma")?.plannedStartDate).toBe("2026-03-03");
+        expect(r?.subtasks?.has("beta")).toBe(false);
+      });
+
+      it("heading renamed in place keeps data via positional fallback", () => {
+        const r = parse(fmBase("### Alpha Task\n### Renamed\n### Gamma Task"));
+        expect(r?.subtasks?.get("beta")?.title).toBe("Renamed");
+        expect(r?.subtasks?.get("beta")?.plannedStartDate).toBe("2026-02-02");
+      });
+
+      it("legacy note without __title keys is positional", () => {
+        const r = parse(`---
+type: task
+displayName: "Test"
+subtaskOrder: [alpha, beta]
+subtask__alpha__plannedStartDate: 2026-01-01
+---
+## Subtasks
+### X
+### Y`);
+        expect(r?.subtasks?.get("alpha")?.title).toBe("X");
+        expect(r?.subtasks?.get("alpha")?.plannedStartDate).toBe("2026-01-01");
+        expect(r?.subtasks?.get("beta")?.title).toBe("Y");
+      });
+    });
   });
 
   describe("buildFrontmatter", () => {
@@ -704,11 +758,11 @@ subtaskOrder: [alpha, beta]
         "completed:",
         'displayName: "Parent"',
         "ganttEnabled:",
-        "ganttOrder:",
         "subtaskOrder:",
       ]) {
         expect(fm).toContain(field);
       }
+      expect(fm).not.toContain("ganttOrder");
     });
 
     it("buildFrontmatter prefixes subtask fields with subtask__{key}__{field}", () => {

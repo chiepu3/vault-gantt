@@ -3,12 +3,12 @@ import { operationInputSchemas } from "../../contracts/operations";
 import type { OperationPreviewV1, PreviewEntry, PreviewEffect } from "../../contracts/preview";
 import type { TaskWorkbenchSettings } from "../../core/types";
 import { pickGanttTagColor } from "../../core/constants";
-import { buildFullNote, parseTaskFile } from "../../core/note-format";
-import { applyPatchToParent } from "../../core/task-patch";
+import { applyPatchToRow } from "../../core/task-patch";
 import { normalizeHolidayDates, shouldRefreshNationalHolidays } from "../holiday-service";
 import { buildReadonlyGanttSnapshotFromTasks, getGanttSyncEndpoint, hashString } from "../gantt-sync-service";
 import type { ConfiguredDailyNoteSettings } from "../daily-note-creation";
 import { taskEffects } from "../preview-projector";
+import { roundTripRow } from "../note-changes";
 import { canonical, checkRevision, contentRevision, fail, findTask, type TaskChange, type TaskSnapshot } from "./runtime";
 
 export const INTEGRATION_OPERATION_IDS = ["S08", "S18", "S19", "S20", "S21", "S27", "S35"] as const;
@@ -83,7 +83,7 @@ export async function integrationPlan<K extends IntegrationId>(id: K, input: Ope
   } else {
     const target = findTask(snapshot, args.target.taskId, args.target.kind === "marker" ? "subtask" : undefined);
     checkRevision(snapshot, target, args.expectedRevision);
-    const parent = findTask(snapshot, target.file.path, "parent");
+    const parent = target.kind === "parent" ? target : findTask(snapshot, target.parentId ?? "", "parent");
     let definition = settings.ganttTags.find((tag) => tag.name.toLocaleLowerCase() === args.name.toLocaleLowerCase() || tag.key === args.name);
     if (!definition) {
       let index = 1; while (settings.ganttTags.some((tag) => tag.key === `tag-${index}`)) index++;
@@ -98,15 +98,10 @@ export async function integrationPlan<K extends IntegrationId>(id: K, input: Ope
       if (!target.ganttMarkers?.some((marker) => marker.key === markerKey)) fail("NOT_FOUND", "実在するmarkerKeyを取得してください。");
       patch = { ganttMarkers: target.ganttMarkers.map((marker) => marker.key === markerKey ? { ...marker, tags: add(marker.tags ?? []) } : { ...marker }) };
     } else patch = { tags: add(target.tags) };
-    const copy = structuredClone(parent); applyPatchToParent(copy, patch, target.id, settings);
-    const reparsed = parseTaskFile({ path: parent.id }, buildFullNote(copy, copy.subtasks), { ...settings, autoPriorityEnabled: false });
-    if (!reparsed || canonical(copy) !== canonical(reparsed)) {
-      // File handles carry runtime metadata; compare the affected public effects instead.
-      const after = target.kind === "parent" ? copy : copy.subtasks!.get(target.key!)!;
-      const parsed = target.kind === "parent" ? reparsed : reparsed?.subtasks?.get(target.key!);
-      if (!parsed || canonical(taskEffects(target, after, { ...patch })) !== canonical(taskEffects(target, parsed, { ...patch }))) fail("INVALID_INPUT", "タグ付与のMarkdown round tripを確認できません。");
-    }
-    const after = target.kind === "parent" ? copy : copy.subtasks!.get(target.key!)!;
+    const after = structuredClone(target); applyPatchToRow(after, patch, settings);
+    const reparsed = roundTripRow(after, { ...settings, autoPriorityEnabled: false });
+    // File handles carry runtime metadata; compare the affected public effects instead.
+    if (!reparsed || canonical(taskEffects(target, after, { ...patch })) !== canonical(taskEffects(target, reparsed, { ...patch }))) fail("INVALID_INPUT", "タグ付与のMarkdown round tripを確認できません。");
     plan.changes.push({ taskId: target.id, patch, expectedRevision: snapshot.revisions.get(target.file.path) });
     plan.entries.push({ entity: { kind: "task", taskId: target.id, ...(target.kind === "subtask" ? { parentId: parent.id } : {}) }, displayName: target.displayName, effects: taskEffects(target, after, { ...patch }) });
   }

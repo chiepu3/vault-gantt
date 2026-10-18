@@ -7,6 +7,7 @@ import { detectConfiguredDailyNoteSettings } from "./app/daily-note-creation";
 import type { PreviewUiHostPorts } from "./contracts/ports";
 import { ViewStateService } from "./app/view-state-service";
 import { OperationService } from "./app/operation-service";
+import { linkTarget, type NoteVault } from "./app/note-vault";
 import { SettingsPersistence } from "./app/settings-persistence";
 import { canonical } from "./app/operations/runtime";
 import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
@@ -60,7 +61,10 @@ import {
   deleteSubtaskTaskItem,
   loadTasks,
 } from "./app/task-operations";
-import { AutoPriorityController, TaskCache } from "./app/auto-priority";
+import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
+import { setNoteNotifier } from "./app/note-changes";
+import { findLegacyNotes, planMigration, runMigration } from "./app/migration-v1";
+import { MigrationModal } from "./ui/migration-modal";
 import {
   createRequestUrlNationalHolidayFetcher,
   HolidayService,
@@ -145,7 +149,7 @@ interface EmbedTableState {
 /**
  * Thin bridge from Obsidian's Vault to the testable VaultAdapter interface.
  */
-export class ObsidianVaultAdapter implements VaultAdapter {
+export class ObsidianVaultAdapter implements NoteVault {
   constructor(private readonly app: App) {}
 
   /**
@@ -205,6 +209,10 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     return this.app.vault.read(this.requireTFile(file.path));
   }
 
+  async cachedRead(file: VaultFile): Promise<string> {
+    return this.app.vault.cachedRead(this.requireTFile(file.path));
+  }
+
   getFiles(): VaultFile[] {
     return this.app.vault.getMarkdownFiles().map(toVaultFile);
   }
@@ -217,6 +225,87 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     return toVaultFile(abstract);
   }
 
+  getFrontmatter(file: VaultFile): Record<string, unknown> | null | undefined {
+    const cache = this.app.metadataCache.getFileCache(this.requireTFile(file.path));
+    return cache ? cache.frontmatter ?? null : undefined;
+  }
+
+  async processFrontMatter(file: VaultFile, update: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+    await this.app.fileManager.processFrontMatter(this.requireTFile(file.path), update);
+  }
+
+  async rename(path: string, newPath: string): Promise<void> {
+    const abstract = this.app.vault.getAbstractFileByPath(path);
+    if (!abstract) throw new Error(`Task file not found: ${path}`);
+    await this.ensureParentFolder(newPath);
+    await this.app.fileManager.renameFile(abstract, newPath);
+  }
+
+  async copyFolder(from: string, to: string): Promise<number> {
+    const adapter = this.app.vault.adapter;
+    const ensure = async (folder: string) => {
+      let current = "";
+      for (const part of folder.split("/")) {
+        current = current ? `${current}/${part}` : part;
+        if (!(await adapter.exists(current))) await adapter.mkdir(current);
+      }
+    };
+    const copy = async (source: string, target: string): Promise<number> => {
+      await ensure(target);
+      const listing = await adapter.list(source);
+      let count = 0;
+      for (const file of listing.files) {
+        await adapter.writeBinary(`${target}/${file.slice(file.lastIndexOf("/") + 1)}`, await adapter.readBinary(file));
+        count += 1;
+      }
+      for (const folder of listing.folders) count += await copy(folder, `${target}/${folder.slice(folder.lastIndexOf("/") + 1)}`);
+      return count;
+    };
+    return copy(from, to);
+  }
+
+  adapterRead(path: string): Promise<string> {
+    return this.app.vault.adapter.read(path);
+  }
+
+  async trash(file: VaultFile): Promise<void> {
+    await this.app.fileManager.trashFile(this.requireTFile(file.path));
+  }
+
+  resolveLink(link: string, fromPath: string): VaultFile | null {
+    const linkpath = linkTarget(link);
+    if (!linkpath) return null;
+    const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, fromPath);
+    return file ? toVaultFile(file) : null;
+  }
+
+  whenIndexed(files: readonly VaultFile[], timeoutMs = 5000): Promise<void> {
+    const cache = this.app.metadataCache;
+    const pending = () => files.some((file) => {
+      const abstract = this.app.vault.getAbstractFileByPath(file.path);
+      return abstract instanceof TFile && !cache.getFileCache(abstract);
+    });
+    if (!pending()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const finish = () => { cache.offref(changed); cache.offref(resolved); clearTimeout(timer); resolve(); };
+      const check = () => { if (!pending()) finish(); };
+      const changed = cache.on("changed", check);
+      const resolved = cache.on("resolved", check);
+      const timer = setTimeout(finish, timeoutMs);
+    });
+  }
+
+  afterWrite(file: VaultFile, contentChanged: boolean): Promise<void> {
+    if (!contentChanged) return Promise.resolve();
+    const cache = this.app.metadataCache;
+    ownWrites.add(file.path);
+    return new Promise<void>((resolve) => {
+      const finish = () => { ownWrites.delete(file.path); cache.offref(ref); clearTimeout(timer); resolve(); };
+      const ref = cache.on("changed", (changed) => { if (changed.path === file.path) finish(); });
+      const timer = setTimeout(finish, 2000);
+    });
+  }
+
   private requireTFile(path: string): TFile {
     const abstract = this.app.vault.getAbstractFileByPath(path);
     if (!(abstract instanceof TFile)) {
@@ -227,9 +316,24 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 }
 
+/** Notes this plugin just wrote and is waiting on the metadataCache for; the writer refreshes the views itself afterwards. */
+const ownWrites = new Set<string>();
+
+const vaultFiles = new WeakMap<TFile, VaultFile>();
+
+/** Notes are listed on every load; the snapshot of a note is reused until its path or stat changes. */
 function toVaultFile(file: TFile): VaultFile {
+  const known = vaultFiles.get(file);
+  if (known && known.path === file.path && known.stat?.mtime === file.stat?.mtime && known.stat?.size === file.stat?.size) return known;
+  const made = snapshotVaultFile(file);
+  vaultFiles.set(file, made);
+  return made;
+}
+
+function snapshotVaultFile(file: TFile): VaultFile {
   return {
     path: file.path,
+    basename: file.basename,
     stat: file.stat
       ? { mtime: file.stat.mtime, size: file.stat.size }
       : undefined,
@@ -268,7 +372,6 @@ export default class TaskWorkbenchPlugin extends Plugin {
   );
 
   readonly taskFiles = new TaskFileService();
-  readonly autoPriority = new AutoPriorityController();
   readonly taskCache: TaskCache = new Map();
   readonly historyManager = new HistoryManager();
   readonly scheduleGhosts = new ScheduleGhostStore();
@@ -278,6 +381,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
     get settings() { return settings(); },
     historyManager: this.historyManager,
     taskCache: this.taskCache,
+    persistSettings: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
+    orderChanged: () => this.persistParentOrder(),
     invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter());
   }
@@ -286,6 +391,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private settingsWriter(): SettingsPersistence {
     return this.settingsPersistence ??= new SettingsPersistence({ settings: () => this.settings,
       coordinate: (run) => this.operations.coordinate(run), write: (settings) => this.saveData({ ...settings, ai: this.aiStore }), read: () => this.loadData() });
+  }
+  /** Saves settings after the parent order was created/extended from loaded notes (fire and forget). */
+  private persistParentOrder(): void {
+    void this.settingsWriter().save().catch((error: unknown) => this.logger?.error("TaskWorkbenchPlugin", "failed to save Gantt parent order", error));
   }
   private createOperationService(): OperationService {
     const settings = () => this.settings, ui = () => this.uiPort, session = () => this.chatSession, logger = () => this.logger, version = () => this.manifest.version;
@@ -418,7 +527,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   redoEntry(entryId: string): Promise<void> {
     return this.operations.coordinate(async () => {
       if (this.historyManager.peekRedoLabel() !== entryId) throw new Error("この履歴は現在やり直せません。履歴を確認してください。");
-      const result = await this.historyManager.redo(this.app.vault);
+      const result = await this.historyManager.redo(this.vaultAdapter());
       if (result.kind !== "success") throw new Error("保存後の変更を検出したため、やり直せませんでした。");
       this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
     });
@@ -427,7 +536,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
     return this.operations.coordinate(async () => {
       await this.historyManager.refreshEligibility();
       if (this.historyPort.inspectUndo(entryId).state !== "available" || this.historyManager.peekUndoLabel() !== entryId) throw new Error("この履歴は現在元に戻せません。履歴と対象ファイルを確認してください。");
-      const result = await this.historyManager.undo(this.app.vault);
+      const result = await this.historyManager.undo(this.vaultAdapter());
       if (result.kind !== "success") throw new Error("保存後の変更を検出したため、元に戻せませんでした。");
       this.operationService.clearSavedProjection(); this.scheduleGhosts.clear(); this.taskCache.clear(); await this.operationService.invalidatePreviews(); await this.refreshOpenViews();
     });
@@ -603,6 +712,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   }
 
   async onload(): Promise<void> {
+    setNoteNotifier((message) => new Notice(message));
 
     const startedAt = Date.now();
 
@@ -614,6 +724,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.loadSettings();
     this.unloading = false;
     this.historyManager.attachVault(() => this.vaultAdapter());
+    this.historyManager.attachOrderStore({
+      get: () => this.settings.ganttParentOrder,
+      set: async (order) => { const candidate = structuredClone(this.settings); candidate.ganttParentOrder = order; await this.settingsWriter().persist(candidate, ["ganttParentOrder"]); },
+    });
 
     this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === aiSecretId(this.aiSettings.id) ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
@@ -655,41 +769,6 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
 
 
-    // updateAutoPriorities failures are caught and logged; view/command/
-    // ribbon registration below MUST still run. Recovery from a missing task
-    // folder is simply creating the folder — no plugin reload required.
-    // The controller supports forced updates internally; no force-update
-    // command is exposed in the command palette.
-    try {
-      const ran = await this.autoPriority.updateAutoPriorities(
-        this.vaultAdapter(),
-        this.settings,
-
-        this.taskCache,
-        false,
-        this.logger
-
-      );
-      if (ran) {
-        // persist settings after the auto priority run
-        await this.saveSettings();
-      }
-    } catch (err) {
-
-      this.logger.error(
-        "TaskWorkbenchPlugin",
-        "Task Workbench: auto priority update failed during onload",
-        err
-      );
-
-    }
-
-    try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
-    // fire-and-forget background holiday refresh.
-    // The caller never awaits or catches: an unexpected rejection surfaces as
-    // an unhandled rejection (console) without blocking plugin startup.
-    void this.holidays.refreshNationalHolidays(false, false);
-
     // the Task Workbench view, constructed with a
     // host object wiring the plugin's existing services.
     this.registerView(VIEW_TYPE_TASK_WORKBENCH, (leaf) =>
@@ -715,11 +794,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
     );
 
     if (typeof this.registerEvent === "function") {
-      const clear = (file: TFile, kind: "modify" | "create" | "delete" | "rename") => { this.scheduleGhosts.clear(); void this.historyManager.refreshEligibility(); void this.operationService.handleVaultChange(file.path, kind); };
+      this.dailyTodos.trackVaultChanges();
+      const clear = (file: TFile, kind: "modify" | "create" | "delete" | "rename") => { if (kind !== "modify") this.dailyTodos.invalidateCandidates(); this.scheduleGhosts.clear(); if (kind !== "modify" || this.historyManager.touchesTopEntry(file.path)) void this.historyManager.refreshEligibility(); void this.operationService.handleVaultChange(file.path, kind); };
       this.registerEvent(this.app.vault.on("modify", (file) => clear(file as TFile, "modify")));
       this.registerEvent(this.app.vault.on("create", (file) => clear(file as TFile, "create")));
       this.registerEvent(this.app.vault.on("delete", (file) => clear(file as TFile, "delete")));
       this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
+      // Frontmatter comes from the metadataCache: drop what it re-indexed and redraw once it settles.
+      let indexed = false, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      const refreshSoon = () => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { refreshTimer = undefined; if (!this.unloading) void this.refreshOpenViews(); }, 300); };
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (!ownWrites.has(file.path)) refreshSoon(); }));
+      this.registerEvent(this.app.metadataCache.on("resolved", () => { if (indexed) return; indexed = true; this.taskCache.clear(); refreshSoon(); }));
     }
     this.registerCommands();
     for (const [position, label] of [["tab", "タブ"], ["left", "左サイドバー"], ["right", "右サイドバー"]] as const) {
@@ -731,13 +816,74 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     this.addSettingTab(new TaskWorkbenchSettingTab(this.app, this));
 
-    // timer start failures would propagate to onload
-    this.startGanttSyncTimer();
-
     this.logger.info("TaskWorkbenchPlugin", "plugin loaded", {
       durationMs: Date.now() - startedAt,
     });
 
+    // Heavy vault work (auto priority, MCP, holiday refresh, sync timer) must not
+    // delay view/command registration: run it once the workspace layout is ready.
+    const workspace = this.app.workspace as { onLayoutReady?: (callback: () => void) => void };
+    if (typeof workspace.onLayoutReady === "function") {
+      workspace.onLayoutReady(() => { this.deferredStartup = this.runDeferredStartup().catch((err) => this.logger.error("TaskWorkbenchPlugin", "deferred startup failed", err)); });
+    } else {
+      await (this.deferredStartup = this.runDeferredStartup());
+    }
+  }
+
+  /** Resolves once the post-layout startup work has finished (tests / diagnostics). */
+  deferredStartup: Promise<void> = Promise.resolve();
+
+  private async runDeferredStartup(): Promise<void> {
+    if (this.unloading) return;
+    try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
+    // fire-and-forget background holiday refresh.
+    // The caller never awaits or catches: an unexpected rejection surfaces as
+    // an unhandled rejection (console) without blocking plugin startup.
+    void this.holidays.refreshNationalHolidays(false, false);
+
+    // timer start failures are logged by the caller's rejection handler
+    if (!this.unloading) this.startGanttSyncTimer();
+    void this.offerNoteFormatConversion().catch((error: unknown) => this.logger.error("TaskWorkbenchPlugin", "legacy note check failed", error));
+  }
+
+  private legacyNotice: Notice | null = null;
+
+  /** Tells the user (once per start) that v1 notes exist, with a button that starts the conversion. */
+  private async offerNoteFormatConversion(): Promise<void> {
+    const legacy = await findLegacyNotes(this.vaultAdapter(), this.settings);
+    if (!legacy.length || this.unloading) return;
+    const fragment = document.createDocumentFragment();
+    fragment.append(`旧形式(v1)のタスクノートが ${legacy.length} 件あります。v2 に変換するまで、これらは表示されません。 `);
+    const button = document.createElement("button");
+    button.textContent = "変換する";
+    fragment.append(button);
+    const notice = new Notice(fragment, 0);
+    this.legacyNotice = notice;
+    button.addEventListener("click", () => { notice.hide(); void this.convertNoteFormat(); });
+  }
+
+  /** 「ノート形式を v2 に変換」: preview, backup, per-parent conversion with verification. */
+  async convertNoteFormat(): Promise<void> {
+    const vault = this.vaultAdapter();
+    const plan = await planMigration(vault, this.settings);
+    if (!plan.items.length && !plan.skipped.length) { new Notice("v2 に変換が必要なノートはありません"); return; }
+    if (!plan.items.length) { new Notice(`変換できるノートがありません(${plan.skipped.length} 件は読み取れません)`); return; }
+    new MigrationModal(this.app, plan, () => this.operations.coordinate(async () => {
+      try {
+        return await runMigration(vault, this.settings, plan, {
+          persist: (candidate, keys) => this.settingsWriter().persist(candidate, keys),
+        });
+      } finally {
+        this.historyManager.clear();
+        this.operationService.clearSavedProjection();
+        this.scheduleGhosts.clear();
+        this.taskCache.clear();
+        await this.operationService.invalidatePreviews();
+        await this.refreshOpenViews();
+        // The start-up notice says v1 notes exist: take it down once nothing is left to convert.
+        if (this.legacyNotice && !(await findLegacyNotes(vault, this.settings)).length) { this.legacyNotice.hide(); this.legacyNotice = null; }
+      }
+    })).open();
   }
 
   /**
@@ -745,27 +891,10 @@ export default class TaskWorkbenchPlugin extends Plugin {
  * controller path, then persist its updated last-run timestamp.
  */
   async updateAutoPriorities(): Promise<void> {
-
-    const startedAt = Date.now();
-
-    const ran = await this.autoPriority.updateAutoPriorities(
-      this.vaultAdapter(),
-      this.settings,
-
-      this.taskCache,
-      true,
-      this.logger
-
-    );
-    if (ran) {
-      await this.saveSettings();
-    }
-
-    this.logger.info("TaskWorkbenchPlugin", "auto priority run", {
-      durationMs: Date.now() - startedAt,
-      ran,
-    });
-
+    // Auto priority is computed when shown, so a settings change only needs a save and a redraw.
+    await this.saveSettings();
+    this.taskCache.clear();
+    await this.refreshOpenViews();
   }
 
   async openAIChat(position: "tab" | "left" | "right" = "tab"): Promise<void> {
@@ -847,7 +976,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     try {
 
-      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger);
+      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder());
 
       const synced = await syncReadonlyGanttSnapshot(
         tasks,
@@ -897,7 +1026,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     try {
 
-      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger);
+      const tasks = await loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder());
 
       const synced = await syncReadonlyGanttSnapshot(
         tasks,
@@ -940,7 +1069,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private async performUndo(): Promise<void> {
     this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
-    const result = await this.historyManager.undo(this.app.vault);
+    const result = await this.historyManager.undo(this.vaultAdapter());
     switch (result.kind) {
       case "empty":
         new Notice("元に戻せる操作がありません");
@@ -967,7 +1096,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
   private async performRedo(): Promise<void> {
     this.operationService.clearSavedProjection();
     this.scheduleGhosts.clear();
-    const result = await this.historyManager.redo(this.app.vault);
+    const result = await this.historyManager.redo(this.vaultAdapter());
     switch (result.kind) {
       case "empty":
         new Notice("やり直せる操作がありません");
@@ -1037,7 +1166,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.settings,
 
       this.taskCache,
-      this.logger
+      this.logger,
+      () => this.persistParentOrder()
 
     );
 
@@ -1562,6 +1692,12 @@ export default class TaskWorkbenchPlugin extends Plugin {
         void this.redoLastAction();
       },
     });
+
+    this.addCommand({
+      id: "convert-note-format-v2",
+      name: "ノート形式を v2 に変換",
+      callback: () => { void this.convertNoteFormat(); },
+    });
   }
 
   /**
@@ -1693,7 +1829,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       settings: this.settings,
       loadTasks: (): Promise<TaskRow[]> =>
 
-        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder()),
 
       getDisplayRows: (tasks: TaskRow[], opts: DisplayRowsOptions) =>
         getDisplayRows(tasks, opts),
@@ -1756,7 +1892,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       settings: this.settings,
       loadTasks: (): Promise<TaskRow[]> =>
 
-        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        loadTasks(this.vaultAdapter(), this.settings, this.taskCache, this.logger, () => this.persistParentOrder()),
 
 
       loadDailyTodoSummaries: (): Promise<DailyTodoSummary[]> =>
@@ -1863,7 +1999,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
           this.settings,
 
           this.taskCache,
-          this.logger
+          this.logger,
+          () => this.persistParentOrder()
 
         );
         const parents = getGanttParentRows(tasks);

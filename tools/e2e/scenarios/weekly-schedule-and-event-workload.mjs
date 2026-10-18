@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadNoteFormatModule } from "../gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "../gen-fixtures.mjs";
 import {
   addDaysIso,
   pickAnchorMonday,
@@ -102,7 +102,7 @@ export async function run({ cdp, vaultDir }) {
       `(() => {
         const file = app.vault.getAbstractFileByPath(${JSON.stringify(fixture.parentPath)});
         const cache = file ? app.metadataCache.getFileCache(file) : null;
-        return !!(cache && cache.frontmatter && cache.frontmatter.ganttEnabled === true);
+        return !!(cache && cache.frontmatter && cache.frontmatter.gantt === true);
       })()`,
       { timeoutMs: 20000, label: "fixture indexed by metadataCache" }
     );
@@ -402,14 +402,11 @@ async function writeFixture(vaultDir) {
   const today = toIsoStr(new Date());
   const parentName = "E2E Weekly Event Flow";
   const subtaskName = "QA 作業";
-  const parentPath = `tasks/${today.slice(0, 4)}/${today.slice(5, 7)}/${today} ${parentName}.md`;
+  const parentPath = `tasks/${today} ${parentName}.md`;
   const subtaskKey = "subtask-1";
-  const { buildFullNote } = await loadNoteFormatModule();
+  const noteModule = await loadNoteFormatModule();
   const subtask = {
     kind: "subtask",
-    id: `${parentPath}::${subtaskKey}`,
-    key: subtaskKey,
-    file: { path: parentPath, parentPath, heading: subtaskName },
     title: subtaskName,
     displayName: subtaskName,
     statusLabel: "active",
@@ -430,7 +427,6 @@ async function writeFixture(vaultDir) {
   };
   const parent = {
     kind: "parent",
-    id: parentPath,
     file: { path: parentPath },
     title: parentName,
     displayName: parentName,
@@ -445,12 +441,9 @@ async function writeFixture(vaultDir) {
     notes: "",
     tags: [],
     ganttEnabled: true,
-    ganttOrder: 0,
     subtasks: new Map([[subtaskKey, subtask]]),
   };
-  const absPath = path.join(vaultDir, parentPath);
-  fs.mkdirSync(path.dirname(absPath), { recursive: true });
-  fs.writeFileSync(absPath, buildFullNote(parent, parent.subtasks), "utf8");
+  writeTaskNotes(noteModule, vaultDir, parent, parent.subtasks); // v2: parent note + subtask note
   return { parentPath, startDate, endDate, eventDate, wednesdayDate };
 }
 

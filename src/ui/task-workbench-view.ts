@@ -1,7 +1,7 @@
 import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
 import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts, ViewStateV1 } from "../contracts/ports";
-import { NotePreservationError } from "../core/note-update";
+import { NotePreservationError } from "../core/note-v2";
 import { ItemView, moment, Notice, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
@@ -25,6 +25,17 @@ import type {
   DisplayRowsOptions,
   WorkbenchDisplayRow,
 } from "../app/workbench-display";
+import {
+  VIRTUAL_DEFAULT_ROW_HEIGHT,
+  VIRTUAL_MIN_ROWS,
+  buildOffsets,
+  computeVirtualRange,
+  extendRangeToInclude,
+  findRowAtOffset,
+  selectWidthProbes,
+  textWeight,
+} from "../app/workbench-virtual";
+import type { VirtualRange } from "../app/workbench-virtual";
 import { TaskFinderModal } from "./task-finder-modal";
 import { registerHistoryHotkeys } from "./history-hotkeys";
 import { appendTagChips } from "./tag-chip";
@@ -33,6 +44,8 @@ import { appendTagChips } from "./tag-chip";
 // still making the filter feel live once the user pauses.
 const FILTER_RENDER_DEBOUNCE_MS = 200;
 
+/** Delay before the off-screen buffer rows are drawn after a data change. */
+const VIRTUAL_FILL_DELAY_MS = 40;
 
 
 
@@ -57,6 +70,12 @@ const FILTER_RENDER_DEBOUNCE_MS = 200;
 
 
 
+
+
+interface RowCacheEntry {
+  tr: HTMLTableRowElement;
+  sig: string;
+}
 
 export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
 
@@ -144,6 +163,69 @@ export class TaskWorkbenchView extends ItemView {
 
   private tableWrapEl!: HTMLElement;
 
+  private tbodyEl!: HTMLTableSectionElement;
+
+  private emptyEl?: HTMLElement;
+
+  /** Reusable <tr> per row id with the signature it was built from. */
+  private rowCache = new Map<string, RowCacheEntry>();
+
+  /** Display row behind each rendered <tr> (delegated handlers read this). */
+  private rowByEl = new WeakMap<Element, WorkbenchDisplayRow>();
+
+  // --- virtual scrolling state -------------------------------------------
+  private theadEl?: HTMLElement;
+
+  private topSpacerEl?: HTMLTableRowElement;
+
+  private bottomSpacerEl?: HTMLTableRowElement;
+
+  /** Rows currently shown by the table (after filter/sort/collapse). */
+  private displayedRows: WorkbenchDisplayRow[] = [];
+
+  private displayCtx: {
+    names: Map<string, string> | undefined;
+    today: moment.Moment;
+  } | null = null;
+
+  /** Prefix sums of row heights (tbody coordinates). */
+  private offsets: Float64Array = new Float64Array(1);
+
+  /** Measured <tr> heights by row id (unmeasured rows use the average). */
+  private heightById = new Map<string, number>();
+
+  /** Sum / count of measured heights per row shape (estimate for unmeasured rows). */
+  private shapeStats = new Map<string, { sum: number; count: number }>();
+
+  private renderedRange: VirtualRange = { start: 0, end: 0 };
+
+  private virtualActive = false;
+
+  /** Row index pinned into the window by keyboard focus near its edge. */
+  private focusRowIdx = -1;
+
+  private lastWrapWidth = 0;
+
+  private resizeObserver?: ResizeObserver;
+
+  private resetScrollOnRender = false;
+
+  /** Rows kept in the DOM as collapsed width probes (see selectWidthProbes). */
+  private probeRows: WorkbenchDisplayRow[] = [];
+
+  private probeCache = new Map<string, RowCacheEntry>();
+
+  private measureCtx?: CanvasRenderingContext2D;
+
+  /** Canvas font template ("@W" = weight); "" when measuring is unavailable. */
+  private measureFontKey?: string;
+
+  private measureWeights: string[] = ["400", "600"];
+
+  private measureCache = new Map<string, number>();
+
+  private fillTimer: ReturnType<typeof setTimeout> | undefined;
+
   constructor(
     leaf: WorkspaceLeaf,
     private readonly host: TaskWorkbenchViewHost
@@ -215,6 +297,12 @@ export class TaskWorkbenchView extends ItemView {
     this.tableWrapEl.classList.add("task-workbench-table-wrap");
     container.appendChild(this.tableWrapEl);
 
+    this.tableWrapEl.addEventListener("scroll", () => this.onWrapScroll());
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver?.disconnect();
+      this.resizeObserver = new ResizeObserver(() => this.onWrapResize());
+      this.resizeObserver.observe(this.tableWrapEl);
+    }
 
     await this.render();
   }
@@ -250,6 +338,7 @@ export class TaskWorkbenchView extends ItemView {
       this.filterRenderTimer !== undefined ||
       this.filterRenderLeadingValue !== undefined;
     if (!isBurstActive) {
+      this.resetScrollOnRender = true;
       this.renderTable();
       this.filterRenderLeadingValue = this.filterText;
     } else if (this.filterRenderTimer !== undefined) {
@@ -265,6 +354,7 @@ export class TaskWorkbenchView extends ItemView {
       const leadingValue = this.filterRenderLeadingValue;
       this.filterRenderLeadingValue = undefined;
       if (leadingValue !== this.filterText) {
+        this.resetScrollOnRender = true;
         this.renderTable();
       }
     }, FILTER_RENDER_DEBOUNCE_MS);
@@ -280,6 +370,7 @@ export class TaskWorkbenchView extends ItemView {
     const leadingValue = this.filterRenderLeadingValue;
     this.filterRenderLeadingValue = undefined;
     if (!this.filterComposing && leadingValue !== this.filterText) {
+      this.resetScrollOnRender = true;
       this.renderTable();
     }
   }
@@ -287,6 +378,7 @@ export class TaskWorkbenchView extends ItemView {
   /** Renders a mode change without leaving an older filter timer pending. */
   private renderTableImmediately(): void {
     this.cancelFilterRender();
+    this.resetScrollOnRender = true;
     this.renderTable();
   }
 
@@ -298,6 +390,12 @@ export class TaskWorkbenchView extends ItemView {
     this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
     this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
+    if (this.fillTimer !== undefined) {
+      clearTimeout(this.fillTimer);
+      this.fillTimer = undefined;
+    }
     return Promise.resolve();
   }
 
@@ -571,9 +669,7 @@ export class TaskWorkbenchView extends ItemView {
 
 
   renderTable(startedAt?: number): void {
-
-    // full clear on every call.
-    this.tableWrapEl.empty();
+    this.ensureTable();
 
     const today = moment().startOf("day");
     const parentDisplayNames = this.flatDueSort
@@ -594,7 +690,47 @@ export class TaskWorkbenchView extends ItemView {
           this.ensureCollapseState()
         );
 
-    // a brand-new <table> every call.
+    this.syncRows(rows, parentDisplayNames, today);
+
+    // empty-state message below the table.
+    const empty = this.emptyEl;
+    if (rows.length === 0) {
+      if (!empty) {
+        const el = document.createElement("div");
+        el.classList.add("task-workbench-empty");
+        el.textContent = "条件に一致するタスクがありません。";
+        this.tableWrapEl.appendChild(el);
+        this.emptyEl = el;
+      }
+    } else if (empty) {
+      empty.remove();
+      this.emptyEl = undefined;
+    }
+
+    if (startedAt !== undefined) {
+      const rowCount = rows.length;
+      this.host.logger.debug?.("TaskWorkbenchView", "render completed", {
+        durationMs: Date.now() - startedAt,
+        rowCount,
+      });
+    }
+  }
+
+  /**
+   * Creates the persistent <table> (thead + tbody) once. Rows are patched in
+   * place by syncRows; user actions are handled by delegated listeners on the
+   * tbody instead of per-cell listeners.
+   */
+  private ensureTable(): void {
+    if (this.tbodyEl && this.tbodyEl.parentNode) {
+      return;
+    }
+    this.tableWrapEl.empty();
+    this.emptyEl = undefined;
+    this.rowCache = new Map();
+    this.topSpacerEl = undefined;
+    this.bottomSpacerEl = undefined;
+
     const table = document.createElement("table");
     table.classList.add("task-workbench-table");
 
@@ -632,36 +768,584 @@ export class TaskWorkbenchView extends ItemView {
     }
     thead.appendChild(headRow);
     table.appendChild(thead);
+    this.theadEl = thead;
 
-    // zero rows → empty tbody.
     const tbody = document.createElement("tbody");
-    for (const row of rows) {
-      // listeners are re-attached per row on every rebuild.
-      tbody.appendChild(this.buildRow(row, parentDisplayNames, today));
-    }
+    tbody.addEventListener("click", (evt) => this.onBodyClick(evt));
+    tbody.addEventListener("change", (evt) => this.onBodyChange(evt));
+    tbody.addEventListener("dblclick", (evt) => this.onBodyDblClick(evt));
+    tbody.addEventListener("focusin", (evt) => this.onBodyFocusIn(evt));
+    tbody.addEventListener("focusout", () => {
+      this.focusRowIdx = -1;
+    });
     table.appendChild(tbody);
 
     this.tableWrapEl.appendChild(table);
-
-    // empty-state message below the table.
-    if (rows.length === 0) {
-      const empty = document.createElement("div");
-      empty.classList.add("task-workbench-empty");
-      empty.textContent = "条件に一致するタスクがありません。";
-      this.tableWrapEl.appendChild(empty);
-    }
-
-
-    if (startedAt !== undefined) {
-      const rowCount = rows.length;
-      this.host.logger.debug?.("TaskWorkbenchView", "render completed", {
-        durationMs: Date.now() - startedAt,
-        rowCount,
-      });
-    }
-
+    this.tbodyEl = tbody;
   }
 
+  /**
+   * Makes the tbody show `rows`. Only the rows near the viewport are in the DOM
+   * (see layoutWindow); spacer rows stand in for the rest.
+   */
+  private syncRows(
+    rows: WorkbenchDisplayRow[],
+    parentDisplayNames: Map<string, string> | undefined,
+    today: moment.Moment
+  ): void {
+    this.displayedRows = rows;
+    this.displayCtx = { names: parentDisplayNames, today };
+    this.rebuildOffsets();
+    this.probeRows =
+      rows.length > VIRTUAL_MIN_ROWS
+        ? this.pickWidthProbes(rows, parentDisplayNames)
+        : [];
+    if (this.resetScrollOnRender) {
+      this.resetScrollOnRender = false;
+      this.tableWrapEl.scrollTop = 0;
+    }
+    // Data changed: draw only the visible rows first so the keystroke / click
+    // paints quickly, then fill the overscan buffer right after.
+    this.layoutWindow(0);
+    if (this.virtualActive) {
+      this.fillTimer = setTimeout(() => {
+        this.fillTimer = undefined;
+        this.layoutWindow();
+      }, VIRTUAL_FILL_DELAY_MS);
+    }
+  }
+
+  /**
+   * Pixel width of `text` in the table font (canvas measurement, cached per
+   * string). Falls back to a character-count estimate where canvas is missing.
+   */
+  private measureWidth(text: string, bold: boolean): number {
+    if (!text) {
+      return 0;
+    }
+    if (this.measureFontKey === undefined) {
+      try {
+        const cs = getComputedStyle(this.tbodyEl);
+        const ctx = document.createElement("canvas").getContext("2d");
+        if (ctx) {
+          this.measureCtx = ctx;
+          this.measureFontKey = `${cs.fontStyle} @W ${cs.fontSize} ${cs.fontFamily}`;
+          this.measureWeights = [cs.fontWeight, "600"];
+        } else {
+          this.measureFontKey = "";
+        }
+      } catch {
+        this.measureFontKey = "";
+      }
+    }
+    const ctx = this.measureCtx;
+    if (!ctx || !this.measureFontKey) {
+      return textWeight(text) * 7;
+    }
+    const key = (bold ? "b" : "n") + text;
+    const hit = this.measureCache.get(key);
+    if (hit !== undefined) {
+      return hit;
+    }
+    if (this.measureCache.size > 50000) {
+      this.measureCache.clear();
+    }
+    ctx.font = this.measureFontKey.replace(
+      "@W",
+      bold ? this.measureWeights[1] : this.measureWeights[0]
+    );
+    const width = ctx.measureText(text).width;
+    this.measureCache.set(key, width);
+    return width;
+  }
+
+  private pickWidthProbes(
+    rows: WorkbenchDisplayRow[],
+    names: Map<string, string> | undefined
+  ): WorkbenchDisplayRow[] {
+    const indices = selectWidthProbes(rows.length, (i) => {
+      const row = rows[i];
+      const info = row.__twbCollapseInfo;
+      const flatSub = this.flatDueSort && row.kind === "subtask";
+      const isParent = row.kind === "parent";
+      let label = row.displayName || row.title;
+      if (flatSub) {
+        label = `${this.parentDisplayName(row, names)} / ${label}`;
+      }
+      let name = this.measureWidth(label, isParent);
+      if (info) {
+        name += 20;
+        if (info.hiddenCount > 0 && !info.expanded) {
+          name += this.measureWidth(` 他${info.hiddenCount}件`, false);
+        }
+      }
+      let tags = 0;
+      for (const tag of row.tags || []) {
+        tags += this.measureWidth(String(tag), false) + 16;
+      }
+      return {
+        name,
+        group: isParent ? 0 : 1,
+        status: this.measureWidth(row.currentStatus ?? "", false),
+        tags,
+      };
+    });
+    return indices.map((i) => rows[i]);
+  }
+
+  private rebuildOffsets(): void {
+    const rows = this.displayedRows;
+    let all = 0;
+    let allCount = 0;
+    for (const stat of this.shapeStats.values()) {
+      all += stat.sum;
+      allCount += stat.count;
+    }
+    const fallback = allCount > 0 ? all / allCount : VIRTUAL_DEFAULT_ROW_HEIGHT;
+    const estimates = new Map<string, number>();
+    this.offsets = buildOffsets(rows.length, (i) => {
+      const key = this.heightKey(rows[i]);
+      const measured = this.heightById.get(key);
+      if (measured !== undefined) {
+        return measured;
+      }
+      const shape = this.rowShape(rows[i]);
+      let estimate = estimates.get(shape);
+      if (estimate === undefined) {
+        const stat = this.shapeStats.get(shape);
+        estimate = stat && stat.count > 0 ? stat.sum / stat.count : fallback;
+        estimates.set(shape, estimate);
+      }
+      return estimate;
+    });
+  }
+
+  /** Rows of the same shape render at (nearly) the same height. */
+  private rowShape(row: WorkbenchDisplayRow): string {
+    const info = row.__twbCollapseInfo;
+    const summary = info && !info.expanded && info.hiddenCount > 0 ? 1 : 0;
+    return `${row.kind}${summary}${this.flatDueSort ? "f" : "h"}`;
+  }
+
+  private heightKey(row: WorkbenchDisplayRow): string {
+    return `${row.id}\u0001${this.rowShape(row)}`;
+  }
+
+  private theadHeight(): number {
+    return this.theadEl ? this.theadEl.getBoundingClientRect().height : 0;
+  }
+
+  /** Index of the row being edited in the displayed rows, or -1. */
+  private editingRowIndex(): number {
+    if (this.editing === null) {
+      return -1;
+    }
+    const id = this.editing.rowId;
+    return this.displayedRows.findIndex((row) => row.id === id);
+  }
+
+  /**
+   * Renders the rows for the current scroll position, then measures them so
+   * the spacers (and scroll position) stay consistent with real row heights.
+   */
+  private layoutWindow(overscanPx?: number): void {
+    if (this.fillTimer !== undefined) {
+      clearTimeout(this.fillTimer);
+      this.fillTimer = undefined;
+    }
+    const rows = this.displayedRows;
+    const count = rows.length;
+    const wrap = this.tableWrapEl;
+    const virtual = count > VIRTUAL_MIN_ROWS;
+    this.virtualActive = virtual;
+    if (!virtual) {
+      this.patchDom({ start: 0, end: count }, false);
+      this.renderedRange = { start: 0, end: count };
+      return;
+    }
+    for (let pass = 0; ; pass += 1) {
+      const theadH = this.theadHeight();
+      const viewTop = wrap.scrollTop - theadH;
+      let range = computeVirtualRange({
+        offsets: this.offsets,
+        viewTop,
+        viewHeight: wrap.clientHeight,
+        overscanPx,
+      });
+      range = extendRangeToInclude(range, this.editingRowIndex(), count);
+      if (this.focusRowIdx >= 0) {
+        range = extendRangeToInclude(range, this.focusRowIdx - 20, count);
+        range = extendRangeToInclude(range, this.focusRowIdx + 20, count);
+      }
+      const anchor = findRowAtOffset(this.offsets, viewTop);
+      const intra = viewTop - this.offsets[anchor];
+      this.patchDom(range, true);
+      this.renderedRange = range;
+      if (!this.measureRendered(range) || pass >= 3) {
+        break;
+      }
+      this.rebuildOffsets();
+      const target = this.offsets[anchor] + intra + theadH;
+      if (Math.abs(wrap.scrollTop - target) > 0.5) {
+        wrap.scrollTop = target;
+      }
+    }
+  }
+
+  /** Reconciles the tbody children with [top spacer, rows in range, bottom spacer]. */
+  private patchDom(range: VirtualRange, virtual: boolean): void {
+    const ctx = this.displayCtx;
+    if (!ctx) {
+      return;
+    }
+    const tbody = this.tbodyEl;
+    const rows = this.displayedRows;
+    const settingsKey = this.settingsSignature();
+    const dayKey = ctx.today.format("YYYY-MM-DD");
+    const nextCache = new Map<string, RowCacheEntry>();
+    const nodes: HTMLTableRowElement[] = [];
+    if (virtual && this.offsets[range.start] > 0.5) {
+      nodes.push(this.spacer("top", this.offsets[range.start]));
+    }
+    for (let i = range.start; i < range.end; i += 1) {
+      const row = rows[i];
+      const key = row.id;
+      const duplicate = nextCache.has(key);
+      const sig = this.rowSignature(row, ctx.names, dayKey, settingsKey);
+      const cached = duplicate ? undefined : this.rowCache.get(key);
+      let tr: HTMLTableRowElement;
+      if (cached && cached.sig === sig) {
+        tr = cached.tr;
+      } else {
+        tr = this.buildRow(row, ctx.names, ctx.today);
+      }
+      this.rowByEl.set(tr, row);
+      if (!duplicate) {
+        nextCache.set(key, { tr, sig });
+      }
+      nodes.push(tr);
+    }
+    const below = this.offsets[rows.length] - this.offsets[range.end];
+    if (virtual && below > 0.5) {
+      nodes.push(this.spacer("bottom", below));
+    }
+    this.rowCache = nextCache;
+
+    // Collapsed zero-height probe rows keep the auto-layout column widths
+    // equal to those of the full table.
+    const nextProbes = new Map<string, RowCacheEntry>();
+    if (virtual) {
+      for (const row of this.probeRows) {
+        if (nextCache.has(row.id)) {
+          continue;
+        }
+        const sig = this.rowSignature(row, ctx.names, dayKey, settingsKey);
+        const cached = this.probeCache.get(row.id);
+        let tr: HTMLTableRowElement;
+        if (cached && cached.sig === sig) {
+          tr = cached.tr;
+        } else {
+          tr = this.buildRow(row, ctx.names, ctx.today);
+          tr.classList.add("twb-width-probe");
+          tr.setAttribute("aria-hidden", "true");
+        }
+        this.rowByEl.set(tr, row);
+        nextProbes.set(row.id, { tr, sig });
+        nodes.push(tr);
+      }
+    }
+    this.probeCache = nextProbes;
+
+    let cursor = tbody.children[0] as Element | undefined;
+    for (const node of nodes) {
+      if (node === cursor) {
+        cursor = cursor.nextSibling as Element | undefined;
+      } else {
+        tbody.insertBefore(node, cursor ?? null);
+      }
+    }
+    while (cursor) {
+      const next = cursor.nextSibling as Element | undefined;
+      cursor.remove();
+      cursor = next;
+    }
+  }
+
+  private spacer(which: "top" | "bottom", height: number): HTMLTableRowElement {
+    let tr = which === "top" ? this.topSpacerEl : this.bottomSpacerEl;
+    if (!tr) {
+      tr = document.createElement("tr");
+      tr.classList.add("twb-virtual-spacer");
+      tr.setAttribute("aria-hidden", "true");
+      const td = document.createElement("td");
+      td.colSpan = 12;
+      tr.appendChild(td);
+      if (which === "top") {
+        this.topSpacerEl = tr;
+      } else {
+        this.bottomSpacerEl = tr;
+      }
+    }
+    // Under collapsed borders the first real row sits half a pixel lower than
+    // the same row after a border-less spacer; compensate to keep every row
+    // exactly where the full table would put it.
+    const px = which === "top" ? height + 0.5 : height;
+    (tr.children[0] as HTMLElement).style.height = `${px}px`;
+    return tr;
+  }
+
+  /** Stores the real height of every rendered row; true when anything moved. */
+  private measureRendered(range: VirtualRange): boolean {
+    const rows = this.displayedRows;
+    // Row height = distance to the next row's top (the real pitch under
+    // border-collapse); the last rendered row has no successor and is skipped
+    // unless it ends the table.
+    const tops: number[] = [];
+    for (let i = range.start; i < range.end; i += 1) {
+      const entry = this.rowCache.get(rows[i].id);
+      tops.push(entry ? entry.tr.getBoundingClientRect().top : Number.NaN);
+    }
+    let changed = false;
+    // Under a spacer the first row's collapsed top border shifts its top by
+    // half a pixel, so its pitch is not measured.
+    const first = range.start > 0 ? range.start + 1 : range.start;
+    for (let i = first; i < range.end - 1; i += 1) {
+      const height = tops[i - range.start + 1] - tops[i - range.start];
+      if (!(height > 0)) {
+        continue;
+      }
+      const key = this.heightKey(rows[i]);
+      const prev = this.heightById.get(key);
+      if (prev === undefined || Math.abs(prev - height) > 0.4) {
+        const shape = this.rowShape(rows[i]);
+        const stat = this.shapeStats.get(shape) ?? { sum: 0, count: 0 };
+        stat.sum += height - (prev ?? 0);
+        stat.count += prev === undefined ? 1 : 0;
+        this.shapeStats.set(shape, stat);
+        this.heightById.set(key, height);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private onWrapScroll(): void {
+    if (!this.virtualActive) {
+      return;
+    }
+    const { start, end } = this.renderedRange;
+    const count = this.displayedRows.length;
+    const viewTop = this.tableWrapEl.scrollTop - this.theadHeight();
+    const viewBottom = viewTop + this.tableWrapEl.clientHeight;
+    const margin = 300;
+    if (
+      (start > 0 && viewTop < this.offsets[start] + margin) ||
+      (end < count && viewBottom > this.offsets[end] - margin)
+    ) {
+      this.layoutWindow();
+    }
+  }
+
+  private onWrapResize(): void {
+    const width = this.tableWrapEl.clientWidth;
+    if (width === this.lastWrapWidth) {
+      return;
+    }
+    this.lastWrapWidth = width;
+    // wrapped text changes row heights, and column widths start over.
+    this.heightById.clear();
+    this.shapeStats.clear();
+    if (this.displayCtx) {
+      this.rebuildOffsets();
+      this.layoutWindow();
+    }
+  }
+
+  /** Keyboard focus near the edge of the window pulls more rows in. */
+  private onBodyFocusIn(evt: Event): void {
+    if (!this.virtualActive) {
+      return;
+    }
+    let node = evt.target as HTMLElement | null;
+    let row: WorkbenchDisplayRow | undefined;
+    while (node && node !== this.tbodyEl) {
+      row = this.rowByEl.get(node);
+      if (row) {
+        break;
+      }
+      node = node.parentNode as HTMLElement | null;
+    }
+    if (!row) {
+      return;
+    }
+    const { start, end } = this.renderedRange;
+    const rows = this.displayedRows;
+    let idx = -1;
+    for (let i = start; i < end; i += 1) {
+      if (rows[i] === row) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) {
+      return;
+    }
+    if ((idx - start < 4 && start > 0) || (end - 1 - idx < 4 && end < rows.length)) {
+      this.focusRowIdx = idx;
+      this.layoutWindow();
+    }
+  }
+
+  /** Cheap stand-in for JSON of the settings that influence cell rendering. */
+  private settingsSignature(): string {
+    try {
+      return JSON.stringify(this.host.settings);
+    } catch {
+      return String(Math.random());
+    }
+  }
+
+  /** Everything buildRow reads from a row, as a string (cache key for reuse). */
+  private rowSignature(
+    row: WorkbenchDisplayRow,
+    parentDisplayNames: Map<string, string> | undefined,
+    dayKey: string,
+    settingsKey: string
+  ): string {
+    const info = row.__twbCollapseInfo;
+    const editing =
+      this.editing !== null && this.editing.rowId === row.id
+        ? this.editing.field
+        : "";
+    return JSON.stringify([
+      row.kind,
+      row.displayName,
+      row.title,
+      row.completed,
+      row.dueDate,
+      row.priority,
+      row.priorityMode,
+      row.statusLabel,
+      row.currentStatus,
+      row.createdAt,
+      row.updatedAt,
+      row.tags,
+      row.ganttEnabled,
+      info ? [info.expanded, info.total, info.visibleCount, info.hiddenCount] : 0,
+      row.__twbCollapsedPreview === true,
+      this.flatDueSort,
+      this.flatDueSort && row.kind === "subtask"
+        ? this.parentDisplayName(row, parentDisplayNames)
+        : "",
+      editing,
+      dayKey,
+      settingsKey,
+    ]);
+  }
+
+  /**
+   * Finds the delegated target: the nearest ancestor (up to the tbody) that
+   * carries `data-<attr>`, plus its owning <tr>'s display row.
+   */
+  private resolveTarget(
+    evt: Event,
+    attr: "twbAct" | "twbDbl"
+  ): { el: HTMLElement; value: string; row: WorkbenchDisplayRow } | null {
+    let node = evt.target as HTMLElement | null;
+    let hit: HTMLElement | null = null;
+    while (node && node !== this.tbodyEl) {
+      if (hit === null && node.dataset?.[attr] !== undefined) {
+        hit = node;
+      }
+      const row = this.rowByEl.get(node);
+      if (row) {
+        return hit ? { el: hit, value: hit.dataset[attr] ?? "", row } : null;
+      }
+      node = node.parentNode as HTMLElement | null;
+    }
+    return null;
+  }
+
+  private onBodyClick(evt: Event): void {
+    const hit = this.resolveTarget(evt, "twbAct");
+    if (!hit) {
+      return;
+    }
+    const { el, value, row } = hit;
+    // every action element keeps its click inside the cell.
+    evt.stopPropagation();
+    switch (value) {
+      case "toggle":
+        this.toggleParentExpanded(row);
+        break;
+      case "star": {
+        const autoPriorityEnabled =
+          this.host.settings.autoPriorityEnabled !== false;
+        const isAuto =
+          autoPriorityEnabled && normalizePriorityMode(row.priorityMode) !== "manual";
+        void this.applyPriorityStarClick(row, Number(el.dataset.twbPos), isAuto);
+        break;
+      }
+      case "reset":
+        // reset restores the auto-calculated priority.
+        void this.savePatch(row, {
+          priority: calculateAutoPriority(row.dueDate),
+          priorityMode: "auto",
+        });
+        break;
+      case "open":
+        void this.host.openTaskItem(row);
+        break;
+      case "add":
+        this.addSubtaskForRow(row);
+        break;
+      default:
+        // status/due/completed/gantt: the click itself does nothing.
+        break;
+    }
+  }
+
+  private onBodyChange(evt: Event): void {
+    const hit = this.resolveTarget(evt, "twbAct");
+    if (!hit) {
+      return;
+    }
+    const { el, value, row } = hit;
+    const control = el as HTMLInputElement & HTMLSelectElement;
+    switch (value) {
+      case "status":
+        // save immediately on change, then re-render.
+        void this.savePatch(row, { statusLabel: control.value });
+        break;
+      case "due":
+        // save YYYY-MM-DD (or empty string) and re-render.
+        void this.savePatch(row, { dueDate: control.value });
+        break;
+      case "completed":
+        void this.savePatch(row, { completed: control.checked });
+        break;
+      case "gantt":
+        // keep a finite stored ganttOrder; stamp the
+        // current unix time on first enable (undefined → Number(undefined)
+        // is NaN → not finite → Date.now).
+        void this.savePatch(row, {
+          ganttEnabled: control.checked,
+          ganttOrder: Number.isFinite(Number(row.ganttOrder))
+            ? row.ganttOrder
+            : Date.now(),
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
+  private onBodyDblClick(evt: Event): void {
+    const hit = this.resolveTarget(evt, "twbDbl");
+    if (hit) {
+      this.startEditing(hit.row, hit.value);
+    }
+  }
 
   private displayOptions(today?: moment.Moment): DisplayRowsOptions {
     return {
@@ -761,7 +1445,7 @@ export class TaskWorkbenchView extends ItemView {
     tr.appendChild(this.buildTagsCell(row));
     tr.appendChild(this.buildCompletedCell(row));
     tr.appendChild(this.buildGanttCell(row));
-    tr.appendChild(this.buildOpenCell(row));
+    tr.appendChild(this.buildOpenCell());
     tr.appendChild(this.buildAddCell(row));
     return tr;
   }
@@ -810,10 +1494,7 @@ export class TaskWorkbenchView extends ItemView {
         : `子タスクを展開（${info.total}件中 ${info.visibleCount}件表示）`;
       toggle.setAttribute("aria-label", label);
       toggle.title = label;
-      toggle.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        this.toggleParentExpanded(row);
-      });
+      toggle.dataset.twbAct = "toggle";
       textWrap.appendChild(toggle);
     }
 
@@ -848,9 +1529,7 @@ export class TaskWorkbenchView extends ItemView {
     }
 
     // dblclick on the displayed name starts inline editing.
-    textWrap.addEventListener("dblclick", () => {
-      this.startEditing(row, "displayName");
-    });
+    textWrap.dataset.twbDbl = "displayName";
 
     if (row.kind === "subtask" && !this.flatDueSort) {
       // indent subtask names in hierarchy mode.
@@ -877,18 +1556,18 @@ export class TaskWorkbenchView extends ItemView {
 
   /**
  * Resolves a subtask's parent display name for the flat-mode prefix.
- * Parent lookup matches `row.file.parentPath` against the in-memory task
+ * Parent lookup matches `row.parentId` against the in-memory task
  * list; unknown parents yield an empty prefix.
  */
   private parentDisplayName(
     row: TaskRow,
     parentDisplayNames?: Map<string, string>
   ): string {
-    const parentPath = row.file.parentPath;
-    if (!parentPath || !parentDisplayNames) {
+    const parentId = row.parentId ?? row.file.parentPath;
+    if (!parentId || !parentDisplayNames) {
       return "";
     }
-    return parentDisplayNames.get(parentPath) ?? "";
+    return parentDisplayNames.get(parentId) ?? "";
   }
 
   /**
@@ -932,10 +1611,8 @@ export class TaskWorkbenchView extends ItemView {
       // clamped to [0,5] by normalizePriority, so priority=10 → all five ★
 
       star.textContent = position <= effective ? "★" : "☆";
-      star.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        void this.applyPriorityStarClick(row, position, isAuto);
-      });
+      star.dataset.twbAct = "star";
+      star.dataset.twbPos = String(position);
       starsWrap.appendChild(star);
     }
 
@@ -944,14 +1621,7 @@ export class TaskWorkbenchView extends ItemView {
     reset.classList.add("task-workbench-priority-reset");
     reset.setAttribute("title", "手動優先度を解除して自動計算に戻す");
     reset.textContent = "↺";
-    reset.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      // reset restores the auto-calculated priority.
-      void this.savePatch(row, {
-        priority: calculateAutoPriority(row.dueDate),
-        priorityMode: "auto",
-      });
-    });
+    reset.dataset.twbAct = "reset";
     starsWrap.appendChild(reset);
 
     return td;
@@ -1008,14 +1678,7 @@ export class TaskWorkbenchView extends ItemView {
     // a statusLabel outside DEFAULT_STATUSES matches no option
     // — the select silently shows no selection (no error notification).
     select.value = row.statusLabel;
-    select.addEventListener("change", () => {
-      // save immediately on change, then re-render.
-      void this.savePatch(row, { statusLabel: select.value });
-    });
-    select.addEventListener("click", (evt) => {
-      // keep clicks inside the select.
-      evt.stopPropagation();
-    });
+    select.dataset.twbAct = "status";
     td.appendChild(select);
     return td;
   }
@@ -1038,9 +1701,7 @@ export class TaskWorkbenchView extends ItemView {
     // empty currentStatus renders as empty text.
     text.textContent = row.currentStatus ?? "";
     // dblclick on the displayed text starts inline editing.
-    text.addEventListener("dblclick", () => {
-      this.startEditing(row, "currentStatus");
-    });
+    text.dataset.twbDbl = "currentStatus";
     td.appendChild(text);
     return td;
   }
@@ -1090,14 +1751,7 @@ export class TaskWorkbenchView extends ItemView {
 
     // invalid dates are rejected by native HTML5
     // validation and never fire change — nothing to do on the view side.
-    input.addEventListener("change", () => {
-      // save YYYY-MM-DD (or empty string) and re-render.
-      void this.savePatch(row, { dueDate: input.value });
-    });
-    input.addEventListener("click", (evt) => {
-      // stop click propagation.
-      evt.stopPropagation();
-    });
+    input.dataset.twbAct = "due";
     td.appendChild(input);
     return td;
   }
@@ -1118,9 +1772,7 @@ export class TaskWorkbenchView extends ItemView {
     // (row.tags || []) guards undefined/null at runtime.
     appendTagChips(td, row.tags || [], this.host.settings);
     // dblclick on the cell starts inline editing.
-    td.addEventListener("dblclick", () => {
-      this.startEditing(row, "tags");
-    });
+    td.dataset.twbDbl = "tags";
     return td;
   }
 
@@ -1135,14 +1787,7 @@ export class TaskWorkbenchView extends ItemView {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = row.completed === true;
-    checkbox.addEventListener("change", () => {
-      // persist the new state, then full re-render.
-      void this.savePatch(row, { completed: checkbox.checked });
-    });
-    checkbox.addEventListener("click", (evt) => {
-      // click propagation stopped.
-      evt.stopPropagation();
-    });
+    checkbox.dataset.twbAct = "completed";
     td.appendChild(checkbox);
     return td;
   }
@@ -1162,21 +1807,7 @@ export class TaskWorkbenchView extends ItemView {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = row.ganttEnabled === true;
-    checkbox.addEventListener("change", () => {
-      // keep a finite stored ganttOrder; stamp the
-      // current unix time on first enable (undefined → Number(undefined)
-      // is NaN → not finite → Date.now).
-      void this.savePatch(row, {
-        ganttEnabled: checkbox.checked,
-        ganttOrder: Number.isFinite(Number(row.ganttOrder))
-          ? row.ganttOrder
-          : Date.now(),
-      });
-    });
-    checkbox.addEventListener("click", (evt) => {
-      // click propagation stopped.
-      evt.stopPropagation();
-    });
+    checkbox.dataset.twbAct = "gantt";
     td.appendChild(checkbox);
     return td;
   }
@@ -1186,7 +1817,7 @@ export class TaskWorkbenchView extends ItemView {
  *
  *
  */
-  private buildOpenCell(row: TaskRow): HTMLTableCellElement {
+  private buildOpenCell(): HTMLTableCellElement {
     const td = document.createElement("td");
     td.classList.add("tiny-col");
     const button = document.createElement("button");
@@ -1194,11 +1825,7 @@ export class TaskWorkbenchView extends ItemView {
     button.classList.add("vg-btn-sm");
     button.setAttribute("aria-label", "ノートを開く");
     button.setAttribute("title", "ノートを開く");
-    button.addEventListener("click", (evt) => {
-      // open the task file, click propagation stopped.
-      evt.stopPropagation();
-      void this.host.openTaskItem(row);
-    });
+    button.dataset.twbAct = "open";
     td.appendChild(button);
     return td;
   }
@@ -1220,10 +1847,7 @@ export class TaskWorkbenchView extends ItemView {
     button.classList.add("vg-btn-sm");
     button.setAttribute("aria-label", "サブタスクを追加");
     button.setAttribute("title", "サブタスクを追加");
-    button.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      this.addSubtaskForRow(row);
-    });
+    button.dataset.twbAct = "add";
     td.appendChild(button);
     return td;
   }

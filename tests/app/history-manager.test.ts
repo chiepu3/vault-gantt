@@ -105,7 +105,7 @@ describe("HistoryManager", () => {
     expect(manager.peekUndoLabel()).toBe("最初の編集");
     expect(manager.peekRedoLabel()).toBeUndefined();
 
-    await manager.undo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
     expect(manager.peekRedoLabel()).toBe("最初の編集");
 
     manager.push(makeEntry("新しい編集"));
@@ -119,7 +119,7 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
 
     manager.push(makeEntry("編集"));
-    await manager.undo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
     manager.push(makeEntry("同値更新", [makeChange("task.md", "before", "before")]));
 
     expect(manager.peekRedoLabel()).toBe("編集");
@@ -137,7 +137,7 @@ describe("HistoryManager", () => {
     }
 
     for (let index = 50; index >= 1; index -= 1) {
-      const result = await manager.undo(vault.asVault());
+      const result = await manager.undo(vault.asVault() as never);
       expect(result).toEqual({ kind: "success", label: `操作${index}` });
     }
     expect(manager.canUndo()).toBe(false);
@@ -154,7 +154,7 @@ describe("HistoryManager", () => {
     manager.push(makeEntry("古い大容量操作", [makeChange("large.md", "", largeContent)]));
     manager.push(makeEntry("新しい大容量操作", [makeChange("large.md", "", largeContent)]));
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
     expect(result).toEqual({ kind: "success", label: "新しい大容量操作" });
     expect(manager.canUndo()).toBe(false);
   });
@@ -177,7 +177,7 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
 
     manager.push(makeEntry("編集"));
-    await manager.undo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
     expect(manager.canRedo()).toBe(true);
 
     manager.clear();
@@ -193,8 +193,8 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
 
     manager.push(makeEntry("編集"));
-    await manager.undo(vault.asVault());
-    const result = await manager.undo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result).toEqual({ kind: "empty" });
     expect(manager.peekRedoLabel()).toBe("編集");
@@ -206,7 +206,7 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
     manager.push(makeEntry("単一ファイル編集"));
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result).toEqual({ kind: "success", label: "単一ファイル編集" });
     expect(vault.getContent("task.md")).toBe("before");
@@ -227,7 +227,7 @@ describe("HistoryManager", () => {
       ])
     );
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result).toEqual({ kind: "success", label: "複数ファイル編集" });
     expect(vault.getContent("a.md")).toBe("a-before");
@@ -247,7 +247,7 @@ describe("HistoryManager", () => {
       ])
     );
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result).toEqual({
       kind: "conflict",
@@ -274,7 +274,7 @@ describe("HistoryManager", () => {
       ])
     );
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result).toEqual({
       kind: "conflict",
@@ -301,7 +301,7 @@ describe("HistoryManager", () => {
 
     vault.driftBeforeNextProcess("task.md", "外部から書き換わった内容");
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result).toEqual({
       kind: "conflict",
@@ -327,7 +327,7 @@ describe("HistoryManager", () => {
       ])
     );
 
-    const result = await manager.undo(vault.asVault());
+    const result = await manager.undo(vault.asVault() as never);
 
     expect(result.kind).toBe("invalidated");
     expect(result).toMatchObject({ label: "補償失敗編集" });
@@ -344,8 +344,8 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
     manager.push(makeEntry("編集のやり直し"));
 
-    await manager.undo(vault.asVault());
-    const result = await manager.redo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
+    const result = await manager.redo(vault.asVault() as never);
 
     expect(result).toEqual({ kind: "success", label: "編集のやり直し" });
     expect(vault.getContent("task.md")).toBe("after");
@@ -360,10 +360,10 @@ describe("HistoryManager", () => {
     vault.seed("second.md", "second-after");
 
     manager.push(makeEntry("最初の編集", [makeChange("first.md", "first-before", "first-after")]));
-    await manager.undo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
     manager.push(makeEntry("新しい編集", [makeChange("second.md", "second-before", "second-after")]));
 
-    const result = await manager.redo(vault.asVault());
+    const result = await manager.redo(vault.asVault() as never);
 
     expect(result).toEqual({ kind: "empty" });
     expect(manager.peekUndoLabel()).toBe("新しい編集");
@@ -376,8 +376,8 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
     manager.push(makeEntry("編集"));
 
-    const firstUndo = manager.undo(vault.asVault());
-    const secondUndo = manager.undo(vault.asVault());
+    const firstUndo = manager.undo(vault.asVault() as never);
+    const secondUndo = manager.undo(vault.asVault() as never);
 
     await expect(firstUndo).resolves.toEqual({ kind: "success", label: "編集" });
     await expect(secondUndo).resolves.toEqual({ kind: "empty" });
@@ -392,7 +392,7 @@ describe("HistoryManager", () => {
     vault.seed("second.md", "second-after");
     manager.push(makeEntry("最初の編集", [makeChange("first.md", "first-before", "first-after")]));
 
-    const undo = manager.undo(vault.asVault());
+    const undo = manager.undo(vault.asVault() as never);
     manager.push(makeEntry("新しい編集", [makeChange("second.md", "second-before", "second-after")]));
 
     await expect(undo).resolves.toEqual({ kind: "success", label: "最初の編集" });
@@ -407,7 +407,7 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
     manager.push(makeEntry("以前の編集", [makeChange("other.md")]));
     manager.push(makeEntry("編集"));
-    await manager.undo(vault.asVault());
+    await manager.undo(vault.asVault() as never);
     expect(manager.canRedo()).toBe(true);
     manager.discardRedo();
     expect(manager.peekUndoLabel()).toBe("以前の編集");
@@ -420,7 +420,7 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
     manager.push(makeEntry("以前の編集", [makeChange("other.md")]));
     manager.push(makeEntry("編集"));
-    const undo = manager.undo(vault.asVault());
+    const undo = manager.undo(vault.asVault() as never);
     manager.discardRedo();
     await expect(undo).resolves.toEqual({ kind: "success", label: "編集" });
     expect(manager.peekUndoLabel()).toBe("以前の編集");
@@ -433,7 +433,7 @@ describe("HistoryManager", () => {
     vault.seed("task.md", "after");
     manager.push(makeEntry("編集"));
 
-    const undo = manager.undo(vault.asVault());
+    const undo = manager.undo(vault.asVault() as never);
     manager.clear();
 
     await expect(undo).resolves.toEqual({ kind: "success", label: "編集" });
@@ -473,5 +473,59 @@ describe("HistoryManager", () => {
     expect(manager.inspectUndo("編集").state).toBe("conflict");
     await inFlight;
     expect(manager.inspectUndo("編集").state).toBe("conflict");
+  });
+
+  it("touchesTopEntry is true only for paths of the newest undo entry", () => {
+    const manager = new HistoryManager();
+    expect(manager.touchesTopEntry("task.md")).toBe(false);
+    manager.push(makeEntry("編集"));
+    expect(manager.touchesTopEntry("task.md")).toBe(true);
+    expect(manager.touchesTopEntry("other.md")).toBe(false);
+  });
+
+  describe("compact storage of large notes", () => {
+    const note = (lines: number, edit?: (rows: string[]) => void): string => {
+      const rows = Array.from({ length: lines }, (_, index) => `subtask__${index}__plannedStartDate: 2026-10-${String(index % 28 + 1).padStart(2, "0")}`);
+      edit?.(rows);
+      return rows.join("\n");
+    };
+    const cases: Array<[string, string, string]> = [
+      ["middle edit", note(400), note(400, (rows) => { rows[200] = "subtask__200__plannedStartDate: 2027-01-01"; })],
+      ["append", note(400), note(400) + "\nextra: 1"],
+      ["truncate", note(400) + "\nextra: 1", note(400)],
+      ["insert at start", note(400), "head: x\n" + note(400)],
+      ["unrelated texts", note(300), "完全に別の内容\n".repeat(300)],
+      ["emoji and CJK", "あ😀い\n".repeat(600), "あ😀い\n".repeat(300) + "う🎉え\n" + "あ😀い\n".repeat(299)],
+      ["repeated characters", "a".repeat(5000), "a".repeat(2500) + "b" + "a".repeat(2499)],
+    ];
+    it.each(cases)("undo and redo restore exactly: %s", async (_name, before, after) => {
+      const manager = new HistoryManager();
+      const vault = new ProcessFakeVault();
+      vault.seed("task.md", after);
+      manager.push(makeEntry("編集", [makeChange("task.md", before, after)]));
+      expect(manager.inspectTransition("undo").entry!.files).toEqual([{ path: "task.md", before, after }]);
+      expect((await manager.undo(vault.asVault() as never)).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(before);
+      expect(manager.inspectTransition("redo").entry!.files).toEqual([{ path: "task.md", before, after }]);
+      expect((await manager.redo(vault.asVault() as never)).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(after);
+    });
+    it("still detects conflicts on a compacted entry and keeps order changes", async () => {
+      const manager = new HistoryManager();
+      const vault = new ProcessFakeVault();
+      const before = note(400), after = note(400, (rows) => { rows[10] = "changed"; });
+      let order = ["a.md", "b.md"];
+      manager.attachOrderStore({ get: () => order, set: async (next) => { order = next; } });
+      vault.seed("task.md", after);
+      manager.push({ label: "並び替え", files: [makeChange("task.md", before, after)], order: { before: ["a.md", "b.md"], after: ["b.md", "a.md"] } });
+      order = ["b.md", "a.md"];
+      vault.seed("task.md", after + "\n外部");
+      expect((await manager.undo(vault.asVault() as never)).kind).toBe("conflict");
+      vault.seed("task.md", after);
+      expect((await manager.undo(vault.asVault() as never)).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(before); expect(order).toEqual(["a.md", "b.md"]);
+      expect((await manager.redo(vault.asVault() as never)).kind).toBe("success");
+      expect(vault.getContent("task.md")).toBe(after); expect(order).toEqual(["b.md", "a.md"]);
+    });
   });
 });

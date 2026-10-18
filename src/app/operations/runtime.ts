@@ -49,8 +49,24 @@ export interface HandlerEnvironment {
 }
 export interface TaskChange { taskId: string; patch: import("../../core/types").TaskPatch; expectedRevision?: string }
 export function flatten(parents: readonly TaskRow[]): TaskRow[] { return parents.flatMap((parent) => [parent, ...parent.subtasks?.values() ?? []]); }
+interface RowIndex { rows: Map<string, TaskRow>; parents: Map<string, TaskRow> }
+const rowIndexes = new WeakMap<readonly TaskRow[], RowIndex>();
+/**
+ * Id lookup for one parents array, built once per array. Snapshot arrays are never mutated after creation
+ * (consumers clone before editing), and snapshots of an unchanged vault share the same array.
+ */
+export function rowIndex(parents: readonly TaskRow[]): RowIndex {
+  let index = rowIndexes.get(parents);
+  if (!index) {
+    index = { rows: new Map(), parents: new Map() };
+    for (const row of flatten(parents)) if (!index.rows.has(row.id)) index.rows.set(row.id, row);
+    for (const parent of parents) if (!index.parents.has(parent.id)) index.parents.set(parent.id, parent);
+    rowIndexes.set(parents, index);
+  }
+  return index;
+}
 export function findTask(snapshot: TaskSnapshot, id: string, kind?: TaskRow["kind"]): TaskRow {
-  const row = flatten(snapshot.parents).find((task) => task.id === id);
+  const row = rowIndex(snapshot.parents).rows.get(id);
   if (!row) fail("NOT_FOUND", `対象 ${id} を検索し直してください。`, "taskId");
   if (kind && row.kind !== kind) fail("KIND_MISMATCH", `${kind}のIDを指定してください。`, "taskId");
   return row;

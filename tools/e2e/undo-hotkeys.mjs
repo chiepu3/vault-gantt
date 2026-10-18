@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, stableId, writeTaskNotes } from "./gen-fixtures.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const vault = fs.mkdtempSync(path.join(os.tmpdir(), "vg-undo-vault-"));
@@ -21,13 +21,13 @@ fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ taskFolder:
   ganttFeatureSyncEnabled: false, ganttNationalHolidays: [today], ganttNationalHolidaysUpdatedAt: new Date().toISOString(),
   mcp: { enabled: false } }));
 fs.writeFileSync(path.join(vault, ".obsidian/community-plugins.json"), '["vault-gantt"]');
-const taskPath = "tasks/P3確認.md", childId = `${taskPath}::review`;
+// v2: the parent and its subtask are separate notes; ids are fixed by stableId so they are known up front.
+const taskPath = "tasks/P3確認.md", childId = stableId("s", `${taskPath}::review`);
 const common = { statusLabel: "active", completed: false, createdAt: today, updatedAt: today, priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const child = { ...common, kind: "subtask", id: childId, key: "review", file: { path: taskPath, parentPath: taskPath, heading: "変更前" },
   title: "変更前", displayName: "変更前", ganttEnabled: false, plannedStartDate: today, plannedEndDate: today };
 const parent = { ...common, kind: "parent", id: taskPath, file: { path: taskPath }, title: "P3確認", displayName: "P3確認", ganttEnabled: true, ganttOrder: 1000, subtasks: new Map([["review", child]]) };
-const { buildFullNote } = await loadNoteFormatModule();
-fs.mkdirSync(path.join(vault, "tasks")); fs.writeFileSync(path.join(vault, taskPath), buildFullNote(parent, parent.subtasks));
+writeTaskNotes(await loadNoteFormatModule(), vault, parent, parent.subtasks);
 // Match ai-design-capture: own Xvfb, literal /tmp profile and own CDP log.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "vg-undo-runtime-")), profile = path.join(root, "independent-profile"), temp = path.join(root, "runtime-temp");
 for (const dir of [profile, temp]) fs.mkdirSync(dir);
@@ -64,7 +64,13 @@ async function launch() {
 
 import { dragGesture, scrollBarIntoView } from "./scenarios/cdp-input.mjs";
 const results = [];
-const source = () => fs.readFileSync(path.join(vault, taskPath), "utf8");
+// The subtask note is renamed when its title changes (AI/UI rename), so it is found by its id, not by path.
+const source = () => {
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(path.join(dir, entry.name)) : entry.name.endsWith(".md") ? [path.join(dir, entry.name)] : []);
+  const file = walk(path.join(vault, "tasks")).find((candidate) => fs.readFileSync(candidate, "utf8").includes(`id: ${childId}`));
+  if (!file) throw new Error(`subtask note ${childId} not found`);
+  return fs.readFileSync(file, "utf8");
+};
 async function key(cdp, letter, shift = false) {
   const modifiers = 2 | (shift ? 8 : 0);
   await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Control", code: "ControlLeft", modifiers: 2, windowsVirtualKeyCode: 17 });
@@ -142,8 +148,8 @@ try {
   await cdp.waitForExpression("!app.workspace.activeLeaf.view.editor.getValue().includes('native markdown edit')", { label: "Markdown native undo" });
   assert.equal(source(), aiSaved); results.push("Markdown editor Ctrl+Z preserves plugin history");
   const report = { ok: true, afterDrag, history, results, vault, profile, runtimeLog: path.join(root, 'obsidian.log'),
-    originalDates: original.split('\n').filter(line => /subtask__review__planned(Start|End)Date:/.test(line)),
-    movedDates: moved.split('\n').filter(line => /subtask__review__planned(Start|End)Date:/.test(line)) };
+    originalDates: original.split('\n').filter(line => /^(start|end):/.test(line)),
+    movedDates: moved.split('\n').filter(line => /^(start|end):/.test(line)) };
   const artifacts = path.join(repo, 'tools/e2e/artifacts'); fs.mkdirSync(artifacts, { recursive: true });
   fs.writeFileSync(path.join(artifacts, 'undo-hotkeys-result.json'), JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify(report, null, 2));

@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from "vitest";
-import * as noteUpdate from "../../src/core/note-update";
 import { z } from "zod";
 import { OperationRegistry, OPERATION_MANIFEST, patchSchema } from "../../src/app/operation-registry";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
@@ -8,7 +7,7 @@ import { HistoryManager } from "../../src/app/history-manager";
 import { FakeVault } from "./fake-vault";
 import { ToolAdapter } from "../../src/agent-tools/tool-adapter";
 import { Logger } from "../../src/core/logger";
-import type { App, Vault } from "obsidian";
+import type { App } from "obsidian";
 
 function setup() {
   const vault = new FakeVault();
@@ -47,21 +46,19 @@ describe("OperationRegistry contract", () => {
         await a.vault.modify(file, content);
         return content;
       },
-    } as unknown as Vault);
+    } as never);
     expect(undo.kind).toBe("success");
     expect((await a.registry.get(row.id)).notes).toBe("UI");
   });
-  it("reports the section that prevents a safe save through the UI", async () => {
+  it("refuses text the note format cannot hold instead of losing it", async () => {
     const a = setup();
     const parent = await createTask(a.vault, a.settings, "親タスク");
     const child = await addSubtask(a.vault, a.settings, parent, "作業");
-    const file = a.vault.getFileByPath(parent.id)!;
-    const original = await a.vault.read(file) + "\n#### 参考資料\n資料\n";
-    await a.vault.modify(file, original);
+    const original = await a.vault.read(a.vault.getFileByPath(child.file.path)!);
     a.vault.resetCounters();
-    await expect(a.registry.updateFromUI([{ row: child, patch: { displayName: "変更" } }]))
-      .rejects.toThrow("保持できない記述があります: ## Subtasks");
-    expect(await a.vault.read(file)).toBe(original);
+    await expect(a.registry.updateFromUI([{ row: child, patch: { currentStatus: "本文\n## 別の見出し\n内容" } }]))
+      .rejects.toThrow("安全に保存できません");
+    expect(await a.vault.read(a.vault.getFileByPath(child.file.path)!)).toBe(original);
     expect(a.vault.getModifyCallCount()).toBe(0);
     expect(a.historyManager.canUndo()).toBe(false);
   });
@@ -69,23 +66,25 @@ describe("OperationRegistry contract", () => {
     const a = setup();
     const parent = await createTask(a.vault, a.settings, "Parent");
     const child = await addSubtask(a.vault, a.settings, parent, "Child");
-    const file = a.vault.getFileByPath(parent.id)!;
-    await a.vault.modify(file, (await a.vault.read(file)).replace("type: task", "type: task\ncustom: keep") + "\n## 参考資料\n保持する本文\n");
+    const file = a.vault.getFileByPath(child.file.path)!;
+    await a.vault.modify(file, (await a.vault.read(file)).replace("type: subtask", "type: subtask\ncustom: keep") + "\n## 参考資料\n保持する本文\n");
     const plan = await a.registry.plan("update", { taskId: child.id, patch: { displayName: "変更" } });
     expect(plan.diffs[0].fields).toContainEqual({ field: "displayName", before: "Child", after: "変更" });
     expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
     expect((await a.registry.get(child.id)).displayName).toBe("変更");
-    expect(await a.vault.read(file)).toContain("custom: keep");
-    expect(await a.vault.read(file)).toContain("## 参考資料\n保持する本文\n");
+    const saved = a.vault.getFileContentById(child.id)!;
+    expect(saved).toContain("custom: keep");
+    expect(saved).toContain("## 参考資料\n保持する本文\n");
+    expect(a.vault.getFileById(child.id)!.path.endsWith("/変更.md")).toBe(true);
   });
   it("content revisions reject same-stat external changes without writing", async () => {
     const a = setup();
     const row = await createTask(a.vault, a.settings, "Example");
     const plan = await a.registry.plan("update", { taskId: row.id, patch: { notes: "new" } });
-    const file = a.vault.getFileByPath(row.id)!;
+    const file = a.vault.getFileByPath(row.file.path)!;
     const stat = { ...file.stat! };
     await a.vault.modify(file, (await a.vault.read(file)).replace("Example", "Changed"));
-    Object.assign(a.vault.getFileByPath(row.id)!.stat!, stat);
+    Object.assign(a.vault.getFileByPath(row.file.path)!.stat!, stat);
     a.vault.resetCounters();
     expect((await a.registry.commit(plan.previewId)).kind).toBe("stale");
     expect(a.vault.getModifyCallCount()).toBe(0);
@@ -101,38 +100,20 @@ describe("OperationRegistry contract", () => {
     expect((await first).diffs[0].fields[0].after).toBe("new");
     expect((await a.registry.get(row.id)).notes).toBe("new");
   });
-  it("rejects a combined file merge before publishing a batch preview", async () => {
+  it("a batch over several subtasks writes each subtask note and leaves the parent note alone", async () => {
     const a = setup();
     const parent = await createTask(a.vault, a.settings, "Parent");
     const first = await addSubtask(a.vault, a.settings, parent, "First");
     const second = await addSubtask(a.vault, a.settings, parent, "Second");
-    const file = a.vault.getFileByPath(parent.id)!;
-    const original = await a.vault.read(file);
-    const realMerge = noteUpdate.mergeTaskNote;
-    const merge = vi.spyOn(noteUpdate, "mergeTaskNote").mockImplementation((source, before, after) => {
-      if (after.includes("Renamed first") && after.includes("Renamed second")) {
-        throw new noteUpdate.NotePreservationError("まとめた変更を保持できません");
-      }
-      return realMerge(source, before, after);
-    });
+    const parentBefore = a.vault.getFileContent(parent.file.path);
     a.vault.resetCounters();
-    try {
-      const changes = [
-        { taskId: first.id, patch: { displayName: "Renamed first" } },
-        { taskId: second.id, patch: { displayName: "Renamed second" } },
-      ];
-      for (const change of changes) {
-        const single = await a.registry.plan("update", change);
-        a.registry.discard(single.previewId);
-      }
-      await expect(a.registry.plan("update-batch", { changes })).rejects.toThrow("まとめた変更を保持できません");
-      expect(merge).toHaveBeenLastCalledWith(original, expect.any(String), expect.stringContaining("Renamed second"));
-      expect(await a.vault.read(file)).toBe(original);
-      expect(a.vault.getModifyCallCount()).toBe(0);
-      expect(a.invalidate).not.toHaveBeenCalled();
-    } finally { merge.mockRestore(); }
+    const plan = await a.registry.plan("update-batch", { changes: [first, second].map((row) => ({ taskId: row.id, patch: { displayName: `Renamed ${row.displayName}` } })) });
+    expect((await a.registry.commit(plan.previewId)).committed).toBe(2);
+    expect(a.vault.getFileContent(parent.file.path)).toBe(parentBefore);
+    expect(a.vault.getFileContentById(first.id)).toContain("title: Renamed First");
+    expect(a.vault.getFileContentById(second.id)).toContain("title: Renamed Second");
   });
-  it("batch is atomic within a file and records subtask-specific diffs", async () => {
+  it("batch writes each note once and records subtask-specific diffs", async () => {
     const a = setup();
     const parent = await createTask(a.vault, a.settings, "Parent");
     const child = await addSubtask(a.vault, a.settings, parent, "Child");
@@ -141,7 +122,7 @@ describe("OperationRegistry contract", () => {
     a.vault.resetCounters();
     const result = await a.registry.commit(plan.previewId);
     expect(result.committed).toBe(2);
-    expect(a.vault.getModifyCallCount()).toBe(1);
+    expect(a.vault.getModifyCallCount()).toBe(2);
     expect(result.diffs[1].taskId).toBe(child.id);
   });
   it("partial failure retains committed diffs and undo for completed files", async () => {
@@ -149,7 +130,7 @@ describe("OperationRegistry contract", () => {
     const rows = await Promise.all(["First", "Second"].map((name) => createTask(a.vault, a.settings, name)));
     const plan = await a.registry.plan("update-batch", { changes: rows.map((row) => ({ taskId: row.id, patch: { notes: "new" } })) });
     const modify = a.vault.modify.bind(a.vault);
-    vi.spyOn(a.vault, "modify").mockImplementation(async (file, content) => { if (file.path === rows[1].id) throw new Error("synthetic failure"); await modify(file, content); });
+    vi.spyOn(a.vault, "modify").mockImplementation(async (file, content) => { if (file.path === rows[1].file.path) throw new Error("synthetic failure"); await modify(file, content); });
     const result = await a.registry.commit(plan.previewId);
     expect(result.kind).toBe("partial");
     expect(result.committed).toBe(1);
@@ -207,6 +188,32 @@ describe("serialization guard", () => {
     a.vault.resetCounters();
     await expect(a.registry.plan("update", { taskId: parent.id, patch: { notes: "memo\n## Subtasks\n### Forged" } })).rejects.toThrow("安全に保存");
     expect(a.vault.getModifyCallCount()).toBe(0);
+  });
+});
+
+describe("registry row lookup", () => {
+  it("get resolves parents and subtasks of any parent, and rejects unknown ids", async () => {
+    const a = setup();
+    const p1 = await createTask(a.vault, a.settings, "One"); const p2 = await createTask(a.vault, a.settings, "Two");
+    const c1 = await addSubtask(a.vault, a.settings, p1, "A"); const c2 = await addSubtask(a.vault, a.settings, p2, "A");
+    expect((await a.registry.get(p2.id)).id).toBe(p2.id);
+    expect((await a.registry.get(c1.id)).id).toBe(c1.id);
+    expect((await a.registry.get(c2.id)).id).toBe(c2.id);
+    expect(c1.id).not.toBe(c2.id);
+    await expect(a.registry.get(`${p1.id}::missing`)).rejects.toThrow("Task not found");
+    await expect(a.registry.get("nope")).rejects.toThrow("Task not found");
+  });
+  it("a single-subtask update changes only that subtask and verifies it in the round trip", async () => {
+    const a = setup();
+    const parent = await createTask(a.vault, a.settings, "Parent");
+    const first = await addSubtask(a.vault, a.settings, parent, "First");
+    const second = await addSubtask(a.vault, a.settings, parent, "Second");
+    const plan = await a.registry.plan("update", { taskId: second.id, patch: { plannedStartDate: "2026-03-01", plannedEndDate: "2026-03-04" } });
+    expect(plan.diffs).toHaveLength(1);
+    expect(plan.diffs[0].taskId).toBe(second.id);
+    expect((await a.registry.commit(plan.previewId)).kind).toBe("success");
+    expect((await a.registry.get(second.id)).plannedStartDate).toBe("2026-03-01");
+    expect((await a.registry.get(first.id)).plannedStartDate ?? "").toBe("");
   });
 });
 

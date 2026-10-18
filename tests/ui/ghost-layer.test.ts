@@ -6,12 +6,12 @@ import { ScheduleGhostStore } from "../../src/app/schedule-ghost";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { createFakeDocument, byClass, dispatch, makeFakeEl } from "../stubs/fake-dom";
 import { FakePreviewPort } from "./preview-fakes";
-import { DELETE_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARENT_ID } from "../contracts/fixtures";
+import { CHILD_ID, DELETE_PREVIEW, OUTSIDE_RANGE_PREVIEW, PARENT_ID } from "../contracts/fixtures";
 import type { TaskRow } from "../../src/core/types";
 import type { OperationResult } from "../../src/app/operation-registry";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
-const ghost = { taskId: "tasks/p.md::child", name: "子タスク", before: { start: "2026-10-01", end: "2026-10-02" }, after: { start: "2026-10-03", end: "2026-10-04" } };
-const result: OperationResult = { kind: "success", committed: 1, total: 1, results: [], message: "ok", diffs: [{ taskId: ghost.taskId, name: ghost.name, fields: [{ field: "plannedStartDate", before: ghost.before.start, after: ghost.after.start }], schedule: { before: ghost.before, after: ghost.after } }] };
+const ghost = { taskId: "s-child", parentId: "t-parent", name: "子タスク", before: { start: "2026-10-01", end: "2026-10-02" }, after: { start: "2026-10-03", end: "2026-10-04" } };
+const result: OperationResult = { kind: "success", committed: 1, total: 1, results: [], message: "ok", diffs: [{ taskId: ghost.taskId, parentId: ghost.parentId, name: ghost.name, fields: [{ field: "plannedStartDate", before: ghost.before.start, after: ghost.after.start }], schedule: { before: ghost.before, after: ghost.after } }] };
 describe("before/current Gantt ghost layer", () => {
   it("uses the existing day scale and labels before/current without color-only encoding", () => {
     vi.stubGlobal("document", createFakeDocument()); const timeline = makeFakeEl("div"); const current = makeFakeEl("div"); timeline.appendChild(current);
@@ -65,8 +65,8 @@ describe("before/current Gantt ghost layer", () => {
   it("adds ghosts on an unchanged incremental render and removes them on close/timeout", async () => {
     vi.useFakeTimers(); vi.stubGlobal("document", createFakeDocument()); vi.stubGlobal("window", makeFakeEl("window")); vi.stubGlobal("requestAnimationFrame", () => 0);
     const store = new ScheduleGhostStore();
-    const child = { kind: "subtask", id: ghost.taskId, key: "child", file: { path: "tasks/p.md" }, title: "子タスク", displayName: "子タスク", statusLabel: "active", tags: [], plannedStartDate: ghost.after.start, plannedEndDate: ghost.after.end } as unknown as TaskRow;
-    const parent = { kind: "parent", id: "tasks/p.md", file: { path: "tasks/p.md" }, title: "親", displayName: "親", tags: [], ganttEnabled: true, ganttOrder: 1, subtasks: new Map([["child", child]]) } as unknown as TaskRow;
+    const child = { kind: "subtask", id: ghost.taskId, key: "s-child", parentId: "t-parent", file: { path: "tasks/p/子タスク.md", parentPath: "tasks/p.md" }, title: "子タスク", displayName: "子タスク", statusLabel: "active", tags: [], plannedStartDate: ghost.after.start, plannedEndDate: ghost.after.end } as unknown as TaskRow;
+    const parent = { kind: "parent", id: "t-parent", file: { path: "tasks/p.md" }, title: "親", displayName: "親", tags: [], ganttEnabled: true, ganttOrder: 1, subtasks: new Map([["s-child", child]]) } as unknown as TaskRow;
     const host = { settings: { ...DEFAULT_SETTINGS, ganttFeatureWorkloadEnabled: false, ganttFeatureDailyTodoEnabled: false, ganttFeatureEventsEnabled: false }, manifest: { version: "test" }, logger: { debug: vi.fn() }, loadTasks: async () => [parent], activateView: vi.fn(), ghosts: store } as unknown as TaskGanttViewHost;
     const view = new TaskGanttView({} as any, host); await view.onOpen();
     const rowHeight = byClass(view.containerEl as any, "task-gantt-parent-timeline")[0].style.height;
@@ -86,12 +86,12 @@ describe("before/current Gantt ghost layer", () => {
 });
 
 describe("Gantt preview overlay from the preview port", () => {
-  const PARENT = "tasks/p.md";
-  const mapped = (value: unknown): any => JSON.parse(JSON.stringify(value).split(PARENT_ID).join(PARENT));
+  const PARENT = "t-p", REVIEW = "s-review";
+  const mapped = (value: unknown): any => JSON.parse(JSON.stringify(value).split(PARENT_ID).join(PARENT).split(CHILD_ID).join(REVIEW));
   const base = (): any => {
     vi.stubGlobal("document", createFakeDocument()); vi.stubGlobal("window", makeFakeEl("window")); vi.stubGlobal("requestAnimationFrame", () => 0);
-    const child = { kind: "subtask", id: PARENT + "::review", key: "review", file: { path: PARENT }, title: "レビュー", displayName: "レビュー", statusLabel: "active", tags: [], plannedStartDate: "2026-10-13", plannedEndDate: "2026-10-15" } as unknown as TaskRow;
-    const parent = { kind: "parent", id: PARENT, file: { path: PARENT }, title: "リリース", displayName: "リリース", tags: [], ganttEnabled: true, ganttOrder: 1, subtasks: new Map([["review", child]]) } as unknown as TaskRow;
+    const child = { kind: "subtask", id: REVIEW, key: REVIEW, parentId: PARENT, file: { path: "tasks/p/レビュー.md", parentPath: "tasks/p.md" }, title: "レビュー", displayName: "レビュー", statusLabel: "active", tags: [], plannedStartDate: "2026-10-13", plannedEndDate: "2026-10-15" } as unknown as TaskRow;
+    const parent = { kind: "parent", id: PARENT, file: { path: "tasks/p.md" }, title: "リリース", displayName: "リリース", tags: [], ganttEnabled: true, ganttOrder: 1, subtasks: new Map([[REVIEW, child]]) } as unknown as TaskRow;
     const moved = mapped({ ...OUTSIDE_RANGE_PREVIEW, previewId: "moved" });
     // Move by three days inside the range instead of two months away.
     for (const state of [moved.projection!.after]) { state.parents[0].children[0].period = { start: "2026-10-16", end: "2026-10-18" }; state.parents[0].period = { start: "2026-10-16", end: "2026-10-18" }; }
@@ -158,7 +158,7 @@ describe("Gantt preview overlay from the preview port", () => {
   });
   it("highlights workload cells, events, Daily ToDo days and preview-only bars on the real chart", async () => {
     const { host, port } = base();
-    const [parentRow] = await host.loadTasks(); const review = parentRow.subtasks!.get("review")!;
+    const [parentRow] = await host.loadTasks(); const review = parentRow.subtasks!.get(REVIEW)!;
     review.workloadPlan = { "2026-10-14": 1 }; review.workloadActual = {};
     host.settings = { ...host.settings, ganttFeatureWorkloadEnabled: true, ganttFeatureEventsEnabled: true, ganttFeatureDailyTodoEnabled: true,
       ganttEvents: [{ key: "e1", title: "会議", date: "2026-10-14" }, { key: "e2", title: "削除する予定", date: "2026-10-15" }] };
@@ -167,7 +167,7 @@ describe("Gantt preview overlay from the preview port", () => {
     const projection = marks.projection!;
     const child = (state: any) => state.parents[0].children[0];
     child(projection.before).hours = [{ date: "2026-10-14", plan: 1, actual: 0 }]; child(projection.after).hours = [{ date: "2026-10-14", plan: 3, actual: 1 }, { date: "2026-10-13", plan: 2, actual: 0 }];
-    projection.after.parents[0].children.push({ ...structuredClone(child(projection.after)), id: PARENT + "::fresh", name: "新規の子", period: { start: "2026-10-20", end: "2026-10-21" }, markers: [], hours: [] });
+    projection.after.parents[0].children.push({ ...structuredClone(child(projection.after)), id: "s-fresh", name: "新規の子", period: { start: "2026-10-20", end: "2026-10-21" }, markers: [], hours: [] });
     projection.before.events = [{ key: "e1", title: "会議", date: "2026-10-14", hours: [] }, { key: "e2", title: "削除する予定", date: "2026-10-15", hours: [] }];
     projection.after.events = [{ key: "e1", title: "会議", date: "2026-10-16", hours: [] }, { key: "e3", title: "新しい予定", date: "2026-10-17", hours: [] }];
     projection.before.daily = [{ date: "2026-10-14", totalCount: 1, completedCount: 0 }]; projection.after.daily = [{ date: "2026-10-14", totalCount: 2, completedCount: 1 }];

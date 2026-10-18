@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { startObsidian, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "./gen-fixtures.mjs";
 
 // Chromium's Unix socket paths must stay below 108 bytes. A /proc FD alias
 // keeps all temporary files inside the supplied scratchpad, with short paths.
@@ -19,13 +19,13 @@ for (const name of ["main.js", "styles.css", "manifest.json"]) fs.copyFileSync(p
 fs.writeFileSync(path.join(vaultDir, ".obsidian/community-plugins.json"), '["vault-gantt"]');
 fs.writeFileSync(path.join(vaultDir, ".obsidian/appearance.json"), JSON.stringify({ theme: "moonstone" }));
 fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ taskFolder: "tasks", autoPriorityEnabled: false, ganttSyncEnabled: false, ganttFeatureSyncEnabled: false, ganttFeatureWorkloadEnabled: false, ganttFeatureEventsEnabled: false, ganttFeatureDailyTodoEnabled: false, agentToolsEnabled: false, ganttZoom: 36 }));
-const { buildFullNote } = await loadNoteFormatModule();
+const noteModule = await loadNoteFormatModule();
 const notePath = "tasks/合成デザイン確認.md";
 const common = { statusLabel: "active", completed: false, createdAt: "2026-10-01", updatedAt: "2026-10-01", priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const child = { ...common, kind: "subtask", id: notePath + "::design", key: "design", file: { path: notePath, parentPath: notePath, heading: "デザイン確認" }, title: "デザイン確認", displayName: "デザイン確認", ganttEnabled: false, plannedStartDate: "2026-10-01", plannedEndDate: "2026-10-03" };
 const parent = { ...common, kind: "parent", id: notePath, file: { path: notePath }, title: "合成デザイン確認", displayName: "合成デザイン確認", ganttEnabled: true, ganttOrder: 0, subtasks: new Map([["design", child]]) };
 fs.mkdirSync(path.join(vaultDir, "tasks"), { recursive: true });
-fs.writeFileSync(path.join(vaultDir, notePath), buildFullNote(parent, parent.subtasks));
+const written = writeTaskNotes(noteModule, vaultDir, parent, parent.subtasks); // v2: parent note + one note per subtask
 fs.writeFileSync(path.join(vaultDir, "合成UIテスト.md"), "# 合成UIテスト\n\n固定のFakeProviderを使用。ライブLLMへの接続なし。\n\n右の会話は合成データです。検索、変更案、確認後の結果を表示しています。\n");
 let runtime;
 try {

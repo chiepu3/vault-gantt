@@ -111,10 +111,12 @@ describe("TaskFileService", () => {
 
       expect(vault.getCreateCallCount()).toBe(1);
       const content = vault.getFileContent(
-        "tasks/2026/07/2026-07-29 Disk Task.md"
+        "tasks/2026-07-29 Disk Task.md"
       );
       expect(content).toContain("type: task");
-      expect(content).toContain("# Disk Task");
+      expect(content).toContain("formatVersion: 2");
+      expect(content).toContain("title: Disk Task");
+      expect(content).not.toContain("# Disk Task");
     });
 
     it("displays a creation notification", async () => {
@@ -135,7 +137,7 @@ describe("TaskFileService", () => {
       expect(getLeaf).toHaveBeenCalledWith(true);
       expect(openFile).toHaveBeenCalledTimes(1);
       const opened = openFile.mock.calls[0][0] as TFile;
-      expect(opened.path).toBe("tasks/2026/07/2026-07-29 Opened Task.md");
+      expect(opened.path).toBe("tasks/2026-07-29 Opened Task.md");
     });
 
     it("invokes the completion callback with the created task", async () => {
@@ -169,8 +171,11 @@ describe("TaskFileService", () => {
       );
 
       expect(subtask?.displayName).toBe("Sub Via Row");
-      const content = vault.getFileContent(parent.file.path) as string;
-      expect(content).toContain("### Sub Via Row");
+      const content = vault.getFileContent(subtask!.file.path) as string;
+      expect(subtask!.file.path).toBe("tasks/2026-07-29 Explicit Parent/Sub Via Row.md");
+      expect(content).toContain("type: subtask");
+      expect(content).toContain("title: Sub Via Row");
+      expect(content).toMatch(/parent: .*2026-07-29 Explicit Parent/);
       expect(NoticeMock).toHaveBeenCalledWith(
         expect.stringContaining("Sub Via Row")
       );
@@ -192,12 +197,12 @@ describe("TaskFileService", () => {
       expect(subtask).toBeNull();
     });
 
-    it("opens the parent file after creation and invokes onCreated", async () => {
+    it("opens the new subtask note after creation and invokes onCreated", async () => {
       const parent = await createTask(vault, settings, "Open Parent");
       const prompt = scriptedPrompt(["Sub Opens Parent"]);
       const onCreated = vi.fn();
 
-      await service.addSubtaskInteractively(
+      const created = await service.addSubtaskInteractively(
         app,
         vault,
         settings,
@@ -209,7 +214,8 @@ describe("TaskFileService", () => {
       expect(getLeaf).toHaveBeenCalledWith(true);
       expect(openFile).toHaveBeenCalledTimes(1);
       const opened = openFile.mock.calls[0][0] as TFile;
-      expect(opened.path).toBe(parent.file.path);
+      expect(opened.path).toBe(created!.file.path);
+      expect(opened.path).not.toBe(parent.file.path);
       expect(onCreated).toHaveBeenCalledTimes(1);
       expect(onCreated.mock.calls[0][0].displayName).toBe(
         "Sub Opens Parent"
@@ -236,9 +242,9 @@ describe("TaskFileService", () => {
       );
 
       expect(subtask?.displayName).toBe("Sub One");
-      const content = vault.getFileContent(parentPath) as string;
-      expect(content).toContain("### Sub One");
-      expect(content).toContain("subtaskOrder: [sub-one]");
+      const content = vault.getFileContent(subtask!.file.path) as string;
+      expect(content).toContain("title: Sub One");
+      expect(content).toContain("parent:");
       expect(NoticeMock).toHaveBeenCalledWith(
         expect.stringContaining("Sub One")
       );

@@ -8,7 +8,7 @@ describe("catalog chat context", () => {
   it("automatically attaches only a bounded overview and selects requested families", async () => {
     const { service, context } = await runtimeFixture();
     const text = await new ContextBuilder(service.contextPort).build(context);
-    expect(new TextEncoder().encode(text).length).toBeLessThan(8192); expect(JSON.parse(text).data.kind).toBe("overview"); expect(text).not.toContain("currentStatus"); expect(text).not.toContain("workloadPlan"); expect(text).not.toContain("review-point");
+    expect(new TextEncoder().encode(text).length).toBeLessThan(8192); expect(JSON.parse(text).data.kind).toBe("overview"); expect(text).not.toContain("currentStatus"); expect(text).not.toContain("workloadPlan"); expect(text).not.toContain("確認");
     expect(selectToolFamilies("イベントの実績時間を設定")).toEqual(["tasks", "schedule", "workload", "events"]);
   });
   it("event wording selects event operations before generic add rules", () => {

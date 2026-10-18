@@ -3,7 +3,7 @@ import type { ToolSet } from "ai";
 import { chatTools } from "../../src/agent-tools/chat-tools";
 import { runtimeFixture } from "../app/operation-runtime-fixture";
 import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
-import { parseTaskFile } from "../../src/core/note-format";
+import { loadNoteTasks } from "../../src/app/note-store";
 async function invoke(tools: ToolSet, name: string, input: unknown) {
   return tools[name].execute!(input, { toolCallId: "fixture", messages: [], context: undefined }) as Promise<any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 }
@@ -43,19 +43,19 @@ describe("compact chat entries", () => {
     expect((await invoke(tools, "operations_describe", { ids: Array(7).fill("T07") })).error.code).toBe("INVALID_INPUT"); f.service.dispose();
   });
   it("copies a child in one approval, preserves the source and supports Undo and repreview", async () => {
-    const f = await runtimeFixture(); const before = f.vault.getFileContent(PARENT_ID);
+    const f = await runtimeFixture(); const before = f.vault.snapshot();
     const preview = await f.service.proposeTaskCopy(CHILD_ID, "レビュー予備", f.context);
-    expect(f.vault.getFileContent(PARENT_ID)).toBe(before);
+    expect(f.vault.snapshot()).toEqual(before);
     const source = preview.projection!.before.parents.flatMap((parent) => parent.children).find((task) => task.id === CHILD_ID);
     const target = preview.projection!.after.parents.flatMap((parent) => parent.children).find((task) => task.name === "レビュー予備");
     expect(target).toMatchObject({ period: source!.period, hours: source!.hours, markers: source!.markers });
     expect(target!.id).not.toBe(CHILD_ID);
     const refreshed = await f.service.previewPort.requestRepreview(preview.previewId);
     const outcome = await f.service.humanApprovalPort.approve(refreshed.previewId); expect(outcome.status).toBe("success");
-    const saved = parseTaskFile({ path: PARENT_ID }, f.vault.getFileContent(PARENT_ID)!, f.settings)!;
-    expect(saved.subtasks!.get(f.child.key!)!.displayName).toBe(f.child.displayName);
+    const saved = (await loadNoteTasks(f.vault, f.settings, new Map())).find((row) => row.id === PARENT_ID)!;
+    expect(saved.subtasks!.get(CHILD_ID)!.displayName).toBe(f.child.displayName);
     expect([...saved.subtasks!.values()].find((task) => task.displayName === "レビュー予備")!.workloadActual).toEqual(f.child.workloadActual);
     const undo = await f.service.propose("V20", {}, f.context); expect((await f.service.humanApprovalPort.approve(undo.previewId)).status).toBe("success");
-    expect(f.vault.getFileContent(PARENT_ID)).toBe(before); f.service.dispose();
+    expect(f.vault.snapshot()).toEqual(before); f.service.dispose();
   });
 });

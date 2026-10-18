@@ -13,12 +13,12 @@ import type {
   TaskUpdateCommand,
   TaskWorkbenchSettings,
 } from "../../src/core/types";
-import { addSubtask, createTask, loadTasks } from "../../src/app/task-operations";
+import { addSubtask, createTask, loadTasks, type TaskCache } from "../../src/app/task-operations";
 
 describe("ToolAdapter (Agent Tools API)", () => {
   let vault: FakeVault;
   let settings: TaskWorkbenchSettings;
-  let cache: Map<string, { revision: string; taskRow: TaskRow | null }>;
+  let cache: TaskCache;
   let adapter: ToolAdapter;
 
   beforeEach(() => {
@@ -169,19 +169,20 @@ describe("ToolAdapter (Agent Tools API)", () => {
       expect(vault.getModifyCallCount()).toBe(1);
     });
 
-    it("previewCreateParentTask reserves a path without creating a file; confirm creates it", async () => {
+    it("previewCreateParentTask reserves an id without creating a file; confirm creates it", async () => {
       const preview = await adapter.previewCreateParentTask("Gamma Task");
 
       expect(preview.kind).toBe("createParentTask");
-      const path = preview.details.path as string;
-      expect(path.startsWith("tasks/2026/07/")).toBe(true);
+      expect(preview.details.taskId).toMatch(/^t-[0-9a-z]{6}$/);
       expect(vault.getCreateCallCount()).toBe(0);
-      expect(vault.getFileByPath(path)).toBeNull();
 
-      await adapter.confirmChange(preview.previewId);
+      const created = (await adapter.confirmChange(preview.previewId)) as TaskRow;
 
+      expect(created.id).toBe(preview.details.taskId);
+      expect(created.file.path.startsWith("tasks/")).toBe(true);
+      expect(created.file.path.endsWith("Gamma Task.md")).toBe(true);
       expect(vault.getCreateCallCount()).toBe(1);
-      expect(vault.getFileByPath(path)).not.toBeNull();
+      expect(vault.getFileByPath(created.file.path)).not.toBeNull();
     });
 
     it("previewCreateParentTask rejects empty names", async () => {
@@ -190,8 +191,9 @@ describe("ToolAdapter (Agent Tools API)", () => {
       );
     });
 
-    it("previewCreateSubtask computes the subtask key; confirm writes it into the parent file", async () => {
+    it("previewCreateSubtask reserves an id; confirm writes a new subtask note and leaves the parent alone", async () => {
       const { parent } = await seedParentAndSubtask();
+      const parentBefore = vault.getFileContent(parent.file.path);
       vault.resetCounters();
 
       const preview = await adapter.previewCreateSubtask(
@@ -200,15 +202,16 @@ describe("ToolAdapter (Agent Tools API)", () => {
       );
 
       expect(preview.kind).toBe("createSubtask");
-      expect(preview.details.key).toBe("delta-subtask");
-      expect(vault.getModifyCallCount()).toBe(0);
+      expect(preview.details.taskId).toMatch(/^s-[0-9a-z]{6}$/);
+      expect(vault.getCreateCallCount()).toBe(0);
 
       await adapter.confirmChange(preview.previewId);
 
-      expect(vault.getModifyCallCount()).toBe(1);
+      expect(vault.getCreateCallCount()).toBe(1);
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(vault.getFileContent(parent.file.path)).toBe(parentBefore);
       const rows = await loadTasks(vault, settings, cache);
-      const keys = Array.from(rows[0].subtasks?.keys() ?? []);
-      expect(keys).toContain("delta-subtask");
+      expect(Array.from(rows[0].subtasks?.keys() ?? [])).toContain(preview.details.taskId);
     });
 
     it("previewCreateSubtask rejects subtask parents", async () => {
@@ -220,18 +223,23 @@ describe("ToolAdapter (Agent Tools API)", () => {
 
     it("previewMoveTask previews a ganttOrder change; confirm applies it", async () => {
       const { parent } = await seedParentAndSubtask();
+      const second = await createTask(vault, settings, "Zeta Task");
+      await loadTasks(vault, settings, cache);
+      expect(settings.ganttParentOrder).toEqual([parent.id, second.id]);
       vault.resetCounters();
 
-      const preview = await adapter.previewMoveTask(parent.id, 42);
+      const preview = await adapter.previewMoveTask(second.id, 500);
 
       expect(preview.kind).toBe("moveTask");
       expect(preview.details.changedFields).toContain("ganttOrder");
       expect(vault.getModifyCallCount()).toBe(0);
 
       await adapter.confirmChange(preview.previewId);
-      expect(vault.getModifyCallCount()).toBe(1);
+      // The order goes to settings; no note is written.
+      expect(vault.getModifyCallCount()).toBe(0);
+      expect(settings.ganttParentOrder).toEqual([second.id, parent.id]);
       const rows = await loadTasks(vault, settings, cache);
-      expect(rows[0].ganttOrder).toBe(42);
+      expect(rows.find((row) => row.id === second.id)!.ganttOrder).toBe(1000);
     });
 
     it("previewUpdateTasksBatch previews multiple commands; confirm applies them atomically per file", async () => {
@@ -255,8 +263,8 @@ describe("ToolAdapter (Agent Tools API)", () => {
 
       await adapter.confirmChange(preview.previewId);
 
-      // both rows live in one parent file → exactly one write
-      expect(vault.getModifyCallCount()).toBe(1);
+      // each row is its own note → one write per note
+      expect(vault.getModifyCallCount()).toBe(2);
       const rows = await loadTasks(vault, settings, cache);
       expect(rows[0].displayName).toBe("Batch Parent");
     });

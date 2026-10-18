@@ -451,6 +451,54 @@ describe("daily-todo-service", () => {
 
   });
 
+  describe("DailyTodoService candidate cache", () => {
+    function persistentVault(paths: Record<string, string>) {
+      const files = new Map<string, TFile>(), contents = new Map<string, string>();
+      let clock = 1;
+      const put = (path: string, content: string) => { const file = files.get(path) ?? makeFile(path, 0, 0); (file as unknown as { stat: object }).stat = { mtime: clock++, size: content.length, ctime: 1 }; files.set(path, file); contents.set(path, content); };
+      for (const [path, content] of Object.entries(paths)) put(path, content);
+      const getMarkdownFiles = vi.fn(() => [...files.values()]);
+      const vault = { getMarkdownFiles, cachedRead: async (file: TFile) => contents.get(file.path)! } as unknown as Vault;
+      return { vault, getMarkdownFiles, put, remove: (path: string) => { files.delete(path); contents.delete(path); } };
+    }
+    const daily = (date: string) => `デイリー/2026/07/${date}_デイリー.md`;
+
+    it("re-enumerates the vault on every call until change tracking is enabled", async () => {
+      const f = persistentVault({ [daily("260725")]: "- [ ] a" });
+      const service = new DailyTodoService();
+      await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS);
+      await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS);
+      expect(f.getMarkdownFiles).toHaveBeenCalledTimes(2);
+    });
+    it("tracked: skips the vault scan, still sees edits, and rescans after invalidation", async () => {
+      const f = persistentVault({ [daily("260725")]: "- [ ] a", "notes/x.md": "- [ ] ignored" });
+      const service = new DailyTodoService(); service.trackVaultChanges();
+      const first = await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS);
+      const second = await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS);
+      expect(f.getMarkdownFiles).toHaveBeenCalledTimes(1);
+      expect(second).toEqual(first);
+      second[0].items[0].text = "mutated"; second[0].items.length = 0;
+      expect((await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS))).toEqual(first);
+      f.put(daily("260725"), "- [ ] a\n- [x] b");
+      expect((await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS))[0].totalCount).toBe(2);
+      expect(f.getMarkdownFiles).toHaveBeenCalledTimes(1);
+      f.put(daily("260726"), "- [ ] c");
+      expect(await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS)).toHaveLength(1);
+      service.invalidateCandidates();
+      expect((await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS)).map((summary) => summary.date)).toEqual(["2026-07-25", "2026-07-26"]);
+      f.remove(daily("260725")); service.invalidateCandidates();
+      expect((await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS)).map((summary) => summary.date)).toEqual(["2026-07-26"]);
+    });
+    it("tracked: changing the configured sources rebuilds the candidate list", async () => {
+      const f = persistentVault({ [daily("260725")]: "- [ ] a" });
+      const service = new DailyTodoService(); service.trackVaultChanges();
+      expect(await service.loadDailyTodoSummaries(f.vault, DEFAULT_SETTINGS)).toHaveLength(1);
+      const none = { ...DEFAULT_SETTINGS, dailyTodoSources: [] } as TaskWorkbenchSettings;
+      expect(await service.loadDailyTodoSummaries(f.vault, none)).toHaveLength(0);
+      expect(f.getMarkdownFiles).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("DailyTodoService.loadDailyTodoSummaries", () => {
     let service: DailyTodoService;
 
@@ -1319,13 +1367,13 @@ describe("daily-todo-service", () => {
       const summary = { date: "2026-07-25", items: [first, meeting], completedCount: 0, totalCount: 2 };
       await updateDailyTodos(summary, [{ ...first, completed: true }, { ...meeting, text: "edited" }, todoItem({ path: "", line: -1, text: "new", isNew: true })], app, DEFAULT_SETTINGS, history);
       const saved = getContent(path);
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(getContent(path)).toBe(before);
       expect(getContent(other)).toBe("- [ ] meeting");
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(getContent("task.md")).toBe("due: 2026-07-01");
-      expect((await history.redo(vault)).kind).toBe("success");
-      expect((await history.redo(vault)).kind).toBe("success");
+      expect((await history.redo(vault as never)).kind).toBe("success");
+      expect((await history.redo(vault as never)).kind).toBe("success");
       expect(getContent(path)).toBe(saved);
       expect(getContent(other)).toBe("- [ ] edited");
     });
@@ -1340,7 +1388,7 @@ describe("daily-todo-service", () => {
       await deleteDailyTodoItem(item, vault, history);
       await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
       for (const expected of ["", "- [x] first", before]) {
-        expect((await history.undo(vault)).kind).toBe("success");
+        expect((await history.undo(vault as never)).kind).toBe("success");
         expect(getContent(path)).toBe(expected);
       }
       expect(history.peekUndoLabel()).toBe("以前の変更");
@@ -1354,7 +1402,7 @@ describe("daily-todo-service", () => {
         setFile(file.path, content);
       }).mockRejectedValueOnce(new Error("save failed"));
       await expect(updateDailyTodos({ date: "2026-07-25", items, completedCount: 0, totalCount: 2 }, items.map((item) => ({ ...item, completed: true })), app, DEFAULT_SETTINGS, history)).rejects.toThrow("save failed");
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(getContent(path)).toBe("- [ ] first");
       expect(getContent("meeting.md")).toBe("- [ ] second");
     });
@@ -1364,7 +1412,7 @@ describe("daily-todo-service", () => {
       const history = new HistoryManager();
       history.push({ label: "以前の変更", files: [{ path: "other.md", before: "a", after: "b" }] });
       await insertDailyTodoItems("2026-07-25", [todoItem({ text: "new" })], app, DEFAULT_SETTINGS, history);
-      expect((await history.undo(vault)).kind).toBe("success");
+      expect((await history.undo(vault as never)).kind).toBe("success");
       expect(vault.getFileByPath(path)).not.toBeNull();
       expect(getContent(path)).not.toContain("- [ ] new");
       expect(history.peekUndoLabel()).toBe("以前の変更");
@@ -1374,7 +1422,7 @@ describe("daily-todo-service", () => {
       const { vault, app } = makeFakeVault({ [path]: "- [ ] first", "task.md": "b" });
       const history = new HistoryManager();
       history.push({ label: "以前の変更", files: [{ path: "task.md", before: "a", after: "b" }] });
-      await history.undo(vault);
+      await history.undo(vault as never);
       const item = todoItem({ path, line: 0, text: "first" });
       await updateDailyTodos({ date: "2026-07-25", items: [item], completedCount: 0, totalCount: 1 }, [item], app, DEFAULT_SETTINGS, history);
       expect(history.canUndo()).toBe(false);

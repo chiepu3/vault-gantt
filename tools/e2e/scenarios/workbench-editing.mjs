@@ -11,8 +11,7 @@
 // cell, and the dblclick-to-edit currentStatus cell.
 
 // Fixture reuse: gen-fixtures.mjs's generateFixtures (built for the Gantt
-// scenarios) produces parent+subtask pairs via the real buildFullNote
-// serializer. task-workbench-view.ts's getDisplayRows flattens BOTH
+// scenarios) produces parent+subtask notes via the real note-v2 serializer. task-workbench-view.ts's getDisplayRows flattens BOTH
 // parents and subtasks into table rows (src/app/workbench-display.ts
 // getDisplayRows: "parents + every parent's subtasks Map values"), so these
 // fixtures work as-is for the Workbench — no new fixture generator needed.
@@ -36,12 +35,11 @@ const TARGET_NAME = "E2E Fixture Task 0001";
 const DUE_DATE_VALUE = "2027-03-15";
 const TAGS_INPUT_VALUE = "foo, , bar";
 // parseTagsInput splits on commas and trims each element:
-// "foo, , bar" becomes ["foo", "", "bar"]. buildFrontmatter serializes parent
-// tags as a quoted array, preserving the empty element as ["foo","","bar"].
-// applyPatchToParent previously ran the clean array through ensureArray,
-// which dropped the empty string. This scenario verifies that the full edit
-// now round-trips the empty element to the saved file.
-const EXPECTED_TAGS_LINE = 'tags: ["foo","","bar"]';
+// "foo, , bar" becomes ["foo", "", "bar"]. The note stores tags as a YAML list
+// (Obsidian's processFrontMatter decides block or flow style), keeping the empty
+// element. This scenario verifies that the full edit round-trips the empty element
+// to the saved file.
+const EXPECTED_TAGS_LINE = /^tags:\s*(\[\s*"?foo"?\s*,\s*(""|'')\s*,\s*"?bar"?\s*\]|\n\s+- foo\n\s+- (""|'')\n\s+- bar)/m;
 const CURRENT_STATUS_VALUE = "E2E workbench inline status edit";
 
 const SETTLE_MS = 800;
@@ -191,11 +189,11 @@ export async function run({ cdp, vaultDir }) {
 
   const afterDue = await waitForFileContains(
     filePath,
-    `dueDate: ${DUE_DATE_VALUE}`,
+    `due: ${DUE_DATE_VALUE}`,
     "dueDate change settled on disk"
   );
   await sleep(SETTLE_MS); // extra settle margin before the next interaction
-  checkFileContains(afterDue, `dueDate: ${DUE_DATE_VALUE}`, "dueDate change: YYYY-MM-DD round-trip", failures, details);
+  checkFileContains(afterDue, `due: ${DUE_DATE_VALUE}`, "dueDate change: YYYY-MM-DD round-trip", failures, details);
   // Updating dueDate must preserve the saved priority.
   checkFileContains(afterDue, `priority: ${STAR_POSITION}`, "dueDate change: prior priority edit still intact", failures, details);
 
@@ -264,7 +262,7 @@ export async function run({ cdp, vaultDir }) {
     failures,
     details
   );
-  checkFileContains(afterTags, `dueDate: ${DUE_DATE_VALUE}`, "tags edit: prior dueDate edit still intact", failures, details);
+  checkFileContains(afterTags, `due: ${DUE_DATE_VALUE}`, "tags edit: prior dueDate edit still intact", failures, details);
 
 
   // 4. Edit currentStatus by double-clicking, typing, and blurring to save.
@@ -436,7 +434,7 @@ async function waitForFileContains(filePath, substring, label) {
   for (;;) {
     try {
       lastContent = fs.readFileSync(filePath, "utf8");
-      if (lastContent.includes(substring)) {
+      if (matches(lastContent, substring)) {
         return lastContent;
       }
     } catch {
@@ -450,8 +448,13 @@ async function waitForFileContains(filePath, substring, label) {
   }
 }
 
+/** substring (string) or pattern (RegExp) found in content. */
+function matches(content, needle) {
+  return needle instanceof RegExp ? needle.test(content) : content.includes(needle);
+}
+
 function checkFileContains(content, substring, label, failures, details) {
-  if (content.includes(substring)) {
+  if (matches(content, substring)) {
     details.push(`OK ${label}`);
   } else {
     failures.push(

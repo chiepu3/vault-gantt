@@ -1,7 +1,8 @@
-// Sample vault: Japanese task notes written with the branch's own buildFullNote (so the note format always matches the code
+// Sample vault: Japanese task notes written with the branch's own buildNewNote (so the note format always matches the code
 // under test), dated relative to "today" so the Gantt always has bars around the current date.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { buildFullNote } from "@app/core/note-format";
+import { stringifyYaml } from "obsidian";
+import { buildNewNote } from "@app/core/note-v2";
 import { FAKE_ORIGIN } from "./fake-llm";
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -44,27 +45,37 @@ const PARENTS: Parent[] = [
   { name: "採用面接の日程調整", tags: [], due: 6, prio: 2, created: -2, gantt: false, subs: [] },
 ];
 
-function toRow(p: Parent, idx: number, base: string): { path: string; parent: any } {
+/** v2 notes: one parent note and one note per subtask (in a folder named like the parent). */
+function toNotes(p: Parent, idx: number): { files: Record<string, string>; parentId: string; subIds: string[] } {
   const t = today();
-  const path = `tasks/${plus(p.created).slice(0, 4)}/${plus(p.created).slice(5, 7)}/${plus(p.created)} ${p.name}.md`;
+  const stem = `${plus(p.created)} ${p.name}`;
+  const parentPath = `tasks/${stem}.md`;
+  const parentId = `t-sd${String(idx).padStart(4, "0")}`;
   const common = { createdAt: plus(p.created), updatedAt: t, completed: false, priority: 0, priorityMode: "auto", currentStatus: "", notes: "", tags: [] as string[] };
-  const subtasks = new Map<string, any>();
-  for (const s of p.subs) {
+  const files: Record<string, string> = {};
+  const subs = new Map<string, any>();
+  const subIds: string[] = [];
+  p.subs.forEach((s, j) => {
+    const id = `s-sd${String(idx)}${String(j).padStart(3, "0")}`;
+    const path = `tasks/${stem}/${s.title}.md`;
     const done = s.status === "done";
-    subtasks.set(s.key, { ...common, kind: "subtask", id: `${path}::${s.key}`, key: s.key, file: { path, parentPath: path, heading: s.title }, title: s.title, displayName: s.title,
+    const row = { ...common, kind: "subtask", id, key: id, parentId, file: { path, parentPath }, title: s.title, displayName: s.title,
       statusLabel: s.status ?? "active", completed: done, dueDate: s.due !== undefined ? plus(s.due) : undefined, tags: s.tags ?? [], ganttEnabled: false, currentStatus: s.status_text ?? "", notes: s.note ?? "",
       plannedStartDate: plus(s.from), plannedEndDate: plus(s.to), workloadPlan: s.plan ? range(s.from, s.to, s.plan) : undefined, workloadActual: s.actual ? range(s.actual[0], s.actual[1], s.actual[2]) : undefined,
-      ganttMarkers: s.markers?.map(([key, title, day]) => ({ key, title, date: plus(day), tags: [] })) });
-  }
-  const parent = { ...common, kind: "parent", id: path, file: { path }, title: p.name, displayName: p.name, statusLabel: p.status ?? "in_progress", completed: !!p.completed, dueDate: p.due !== undefined ? plus(p.due) : undefined,
-    priority: p.prio, priorityMode: "manual", tags: p.tags, ganttEnabled: p.gantt ?? true, ganttOrder: idx, currentStatus: p.current ?? "", notes: p.notes ?? "", subtasks };
-  void base;
-  return { path, parent };
+      ganttMarkers: s.markers?.map(([key, title, day]) => ({ key, title, date: plus(day), tags: [] })) };
+    subs.set(id, row); subIds.push(id);
+    files[path] = buildNewNote(row as any, stringifyYaml, { parentLink: `[[${stem}]]` });
+  });
+  const parent = { ...common, kind: "parent", id: parentId, file: { path: parentPath }, title: p.name, displayName: p.name, statusLabel: p.status ?? "in_progress", completed: !!p.completed, dueDate: p.due !== undefined ? plus(p.due) : undefined,
+    priority: p.prio, priorityMode: "manual", tags: p.tags, ganttEnabled: p.gantt ?? true, currentStatus: p.current ?? "", notes: p.notes ?? "", subtasks: subs };
+  files[parentPath] = buildNewNote(parent as any, stringifyYaml);
+  return { files, parentId, subIds };
 }
 
 export function makeSeed(): { files: Record<string, string>; data: any; secrets: Record<string, string> } {
   const files: Record<string, string> = {};
-  PARENTS.forEach((p, i) => { const { path, parent } = toRow(p, i, ""); files[path] = buildFullNote(parent, parent.subtasks); });
+  const subtaskOrder: Record<string, string[]> = {}, ganttParentOrder: string[] = [];
+  PARENTS.forEach((p, i) => { const n = toNotes(p, i); Object.assign(files, n.files); ganttParentOrder.push(n.parentId); if (n.subIds.length) subtaskOrder[n.parentId] = n.subIds; });
   const t = new Date(), ymd = (d: Date) => ({ y: d.getFullYear(), m: String(d.getMonth() + 1).padStart(2, "0"), d: String(d.getDate()).padStart(2, "0") });
   for (const off of [-2, -1, 0, 1, 2]) {
     const d = new Date(t); d.setDate(d.getDate() + off); const { y, m, d: dd } = ymd(d);
@@ -77,7 +88,7 @@ export function makeSeed(): { files: Record<string, string>; data: any; secrets:
 
   const holidays = ["2026-01-01", "2026-01-12", "2026-02-11", "2026-02-23", "2026-03-20", "2026-04-29", "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06", "2026-07-20", "2026-08-11", "2026-09-21", "2026-09-22", "2026-09-23", "2026-10-12", "2026-11-03", "2026-11-23", "2027-01-01", "2027-01-11", "2027-02-11", "2027-02-23"];
   const data = {
-    taskFolder: "tasks", autoPriorityEnabled: true, ganttNationalHolidays: holidays, ganttNationalHolidaysUpdatedAt: today(), ganttZoom: 28,
+    taskFolder: "tasks", autoPriorityEnabled: true, ganttParentOrder, subtaskOrder, ganttNationalHolidays: holidays, ganttNationalHolidaysUpdatedAt: today(), ganttZoom: 28,
     ganttTags: [["dev", "開発", "#2563eb"], ["design", "デザイン", "#7c3aed"], ["ops", "運用", "#12883e"], ["research", "調査", "#b16105"]].map(([key, name, color], order) => ({ key, name, color, order })),
     ganttEvents: [{ key: "ev1", title: "全社会議", date: plus(3) }, { key: "ev2", title: "リリース", date: plus(14), workloadPlan: { [plus(14)]: 2 } }],
     weeklyWorkSchedules: [{ key: "w1", title: "定例会議", dayOfWeek: 1, minutesPerWeek: 60 }, { key: "w2", title: "1on1", dayOfWeek: 3, minutesPerWeek: 30 }],

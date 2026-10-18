@@ -2,7 +2,7 @@ import { operationInputSchemas, type ViewOperationId, type OperationInputMap } f
 import { formatBuildLabel, getBuildInfo } from "../build-info";
 import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts } from "../contracts/ports";
-import { NotePreservationError } from "../core/note-update";
+import { NotePreservationError } from "../core/note-v2";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
 import type { PreviewPort } from "../contracts/ports";
@@ -116,6 +116,9 @@ import {
 } from "../app/gantt-task-service";
 import { WeeklyWorkScheduleModal } from "./modals";
 import { registerHistoryHotkeys } from "./history-hotkeys";
+import { StickyTitleTracker } from "./gantt-sticky-titles";
+import { pickTopmostAt, rectsIntersect } from "./rich-popover-cover";
+import { planInitialViewport } from "../app/gantt-viewport";
 
 
 /**
@@ -994,6 +997,11 @@ export class TaskGanttView extends ItemView {
   private chartNeedsVisibleRender = false;
   /** True until the first visible chart has been scrolled to today. */
   private initialScrollPending = true;
+  /**
+   * scrollLeft the first render will be scrolled to (and its lane window computed for). Planned before that render so the
+   * chart is built once at its final range and position instead of at the range start and then rebuilt after the scroll.
+   */
+  private initialScrollLeft: number | undefined = undefined;
 
 
 
@@ -1045,6 +1053,10 @@ export class TaskGanttView extends ItemView {
 
 
   private dragState: Record<string, unknown> | undefined = undefined;
+  /** True from a drag's pointerdown until its pointerup/pointercancel (dragState outlives the gesture). */
+  private dragActive = false;
+  /** A chart render that arrived mid-drag; it runs when the gesture ends. */
+  private renderAfterDrag = false;
 
   /**
  *
@@ -1064,6 +1076,15 @@ export class TaskGanttView extends ItemView {
  * query helper.
  */
   private barElsByTaskId = new Map<string, HTMLElement>();
+  /** Offsets the titles of bars that overlap the sticky name column (see gantt-sticky-titles.ts). */
+  private readonly stickyTitles = new StickyTitleTracker();
+  /**
+   * Parent rows whose timeline contents are not built yet, with the function that builds them. Rows far outside the
+   * viewport stay empty shells of exactly their final size until they come near (see populateNearRows).
+   */
+  private readonly pendingRowFills = new Map<HTMLElement, () => void>();
+  /** Whether this render defers row contents; false when nothing is laid out (hidden tab, tests without layout). */
+  private lazyRowContents = false;
 
 
 
@@ -1326,6 +1347,8 @@ export class TaskGanttView extends ItemView {
   private readonly barPopoverTriggers = new WeakMap<HTMLElement, (evt: MouseEvent) => void>();
   /** Pending switch to a bar the pointer rests on beneath the popover. */
   private coveredBarSwitch: { barEl: HTMLElement; timer: ReturnType<typeof setTimeout> } | undefined = undefined;
+  /** Bars under the open rich popover with their rects, for the covered-bar check on mousemove. */
+  private coveredBarCandidates: { popover: HTMLElement; bars: { el: HTMLElement; rect: RichPopoverRect }[] } | undefined = undefined;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -1374,7 +1397,7 @@ export class TaskGanttView extends ItemView {
         this.bulkMoveState = { parentKey: parent.id, anchorKey: anchor?.id ?? "", anchorStart: anchor?.plannedStartDate ?? todayStr() };
       }
     } else if (id === "V17") {
-      const target = args as OperationInputMap["V17"], anchorEl = this.barElsByTaskId.get(target.target) ?? this.wrapEl;
+      const target = args as OperationInputMap["V17"], anchorEl = this.barElFor(target.target) ?? this.wrapEl;
       if (target.kind === "weekly") {
         const button = this.wrapEl.querySelector<HTMLButtonElement>(".task-gantt-workload-settings-button"); if (!button) throw new Error("UI_UNAVAILABLE"); button.click();
       } else if (target.kind === "workload") { if (!this.host.settings.ganttFeatureWorkloadEnabled || !this.dates.includes(target.target)) throw new Error("UI_UNAVAILABLE"); this.showWorkloadDaySummaryPopup(target.target, anchorEl); }
@@ -1462,6 +1485,7 @@ export class TaskGanttView extends ItemView {
       if (event === "show") this.renderChart();
       else this.clearGhostLayer();
     });
+    this.planInitialViewport();
     await this.render();
 
     // defer the initial scroll to the next animation frame so the
@@ -1469,6 +1493,30 @@ export class TaskGanttView extends ItemView {
     requestAnimationFrame(() => {
       this.applyInitialScroll();
     });
+  }
+
+  /**
+   * Decides the range and scroll offset the chart opens at, before it is first built. Opening used to build the chart at
+   * scrollLeft 0, scroll to today (which sits within the left-extension threshold of the range start), extend the range
+   * and the lane window, and rebuild twice more. This runs the same extension rule up front, so the one build already
+   * has its final range, lane window and scroll position. A chart that is not laid out yet (hidden tab) keeps the
+   * old path, which applies the scroll once it becomes visible.
+   */
+  private planInitialViewport(): void {
+    this.initialScrollLeft = undefined;
+    const clientWidth = this.wrapEl.clientWidth;
+    if (!(clientWidth > 0)) return;
+    const plan = planInitialViewport({
+      today: todayStr(),
+      rangeStart: this.rangeStart,
+      rangeDays: this.rangeDays,
+      dayWidth: this.dayWidth,
+      clientWidth,
+      offsetPx: INITIAL_SCROLL_OFFSET_PX,
+    });
+    this.rangeStart = plan.rangeStart;
+    this.rangeDays = plan.rangeDays;
+    this.initialScrollLeft = plan.scrollLeft;
   }
 
   /**
@@ -1566,14 +1614,25 @@ export class TaskGanttView extends ItemView {
     return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined;
   }
 
+  /** Row elements are keyed by the parent note's path; tasks are known by id. */
+  private readonly parentPathByTaskId = new Map<string, string>();
+  private indexParentPaths(parents: readonly TaskRow[]): void {
+    this.parentPathByTaskId.clear();
+    for (const parent of parents) {
+      this.parentPathByTaskId.set(parent.id, parent.file.path);
+      for (const child of parent.subtasks?.values() ?? []) this.parentPathByTaskId.set(child.id, parent.file.path);
+    }
+  }
+  private rowKeyOf(taskId: string): string { return this.parentPathByTaskId.get(taskId) ?? taskId.split("::")[0]; }
+
   private clearGhostLayer(): void {
     for (const [taskId, { nodes, current }] of this.ghostNodes) {
-      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      this._ganttRowCache?.rowFingerprints.delete(this.rowKeyOf(taskId));
       nodes.forEach((node) => node.remove()); current?.classList.remove("vg-ai-target");
     }
     this.ghostNodes.clear(); this.ghostLegend?.remove(); this.ghostLegend = undefined;
     for (const [taskId, nodes] of this.previewNodes) {
-      this._ganttRowCache?.rowFingerprints.delete(taskId.split("::")[0]);
+      this._ganttRowCache?.rowFingerprints.delete(this.rowKeyOf(taskId));
       nodes.forEach((node) => node.remove());
     }
     this.previewNodes.clear();
@@ -1616,7 +1675,7 @@ export class TaskGanttView extends ItemView {
       // The first changed day lands clear of the sticky name column.
       this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX + 180);
     }
-    const row = taskId ? this._ganttRowCache?.rowEls.get(taskId.split("::")[0]) : undefined;
+    const row = taskId ? this._ganttRowCache?.rowEls.get(this.rowKeyOf(taskId)) : undefined;
     if (!row?.getBoundingClientRect) return;
     const wrap = this.wrapEl.getBoundingClientRect(); const rect = row.getBoundingClientRect();
     const stickyTop = (this.ganttHeaderEl?.getBoundingClientRect().height ?? 0) + 160;
@@ -1724,10 +1783,15 @@ export class TaskGanttView extends ItemView {
  * selects the full-render escape hatch.
  */
   renderChart(): void {
+    // Rebuilding rows mid-drag would detach the dragged bar (a save's follow-up refresh can land
+    // after the next drag began); the render runs when the gesture ends.
+    if (this.dragActive) { this.renderAfterDrag = true; return; }
     // Hidden tabs report zero scroll offsets. Rebuilding them would discard
     // the visible date and derive a month from the range's far-left edge.
     if (this.wrapEl.offsetParent === null) { this.chartNeedsVisibleRender = true; return; }
     this.chartNeedsVisibleRender = false;
+    this.lazyRowContents = this.wrapEl.clientHeight > 0;
+    this.coveredBarCandidates = undefined;
     this.dateClassesCache.clear();
     if ((this.host.ghosts?.entries.size || this.previewLayer?.active) && !this.ghostLegend) {
       const legend = this.previewLayer?.legend();
@@ -1804,6 +1868,48 @@ export class TaskGanttView extends ItemView {
       this.renderChartFull(parents, dates, headerFingerprint);
     }
     this.syncStickyHeaderHeight();
+    this.populateNearRows();
+    this.updateStickyTitles();
+  }
+
+  /** Builds one row's deferred timeline contents (no-op once built). */
+  private populateRow(row: HTMLElement): void {
+    const fill = this.pendingRowFills.get(row);
+    if (fill === undefined) return;
+    this.pendingRowFills.delete(row);
+    fill();
+  }
+
+  /**
+   * Builds the deferred contents of every row within one viewport height of the scroll viewport. Row shells already
+   * have their final height, so nothing shifts when a row fills in; filling runs before the row can scroll into view.
+   */
+  private populateNearRows(): void {
+    if (this.pendingRowFills.size === 0) return;
+    const wrap = this.wrapEl.getBoundingClientRect();
+    const margin = Math.max(this.wrapEl.clientHeight, 400);
+    const top = wrap.top - margin, bottom = wrap.bottom + margin;
+    const due: HTMLElement[] = [];
+    for (const row of this.pendingRowFills.keys()) {
+      if (!row.isConnected) { this.pendingRowFills.delete(row); continue; }
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > top && rect.top < bottom) due.push(row);
+    }
+    for (const row of due) this.populateRow(row);
+  }
+
+  /** The bar element for a subtask, building its parent row first when that row has not been filled in yet. */
+  private barElFor(taskId: string): HTMLElement | undefined {
+    const row = this._ganttRowCache?.rowEls.get(this.rowKeyOf(taskId));
+    if (row !== undefined) this.populateRow(row);
+    return this.barElsByTaskId.get(taskId);
+  }
+
+  /** Offsets the titles of bars that overlap the sticky name column; see gantt-sticky-titles.ts. */
+  private updateStickyTitles(): void {
+    const wrap = this.wrapEl;
+    const rect = wrap.getBoundingClientRect();
+    this.stickyTitles.update({ scrollLeft: wrap.scrollLeft, scrollTop: wrap.scrollTop, top: rect.top, bottom: rect.bottom });
   }
 
   /**
@@ -1828,15 +1934,24 @@ export class TaskGanttView extends ItemView {
 
 
 
+  /** The planned opening scroll offset, once: the first full build positions itself instead of being scrolled afterwards. */
+  private takeInitialScrollLeft(): number | undefined {
+    const value = this.initialScrollLeft;
+    this.initialScrollLeft = undefined;
+    return value;
+  }
+
   private renderChartFull(
     parents: TaskRow[],
     dates: string[],
     headerFingerprint: string
   ): void {
+    this.indexParentPaths(parents);
     // Removing live scroll content clamps the browser's offsets to zero.
     // Restore them after rebuilding, before deriving the visible month.
     const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
+    this.pendingRowFills.clear();
 
     // header, then the fixed rows — rendered even when
     // the parent list turns out empty below.
@@ -1855,7 +1970,7 @@ export class TaskGanttView extends ItemView {
       empty.textContent =
         "ガント表示対象の親タスクがありません。親タスクの frontmatter / ダッシュボードで ganttEnabled を true にしてください。";
       this.wrapEl.appendChild(empty);
-      this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
+      this.wrapEl.scrollLeft = this.takeInitialScrollLeft() ?? scrollLeft; this.wrapEl.scrollTop = scrollTop;
       this.updateFloatingMonth();
       return;
     }
@@ -1881,7 +1996,7 @@ export class TaskGanttView extends ItemView {
       const rowEl = this.renderParentRow(parent, dates);
       rowFragment.appendChild(rowEl);
       rowEls.set(parent.file.path, rowEl);
-      rowFingerprints.set(parent.file.path, this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? ""));
+      rowFingerprints.set(parent.file.path, this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.id) ?? "") + (this.previewLayer?.fingerprint(parent.id) ?? ""));
     }
     this.wrapEl.appendChild(rowFragment);
 
@@ -1901,7 +2016,7 @@ export class TaskGanttView extends ItemView {
     // the add row is (re)built at the very end.
     this.renderParentAddRow();
 
-    this.wrapEl.scrollLeft = scrollLeft; this.wrapEl.scrollTop = scrollTop;
+    this.wrapEl.scrollLeft = this.takeInitialScrollLeft() ?? scrollLeft; this.wrapEl.scrollTop = scrollTop;
 
     // keep the floating month in sync after every chart render.
     this.updateFloatingMonth();
@@ -1930,6 +2045,7 @@ export class TaskGanttView extends ItemView {
     dates: string[],
     headerFingerprint: string
   ): void {
+    this.indexParentPaths(parents);
     // Keep the cached root, header, and fixed rows; their inputs are stable
     // within this render epoch.
     // The fixed-row references are part of that cache invariant too: if an
@@ -1956,6 +2072,7 @@ export class TaskGanttView extends ItemView {
     for (const [path, oldEl] of cache.rowEls) {
       if (!currentPaths.has(path)) {
         oldEl.remove();
+        this.pendingRowFills.delete(oldEl);
       }
     }
 
@@ -1971,6 +2088,7 @@ export class TaskGanttView extends ItemView {
       if (!this.isGanttParentVisible(parent)) {
         if (oldEl !== undefined) {
           oldEl.remove();
+          this.pendingRowFills.delete(oldEl);
         }
         continue;
       }
@@ -1986,7 +2104,7 @@ export class TaskGanttView extends ItemView {
       }
 
 
-      const fingerprint = this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.file.path) ?? "") + (this.previewLayer?.fingerprint(parent.file.path) ?? "");
+      const fingerprint = this.rowFingerprint(parent) + (this.host.ghosts?.fingerprint(parent.id) ?? "") + (this.previewLayer?.fingerprint(parent.id) ?? "");
       if (
         oldEl !== undefined &&
         cache.rowFingerprints.get(path) === fingerprint
@@ -2003,6 +2121,7 @@ export class TaskGanttView extends ItemView {
 
       if (oldEl !== undefined) {
         oldEl.remove();
+        this.pendingRowFills.delete(oldEl);
       }
 
       const newEl = this.renderParentRow(parent, dates);
@@ -2601,32 +2720,29 @@ export class TaskGanttView extends ItemView {
     parents: TaskRow[],
     dates: string[]
   ): string {
-    const serializeWorkloadMap = (
-      values: Record<string, number> | undefined
-    ): Array<[string, number]> =>
-      Object.entries(values ?? {}).sort(([dateA], [dateB]) =>
-        dateA.localeCompare(dateB)
-      );
-
-    return JSON.stringify({
-      preview: this.previewLayer?.markKey ?? "",
-      dates,
-      capacityHours: getCapacityHours(this.host.settings),
-      holidays: Array.from(this.holidaySet).sort(),
-      today: this.todayForRender,
-      parents: parents.map((parent) => ({
-        path: parent.file.path,
-        subtasks: Array.from(parent.subtasks?.values() ?? [])
-          .map((subtask) => ({
-            id: subtask.id,
-            plannedStartDate: subtask.plannedStartDate ?? "",
-            plannedEndDate: subtask.plannedEndDate ?? "",
-            workloadPlan: serializeWorkloadMap(subtask.workloadPlan),
-            workloadActual: serializeWorkloadMap(subtask.workloadActual),
-          }))
-          .sort((subtaskA, subtaskB) => subtaskA.id.localeCompare(subtaskB.id)),
-      })),
-    });
+    // A flat string instead of nested objects + JSON.stringify: this runs on every incremental render, once per
+    // subtask. Key order inside a workload map is not normalized; a different order only costs a recompute.
+    const mapKey = (values: Record<string, number> | undefined): string => {
+      if (values === undefined) return "";
+      let out = "";
+      for (const date of Object.keys(values)) out += `${date}=${values[date]};`;
+      return out;
+    };
+    const parts: string[] = [
+      this.previewLayer?.markKey ?? "",
+      dates.join(","),
+      String(getCapacityHours(this.host.settings)),
+      Array.from(this.holidaySet).sort().join(","),
+      this.todayForRender,
+    ];
+    for (const parent of parents) {
+      parts.push(`#${parent.file.path}`);
+      if (parent.subtasks === undefined) continue;
+      for (const subtask of parent.subtasks.values()) {
+        parts.push(subtask.id, subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
+      }
+    }
+    return parts.join("\u0001");
   }
 
   /** The only O(visible dates × subtasks) workload aggregation in this view. */
@@ -2635,42 +2751,44 @@ export class TaskGanttView extends ItemView {
     dates: string[]
   ): Map<string, WorkloadSummaryTotals> {
     const totalsByDate = new Map<string, WorkloadSummaryTotals>();
-    for (const date of dates) {
-      let plan = 0;
-      let actual = 0;
-      for (const parent of parents) {
-        for (const subtask of parent.subtasks?.values() ?? []) {
-          if (
-            !hasPlannedDates(subtask) ||
-            date < subtask.plannedStartDate ||
-            date > subtask.plannedEndDate
-          ) {
-            continue;
+    const dateIndex = new Map<string, number>();
+    dates.forEach((date, index) => dateIndex.set(date, index));
+    const plans = new Array<number>(dates.length).fill(0);
+    const actuals = new Array<number>(dates.length).fill(0);
+    // Walk each subtask's own workload entries instead of probing every visible date: a date without an entry adds
+    // exactly 0, and parents/subtasks are still visited in the old order, so every date's sum is bit-identical.
+    for (const parent of parents) {
+      for (const subtask of parent.subtasks?.values() ?? []) {
+        if (!hasPlannedDates(subtask)) continue;
+        const start = subtask.plannedStartDate;
+        const end = subtask.plannedEndDate;
+        const add = (values: Record<string, number> | undefined, into: number[]): void => {
+          if (values === undefined) return;
+          for (const date of Object.keys(values)) {
+            const index = dateIndex.get(date);
+            if (index === undefined || date < start || date > end) continue;
+            into[index] += values[date] ?? 0;
           }
-          const values = dayValues(subtask, date);
-          plan += values.plan;
-          actual += values.actual;
-        }
+        };
+        add(subtask.workloadPlan, plans);
+        add(subtask.workloadActual, actuals);
       }
-
-
-      // weekly schedules are plan-only and match indefinitely
-      // by calendar weekday, regardless of any subtask date range.
-      const schedules: WeeklyWorkSchedule[] = Array.isArray(
-        this.host.settings.weeklyWorkSchedules
-      )
-        ? this.host.settings.weeklyWorkSchedules
-        : [];
-      const dayOfWeek = moment(date, "YYYY-MM-DD").day();
-      for (const schedule of schedules) {
-        if (dayOfWeek === schedule.dayOfWeek) {
-          plan += schedule.minutesPerWeek / 60;
-        }
-      }
-
-
-      totalsByDate.set(date, { plan, actual });
     }
+    // weekly schedules are plan-only and match indefinitely
+    // by calendar weekday, regardless of any subtask date range.
+    const schedules: WeeklyWorkSchedule[] = Array.isArray(this.host.settings.weeklyWorkSchedules)
+      ? this.host.settings.weeklyWorkSchedules
+      : [];
+    dates.forEach((date, index) => {
+      let plan = plans[index];
+      if (schedules.length > 0) {
+        const dayOfWeek = moment(date, "YYYY-MM-DD").day();
+        for (const schedule of schedules) {
+          if (dayOfWeek === schedule.dayOfWeek) plan += schedule.minutesPerWeek / 60;
+        }
+      }
+      totalsByDate.set(date, { plan, actual: actuals[index] });
+    });
     return totalsByDate;
   }
 
@@ -4534,23 +4652,34 @@ export class TaskGanttView extends ItemView {
       hasDeadlineMarker
     );
     // Preview-only bars for rows the chart does not hold right now get their own strip below the lanes.
-    const phantomLanes = this.layoutPhantomBars(parent.file.path);
+    const phantomLanes = this.layoutPhantomBars(parent.id);
     const rowHeight = baseRowHeight + phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX;
 
     // --- Create the row container and set its height ---
     const row = document.createElement("div");
     row.classList.add("task-gantt-parent-row");
     row.style.height = `${rowHeight}px`;
+    // The exact size of the row while the browser skips its off-screen contents (content-visibility: auto).
+    setStyleVar(row, "contain-intrinsic-size", `${PARENT_COL_WIDTH + dates.length * dayWidth}px ${rowHeight}px`);
 
     const leftEl = this.renderParentLeft(parent);
-    const parentMark = this.previewLayer?.rowState(parent.file.path);
+    const parentMark = this.previewLayer?.rowState(parent.id);
     if (parentMark) {
       leftEl.classList.add("vg-hl-row", `is-${parentMark}`);
       row.classList.add("vg-hl-parent-row");
     }
     row.appendChild(leftEl);
-    row.appendChild(
+    // The row's shell (left cell, exact height, timeline box) is built now; the bars and everything inside the
+    // timeline are built when the row nears the viewport, so a rebuild only pays for what can be seen.
+    const timeline = document.createElement("div");
+    timeline.classList.add("task-gantt-parent-timeline");
+    timeline.style.width = `${dates.length * dayWidth}px`;
+    timeline.style.height = `${rowHeight}px`;
+    row.appendChild(timeline);
+    const fill = (): void => {
+      const stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = [];
       this.renderParentTimeline(
+        timeline,
         parent,
         dates,
         dayWidth,
@@ -4563,9 +4692,13 @@ export class TaskGanttView extends ItemView {
         laneOffsets,
         rowHeight,
         hasDeadlineMarker,
-        phantomLanes
-      )
-    );
+        phantomLanes,
+        stickyBars
+      );
+      this.stickyTitles.register(row, stickyBars);
+    };
+    if (this.lazyRowContents) this.pendingRowFills.set(row, fill);
+    else fill();
 
     return row;
   }
@@ -4691,12 +4824,14 @@ export class TaskGanttView extends ItemView {
   /**
  *
  *
- * The timeline half of a parent row: per-date background cells, then bars /
+ * Fills the timeline half of a parent row: per-date background cells, then bars /
  * markers / external labels positioned from the precomputed layout, then
  * the deadline marker. Bars are never clamped to the visible range
- * — overflow is the CSS layer's job.
+ * — overflow is the CSS layer's job. Runs when the row is populated (see
+ * populateNearRows), not when its shell is built.
  */
   private renderParentTimeline(
+    timeline: HTMLElement,
     parent: TaskRow,
     dates: string[],
     dayWidth: number,
@@ -4709,13 +4844,9 @@ export class TaskGanttView extends ItemView {
     laneOffsets: number[],
     rowHeight: number,
     hasDeadlineMarker: boolean,
-    phantomLanes: PhantomLayout = { laneCount: 0, bars: [] }
-  ): HTMLElement {
-    const timeline = document.createElement("div");
-    timeline.classList.add("task-gantt-parent-timeline");
-    timeline.style.width = `${dates.length * dayWidth}px`;
-    timeline.style.height = `${rowHeight}px`;
-
+    phantomLanes: PhantomLayout = { laneCount: 0, bars: [] },
+    stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = []
+  ): void {
     // Only days that actually look different (weekend / holiday / today) get a
     // background cell, positioned at index × dayWidth and classified via the
     // shared dateClasses helper. Plain days are transparent, so a single hit
@@ -4797,11 +4928,13 @@ export class TaskGanttView extends ItemView {
       barEl.style.height = `${BAR_HEIGHT}px`;
       // Do not set a native title attribute; browser tooltips would duplicate
       // the label shown inside or beside the bar.
+      let titleEl: HTMLElement | undefined;
       if (!needsLabel) {
         const title = document.createElement("span");
         title.classList.add("task-gantt-bar-title");
         title.textContent = labelText;
         barEl.appendChild(title);
+        titleEl = title;
       }
       const primaryBadgeTag = getPrimaryGanttTagDefinition(
         this.host.settings,
@@ -4822,13 +4955,9 @@ export class TaskGanttView extends ItemView {
         }
         barEl.appendChild(badge);
       }
-      const resizeStart = document.createElement("span");
-      resizeStart.classList.add("task-gantt-resize-start");
-      barEl.appendChild(resizeStart);
-      const resizeEnd = document.createElement("span");
-      resizeEnd.classList.add("task-gantt-resize-end");
-      barEl.appendChild(resizeEnd);
+      // Resize-edge cursors are the bar's ::before/::after (styles.css); no per-bar handle elements.
       timeline.appendChild(barEl);
+      stickyBars.push({ el: barEl, title: titleEl, left, width });
       const savedGhost = this.host.ghosts?.entries.get(bar.task.id);
       const ghost = savedGhost ?? this.previewLayer?.scheduleGhost(bar.task.id);
       if (ghost) {
@@ -5175,7 +5304,6 @@ export class TaskGanttView extends ItemView {
       }
     }
 
-    return timeline;
   }
 
 
@@ -5340,6 +5468,8 @@ export class TaskGanttView extends ItemView {
  * the visible position stable after prepending 60 days.
  */
   private onScroll(): void {
+    this.populateNearRows();
+    this.updateStickyTitles();
     this.scheduleLaneRelayout();
 
 
@@ -5438,7 +5568,7 @@ export class TaskGanttView extends ItemView {
   ): { start: string; end: string } | null {
     if (this.host.settings.compactRowsToViewport === false) return null;
     const input = {
-      scrollLeft: this.wrapEl.scrollLeft + this.pendingScrollShiftPx,
+      scrollLeft: this.initialScrollLeft ?? this.wrapEl.scrollLeft + this.pendingScrollShiftPx,
       clientWidth: this.wrapEl.clientWidth || 1200,
       dayWidth: this.dayWidth,
       rangeStart: this.rangeStart,
@@ -5465,7 +5595,7 @@ export class TaskGanttView extends ItemView {
 
   private relayoutForWindow(): void {
     if (typeof document === "undefined") return; // view outlived its environment
-    if (this.isExtendingRange || this.dragState !== undefined) {
+    if (this.isExtendingRange || this.dragActive) {
       // Range extension re-renders itself, and rebuilding rows mid-drag would
       // detach the dragged bar; retry once either has settled.
       this.scheduleLaneRelayout();
@@ -5479,6 +5609,22 @@ export class TaskGanttView extends ItemView {
     const anchor = this.captureRowAnchor();
     this.renderChart();
     this.restoreRowAnchor(anchor);
+  }
+
+  /** Marks a drag gesture active until the pointer is released; registered after the drag's own onUp so that runs first. */
+  private trackDragGesture(): void {
+    this.dragActive = true;
+    const end = (): void => {
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      this.dragActive = false;
+      if (this.renderAfterDrag) {
+        this.renderAfterDrag = false;
+        this.renderChart();
+      }
+    };
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   }
 
   /** Anchor parent row below the sticky header block, with its viewport offset. */
@@ -5615,7 +5761,6 @@ export class TaskGanttView extends ItemView {
     this.dayWidth = newDayWidth;
 
     this.host.settings.ganttZoom = newDayWidth;
-    await this.host.saveSettings();
 
     // Preserve the visible date in range after zooming.
 
@@ -5636,6 +5781,9 @@ export class TaskGanttView extends ItemView {
 
 
     this.updateFloatingMonth();
+
+    // Persist after the chart shows the new zoom: the settings write is disk I/O the user should not wait on.
+    await this.host.saveSettings();
   }
 
 
@@ -5871,6 +6019,8 @@ export class TaskGanttView extends ItemView {
         )}px`;
       }
 
+      // The sticky title follows the live preview geometry, as the old sticky positioning did.
+      this.stickyTitles.setGeometry(barEl, Number.parseFloat(barEl.style.left), Number.parseFloat(barEl.style.width));
       if (!movedPastThreshold) {
         return;
       }
@@ -5935,6 +6085,7 @@ export class TaskGanttView extends ItemView {
       barEl.classList.remove("is-dragging");
       barEl.style.left = `${originalLeft}px`;
       barEl.style.width = `${originalWidth}px`;
+      this.stickyTitles.setGeometry(barEl, originalLeft, originalWidth);
       markerEls.forEach((el, i) => {
         el.style.left = `${originalMarkerLefts[i]}px`;
       });
@@ -5956,6 +6107,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     this.dragState = { kind: `bar-${kind}`, taskId: task.id };
+    this.trackDragGesture();
   }
 
 
@@ -6136,6 +6288,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
     this.dragState = { kind: "gantt-event", eventKey: event.key };
+    this.trackDragGesture();
   }
 
   private async finishGanttEventDrag(
@@ -6363,6 +6516,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     this.dragState = { kind: "marker", taskId, markerKey };
+    this.trackDragGesture();
   }
 
   /**
@@ -6504,6 +6658,7 @@ export class TaskGanttView extends ItemView {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     this.dragState = { kind: "parent-due", taskId: parent.id };
+    this.trackDragGesture();
   }
 
 
@@ -6810,7 +6965,7 @@ export class TaskGanttView extends ItemView {
     const targets = subtasks.filter((t) => targetKeys.has(t.id));
 
     const barEls = targets
-      .map((task) => this.barElsByTaskId.get(task.id))
+      .map((task) => this.barElFor(task.id))
       .filter((el): el is HTMLElement => el !== undefined);
     const originalLefts = barEls.map((el) =>
       parseFloat(el.style.left || "0")
@@ -6818,10 +6973,11 @@ export class TaskGanttView extends ItemView {
 
     const dayWidth = this.dayWidth;
     let movedPastThreshold = false;
-    const anchorEl = this.barElsByTaskId.get(anchorKey);
+    const anchorEl = this.barElFor(anchorKey);
 
     barEls.forEach((el) => {
       el.classList.add("is-dragging");
+
       el.classList.add(
         el === anchorEl
           ? "is-bulk-move-anchor"
@@ -6840,6 +6996,7 @@ export class TaskGanttView extends ItemView {
       // Preview every target bar together.
       barEls.forEach((el, i) => {
         el.style.left = `${originalLefts[i] + dxPx}px`;
+        this.stickyTitles.setGeometry(el, originalLefts[i] + dxPx, Number.parseFloat(el.style.width));
       });
 
       if (!movedPastThreshold) {
@@ -6863,8 +7020,10 @@ export class TaskGanttView extends ItemView {
       window.removeEventListener("pointerup", onUp);
       barEls.forEach((el, i) => {
         el.classList.remove("is-dragging");
+
         el.classList.remove("is-bulk-move-anchor", "is-bulk-move-follower");
         el.style.left = `${originalLefts[i]}px`;
+        this.stickyTitles.setGeometry(el, originalLefts[i], Number.parseFloat(el.style.width));
       });
       this.hideDragTooltip();
       this.armRichPopoverSuppress();
@@ -6884,6 +7043,7 @@ export class TaskGanttView extends ItemView {
       parentId: parent.id,
       targetIds: targets.map((t) => t.id),
     };
+    this.trackDragGesture();
   }
 
   /**
@@ -7010,15 +7170,14 @@ export class TaskGanttView extends ItemView {
     const target = evt.target as HTMLElement | null;
     if (
       this.richPopoverInteractionActive ||
-      typeof document.elementsFromPoint !== "function" ||
       target?.closest?.("button, input, select, textarea, a, [contenteditable], .task-gantt-workload-popup")
     ) {
       this.cancelCoveredBarSwitch();
       return;
     }
-    const covered = document
-      .elementsFromPoint(evt.clientX, evt.clientY)
-      .find((node) => !el.contains(node) && (node as HTMLElement).classList?.contains("task-gantt-bar")) as HTMLElement | undefined;
+    // Hit-testing the whole page (elementsFromPoint) on every mousemove cost milliseconds at thousands of bars;
+    // only the bars under the popover can be covered, and their rects stay fixed while it is open.
+    const covered = pickTopmostAt(this.getCoveredBarCandidates(el), evt.clientX, evt.clientY);
     if (!covered || covered === this.richPopoverAnchorEl || !this.barPopoverTriggers.has(covered)) {
       this.cancelCoveredBarSwitch();
       return;
@@ -7038,6 +7197,27 @@ export class TaskGanttView extends ItemView {
         this.barPopoverTriggers.get(covered)?.({ clientX, clientY } as MouseEvent);
       }, RICH_POPOVER_COVERED_SWITCH_MS),
     };
+  }
+
+  /** The bars whose rects intersect the open popover, measured once per popover (the popover closes on scroll and re-render). */
+  private getCoveredBarCandidates(popover: HTMLElement): { el: HTMLElement; rect: RichPopoverRect }[] {
+    if (this.coveredBarCandidates?.popover === popover) return this.coveredBarCandidates.bars;
+    const bars: { el: HTMLElement; rect: RichPopoverRect }[] = [];
+    try {
+      const popoverRect = popover.getBoundingClientRect();
+      for (const row of this._ganttRowCache?.rowEls.values() ?? []) {
+        if (!rectsIntersect(row.getBoundingClientRect(), popoverRect)) continue;
+        for (const barEl of Array.from(row.querySelectorAll<HTMLElement>(".task-gantt-bar"))) {
+          if (!this.barPopoverTriggers.has(barEl)) continue;
+          const rect = barEl.getBoundingClientRect();
+          if (rectsIntersect(rect, popoverRect)) bars.push({ el: barEl, rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } });
+        }
+      }
+    } catch {
+      bars.length = 0; // measuring is best-effort; without candidates no bar switch is offered
+    }
+    this.coveredBarCandidates = { popover, bars };
+    return bars;
   }
 
   private cancelCoveredBarSwitch(): void {
@@ -7217,6 +7397,7 @@ export class TaskGanttView extends ItemView {
     this.cancelCoveredBarSwitch();
     this.richPopoverInteractionActive = false;
     this.richPopoverPointerOutside = false;
+    this.coveredBarCandidates = undefined;
     if (this.richPopoverEl !== undefined) {
       this.richPopoverEl.remove();
     }

@@ -1,11 +1,10 @@
 import type { OperationService } from "../app/operation-service";
 import type { TaskPatch, TaskRow, TaskUpdateCommand, TaskWorkbenchSettings } from "../core/types";
-import type { TaskCache } from "../app/auto-priority";
+import type { TaskCache } from "../app/note-store";
 import type { Logger } from "../core/logger";
 import type { VaultAdapter } from "../app/task-operations";
 import { HistoryManager } from "../app/history-manager";
 import { OperationRegistry, OperationPlan } from "../app/operation-registry";
-import { getSubtaskKey } from "../core/utils";
 
 export interface ToolAdapterHost {
   readonly logger: Logger;
@@ -36,14 +35,14 @@ export class ToolAdapter {
     this.requireEnabled();
     if (!name.trim()) throw new Error("Task name cannot be empty");
     const plan = await this.registry.plan("create", { name });
-    return this.preview(plan, "createParentTask", { name: name.trim(), path: plan.diffs[0].taskId });
+    return this.preview(plan, "createParentTask", { name: name.trim(), taskId: plan.diffs[0].taskId });
   }
   async previewCreateSubtask(parentTaskId: string, name: string): Promise<ToolPreview> {
     this.requireEnabled();
     if (!name.trim()) throw new Error("Task name cannot be empty");
-    const parent = await this.registry.get(parentTaskId);
+    await this.registry.get(parentTaskId);
     const plan = await this.registry.plan("create", { name, parentTaskId });
-    return this.preview(plan, "createSubtask", { parentPath: parent.file.path, name: name.trim(), key: getSubtaskKey(name.trim(), new Set(parent.subtasks?.keys())) });
+    return this.preview(plan, "createSubtask", { parentTaskId, name: name.trim(), taskId: plan.diffs[0].taskId });
   }
   async previewMoveTask(taskId: string, ganttOrder: number): Promise<ToolPreview> {
     this.requireEnabled();

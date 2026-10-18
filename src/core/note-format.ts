@@ -452,21 +452,38 @@ export function parseTaskFile(
       const orderArray = Array.isArray(subtaskOrder) ? subtaskOrder : [];
       const usedKeys = new Set<string>();
 
+      const orderKeys = orderArray
+        .map((k) => String(k ?? "").trim())
+        .filter((k) => k.length > 0);
+      // Pass 1: match by stored title so hand-edited section order keeps its data
+      const matchedKeys: (string | undefined)[] = subtaskParts.map(() => undefined);
+      const claimed = new Set<string>();
+      subtaskParts.forEach((part, i) => {
+        const found = orderKeys.find((k) => {
+          if (claimed.has(k)) return false;
+          const raw = fm[`subtask__${k}__title`];
+          if (raw === undefined || raw === null) return false;
+          return String(parseSimpleValue(String(raw))).trim() === part.title.trim();
+        });
+        if (found) {
+          matchedKeys[i] = found;
+          claimed.add(found);
+        }
+      });
+      // Pass 2: positional fallback (heading renamed in place)
+      subtaskParts.forEach((_, i) => {
+        if (matchedKeys[i]) return;
+        const cand = i < orderArray.length && orderArray[i] ? String(orderArray[i]).trim() : "";
+        if (cand && !claimed.has(cand)) {
+          matchedKeys[i] = cand;
+          claimed.add(cand);
+        }
+      });
+
+      claimed.forEach((k) => usedKeys.add(k)); // new keys must not collide with later matches
       for (let i = 0; i < subtaskParts.length; i++) {
         const part = subtaskParts[i];
-        let subtaskKey: string;
-
-        // Use subtaskOrder[i] if present and not already used
-        if (i < orderArray.length && orderArray[i]) {
-          const candidateKey = String(orderArray[i]).trim();
-          if (candidateKey && !usedKeys.has(candidateKey)) {
-            subtaskKey = candidateKey;
-          } else {
-            subtaskKey = getSubtaskKey(part.title, usedKeys);
-          }
-        } else {
-          subtaskKey = getSubtaskKey(part.title, usedKeys);
-        }
+        const subtaskKey = matchedKeys[i] ?? getSubtaskKey(part.title, usedKeys);
 
         usedKeys.add(subtaskKey);
 
@@ -649,7 +666,6 @@ export function buildFrontmatter(
   lines.push(`completed: ${task.completed ? "true" : "false"}`);
   lines.push(`displayName: "${yamlEscape(task.displayName)}"`);
   lines.push(`ganttEnabled: ${task.ganttEnabled ? "true" : "false"}`);
-  lines.push(`ganttOrder: ${task.ganttOrder || 0}`);
 
   // Subtask order
   const subtaskKeys = subtaskMap ? Array.from(subtaskMap.keys()) : [];

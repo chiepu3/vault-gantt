@@ -1,0 +1,340 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_SETTINGS } from "../../src/core/constants";
+import { buildFullNote } from "../../src/core/note-format";
+import type { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
+import { reconcileParentOrder } from "../../src/core/parent-order";
+import { cleanLegacyBody } from "../../src/core/legacy-v1";
+import { backupStamp, findLegacyNotes, planMigration, runMigration } from "../../src/app/migration-v1";
+import { setNoteNotifier } from "../../src/app/note-changes";
+import { updateTaskItemsBatch } from "../../src/app/task-operations";
+import { loadNoteTasks } from "../../src/app/note-store";
+import { FakeVault } from "./fake-vault";
+
+const base = {
+  completed: false, ganttEnabled: false, tags: [] as string[], currentStatus: "", notes: "", priority: 0,
+  priorityMode: "auto" as const, createdAt: "2026-06-01", updatedAt: "2026-06-10", dueDate: undefined, statusLabel: "active" as const,
+};
+
+function v1Row(partial: Partial<TaskRow> & Pick<TaskRow, "kind" | "id" | "displayName">): TaskRow {
+  return { ...base, title: partial.displayName, file: { path: "" } as TaskRow["file"], ...partial } as TaskRow;
+}
+
+/** A v1 parent note with two subtasks, a user frontmatter key, an unknown section and extra text in a subtask. */
+function v1Note(path: string, name: string, order?: number): string {
+  const sub1 = v1Row({
+    kind: "subtask", id: `${path}::design`, key: "design", displayName: "設計", statusLabel: "in_progress",
+    plannedStartDate: "2026-07-01", plannedEndDate: "2026-07-03", dueDate: "2026-07-05", tags: ["x", "y"],
+    workloadPlan: { "2026-07-01": 2, "2026-07-02": 3 }, workloadActual: { "2026-07-01": 1.5 },
+    ganttMarkers: [{ key: "review", title: "レビュー", date: "2026-07-02", tags: ["m"] }],
+    currentStatus: "設計中", notes: "設計のメモ", priority: 5, priorityMode: "manual",
+  });
+  const sub2 = v1Row({ kind: "subtask", id: `${path}::build`, key: "build", displayName: "実装", statusLabel: "done", completed: true, notes: "実装メモ" });
+  const parent = v1Row({
+    kind: "parent", id: path, displayName: name, statusLabel: "in_progress", dueDate: "2026-07-31", priority: 3, priorityMode: "manual",
+    currentStatus: "親の現状", notes: "親のメモ", tags: ["a", "b"], ganttEnabled: true, file: { path } as TaskRow["file"],
+  });
+  const subtasks = new Map([["design", sub1], ["build", sub2]]);
+  parent.subtasks = subtasks;
+  let text = buildFullNote(parent, subtasks);
+  if (order !== undefined) text = text.replace("ganttEnabled: true", `ganttEnabled: true\nganttOrder: ${order}`);
+  text = text.replace("type: task\n", "type: task\nproject: 顧客A\nrefs:\n  - 資料A\n  - 資料B\n");
+  text = text.replace("#### Notes\n設計のメモ\n", "#### Notes\n設計のメモ\n\n#### 参考\n補足の文章\n");
+  return `${text}\n## 参考資料\n[資料](https://example.com)\n`;
+}
+
+/** The dashboard callouts as they really appear in v1 vaults: `- ` bullets and several `label: value` pairs joined by " / ". */
+const REAL_DASHBOARDS = [
+  "> [!info]- サブタスクダッシュボード",
+  "> - 優先度: `INPUT[select(option(0), option(1), option(2)):subtask__design__priority]` / モード: `INPUT[select(option(auto), option(manual)):subtask__design__priorityMode]`",
+  "> - 状態: `INPUT[select(option(active), option(done)):subtask__design__statusLabel]` / 完了: `INPUT[toggle:subtask__design__completed]`",
+  "> - 計画開始: `INPUT[datePicker:subtask__design__plannedStartDate]` / 計画終了: `INPUT[datePicker:subtask__design__plannedEndDate]` / 期限: `INPUT[datePicker:subtask__design__dueDate]`",
+  "> - 作成日: `VIEW[{subtask__design__createdAt}]` / 更新日: `VIEW[{subtask__design__updatedAt}]`",
+  "> - タグ: `INPUT[inlineList:subtask__design__tags]`",
+  "",
+  "> [!info] タスクダッシュボード",
+  "> - 優先度: `INPUT[select(option(0)):priority]` / モード: `INPUT[select(option(auto)):priorityMode]`",
+  "> - 期限: `INPUT[datePicker:dueDate]` / 完了: `INPUT[toggle:completed]`",
+  "",
+  "> [!info]- タスク情報",
+  "> - 状態: active",
+  "> - 期限: 2026-07-31 / 完了: false",
+  "",
+  "> [!info]- サブタスク情報",
+  "> - 予定: 2026-08-26 ～ 2026-08-29",
+  "> - 作成日: 2026-06-01 / 更新日: 2026-06-10",
+  "",
+  "> [!note] ダッシュボード",
+  "> **作成日**: `VIEW[{createdAt}]`",
+  "> **期限**: `INPUT[datePicker:dueDate]`",
+].join("\n");
+
+describe("v1 to v2 conversion", () => {
+  let vault: FakeVault;
+  let settings: TaskWorkbenchSettings;
+  const persist = vi.fn(async (candidate: TaskWorkbenchSettings) => { void candidate; });
+  const deps = () => ({ persist, now: () => new Date(2026, 6, 1, 9, 5, 7) });
+  const A = "tasks/2026/06/2026-06-01 アルファ.md";
+  const B = "tasks/2026/06/2026-06-02 ベータ.md";
+
+  beforeEach(async () => {
+    vault = new FakeVault();
+    settings = { ...DEFAULT_SETTINGS, autoPriorityEnabled: false, ganttParentOrder: [B, A] };
+    persist.mockClear();
+    await vault.create(A, v1Note(A, "アルファ", 1000));
+    await vault.create(B, v1Note(B, "ベータ", 2000));
+  });
+
+  it("lists what it would create and change without writing", async () => {
+    const before = vault.snapshot();
+    const plan = await planMigration(vault, settings, new Date(2026, 6, 1, 9, 5, 7));
+    expect(plan.backupRoot).toBe(".vault-gantt-backup/20260701-090507");
+    expect(plan.items.map((item) => item.path)).toEqual([A, B]);
+    expect(plan.items[0].subtasks.map((sub) => sub.path)).toEqual([
+      "tasks/2026/06/2026-06-01 アルファ/設計.md", "tasks/2026/06/2026-06-01 アルファ/実装.md",
+    ]);
+    expect(vault.snapshot()).toEqual(before);
+    expect(backupStamp(new Date(2026, 0, 2, 3, 4, 5))).toBe("20260102-030405");
+  });
+
+  it("converts every parent, keeps the data and the user's own content, and leaves no v1 traces", async () => {
+    const original = vault.getFileContent(A)!;
+    const plan = await planMigration(vault, settings, new Date(2026, 6, 1, 9, 5, 7));
+    const report = await runMigration(vault, settings, plan, deps());
+    expect(report.failed).toEqual([]);
+    expect(report.converted).toHaveLength(2);
+
+    // backup of the whole task folder, taken before any change
+    expect(vault.adapterFiles.get(`.vault-gantt-backup/20260701-090507/${A}`)).toBe(original);
+
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    expect(rows).toHaveLength(2);
+    const alpha = rows.find((row) => row.displayName === "アルファ")!;
+    expect(alpha).toMatchObject({ statusLabel: "in_progress", dueDate: "2026-07-31", priority: 3, priorityMode: "manual", currentStatus: "親の現状", notes: "親のメモ", tags: ["a", "b"], ganttEnabled: true, createdAt: "2026-06-01", updatedAt: "2026-06-10" });
+    expect(alpha.id).toMatch(/^t-[0-9a-z]{6}$/);
+    const subs = [...alpha.subtasks!.values()];
+    expect(subs.map((sub) => sub.displayName)).toEqual(["設計", "実装"]);
+    expect(subs[0]).toMatchObject({
+      statusLabel: "in_progress", plannedStartDate: "2026-07-01", plannedEndDate: "2026-07-03", dueDate: "2026-07-05", tags: ["x", "y"],
+      workloadPlan: { "2026-07-01": 2, "2026-07-02": 3 }, workloadActual: { "2026-07-01": 1.5 }, currentStatus: "設計中", priority: 5, priorityMode: "manual",
+    });
+    expect(subs[0].id).toMatch(/^s-[0-9a-z]{6}$/);
+    expect(subs[0].ganttMarkers).toMatchObject([{ title: "レビュー", date: "2026-07-02", tags: ["m"] }]);
+    // text the format has no field for stays in the note
+    expect(subs[0].notes).toBe("設計のメモ\n\n#### 参考\n補足の文章");
+    expect(subs[1]).toMatchObject({ statusLabel: "done", completed: true, notes: "実装メモ" });
+
+    const parentText = vault.getFileContent(A)!;
+    expect(parentText).toContain("project: 顧客A");
+    expect(parentText).toContain("  - 資料B");
+    expect(parentText).toContain("## 参考資料\n[資料](https://example.com)");
+    expect(parentText).toContain("formatVersion: 2");
+    expect(parentText).not.toMatch(/subtask__|subtaskOrder|meta-bind|INPUT\[|ganttOrder|^# /m);
+    expect(parentText).not.toContain("### ");
+
+    // order stores
+    expect(settings.subtaskOrder![alpha.id]).toEqual(subs.map((sub) => sub.id));
+    const beta = rows.find((row) => row.displayName === "ベータ")!;
+    expect(settings.ganttParentOrder).toEqual([beta.id, alpha.id]);
+    expect(persist).toHaveBeenCalled();
+    expect(await findLegacyNotes(vault, settings)).toEqual([]);
+  });
+
+  it("builds the gantt order from the notes' own order values when settings have none", async () => {
+    settings.ganttParentOrder = undefined;
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const byName = (name: string) => rows.find((row) => row.displayName === name)!.id;
+    expect(settings.ganttParentOrder).toEqual([byName("アルファ"), byName("ベータ")]);
+  });
+
+  it("uses the notes' own order values when the stored order was completed empty while the v1 notes were hidden", async () => {
+    settings.ganttParentOrder = [];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const byName = (name: string) => rows.find((row) => row.displayName === name)!.id;
+    expect(settings.ganttParentOrder).toEqual([byName("アルファ"), byName("ベータ")]);
+    expect(persist).toHaveBeenLastCalledWith(expect.objectContaining({ ganttParentOrder: [byName("アルファ"), byName("ベータ")] }), ["subtaskOrder", "ganttParentOrder"]);
+  });
+
+  it("stops and restores one parent when its result differs, and still converts the others", async () => {
+    const plan = await planMigration(vault, settings, new Date(2026, 6, 1, 9, 5, 7));
+    const original = vault.getFileContent(A)!;
+    const frontmatter = vault.getFrontmatter.bind(vault);
+    vi.spyOn(vault, "getFrontmatter").mockImplementation((file) => {
+      const fm = frontmatter(file);
+      return file.path.startsWith("tasks/2026/06/2026-06-01 アルファ/設計") && fm ? { ...fm, title: "別の題名" } : fm;
+    });
+    const report = await runMigration(vault, settings, plan, deps());
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0].path).toBe(A);
+    expect(report.failed[0].reason).toContain("一致しません");
+    expect(vault.getFileContent(A)).toBe(original);
+    expect(vault.getFileByPath("tasks/2026/06/2026-06-01 アルファ/設計.md")).toBeNull();
+    expect(vault.getFileByPath("tasks/2026/06/2026-06-01 アルファ/実装.md")).toBeNull();
+    expect(report.converted.map((entry) => entry.path)).toEqual([B]);
+    expect(settings.subtaskOrder && Object.keys(settings.subtaskOrder)).toHaveLength(1);
+    expect(settings.ganttParentOrder).toContain(A);
+  });
+
+  it("restores the parent when a subtask note cannot be created", async () => {
+    const plan = await planMigration(vault, settings);
+    const original = vault.getFileContent(B)!;
+    const create = vault.create.bind(vault);
+    vi.spyOn(vault, "create").mockImplementation(async (path, content) => {
+      if (path.endsWith("ベータ/実装.md")) throw new Error("disk full");
+      return create(path, content);
+    });
+    const report = await runMigration(vault, settings, plan, deps());
+    expect(report.failed).toEqual([{ path: B, reason: "disk full" }]);
+    expect(vault.getFileContent(B)).toBe(original);
+    expect(vault.getFileByPath("tasks/2026/06/2026-06-02 ベータ/設計.md")).toBeNull();
+    expect(report.converted.map((entry) => entry.path)).toEqual([A]);
+  });
+
+  it("changes nothing when the backup cannot be made", async () => {
+    const before = vault.snapshot();
+    vault.failCopy = true;
+    await expect(runMigration(vault, settings, await planMigration(vault, settings), deps())).rejects.toThrow("backup failed");
+    expect(vault.snapshot()).toEqual(before);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("does not touch notes that are already v2", async () => {
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const before = vault.snapshot();
+    const plan = await planMigration(vault, settings);
+    expect(plan.items).toEqual([]);
+    await runMigration(vault, settings, plan, deps());
+    expect(vault.snapshot()).toEqual(before);
+  });
+
+  it("stops saving a converted parent when v1 keys show up in it again", async () => {
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const alpha = rows.find((row) => row.displayName === "アルファ")!;
+    const file = vault.getFileByPath(A)!;
+    await vault.processFrontMatter(file, (fm) => { fm.subtask__x__title = "古い書き込み"; });
+    const notices: string[] = [];
+    setNoteNotifier((message) => notices.push(message));
+    const before = vault.getFileContent(A);
+    await expect(updateTaskItemsBatch(vault, settings, new Map(), [{ row: alpha, patch: { notes: "新しいメモ" } }], {})).rejects.toThrow("v1 形式");
+    expect(vault.getFileContent(A)).toBe(before);
+    expect(notices).toHaveLength(1);
+    setNoteNotifier(() => {});
+  });
+
+  it("orders parents with equal ganttOrder by name, like the v1 gantt", async () => {
+    const C = "tasks/2026/06/2026-06-03 カ.md", D = "tasks/2026/06/2026-06-04 イ.md", E = "tasks/2026/06/2026-06-05 ウ.md";
+    await vault.create(C, v1Note(C, "カ", 0));
+    await vault.create(D, v1Note(D, "イ", 0));
+    await vault.create(E, v1Note(E, "ウ", 0));
+    settings.ganttParentOrder = undefined;
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const name = (id: string) => rows.find((row) => row.id === id)!.displayName;
+    expect(settings.ganttParentOrder!.map(name)).toEqual(["イ", "ウ", "カ", "アルファ", "ベータ"]);
+  });
+
+  it("rebuilds the v1 display order when the stored order only holds a few stale path entries", async () => {
+    for (const path of [A, B]) await vault.trash(vault.getFileByPath(path)!);
+    const names = ["E0001", "あいうえお", "テスト", "M0", "E0002", "M1", "perftest-048", "perftest-049", "M2"];
+    const orders = [0, 0, 0, 0, 1, 1, 2, 2, 3];
+    const paths = names.map((name, index) => `tasks/2026/06/2026-06-${String(index + 1).padStart(2, "0")} ${name}.md`);
+    // created in an order unrelated to the display order
+    for (const index of [8, 3, 6, 0, 5, 2, 7, 1, 4]) await vault.create(paths[index], v1Note(paths[index], names[index], orders[index]));
+    // stale leftovers: only some parents, and by path
+    settings.ganttParentOrder = [paths[1], paths[2], paths[6], paths[7]];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const name = (id: string) => rows.find((row) => row.id === id)!.displayName;
+    const v1Display = names.map((n, i) => ({ n, o: orders[i] })).sort((x, y) => x.o - y.o || x.n.localeCompare(y.n)).map((x) => x.n);
+    expect(settings.ganttParentOrder!.map(name)).toEqual(v1Display);
+    // the next load keeps it
+    const loaded = { ganttParentOrder: [...settings.ganttParentOrder!] };
+    expect(reconcileParentOrder(loaded, rows)).toBe(false);
+    expect(loaded.ganttParentOrder).toEqual(settings.ganttParentOrder);
+  });
+
+  it("keeps a stored order that already holds every converted parent", async () => {
+    settings.ganttParentOrder = [B, A];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    expect(settings.ganttParentOrder!.map((id) => rows.find((row) => row.id === id)!.displayName)).toEqual(["ベータ", "アルファ"]);
+  });
+
+  it("keeps already-v2 parents' stored order in front of the rebuilt converted ones", async () => {
+    settings.ganttParentOrder = ["t-keep02", A, "t-keep01"];
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const label = (id: string) => rows.find((row) => row.id === id)?.displayName ?? id;
+    expect(settings.ganttParentOrder!.map(label)).toEqual(["t-keep02", "t-keep01", "アルファ", "ベータ"]);
+  });
+
+  it("drops every real-world dashboard callout shape from subtask memos", async () => {
+    let text = vault.getFileContent(A)!;
+    text = text.replace("#### Current Status\n設計中", `${REAL_DASHBOARDS}\n\n#### Current Status\n設計中`);
+    text = text.replace("#### Notes\n設計のメモ", `#### Notes\n設計のメモ\n\n${REAL_DASHBOARDS}`);
+    text = text.replace("#### Notes\n実装メモ", `#### Notes\n${REAL_DASHBOARDS}\n\n実装メモ`);
+    await vault.modify(vault.getFileByPath(A)!, text);
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const subs = [...rows.find((row) => row.displayName === "アルファ")!.subtasks!.values()];
+    // what the v1 parser showed: it skipped these callouts entirely
+    expect(subs[0].currentStatus).toBe("設計中");
+    expect(subs[0].notes).toBe("設計のメモ\n\n#### 参考\n補足の文章");
+    expect(subs[1].notes).toBe("実装メモ");
+    for (const file of vault.getFiles()) expect(vault.getFileContent(file.path)).not.toMatch(/INPUT\[|VIEW\[|\[!info\]|\[!note\] ダッシュボード/);
+  });
+
+  it("removes plugin dashboards from converted notes but keeps user callouts and text", async () => {
+    const dash = (title: string) => `${title}\n> \n> **ステータス**: \`INPUT[select(option(a)):subtask__design__statusLabel]\`\n> \n> **作成日**: \`VIEW[{subtask__design__createdAt}]\``;
+    let text = vault.getFileContent(A)!;
+    text = text.replace("#### Current Status\n設計中", `${dash("> [!info]- サブタスク情報")}\n\n\`\`\`meta-bind-button\nid: x\nactions:\n  - type: command\n\`\`\`\n\n#### Current Status\n設計中`);
+    text = text.replace("#### Notes\n設計のメモ", "#### Notes\n設計のメモ\n\n> [!warning] 注意\n> 納期厳守\n\n> [!info]- 自分の情報\n> 大事な話");
+    await vault.modify(vault.getFileByPath(A)!, text);
+    await runMigration(vault, settings, await planMigration(vault, settings), deps());
+    const rows = await loadNoteTasks(vault, settings, new Map());
+    const design = [...rows.find((row) => row.displayName === "アルファ")!.subtasks!.values()][0];
+    expect(design.currentStatus).toBe("設計中");
+    expect(design.notes).toContain("設計のメモ");
+    expect(design.notes).toContain("> [!warning] 注意\n> 納期厳守");
+    expect(design.notes).toContain("> [!info]- 自分の情報\n> 大事な話");
+    for (const sub of vault.getFiles().filter((file) => file.path.includes("アルファ/"))) {
+      expect(vault.getFileContent(sub.path)).not.toMatch(/INPUT\[|VIEW\[|meta-bind|サブタスク情報/);
+    }
+  });
+});
+
+describe("cleanLegacyBody", () => {
+  const fields = "> \n> **完了**: `INPUT[toggle:completed]`\n> \n> **更新日**: `VIEW[{updatedAt}]`";
+  it.each([
+    "> [!note] ダッシュボード", "> [!info] タスクダッシュボード", "> [!info]- サブタスクダッシュボード", "> [!info]- タスク情報", "> [!info]- サブタスク情報",
+    "> [!tip] 別の名前",
+  ])("drops the dashboard shape %s", (header) => {
+    expect(cleanLegacyBody(`前\n${header}\n${fields}\n後`)).toBe("前\n後");
+  });
+  it("drops a known-titled callout and a hidden button, keeps genuine callouts and bare text", () => {
+    const body = "a\n> [!note] ダッシュボード\n> **作成日**: 2026-10-01\n> **期限**: `INPUT[datePicker:dueDate]`\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n```meta-bind-button\nid: a\n```\n本文 `VIEW[x]` あり\nb";
+    expect(cleanLegacyBody(body)).toBe("a\n\n> [!note] メモ\n> 本物 `INPUT[x]` の話\n\n本文 `VIEW[x]` あり\nb");
+  });
+
+  it.each([
+    ["> [!info] タスクダッシュボード", "> - 優先度: `INPUT[a:p]` / モード: `INPUT[b:m]`"],
+    ["> [!info]- タスク情報", "> - 状態: active"],
+    ["> [!info]- サブタスク情報", "> - 予定: 2026-08-26 ～ 2026-08-29"],
+    ["> [!tip] 別の名前", "> - 優先度: `INPUT[a:p]` / モード: `VIEW[{m}]`"],
+  ])("drops bulleted and joined pairs under %s", (header, line) => {
+    expect(cleanLegacyBody(`前\n${header}\n${line}\n後`)).toBe("前\n後");
+  });
+  it("keeps bulleted prose under a known heading, and plain values under an unknown one", () => {
+    const prose = "> [!info]- タスク情報\n> - 状態: active\n> - 先方の担当は田中さん";
+    expect(cleanLegacyBody(prose)).toBe(prose);
+    const plain = "> [!info]- 自分の情報\n> - 状態: active";
+    expect(cleanLegacyBody(plain)).toBe(plain);
+  });
+
+  it("keeps a known-titled callout that holds user text", () => {
+    const body = "> [!info]- タスク情報\n> 先方の担当は田中さん\n> **期限**: `INPUT[datePicker:dueDate]`";
+    expect(cleanLegacyBody(body)).toBe(body);
+  });
+});

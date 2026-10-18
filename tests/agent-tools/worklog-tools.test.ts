@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { ToolSet } from "ai";
 import { chatTools } from "../../src/agent-tools/chat-tools";
 import { matchScore } from "../../src/core/fuzzy-match";
-import { parseTaskFile } from "../../src/core/note-format";
+import { loadNoteTasks } from "../../src/app/note-store";
 import { runtimeFixture } from "../app/operation-runtime-fixture";
 import { CHILD_ID, PARENT_ID } from "../contracts/fixtures";
 async function invoke(tools: ToolSet, name: string, input: unknown) {
@@ -38,13 +38,13 @@ describe("worklog tools", () => {
     expect(candidates.results[0].subtasks[0].subtaskId).toBe(CHILD_ID);
     expect(candidates.results[1].parents[0].parentId).toBe(PARENT_ID);
     expect(candidates.results[2].matchQuality).toBe("near-or-none");
-    const before = f.vault.getFileContent(PARENT_ID);
+    const before = f.vault.snapshot();
     const proposed = await invoke(tools, "worklog_propose", { date: "2026-10-13", entries: [
       { subtaskId: CHILD_ID, hours: 1 }, { subtaskId: CHILD_ID, hours: 2 },
       { parentId: PARENT_ID, newSubtaskName: "不具合修正", hours: 1.5 }, { eventTitle: "部長の呼び出し", hours: 0.5 },
     ] });
     expect(proposed.status).toBe("proposal-created"); expect(proposed.entries).toHaveLength(3);
-    expect(events).toHaveLength(1); expect(events[0].preview.operationId).toBe("T31"); expect(f.vault.getFileContent(PARENT_ID)).toBe(before);
+    expect(events).toHaveLength(1); expect(events[0].preview.operationId).toBe("T31"); expect(f.vault.snapshot()).toEqual(before);
     const children = events[0].preview.projection.after.parents.flatMap((p) => p.children);
     expect(children.find((c) => c.name === "不具合修正")?.hours).toContainEqual(expect.objectContaining({ date: "2026-10-13", actual: 1.5 }));
     expect(children.find((c) => c.id === CHILD_ID)?.hours).toContainEqual(expect.objectContaining({ date: "2026-10-13", actual: 3 }));
@@ -54,7 +54,7 @@ describe("worklog tools", () => {
     const f = await runtimeFixture(), tools = chatTools(f.service, f.context, "", () => undefined);
     const proposed = await invoke(tools, "worklog_propose", { date: "2026-10-13", entries: [{ subtaskId: CHILD_ID, hours: 2 }, { parentId: PARENT_ID, newSubtaskName: "不具合修正", hours: 1.5 }, { parentId: PARENT_ID, newSubtaskName: "打ち合わせ", hours: 1 }, { eventTitle: "割り込み", hours: 0.5 }] });
     expect((await f.service.humanApprovalPort.approve(proposed.previewId)).status).toBe("success");
-    const parent = parseTaskFile({ path: PARENT_ID }, f.vault.getFileContent(PARENT_ID) ?? "", f.settings)!;
+    const parent = (await loadNoteTasks(f.vault, f.settings, new Map())).find((row) => row.id === PARENT_ID)!;
     const rows = [...parent.subtasks!.values()];
     expect(rows.find((r) => r.id === CHILD_ID)?.workloadActual).toMatchObject({ "2026-10-13": 2 });
     expect(rows.find((r) => r.displayName === "不具合修正")?.workloadActual).toMatchObject({ "2026-10-13": 1.5 });

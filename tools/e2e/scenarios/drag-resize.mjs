@@ -30,6 +30,7 @@ import {
   writeDragFixture,
   waitForFrontmatterField,
   readFrontmatterField,
+  readNoteText,
   loadGanttDragModules,
 } from "./drag-fixture.mjs";
 import {
@@ -75,8 +76,8 @@ export async function run({ cdp, vaultDir }) {
   });
   details.push(`fixture: ${originalStart} -> ${originalEnd} (subtask ${subtaskKey})`);
 
-  const startKey = `subtask__${subtaskKey}__plannedStartDate`;
-  const endKey = `subtask__${subtaskKey}__plannedEndDate`;
+  const startKey = "start";
+  const endKey = "end";
 
   const hasCommand = await cdp.evaluate(
     `!!app.commands.commands[${JSON.stringify(COMMAND_ID)}]`
@@ -103,7 +104,7 @@ export async function run({ cdp, vaultDir }) {
         const f = app.vault.getAbstractFileByPath(${JSON.stringify(parentPath)});
         if (!f) return false;
         const cache = app.metadataCache.getFileCache(f);
-        return !!(cache && cache.frontmatter && cache.frontmatter.ganttEnabled === true);
+        return !!(cache && cache.frontmatter && cache.frontmatter.gantt === true);
       })()`,
       { timeoutMs: 15000, label: "fixture file indexed by metadataCache" }
     );
@@ -169,7 +170,7 @@ export async function run({ cdp, vaultDir }) {
     });
     details.push(`(1) plannedStartDate on disk: ${start1} (expected ${expectedStartAfterResize1})`);
   } catch (err) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     failures.push(
       `${err.message}\n    on-disk plannedEndDate at time of failure: ${readFrontmatterField(content, endKey)}`
     );
@@ -179,7 +180,7 @@ export async function run({ cdp, vaultDir }) {
     return { ok: false, failures, details: details.join(" | ") };
   }
 
-  const endUnchangedAfter1 = readFrontmatterField(fs.readFileSync(absPath, "utf8"), endKey);
+  const endUnchangedAfter1 = readFrontmatterField(readNoteText(absPath), endKey);
   if (endUnchangedAfter1 !== originalEnd) {
     failures.push(
       `(1) resize-start drag changed plannedEndDate: on-disk=${endUnchangedAfter1}, expected unchanged ${originalEnd}`
@@ -189,11 +190,17 @@ export async function run({ cdp, vaultDir }) {
   }
 
   // Settle point before the second gesture: wait for the re-render to
-  // finish (exactly one bar again) — see header + cdp-input.mjs's
-  // dragGesture isolation warning for why this matters.
+  // finish (exactly one bar again, already narrowed by resize-start) — see
+  // header + cdp-input.mjs's dragGesture isolation warning for why this
+  // matters. The save's follow-up render waits for the metadata cache, so
+  // the bar count alone also matches the stale pre-save bar.
   try {
     await cdp.waitForExpression(
-      `document.querySelectorAll(".task-gantt-bar").length === 1`,
+      `(() => {
+        const bars = document.querySelectorAll(".task-gantt-bar");
+        return bars.length === 1 && !bars[0].classList.contains("is-dragging") &&
+          parseFloat(bars[0].style.width) <= ${rect1.width - RESIZE_START_DELTA_DAYS * DAY_WIDTH_PX / 2};
+      })()`,
       { timeoutMs: 15000, label: "single gantt bar re-rendered after resize-start save" }
     );
   } catch (err) {
@@ -284,13 +291,13 @@ export async function run({ cdp, vaultDir }) {
     });
     details.push(`(2) plannedEndDate on disk: ${end2} (expected ${expectedEndAfterResize2})`);
   } catch (err) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     failures.push(
       `${err.message}\n    on-disk plannedStartDate at time of failure: ${readFrontmatterField(content, startKey)}`
     );
   }
 
-  const startUnchangedAfter2 = readFrontmatterField(fs.readFileSync(absPath, "utf8"), startKey);
+  const startUnchangedAfter2 = readFrontmatterField(readNoteText(absPath), startKey);
   if (startUnchangedAfter2 !== expectedStartAfterResize1) {
     failures.push(
       `(2) resize-end drag changed plannedStartDate: on-disk=${startUnchangedAfter2}, expected unchanged ${expectedStartAfterResize1}`

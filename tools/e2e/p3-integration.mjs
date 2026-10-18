@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, stableId, writeTaskNotes } from "./gen-fixtures.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const vault = fs.mkdtempSync(path.join(os.tmpdir(), "vg-p3-vault-"));
@@ -22,13 +22,15 @@ fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ taskFolder:
   ganttFeatureSyncEnabled: false, ganttNationalHolidays: [today], ganttNationalHolidaysUpdatedAt: new Date().toISOString(),
   mcp: { enabled: true, port: 0, secretId: null, allowedOrigins: [] } }));
 fs.writeFileSync(path.join(vault, ".obsidian/community-plugins.json"), '["vault-gantt"]');
-const taskPath = "tasks/P3確認.md", childId = `${taskPath}::review`;
+// v2: the parent and its subtask are separate notes; ids are fixed by stableId so they are known up front.
+const taskPath = "tasks/P3確認.md", childId = stableId("s", `${taskPath}::review`), parentId = stableId("t", taskPath), childPath = "tasks/P3確認/変更前.md";
 const common = { statusLabel: "active", completed: false, createdAt: today, updatedAt: today, priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const child = { ...common, kind: "subtask", id: childId, key: "review", file: { path: taskPath, parentPath: taskPath, heading: "変更前" },
   title: "変更前", displayName: "変更前", ganttEnabled: false, plannedStartDate: today, plannedEndDate: today };
 const parent = { ...common, kind: "parent", id: taskPath, file: { path: taskPath }, title: "P3確認", displayName: "P3確認", ganttEnabled: true, ganttOrder: 1000, subtasks: new Map([["review", child]]) };
-const { buildFullNote } = await loadNoteFormatModule();
-fs.mkdirSync(path.join(vault, "tasks")); fs.writeFileSync(path.join(vault, taskPath), buildFullNote(parent, parent.subtasks));
+writeTaskNotes(await loadNoteFormatModule(), vault, parent, parent.subtasks);
+// A rename moves a subtask note to a new file name, so the vault is searched by content, not by one path.
+const vaultHas = (text) => { const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).some((entry) => entry.isDirectory() ? walk(path.join(dir, entry.name)) : entry.name.endsWith(".md") && fs.readFileSync(path.join(dir, entry.name), "utf8").includes(text)); return walk(path.join(vault, "tasks")); };
 // Match ai-design-capture: own Xvfb, literal /tmp profile and own CDP log.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "vg-p3-runtime-")), profile = path.join(root, "independent-profile"), temp = path.join(root, "runtime-temp");
 for (const dir of [profile, temp]) fs.mkdirSync(dir);
@@ -105,7 +107,7 @@ try {
     document.querySelector(".vg-ai-send").click();
     await new Promise(resolve => { const unsubscribe = plugin.chatSession.subscribe(() => { if (plugin.chatSession.active.status !== "running") { unsubscribe(); resolve(); } }); });
     const preview = plugin.previewPort.list().find(p => p.origin.kind === "chat");
-    return { previewId: preview.previewId, status: preview.status, content: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(taskPath)})), endpoint: plugin.getMcpStatus() };
+    return { previewId: preview.previewId, status: preview.status, content: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(childPath)})), endpoint: plugin.getMcpStatus() };
   })()`);
   assert.equal(initial.status, "pending"); assert.ok(initial.content.includes("変更前")); assert.ok(!initial.content.includes("チャット保存"));
   const cardSelector = `[data-preview-id="${initial.previewId}"]`;
@@ -116,7 +118,7 @@ try {
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].openAIChat("tab")`);
   await cdp.evaluate(`document.querySelector(${JSON.stringify(cardSelector + ' button[data-action="approve"]')}).click()`);
   await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(initial.previewId)})?.status === "success"`, { timeoutMs: 10000, label: "chat approval save" });
-  assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("チャット保存"));
+  assert.ok(vaultHas("チャット保存"));
   await shot(cdp, "02-chat-saved");
   if (reviewFixes) {
     await cdp.evaluate(`(async () => {
@@ -129,7 +131,7 @@ try {
     const created = await cdp.evaluate(`(async () => {
       const plugin = app.plugins.plugins["vault-gantt"];
       plugin.chatSession.provider = { connected: () => true, async *stream(request) {
-        const input = { parentId: ${JSON.stringify(taskPath)}, name: "作成案の確認", date: ${JSON.stringify(today)} };
+        const input = { parentId: ${JSON.stringify(parentId)}, name: "作成案の確認", date: ${JSON.stringify(today)} };
         const preview = await plugin.operationService.propose("T06", input, {
           vaultInstanceId: plugin.operationService.vaultInstanceId, principalId: "obsidian-chat", origin: { kind: "chat", conversationId: request.conversationId },
           capabilities: ["read", "propose"], requestId: "v7-create", signal: request.signal
@@ -164,7 +166,7 @@ try {
     await setTheme(cdp, "moonstone"); await cdp.evaluate(`app.plugins.plugins["vault-gantt"].openAIChat("tab")`);
     await cdp.evaluate(`document.querySelector(${JSON.stringify(createCard + ' button[data-action="approve"]')}).click()`);
     await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(created)})?.status === "success"`, { timeoutMs: 10000, label: "creation saved" });
-    assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("作成案の確認"));
+    assert.ok(vaultHas("作成案の確認"));
   }
   // Keep credentials in memory; never include them in logs/artifacts.
   const connection = await cdp.evaluate(`({ endpoint: app.plugins.plugins["vault-gantt"].mcpServer?.endpoint, token: app.plugins.plugins["vault-gantt"].mcpServer?.sessionToken, vaultInstanceId: app.plugins.plugins["vault-gantt"].operationService.vaultInstanceId })`);
@@ -190,18 +192,18 @@ try {
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].activateApprovalView()`);
   const mcpSelector = `[data-preview-id="${data.previewId}"] button[data-action="approve"]`;
   await cdp.waitForExpression(`!!document.querySelector(${JSON.stringify(mcpSelector)})`, { timeoutMs: 10000, label: "MCP approval list" });
-  assert.ok(!fs.readFileSync(path.join(vault, taskPath), "utf8").includes("MCP保存"));
+  assert.ok(!vaultHas("MCP保存"));
   await shot(cdp, "03-mcp-approval-list");
   await cdp.evaluate(`document.querySelector(${JSON.stringify(mcpSelector)}).click()`);
   await cdp.waitForExpression(`app.plugins.plugins["vault-gantt"].previewPort.inspectOutcome(${JSON.stringify(data.previewId)})?.status === "success"`, { timeoutMs: 10000, label: "MCP human approval save" });
   const status = await client.callTool({ name: "previews.status", arguments: { previewId: data.previewId } });
   assert.equal(status.structuredContent.data.status, "committed"); assert.equal(status.structuredContent.data.descriptor.approvedEvent.kind, "approved");
-  assert.ok(fs.readFileSync(path.join(vault, taskPath), "utf8").includes("MCP保存"));
+  assert.ok(vaultHas("MCP保存"));
   await shot(cdp, "04-mcp-saved");
   const pending = await client.callTool({ name: "operations.T07.propose", arguments: { callerIntentId: "p3-mcp-pending", input: { taskId: childId, name: "未保存" } } });
   await cdp.evaluate(`app.plugins.plugins["vault-gantt"].generateMcpToken(true)`);
   const revoked = await cdp.evaluate(`app.plugins.plugins["vault-gantt"].previewPort.inspect(${JSON.stringify(pending.structuredContent.data.previewId)}).status`);
-  assert.equal(revoked, "revoked"); assert.ok(!fs.readFileSync(path.join(vault, taskPath), "utf8").includes("未保存"));
+  assert.equal(revoked, "revoked"); assert.ok(!vaultHas("未保存"));
   console.log(JSON.stringify({ vault, root, screenshots, measurements, monthChecks, chatProvider: "deterministic (no LLM)", chatCardApproveSave: "passed", ganttPreviewDock: "passed", approvalList: "passed", mcpLoopbackApproveSave: "passed", tokenRotationRevokesPending: "passed" }));
 } finally {
   if (client) await client.close().catch(() => {});

@@ -7,10 +7,21 @@ import http from "node:http";
 const chunk = (delta, finish = null) => "data: " + JSON.stringify({ id: "fake", object: "chat.completion.chunk", created: 1, model: "fake-model", choices: [{ index: 0, delta, finish_reason: finish }] }) + "\n\n";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The subtask the user means is found by name in the search result: ids are opaque (s-xxxxxx).
 function findSubtaskId(messages) {
+  const walk = (value) => {
+    if (Array.isArray(value)) { for (const item of value) { const hit = walk(item); if (hit) return hit; } return undefined; }
+    if (value && typeof value === "object") {
+      if (typeof value.id === "string" && /^s-[0-9a-z]{6}$/.test(value.id) && value.name === "デザイン確認") return value.id;
+      for (const item of Object.values(value)) { const hit = walk(item); if (hit) return hit; }
+    }
+    return undefined;
+  };
   for (const message of messages) {
     if (message.role !== "tool") continue;
-    const match = /"id":"([^"]*::design[^"]*)"/.exec(typeof message.content === "string" ? message.content : JSON.stringify(message.content));
+    const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+    try { const hit = walk(JSON.parse(text)); if (hit) return hit; } catch { /* not JSON: fall through */ }
+    const match = /"id":"(s-[0-9a-z]{6})"[^{}]*"name":"デザイン確認"/.exec(text);
     if (match) return match[1];
   }
   return undefined;

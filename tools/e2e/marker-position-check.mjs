@@ -20,34 +20,23 @@ fs.writeFileSync(
   JSON.stringify(["vault-gantt"])
 );
 
-const [fixturePath] = await generateFixtures({ vaultDir, count: 1 });
-const fixtureFile = path.join(vaultDir, fixturePath);
+// v2: generateFixtures returns the parent note first, then its subtask note.
+const [, subtaskPath] = await generateFixtures({ vaultDir, count: 1 });
+const fixtureFile = path.join(vaultDir, subtaskPath);
 const fixtureContent = fs.readFileSync(fixtureFile, "utf8");
-const plannedStartDate = fixtureContent.match(
-  /^subtask__subtask-1__plannedStartDate:\s*(\d{4}-\d{2}-\d{2})\s*$/m
-)?.[1];
-const plannedEndDate = fixtureContent.match(
-  /^subtask__subtask-1__plannedEndDate:\s*(\d{4}-\d{2}-\d{2})\s*$/m
-)?.[1];
+const plannedStartDate = fixtureContent.match(/^start:\s*(\d{4}-\d{2}-\d{2})\s*$/m)?.[1];
+const plannedEndDate = fixtureContent.match(/^end:\s*(\d{4}-\d{2}-\d{2})\s*$/m)?.[1];
 if (!plannedStartDate || !plannedEndDate || plannedStartDate > plannedEndDate) {
   throw new Error("fixture is missing a valid planned date range");
 }
 
-const emptyMarkerOrder = "subtask__subtask-1__ganttMarkerOrder: []";
-if (!fixtureContent.includes(emptyMarkerOrder)) {
-  throw new Error("fixture is missing the expected empty marker order");
+const anchor = "cssclasses:";
+if (!fixtureContent.includes(anchor) || fixtureContent.includes("markers:")) {
+  throw new Error("fixture is missing the expected frontmatter or already has markers");
 }
 fs.writeFileSync(
   fixtureFile,
-  fixtureContent.replace(
-    emptyMarkerOrder,
-    [
-      "subtask__subtask-1__ganttMarkerOrder: [marker-1]",
-      'subtask__subtask-1__ganttMarker__marker-1__title: "M"',
-      `subtask__subtask-1__ganttMarker__marker-1__date: ${plannedStartDate}`,
-      "subtask__subtask-1__ganttMarker__marker-1__tags: ",
-    ].join("\n")
-  )
+  fixtureContent.replace(anchor, `markers:\n  - title: M\n    date: ${plannedStartDate}\n${anchor}`)
 );
 
 const runtime = await startObsidian({

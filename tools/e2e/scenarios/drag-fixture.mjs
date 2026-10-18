@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadNoteFormatModule } from "../gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "../gen-fixtures.mjs";
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -156,14 +156,35 @@ export async function loadGanttDragModules() {
   }
 }
 
+/** id of each fixture subtask note by the path it was written to, so it can be found again after a rename. */
+const noteIds = new Map();
+
+/**
+ * Text of a fixture note. A title edit renames the file, so when `absPath` is gone the note is looked up
+ * by its id in the same folder.
+ */
+export function readNoteText(absPath) {
+  if (fs.existsSync(absPath)) return fs.readFileSync(absPath, "utf8");
+  const id = noteIds.get(absPath);
+  if (id) {
+    const dir = path.dirname(absPath);
+    for (const entry of fs.readdirSync(dir)) {
+      const text = entry.endsWith(".md") ? fs.readFileSync(path.join(dir, entry), "utf8") : "";
+      if (text.includes(`id: ${id}`)) return text;
+    }
+  }
+  throw new Error(`note not found: ${absPath}`);
+}
+
 /**
  * Writes one gantt-enabled parent task with exactly one dated subtask to
- * `vaultDir`, via the REAL buildFullNote serializer (same technique
- * gen-fixtures.mjs uses for its bulk fixtures — see that file's header for
- * why hand-written frontmatter was proven fragile). Deliberately NOT added
+ * `vaultDir` (note format v2: a parent note and a subtask note), via the REAL note-v2
+ * serializer (same technique gen-fixtures.mjs uses for its bulk fixtures — see that file's
+ * header for why hand-written frontmatter was proven fragile). Deliberately NOT added
  * to gen-fixtures.mjs itself: these scenarios need a single task with
  * caller-chosen exact dates/name/status, which doesn't fit gen-fixtures'
  * bulk "spread N tasks across a wide timeline" shape.
+ * `absPath` is the SUBTASK note (the one the drag scenarios watch); `parentAbsPath` the parent.
  */
 export async function writeDragFixture({
   vaultDir,
@@ -173,16 +194,13 @@ export async function writeDragFixture({
   endDate,
   statusLabel = "active",
 }) {
-  const { buildFullNote } = await loadNoteFormatModule();
+  const mod = await loadNoteFormatModule();
   const today = toIsoStr(new Date());
-  const parentPath = `tasks/${today.slice(0, 4)}/${today.slice(5, 7)}/${today} ${parentName}.md`;
+  const parentPath = `tasks/${today} ${parentName}.md`;
   const subtaskKey = "subtask-1";
 
   const subtask = {
     kind: "subtask",
-    id: `${parentPath}::${subtaskKey}`,
-    key: subtaskKey,
-    file: { path: parentPath, parentPath, heading: subtaskName },
     title: subtaskName,
     displayName: subtaskName,
     statusLabel,
@@ -195,14 +213,13 @@ export async function writeDragFixture({
     currentStatus: "",
     notes: "",
     tags: [],
-    ganttEnabled: false, // subtasks never carry ganttEnabled (note-format.ts)
+    ganttEnabled: false,
     plannedStartDate: startDate,
     plannedEndDate: endDate,
   };
 
   const parent = {
     kind: "parent",
-    id: parentPath,
     file: { path: parentPath },
     title: parentName,
     displayName: parentName,
@@ -217,24 +234,22 @@ export async function writeDragFixture({
     notes: "",
     tags: [],
     ganttEnabled: true,
-    ganttOrder: 0,
     subtasks: new Map([[subtaskKey, subtask]]),
   };
 
-  const content = buildFullNote(parent, parent.subtasks);
-  const absPath = path.join(vaultDir, parentPath);
-  fs.mkdirSync(path.dirname(absPath), { recursive: true });
-  fs.writeFileSync(absPath, content, "utf8");
+  const notes = writeTaskNotes(mod, vaultDir, parent, parent.subtasks);
+  const written = notes.subs.get(subtaskKey);
+  const absPath = path.join(vaultDir, written.path);
+  noteIds.set(absPath, written.id);
 
-  return { parentPath, absPath, subtaskKey };
+  return { parentPath, absPath, parentAbsPath: path.join(vaultDir, parentPath), subtaskKey, subtaskId: written.id, parentId: notes.parentId };
 }
 
 /**
- * Reads a single flat `key: value` frontmatter line (buildFrontmatter's
- * format — src/core/note-format.ts), stripping a surrounding quote pair if
+ * Reads a single flat `key: value` frontmatter line, stripping a surrounding quote pair if
  * present. Returns undefined if the key is absent. This is not a general YAML
- * parser; it matches the flat key:value frontmatter format used by this
- * codebase, rather than nested YAML.
+ * parser; it matches the flat key:value lines of the note format (dates, status, title),
+ * rather than nested YAML.
  */
 export function readFrontmatterField(content, key) {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -243,7 +258,7 @@ export function readFrontmatterField(content, key) {
     return undefined;
   }
   let value = match[1].trim();
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
     value = value.slice(1, -1);
   }
   return value;
@@ -266,7 +281,7 @@ export async function waitForFrontmatterField(
   const deadline = Date.now() + timeoutMs;
   let last;
   for (;;) {
-    const content = fs.readFileSync(absPath, "utf8");
+    const content = readNoteText(absPath);
     last = readFrontmatterField(content, key);
     if (last === expected) {
       return last;

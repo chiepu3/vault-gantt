@@ -8,10 +8,16 @@ import { createRequire } from "node:module";
 
 // Use the YAML parser already installed by ESLint instead of approximating YAML.
 const yaml = createRequire(import.meta.url)("js-yaml") as {
-  load: (input: string) => unknown;
+  load: (input: string, options?: Record<string, unknown>) => unknown;
+  dump: (value: unknown, options?: Record<string, unknown>) => string;
+  CORE_SCHEMA: unknown;
 };
+// Core schema: like Obsidian, a bare 2026-10-01 stays a string (the default schema makes it a Date).
 export function parseYaml(input: string): unknown {
-  return yaml.load(input);
+  return yaml.load(input, { schema: yaml.CORE_SCHEMA });
+}
+export function stringifyYaml(value: unknown): string {
+  return yaml.dump(value, { schema: yaml.CORE_SCHEMA, lineWidth: -1, noRefs: true });
 }
 
 export { default as moment } from "moment";

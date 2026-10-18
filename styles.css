@@ -117,6 +117,12 @@ body {
 
 .task-workbench-table thead th { position: sticky; top: 0; z-index: 1; background: var(--background-secondary); white-space: nowrap; padding-top: 6px; padding-bottom: 6px; font-size: var(--vg-font-m); font-weight: var(--vg-weight-strong); color: var(--text-muted); box-shadow: inset 0 -1px 0 var(--background-modifier-border); }
 
+/* Virtual-scroll spacers stand in for rows outside the rendered window. */
+.task-workbench-table tr.twb-virtual-spacer td { padding: 0; border: 0; }
+/* Zero-height rows that still size the auto-layout columns, so virtualized
+   column widths match the full table. */
+.task-workbench-table tr.twb-width-probe { visibility: collapse; }
+
 .task-workbench-table .task-workbench-col-name { min-width: 240px; }
 .task-workbench-table .task-workbench-col-status { min-width: 120px; }
 .task-workbench-table .task-workbench-priority-cell { white-space: nowrap; text-align: center; }
@@ -242,8 +248,10 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-month-cell.is-month-start { position: relative; overflow: visible; }
 .task-gantt-day-cell { flex: 0 0 auto; text-align: center; overflow: hidden; white-space: nowrap; font-size: var(--vg-font-s); line-height: 18px; border-right: var(--vg-border-subtle); }
 
-/* overflow:clip (not hidden) keeps sticky children working while stopping bg cells/bars from spilling into neighbouring rows. */
-.task-gantt-parent-row { display: flex; border-bottom: var(--vg-border-subtle); width: max-content; overflow: clip; }
+/* overflow:clip (not hidden) keeps sticky children working while stopping bg cells/bars from spilling into neighbouring rows.
+   content-visibility:auto lets the browser skip layout, paint and hit-testing for rows far outside the viewport; the renderer
+   sets contain-intrinsic-size inline to the row's exact size so a skipped row keeps its width and height. */
+.task-gantt-parent-row { display: flex; border-bottom: var(--vg-border-subtle); width: max-content; overflow: clip; content-visibility: auto; }
 
 /* overflow: clip (not hidden) keeps the timeline from becoming a scroll container, so bar titles can stick to the wrap's left edge. */
 .task-gantt-parent-timeline { position: relative; isolation: isolate; overflow: clip; max-height: 100%; flex-shrink: 0; }
@@ -390,8 +398,10 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-bar.is-tag-colored-completed { background-image: linear-gradient(color-mix(in srgb, var(--background-primary) 55%, transparent), color-mix(in srgb, var(--background-primary) 55%, transparent)); filter: saturate(.6); }
 .task-gantt-bar.is-completed .task-gantt-bar-title { color: var(--text-normal); }
 .task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vg-font-m); line-height: 24px; color: var(--text-on-accent); cursor: text; }
-/* Sticky label: a bar scrolled under the left name column keeps its title start visible (320px column + 6px). */
-.task-gantt-bar-title { position: sticky; left: 326px; width: max-content; }
+/* Sticky label: a bar scrolled under the left name column keeps its title start visible (320px column + 6px).
+   Not position: sticky (one compositor layer per title made every layout and scroll frame expensive): gantt-sticky-titles.ts
+   applies the same offset as a transform to just the titles of bars that overlap that edge. */
+.task-gantt-bar-title { width: max-content; }
 .task-gantt-bar.has-tag-badge { display: flex; align-items: center; }
 .task-gantt-bar.has-tag-badge .task-gantt-bar-title { flex: 0 1 auto; min-width: 0; }
 
@@ -400,8 +410,11 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-bar.is-completed .task-gantt-bar-tag-badge { opacity: .86; }
 
-.task-gantt-resize-start { position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; left: 0; }
-.task-gantt-resize-end { position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; right: 0; }
+/* Resize-edge cursor zones: the bar's own pseudo-elements (no extra DOM nodes). The drag itself is decided by the pointer's
+   offset in onBarPointerDown (RESIZE_EDGE_HIT_ZONE_PX), so these only supply the cursor. */
+.task-gantt-bar::before, .task-gantt-bar::after { content: ""; position: absolute; top: 0; height: 100%; width: 6px; cursor: ew-resize; }
+.task-gantt-bar::before { left: 0; }
+.task-gantt-bar::after { right: 0; }
 
 /* Left colour band from the registry-order primary tag (renderer sets --vg-tag-accent). */
 .task-gantt-parent-left.has-tag-accent { border-left-color: var(--vg-tag-accent); }

@@ -93,13 +93,13 @@ describe("chat review regressions", () => {
   });
   it("stale re-preview refreshes old revision guards and retains the failed result", async () => {
     const a = setup(); const row = await createTask(a.vault, { ...DEFAULT_SETTINGS }, "Example");
-    const expectedRevision = buildFileRevision(a.vault.getFileByPath(row.id)! as TaskRow["file"]);
+    const expectedRevision = buildFileRevision(a.vault.getFileByPath(row.file.path)! as TaskRow["file"]);
     const input = { taskId: row.id, patch: { notes: "new" }, expectedRevision };
     const plan = await a.registry.plan("update", input);
     const session = new ChatSession(a.vault, a.registry, new FakeProvider(async function* () { yield { type: "plan", plan, operation: "update", input }; }));
     session.configure(config); await session.send("change");
     const proposal = session.active.messages[1].proposals[0];
-    const file = a.vault.getFileByPath(row.id)!; await a.vault.modify(file, (await a.vault.read(file)) + "\n");
+    const file = a.vault.getFileByPath(row.file.path)!; await a.vault.modify(file, (await a.vault.read(file)) + "\n");
     await session.confirm(proposal); expect(proposal.result?.kind).toBe("stale");
     await session.repreview(proposal);
     expect(session.active.status).toBe("preview");

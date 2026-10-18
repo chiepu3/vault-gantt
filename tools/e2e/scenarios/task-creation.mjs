@@ -3,12 +3,10 @@
 
 // Scenario 1: task creation with real filesystem parent-folder handling.
 
-// Vault state: an EXISTING root tasks/ folder but NO tasks/YYYY/MM subfolder
-// yet. This exposes the missing-parent-folder bug: Vault.create does not
-// create missing parent folders, and FakeVault (a flat Map) never modeled
-// that. With the bug present, the command rejects silently (uncaught
-// rejection -> captured console error), no Notice appears, no file is
-// written.
+// Vault state: an EXISTING, empty root tasks/ folder. A new parent task is a single
+// note directly in it (tasks/<date> <title>.md, no YYYY/MM folders); if the command
+// fails it rejects silently (uncaught rejection -> captured console error), no Notice
+// appears and no file is written.
 
 // Drives the REAL command through the REAL modal: executeCommandById ->
 // type into the modal's text input -> Enter, like a user would.
@@ -36,18 +34,10 @@ export async function run({ cdp, vaultDir }) {
   const failures = [];
   const details = [];
 
-  // --- Precondition: tasks/ exists, tasks/<year>/ does not --------------
+  // --- Precondition: tasks/ exists -------------------------------------
   const tasksRoot = path.join(vaultDir, "tasks");
   if (!fs.existsSync(tasksRoot)) {
     fs.mkdirSync(tasksRoot, { recursive: true });
-  }
-  const yearNow = String(new Date().getFullYear());
-  if (fs.existsSync(path.join(tasksRoot, yearNow))) {
-    failures.push(
-      `precondition violated: ${path.join(tasksRoot, yearNow)} already exists — ` +
-        `the scenario requires a tasks/ root with no year subfolder`
-    );
-    return { ok: false, failures, details: "" };
   }
 
   // Command must be registered by the plugin.
@@ -117,20 +107,14 @@ export async function run({ cdp, vaultDir }) {
     }
   }
 
-  // --- Assert the file exists at tasks/YYYY/MM/YYYY-MM-DD <name>.md -------
+  // --- Assert the file exists at tasks/YYYY-MM-DD <name>.md -------
   // Recompute the date after creation so a midnight rollover during the test
   // does not cause a false failure.
   const now = new Date();
   const dateStr = localDateStr(now);
-  const expectedPath = path.join(
-    vaultDir,
-    "tasks",
-    dateStr.slice(0, 4),
-    dateStr.slice(5, 7),
-    `${dateStr} ${TASK_NAME}.md`
-  );
+  const expectedPath = path.join(vaultDir, "tasks", `${dateStr} ${TASK_NAME}.md`);
   if (fs.existsSync(expectedPath)) {
-    details.push(`file exists: tasks/${dateStr.slice(0, 4)}/${dateStr.slice(5, 7)}/${dateStr} ${TASK_NAME}.md`);
+    details.push(`file exists: tasks/${dateStr} ${TASK_NAME}.md`);
   } else {
     const treeDump = dumpTree(path.join(vaultDir, "tasks"), 3);
     failures.push(`expected file missing: ${expectedPath}\n    tasks/ tree:\n${treeDump}`);

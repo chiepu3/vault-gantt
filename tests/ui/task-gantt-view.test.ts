@@ -1,4 +1,4 @@
-import { NotePreservationError } from "../../src/core/note-update";
+import { NotePreservationError } from "../../src/core/note-v2";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 
@@ -1228,6 +1228,112 @@ describe("TaskGanttView", () => {
 
 
 
+  describe("row contents are built only for rows near the viewport", () => {
+    const rect = (top: number, bottom: number) => () => ({ left: 0, top, right: 1000, bottom, width: 1000, height: bottom - top });
+
+    async function openLaidOut() {
+      const parents = [0, 1, 2].map((i) => withChildren(makeParent({ id: `p${i}`, file: { path: `tasks/p${i}.md` }, ganttEnabled: true, ganttOrder: i }), [
+        makeSubtask(`s${i}`, { id: `tasks/p${i}.md::s${i}`, plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), file: { path: `tasks/p${i}.md`, parentPath: `tasks/p${i}.md`, heading: `s${i}` } }),
+      ]));
+      const { view, container, h } = await openView(parents);
+      const wrap = wrapOf(container);
+      return { view, container, h, wrap, parents };
+    }
+    const barsIn = (container: FakeEl) => byClass(container, "task-gantt-bar");
+
+    it("builds everything immediately when nothing is laid out (hidden tab, no layout engine)", async () => {
+      const { container } = await openLaidOut();
+      expect(barsIn(container)).toHaveLength(3);
+    });
+
+    it("leaves rows far from the viewport as shells and fills them in when they scroll near", async () => {
+      const { view, container, wrap } = await openLaidOut();
+      // A viewport thousands of pixels away from every (zero-rect) row.
+      (wrap as any).clientHeight = 800;
+      wrap.getBoundingClientRect = rect(10000, 10800) as any;
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      expect(parentRows(container)).toHaveLength(3);
+      expect(barsIn(container)).toHaveLength(0);
+      // The shell already has the row's final timeline size.
+      expect(timelineOf(parentRows(container)[0]).style.height).toMatch(/px$/);
+      expect((view as any).pendingRowFills.size).toBe(3);
+
+      // Scrolling the viewport onto the rows builds them.
+      wrap.getBoundingClientRect = rect(-100, 700) as any;
+      dispatch(wrap, "scroll", {});
+      expect(barsIn(container)).toHaveLength(3);
+      expect((view as any).pendingRowFills.size).toBe(0);
+    });
+
+    it("builds a row on demand when something needs one of its bars", async () => {
+      const { view, container, wrap, parents } = await openLaidOut();
+      (wrap as any).clientHeight = 800;
+      wrap.getBoundingClientRect = rect(10000, 10800) as any;
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      expect(barsIn(container)).toHaveLength(0);
+      const subtask = [...parents[1].subtasks!.values()][0];
+      const bar = (view as any).barElFor(subtask.id);
+      expect(bar).toBeDefined();
+      expect(barsIn(container)).toHaveLength(1);
+      expect(bar.classList.contains("task-gantt-bar")).toBe(true);
+    });
+
+    it("drops the pending fill of a row that a rebuild replaced", async () => {
+      const { view, wrap } = await openLaidOut();
+      (wrap as any).clientHeight = 800;
+      wrap.getBoundingClientRect = rect(10000, 10800) as any;
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      const before = [...(view as any).pendingRowFills.keys()];
+      (view as any)._ganttRowCache = undefined;
+      (view as any).renderChart();
+      const after = [...(view as any).pendingRowFills.keys()];
+      expect(after).toHaveLength(3);
+      expect(after.some((row: unknown) => before.includes(row))).toBe(false);
+    });
+  });
+
+  describe("workload summary totals", () => {
+    it("equal the per-date brute-force sum (entries outside the subtask range or the visible dates are ignored)", async () => {
+      const dates = Array.from({ length: 20 }, (_, i) => dateOffset(i));
+      const mk = (i: number, start: number, end: number, plan: Record<string, number>, actual: Record<string, number>) =>
+        makeSubtask(`w${i}`, { id: `tasks/p0.md::w${i}`, plannedStartDate: dateOffset(start), plannedEndDate: dateOffset(end), workloadPlan: plan, workloadActual: actual });
+      const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
+        mk(0, 2, 6, { [dateOffset(2)]: 1.5, [dateOffset(5)]: 0.25, [dateOffset(9)]: 4 }, { [dateOffset(3)]: 2 }),
+        mk(1, 4, 8, { [dateOffset(5)]: 0.5, [dateOffset(-3)]: 7, [dateOffset(40)]: 7 }, { [dateOffset(5)]: 1 }),
+        makeSubtask("nodates", { id: "tasks/p0.md::nodates", workloadPlan: { [dateOffset(5)]: 9 } }),
+      ]);
+      const { view } = await openView([parent]);
+      const totals = (view as any).computeWorkloadSummaryValues([parent], dates) as Map<string, { plan: number; actual: number }>;
+      for (const date of dates) {
+        let plan = 0, actual = 0;
+        for (const s of parent.subtasks!.values()) {
+          if (!s.plannedStartDate || !s.plannedEndDate || date < s.plannedStartDate || date > s.plannedEndDate) continue;
+          plan += s.workloadPlan?.[date] ?? 0; actual += s.workloadActual?.[date] ?? 0;
+        }
+        const got = totals.get(date)!;
+        expect(got.plan).toBe(plan);
+        expect(got.actual).toBe(actual);
+      }
+      expect(totals.get(dateOffset(5))!.plan).toBe(0.75);
+    });
+
+    it("changes the input fingerprint when a subtask's workload entry changes", async () => {
+      const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
+        makeSubtask("a", { id: "tasks/p0.md::a", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 1 } }),
+      ]);
+      const { view } = await openView([parent]);
+      const dates = [dateOffset(0), dateOffset(1)];
+      const fp = () => (view as any).workloadSummaryInputsFingerprint([parent], dates) as string;
+      const before = fp();
+      expect(fp()).toBe(before);
+      parent.subtasks!.values().next().value!.workloadPlan = { [dateOffset(1)]: 2 };
+      expect(fp()).not.toBe(before);
+    });
+  });
+
   describe("setZoom", () => {
     it("updates dayWidth, persists, scales scroll, re-renders", async () => {
       const { view, container, h } = await openView([]);
@@ -1246,6 +1352,27 @@ describe("TaskGanttView", () => {
       // Header cells were re-rendered at the new width.
       const monthCell = rowOf(wrapOf(container), "task-gantt-month-row").children[0];
       expect(monthCell.style.width).toBe("56px");
+    });
+
+    it("shows the new zoom before the settings write finishes, then resolves after it", async () => {
+      const { view, container, h } = await openView([]);
+      let finishWrite!: () => void;
+      h.saveSettings.mockImplementationOnce(() => new Promise<void>((resolve) => { finishWrite = resolve; }));
+
+      let settled = false;
+      const zooming = (view as any).setZoom(56).then(() => { settled = true; });
+      await flush();
+
+      // The chart and label already show the new zoom while the write is still pending.
+      const monthCell = rowOf(wrapOf(container), "task-gantt-month-row").children[0];
+      expect(monthCell.style.width).toBe("56px");
+      expect(((view as any).zoomLabelEl as FakeEl).textContent).toBe("56px/日");
+      expect(h.saveSettings).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+
+      finishWrite();
+      await zooming;
+      expect(settled).toBe(true);
     });
 
     it("renders a default zoom label in the toolbar", async () => {
@@ -1665,7 +1792,7 @@ describe("TaskGanttView", () => {
       expect(bar.style.width).toBe(`${Math.max(8, right - left)}px`);
     });
 
-    it("renders invisible resize-edge cursor targets on every bar", async () => {
+    it("has no per-bar resize handle elements (the edge cursors are CSS pseudo-elements)", async () => {
       const parent = withChildren(makeParent({ ganttEnabled: true }), [
         makeSubtask("s1", {
           displayName: "A",
@@ -1676,8 +1803,8 @@ describe("TaskGanttView", () => {
       const { container } = await openView([parent]);
       const bar = byClass(timelineOf(parentRows(container)[0]), "task-gantt-bar")[0];
 
-      expect(byClass(bar, "task-gantt-resize-start")).toHaveLength(1);
-      expect(byClass(bar, "task-gantt-resize-end")).toHaveLength(1);
+      expect(byClass(bar, "task-gantt-resize-start")).toHaveLength(0);
+      expect(byClass(bar, "task-gantt-resize-end")).toHaveLength(0);
     });
 
     it("renders a subtask tag badge with the resolved tag color", async () => {
@@ -4924,10 +5051,10 @@ describe("TaskGanttView", () => {
       expect(patch).toEqual({ plannedEndDate: dateOffset(6) });
     });
 
-    it("uses the bar geometry when pointerdown targets the resize-end child span", async () => {
+    it("resizes by the pointer's offset inside the bar when pointerdown targets a child of the bar", async () => {
       const { timeline, h, sub } = await openViewWithBar();
       const bar = barElOf(timeline);
-      const resizeEnd = byClass(bar, "task-gantt-resize-end")[0];
+      const resizeEnd = bar.children[bar.children.length - 1];
       const width = parseFloat(bar.style.width);
       setBarRect(bar, 100);
 
@@ -6608,6 +6735,57 @@ describe("rich popover behavior", () => {
       dispatch(bar, "mouseover", { clientX: 100, clientY: 50 });
       vi.advanceTimersByTime(1000);
       expect(popoverOf(container)).toBeDefined();
+    });
+
+    it("switches to the bar resting under the popover after 300ms, resolved from cached rects (no page hit test)", async () => {
+      const first = makeSubtask("subA", { title: "AAA", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const second = makeSubtask("subB", { title: "BBB", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const parent = withChildren(makeParent({ ganttEnabled: true }), [first, second]);
+      const { container } = await openView([parent]);
+      const row = parentRows(container)[0];
+      const [barA, barB] = byClass(timelineOf(row), "task-gantt-bar");
+      const rect = (left: number, top: number, right: number, bottom: number) => () => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+      row.getBoundingClientRect = rect(0, 0, 2000, 400);
+      (row as any).querySelectorAll = () => [barA, barB];
+      barA.getBoundingClientRect = rect(600, 40, 700, 64);
+      barB.getBoundingClientRect = rect(250, 120, 350, 144);
+      const popover = showPopover(container, barA);
+      popover.getBoundingClientRect = rect(200, 100, 640, 300);
+      const titleOf = () => byClass(popoverOf(container) as FakeEl, "task-gantt-popover-title")[0].textContent;
+      expect(titleOf()).toBe("subA");
+      const hitTests = vi.fn(() => []);
+      (globalThis as any).document.elementsFromPoint = hitTests;
+
+      dispatch(popover, "mousemove", { clientX: 300, clientY: 130 });
+      vi.advanceTimersByTime(299);
+      expect(titleOf()).toBe("subA");
+      // moving again over the same covered bar restarts the rest timer
+      dispatch(popover, "mousemove", { clientX: 301, clientY: 131 });
+      vi.advanceTimersByTime(299);
+      expect(titleOf()).toBe("subA");
+      vi.advanceTimersByTime(1);
+      expect(titleOf()).toBe("subB");
+      expect(hitTests).not.toHaveBeenCalled();
+    });
+
+    it("does not switch while the pointer is over a part of the popover that covers no other bar", async () => {
+      const first = makeSubtask("subA", { title: "AAA", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const second = makeSubtask("subB", { title: "BBB", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(2) });
+      const parent = withChildren(makeParent({ ganttEnabled: true }), [first, second]);
+      const { container } = await openView([parent]);
+      const row = parentRows(container)[0];
+      const [barA, barB] = byClass(timelineOf(row), "task-gantt-bar");
+      const rect = (left: number, top: number, right: number, bottom: number) => () => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+      row.getBoundingClientRect = rect(0, 0, 2000, 400);
+      (row as any).querySelectorAll = () => [barA, barB];
+      barA.getBoundingClientRect = rect(600, 40, 700, 64);
+      barB.getBoundingClientRect = rect(250, 120, 350, 144);
+      const popover = showPopover(container, barA);
+      popover.getBoundingClientRect = rect(200, 100, 640, 300);
+      dispatch(popover, "mousemove", { clientX: 450, clientY: 250 }); // inside the popover, over no bar
+      dispatch(popover, "mousemove", { clientX: 650, clientY: 50 }); // over the anchor bar's own rect: never a switch
+      vi.advanceTimersByTime(1000);
+      expect(byClass(popoverOf(container) as FakeEl, "task-gantt-popover-title")[0].textContent).toBe("subA");
     });
 
     it("keeps the popover open while Current Status is focused and typed into", async () => {

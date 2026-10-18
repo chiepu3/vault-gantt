@@ -5,7 +5,7 @@ import { VIEW_TYPE_AI_CHAT } from "../src/ui/agent-view";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Mock } from "vitest";
-import { Modal, Notice, PluginSettingTab, requestUrl, TFile, Platform } from "obsidian";
+import { Modal, Notice, PluginSettingTab, requestUrl, TFile, Platform, parseYaml, stringifyYaml } from "obsidian";
 import TaskWorkbenchPlugin, {
   VIEW_TYPE_TASK_WORKBENCH,
   VIEW_TYPE_TASK_GANTT,
@@ -14,8 +14,7 @@ import TaskWorkbenchPlugin, {
   TaskWorkbenchSettingTab,
 } from "../src/main";
 import { HolidayService } from "../src/app/holiday-service";
-import { addSubtask, createTask } from "../src/app/task-operations";
-import { buildFullNote } from "../src/core/note-format";
+import { addSubtask, createTask, loadTasks, newNoteText } from "../src/app/task-operations";
 import { DEFAULT_SETTINGS } from "../src/core/constants";
 import { Logger } from "../src/core/logger";
 import { TaskWorkbenchView } from "../src/ui/task-workbench-view";
@@ -106,7 +105,8 @@ function createHarness(storedData: unknown = undefined): Harness {
     create: vi.fn(async (path: string, content: string) => {
       const mtime = Date.now();
       files.set(path, { content, mtime, size: content.length });
-      return makeTFile(path, mtime, content.length);
+      const created = makeTFile(path, mtime, content.length); emitChanged(created);
+      return created;
     }),
     modify: vi.fn(async (file: TFile, content: string) => {
       const entry = files.get(file.path);
@@ -118,6 +118,7 @@ function createHarness(storedData: unknown = undefined): Harness {
       entry.mtime = mtime;
       entry.size = content.length;
       (file as any).stat = { mtime, size: content.length, ctime: mtime };
+      emitChanged(file);
     }),
     read: vi.fn(async (file: TFile) => {
       const entry = files.get(file.path);
@@ -168,7 +169,53 @@ function createHarness(storedData: unknown = undefined): Harness {
   const getLeaf = vi.fn(() => ({ openFile }));
   workspace.getLeaf.mockImplementation(getLeaf);
 
-  const fakeApp = { workspace, vault: vaultApi };
+  // A small metadataCache + fileManager over the same fake files (frontmatter parsed on demand).
+  const cacheListeners = new Map<string, Set<(...args: any[]) => void>>();
+  // Obsidian indexes after the write returns: the event arrives a few ticks later.
+  const emitChanged = (file: TFile) => { let tick = Promise.resolve(); for (let i = 0; i < 8; i++) tick = tick.then(() => undefined); void tick.then(() => cacheListeners.get("changed")?.forEach((listener) => listener(file))); };
+  const frontmatterOf = (content: string): Record<string, unknown> | undefined => {
+    const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+    return match ? (parseYaml(match[1]) as Record<string, unknown> | null) ?? undefined : undefined;
+  };
+  const metadataCache = {
+    getFileCache: vi.fn((file: TFile) => {
+      const entry = files.get(file.path);
+      if (!entry) return null;
+      const frontmatter = frontmatterOf(entry.content);
+      return frontmatter ? { frontmatter } : {};
+    }),
+    on: vi.fn((name: string, callback: (...args: any[]) => void) => {
+      const set = cacheListeners.get(name) ?? new Set();
+      set.add(callback); cacheListeners.set(name, set);
+      return { name, callback };
+    }),
+    offref: vi.fn((ref: { name: string; callback: (...args: any[]) => void }) => { cacheListeners.get(ref.name)?.delete(ref.callback); }),
+    getFirstLinkpathDest: vi.fn((link: string) => {
+      const match = [...files.keys()].find((path) => path.split("/").pop()!.replace(/\.md$/i, "") === link);
+      const entry = match ? files.get(match) : undefined;
+      return match && entry ? makeTFile(match, entry.mtime, entry.size) : null;
+    }),
+  };
+  const fileManager = {
+    processFrontMatter: vi.fn(async (file: TFile, update: (frontmatter: Record<string, unknown>) => void) => {
+      const entry = files.get(file.path);
+      if (!entry) throw new Error(`File not found: ${file.path}`);
+      const frontmatter = structuredClone(frontmatterOf(entry.content) ?? {});
+      update(frontmatter);
+      const body = entry.content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+      entry.content = `---\n${stringifyYaml(frontmatter)}---\n${body}`;
+      entry.mtime = Date.now(); entry.size = entry.content.length;
+      emitChanged(file);
+    }),
+    renameFile: vi.fn(async (file: TFile, newPath: string) => {
+      const entry = files.get(file.path);
+      if (!entry) throw new Error(`File not found: ${file.path}`);
+      files.delete(file.path); files.set(newPath, entry);
+    }),
+    trashFile: vi.fn(async (file: TFile) => { files.delete(file.path); }),
+  };
+
+  const fakeApp = { workspace, vault: vaultApi, metadataCache, fileManager };
 
   const plugin = new TaskWorkbenchPlugin(fakeApp as any, {} as any);
   (plugin as any).app = fakeApp;
@@ -589,6 +636,15 @@ describe("TaskWorkbenchPlugin", () => {
       callback({ path: "external.md" }); await flush();
       expect(h.plugin.previewPort.focusedPreviewId()).toBeNull(); expect(h.plugin.previewPort.inspectOutcome(preview.previewId)).toBeDefined();
     });
+    it("daily-note candidates are invalidated by create/delete/rename but not by modify", async () => {
+      const h = createHarness({ autoPriorityEnabled: false });
+      (h.plugin as any).registerEvent = vi.fn(); h.vaultApi.on = vi.fn(); await h.plugin.onload();
+      const invalidate = vi.spyOn(h.plugin.dailyTodos, "invalidateCandidates");
+      const fire = (event: string) => h.vaultApi.on.mock.calls.find(([name]: [string]) => name === event)[1]({ path: "daily/x.md" });
+      fire("modify"); expect(invalidate).not.toHaveBeenCalled();
+      for (const event of ["create", "delete", "rename"]) { invalidate.mockClear(); fire(event); expect(invalidate).toHaveBeenCalledTimes(1); }
+      await flush();
+    });
     it("does not republish the AI setting over UI changes that returned to the original value", async () => {
       const h = createHarness({ autoPriorityEnabled: false, currentStatusRows: 28 }); await h.plugin.onload();
       const service = h.plugin.operationService;
@@ -631,40 +687,60 @@ describe("TaskWorkbenchPlugin", () => {
     });
   });
 
-  describe("onload handles automatic-priority failures", () => {
-    it("auto priority failure is caught and logged; views/commands/ribbon still register", async () => {
+  describe("onload does not depend on the vault listing", () => {
+    it("views/commands/ribbon register without reading any task note", async () => {
       const h = createHarness();
-      const loggerErrorSpy = vi.spyOn(Logger.prototype, "error");
-      // simulate the task folder lookup blowing up inside loadTasks
       h.vaultApi.getMarkdownFiles.mockImplementation(() => {
         throw new Error("task folder missing");
       });
 
       await expect(h.plugin.onload()).resolves.toBeUndefined();
 
-      expect(loggerErrorSpy).toHaveBeenCalledWith(
-        "TaskWorkbenchPlugin",
-        "Task Workbench: auto priority update failed during onload",
-        expect.any(Error)
-      );
-
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
 
       expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
       expect(h.settingTabs).toHaveLength(1);
     });
 
-    it("settings are persisted after a successful auto priority run", async () => {
+    it("never rewrites notes for auto priority on startup", async () => {
       const h = createHarness({});
+      await createTask(new ObsidianVaultAdapter(h.fakeApp), { ...DEFAULT_SETTINGS }, "Untouched");
+      h.vaultApi.modify.mockClear();
 
       await h.plugin.onload();
       await flush();
 
-      expect(h.savedData.length).toBeGreaterThanOrEqual(1);
-      expect(
-        h.savedData.some((d) => d.lastAutoPriorityUpdate === "2026-07-29")
-      ).toBe(true);
+      expect(h.vaultApi.modify).not.toHaveBeenCalled();
+      expect(h.fakeApp.fileManager.processFrontMatter).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("onload: deferred startup", () => {
+    it("registers views first and runs MCP / holiday refresh only after layout ready", async () => {
+      const h = createHarness({});
+      const { refresh } = stubHolidays(h.plugin, {});
+      let ready: (() => void) | undefined;
+      h.workspace.onLayoutReady = vi.fn((cb: () => void) => { ready = cb; });
+      await h.plugin.onload();
+      expect(h.views.size).toBe(4);
+      expect(h.commands).toHaveLength(15);
+      expect(refresh).not.toHaveBeenCalled();
+      ready!();
+      await h.plugin.deferredStartup;
+      expect(refresh).toHaveBeenCalledWith(false, false);
+      h.plugin.onunload();
+    });
+    it("skips deferred work when unloaded before layout ready", async () => {
+      const h = createHarness({});
+      const { refresh } = stubHolidays(h.plugin, {});
+      let ready: (() => void) | undefined;
+      h.workspace.onLayoutReady = vi.fn((cb: () => void) => { ready = cb; });
+      await h.plugin.onload();
+      h.plugin.onunload();
+      ready!();
+      await h.plugin.deferredStartup;
+      expect(refresh).not.toHaveBeenCalled();
     });
   });
 
@@ -692,7 +768,7 @@ describe("TaskWorkbenchPlugin", () => {
 
       expect(refresh).toHaveBeenCalledTimes(1);
 
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
 
       expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
@@ -785,6 +861,7 @@ describe("TaskWorkbenchPlugin", () => {
 
         "undo-last-action",
         "redo-last-action",
+        "convert-note-format-v2",
         "open-ai-chat-tab",
         "open-ai-chat-left",
         "open-ai-chat-right",
@@ -803,6 +880,7 @@ describe("TaskWorkbenchPlugin", () => {
 
         "元に戻す",
         "やり直す",
+        "ノート形式を v2 に変換",
         "AI チャットを開く（タブ）",
         "AI チャットを開く（左サイドバー）",
         "AI チャットを開く（右サイドバー）",
@@ -872,7 +950,7 @@ describe("TaskWorkbenchPlugin", () => {
         .mockResolvedValue({ kind: "success", label: "タスク更新" });
 
       await h.plugin.undoLastAction();
-      expect(undo).toHaveBeenCalledWith(h.fakeApp.vault);
+      expect(undo).toHaveBeenCalledWith(expect.objectContaining({ getFileByPath: expect.any(Function) }));
       expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
       expect(workbenchRender).toHaveBeenCalledTimes(1);
       expect(ganttRender).toHaveBeenCalledTimes(1);
@@ -880,7 +958,7 @@ describe("TaskWorkbenchPlugin", () => {
 
       h.plugin.previewPort.focus(preview.previewId); await h.plugin.redoLastAction();
       expect(h.plugin.previewPort.focusedPreviewId()).toBeNull();
-      expect(redo).toHaveBeenCalledWith(h.fakeApp.vault);
+      expect(redo).toHaveBeenCalledWith(expect.objectContaining({ getFileByPath: expect.any(Function) }));
       expect(workbenchRender).toHaveBeenCalledTimes(2);
       expect(ganttRender).toHaveBeenCalledTimes(2);
       expect(NoticeMock).toHaveBeenLastCalledWith("やり直しました: タスク更新");
@@ -1458,7 +1536,7 @@ describe("TaskWorkbenchPlugin", () => {
   });
 
   describe("happy path scenarios", () => {
-    it("scenario A: startup → auto priority once → ribbon click shows the workbench via navigation", async () => {
+    it("scenario A: startup → ribbon click shows the workbench via navigation", async () => {
       const h = createHarness({});
       const activateView = vi.fn();
       h.plugin.navigation = {
@@ -1472,14 +1550,10 @@ describe("TaskWorkbenchPlugin", () => {
 
       // startup registrations all happened
 
-      expect(h.commands).toHaveLength(14);
+      expect(h.commands).toHaveLength(15);
 
       expect(h.views.size).toBe(4);
       expect(h.ribbons).toHaveLength(2);
-      // auto priority ran once on startup
-      expect(
-        h.savedData.some((d) => d.lastAutoPriorityUpdate === "2026-07-29")
-      ).toBe(true);
 
       // user clicks "Task Workbench を開く"
       h.ribbons[0].callback();
@@ -1497,7 +1571,7 @@ describe("TaskWorkbenchPlugin", () => {
       h.commands[3].callback();
       await flush();
 
-      const path = "tasks/2026/07/2026-07-29 Scenario Task.md";
+      const path = "tasks/2026-07-29 Scenario Task.md";
       expect(h.files.has(path)).toBe(true);
       expect(h.files.get(path)!.content).toContain("type: task");
       expect(NoticeMock).toHaveBeenCalledWith(
@@ -1526,27 +1600,22 @@ describe("TaskWorkbenchPlugin", () => {
       expect(openTaskFinder).toHaveBeenCalledTimes(1);
     });
 
-    it("scenario D: date rollover → restart → auto priority re-runs and records the new date", async () => {
+    it("scenario D: date rollover → restart → auto priority follows the new date without touching notes", async () => {
       vi.setSystemTime(new Date("2026-07-28T10:00:00Z"));
-      const h = createHarness({ lastAutoPriorityUpdate: "2026-07-28" });
-      // an existing managed task from the previous day
-      await createTask(
-        new ObsidianVaultAdapter(h.fakeApp),
-        { ...DEFAULT_SETTINGS },
-        "Day One Task"
-      );
+      const h = createHarness({});
+      const adapter = new ObsidianVaultAdapter(h.fakeApp);
+      const row = await createTask(adapter, { ...DEFAULT_SETTINGS }, "Day One Task");
+      await adapter.modify(adapter.getFileByPath(row.file.path)!, newNoteText(adapter, { ...row, dueDate: "2026-07-30" }));
+      const before = h.files.get(row.file.path)!.content;
 
-      // the next day Obsidian restarts
+      // the next day Obsidian restarts; the due date is now one day away, which changes the shown priority only
       vi.setSystemTime(new Date("2026-07-29T10:00:00Z"));
       await h.plugin.onload();
       await flush();
 
-      // date differs → the run happened and was persisted
-      expect(
-        h.savedData.some((d) => d.lastAutoPriorityUpdate === "2026-07-29")
-      ).toBe(true);
-
-      // The update changes this metadata, so unchanged files are left untouched.
+      const tasks = await loadTasks(adapter, h.plugin.settings, new Map());
+      expect(tasks[0].priority).toBeGreaterThan(0);
+      expect(h.files.get(row.file.path)!.content).toBe(before);
     });
   });
 
@@ -1566,10 +1635,7 @@ describe("TaskWorkbenchPlugin", () => {
       const row = await createTask(adapter, h.plugin.settings, name);
       Object.assign(row, overrides);
       const file = adapter.getFileByPath(row.file.path)!;
-      await adapter.modify(
-        file,
-        buildFullNote(row, row.subtasks ?? new Map())
-      );
+      await adapter.modify(file, newNoteText(adapter, row));
       return row;
     }
 
@@ -1584,11 +1650,8 @@ describe("TaskWorkbenchPlugin", () => {
       const subtask = await addSubtask(adapter, h.plugin.settings, parent, name);
       Object.assign(subtask, overrides);
       parent.subtasks!.set(subtask.key!, subtask);
-      const file = adapter.getFileByPath(parent.file.path)!;
-      await adapter.modify(
-        file,
-        buildFullNote(parent, parent.subtasks!)
-      );
+      const file = adapter.getFileByPath(subtask.file.path)!;
+      await adapter.modify(file, newNoteText(adapter, subtask, parent));
       return subtask;
     }
 

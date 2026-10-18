@@ -467,3 +467,35 @@ export function deepText(root: FakeEl): string {
   }
   return text;
 }
+
+/**
+ * Like `dispatch`, but the event bubbles from `el` up through its ancestors
+ * (until a listener calls stopPropagation) and carries `target`. Needed for
+ * views that use delegated listeners.
+ */
+export function dispatchBubbling(
+  el: FakeEl,
+  type: string,
+  event: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const evt: any = {
+    type,
+    target: el,
+    stopPropagation: () => {
+      evt.__propagationStopped = true;
+    },
+    preventDefault: () => {
+      evt.__defaultPrevented = true;
+    },
+    ...event,
+  };
+  let node: FakeEl | null = el;
+  while (node && !evt.__propagationStopped) {
+    evt.currentTarget = node;
+    for (const cb of node.listeners[type] ?? []) {
+      cb(evt);
+    }
+    node = node.parentNode;
+  }
+  return evt;
+}

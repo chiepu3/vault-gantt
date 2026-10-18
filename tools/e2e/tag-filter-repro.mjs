@@ -21,12 +21,12 @@ fs.writeFileSync(
 );
 
 await generateFixtures({ vaultDir, count: 2 });
-for (const entry of fs.readdirSync(path.join(vaultDir, "tasks", "2026", "08"))) {
-  const file = path.join(vaultDir, "tasks", "2026", "08", entry);
-  const content = fs.readFileSync(file, "utf8")
-    .replace("tags: []\n", 'tags: ["alpha","beta"]\n')
-    .replace("subtask__subtask-1__tags: \n", "subtask__subtask-1__tags: gamma\n");
-  fs.writeFileSync(file, content);
+// v2: parent notes get alpha/beta, subtask notes get gamma.
+const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(path.join(dir, entry.name)) : entry.name.endsWith(".md") ? [path.join(dir, entry.name)] : []);
+for (const file of walk(path.join(vaultDir, "tasks"))) {
+  const content = fs.readFileSync(file, "utf8");
+  const tags = content.includes("type: subtask\n") ? '["gamma"]' : '["alpha","beta"]';
+  fs.writeFileSync(file, content.replace("tags: []\n", `tags: ${tags}\n`));
 }
 
 const runtime = await startObsidian({

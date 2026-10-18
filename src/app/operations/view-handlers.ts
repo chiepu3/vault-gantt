@@ -3,13 +3,14 @@ import { operationInputSchemas, operationOutputSchemas, type OperationInputMap, 
 import type { UiPort } from "../../contracts/ports";
 import type { PreviewEntry } from "../../contracts/preview";
 import type { Logger } from "../../core/logger";
-import type { TaskRow } from "../../core/types";
-import { parseTaskFile, buildFullNote } from "../../core/note-format";
-import { mergeTaskNote } from "../../core/note-update";
+import type { TaskRow, TaskWorkbenchSettings } from "../../core/types";
+import { parseYaml } from "obsidian";
+import { parseNote, readSections, splitFrontmatter } from "../../core/note-v2";
+import { linkTarget } from "../note-vault";
 import { taskEffects } from "../preview-projector";
 import type { HistoryManager } from "../history-manager";
 import type { VaultAdapter } from "../task-operations";
-import { canonical, fail, flatten, handlerInput, type TaskSnapshot } from "./runtime";
+import { canonical, fail, handlerInput, type TaskSnapshot } from "./runtime";
 import { getDailyTodoSourceForPath, extractDateFromDailyPath, parseDailyTodos } from "../daily-todo-service";
 import { dailyItems, checkModeled, type DailyPlan, safeDailyPath } from "./daily-handlers";
 
@@ -29,6 +30,13 @@ export async function diagnosticRequest(input: OperationInputMap["V22"], context
   logger.startRecording(args.name);
   return operationOutputSchemas.V22.parse({ schemaVersion: 1, resultKind: "request", operationId: "V22", status: "applied", effects: [{ kind: "diagnostic", recording: true, entryCount: 0 }] });
 }
+
+function parseNoteText(path: string, text: string | null, settings: TaskWorkbenchSettings) {
+  if (text === null) return null;
+  let fm: Record<string, unknown> | null = null;
+  try { const front = splitFrontmatter(text).front.replace(/^---[ \t]*\r?\n/, "").replace(/\r?\n?---[ \t]*\r?\n?$/, ""); fm = front ? (parseYaml(front) as Record<string, unknown> | null) : null; } catch { fm = null; }
+  return parseNote({ path }, fm, readSections(text), { ...settings, autoPriorityEnabled: false });
+}
 export interface HistoryPlan {
   daily?: DailyPlan;
   direction: "undo" | "redo";
@@ -36,19 +44,23 @@ export interface HistoryPlan {
   label: string;
   entries: Omit<PreviewEntry, "actionId">[];
   afterParents: TaskRow[];
-  writes: { path: string; before: string; after: string }[];
+  writes: { path: string; before: string | null; after: string | null; afterPath?: string; taskId?: string }[];
+  /** The history entry as inspected, in its own before/after orientation. */
+  entryFiles: unknown;
 }
 export async function historyPlan(id: "V20" | "V21", input: OperationInputMap["V20"], snapshot: TaskSnapshot, history: HistoryManager): Promise<HistoryPlan> {
   operationInputSchemas[id].parse(input);
   const direction = id === "V20" ? "undo" : "redo", transition = history.inspectTransition(direction);
   if (transition.busy) fail("POLICY_DENIED", "履歴操作の完了後に再プレビューしてください。");
   if (!transition.entry) fail("NOT_FOUND", "対象のUndo/Redo履歴がありません。");
-  const plan: HistoryPlan = { direction, historyRevision: transition.historyRevision, label: transition.entry.label, entries: [], afterParents: structuredClone(snapshot.parents), writes: [] };
+  if (transition.entry.order) fail("INVALID_INPUT", "並び順の変更を含む履歴はAIから実行できません。画面のUndo/Redoを使用してください。");
+  const plan: HistoryPlan = { direction, historyRevision: transition.historyRevision, label: transition.entry.label, entries: [], afterParents: structuredClone(snapshot.parents), writes: [], entryFiles: transition.entry.files };
   for (const file of transition.entry.files) {
     const before = direction === "undo" ? file.after : file.before, after = direction === "undo" ? file.before : file.after;
-    if (snapshot.contents.get(file.path) !== before) fail("REVISION_CONFLICT", "履歴と現在のファイル内容が一致しません。");
+    const current = direction === "undo" ? file.afterPath ?? file.path : file.path;
+    if ((snapshot.contents.get(current) ?? null) !== before) fail("REVISION_CONFLICT", "履歴と現在のファイル内容が一致しません。");
     const source = getDailyTodoSourceForPath(file.path, snapshot.settings);
-    if (source && !snapshot.parents.some((parent) => parent.id === file.path)) {
+    if (source && before !== null && after !== null && !snapshot.parents.some((parent) => parent.file.path === file.path)) {
       safeDailyPath(file.path); checkModeled(before); checkModeled(after);
       const unmodeled = (content: string) => {
         const todos = new Set(parseDailyTodos(content).map((item) => item.line));
@@ -75,34 +87,30 @@ export async function historyPlan(id: "V20" | "V21", input: OperationInputMap["V
       plan.writes.push({ path: file.path, before, after });
       continue;
     }
-    const old = parseTaskFile({ path: file.path }, before, { ...snapshot.settings, autoPriorityEnabled: false });
-    const next = parseTaskFile({ path: file.path }, after, { ...snapshot.settings, autoPriorityEnabled: false });
-    if (!old || !next) fail("INVALID_INPUT", "履歴のタスクを安全にプレビューできません。");
-    const oldNote = buildFullNote(old, old.subtasks), nextNote = buildFullNote(next, next.subtasks);
-    // Either direction may be the original preserving write (Undo restores its exact bytes).
-    let preserving = false;
-    try {
-      preserving = mergeTaskNote(before, oldNote, nextNote) === after;
-    } catch {
-      // Undo may only be reproducible by the original forward write.
+    const afterTarget = direction === "undo" ? file.path : file.afterPath ?? file.path;
+    const old = parseNoteText(current, before, snapshot.settings), next = parseNoteText(afterTarget, after, snapshot.settings);
+    if ((before !== null && !old) || (after !== null && !next)) fail("INVALID_INPUT", "履歴のタスクを安全にプレビューできません。");
+    const prior = old?.row, row = next?.row;
+    const find = (parents: TaskRow[], note: typeof old) => note ? note.kind === "parent" ? parents.find((parent) => parent.id === note.row.id) : parents.find((parent) => parent.subtasks?.has(note.row.id) || (note.parentLink && parent.file.path.replace(/^.*\//, "").replace(/\.md$/i, "") === linkTarget(note.parentLink))) : undefined;
+    const owner = find(plan.afterParents, next) ?? find(plan.afterParents, old);
+    if (row?.kind === "subtask" && !owner) fail("NOT_FOUND", "履歴の親タスクを再取得してください。");
+    if (row) row.file.path = afterTarget;
+    if (row?.kind === "subtask") { row.parentId = owner!.id; row.file.parentPath = owner!.file.path; }
+    const taskId = (row ?? prior)!.id;
+    const effects = taskEffects(prior, row);
+    if (effects.length) plan.entries.push({ entity: { kind: "task", taskId, ...((row ?? prior)!.kind === "subtask" ? { parentId: owner!.id } : {}) }, displayName: (row ?? prior)!.displayName, effects });
+    if (row?.kind === "parent") {
+      const index = plan.afterParents.findIndex((parent) => parent.id === row.id);
+      const keep = index >= 0 ? plan.afterParents[index].subtasks : new Map();
+      row.subtasks = keep;
+      for (const sub of keep!.values()) sub.file.parentPath = row.file.path;
+      if (index >= 0) plan.afterParents[index] = row; else plan.afterParents.push(row);
+    } else if (prior?.kind === "parent" && !row) {
+      plan.afterParents = plan.afterParents.filter((parent) => parent.id !== prior.id);
+    } else if (owner) {
+      if (row) owner.subtasks!.set(row.id, row); else if (prior) owner.subtasks!.delete(prior.id);
     }
-    if (!preserving) {
-      try {
-        preserving = mergeTaskNote(after, nextNote, oldNote) === before;
-      } catch {
-        // Report either direction's refusal through the operation error contract.
-      }
-    }
-    if (!preserving) fail("INVALID_INPUT", "未モデル化Markdownの変更を含む履歴は安全にプレビューできません。");
-    const oldRows = flatten([old]), newRows = flatten([next]);
-    for (const taskId of new Set([...oldRows, ...newRows].map((row) => row.id))) {
-      const prior = oldRows.find((row) => row.id === taskId), current = newRows.find((row) => row.id === taskId);
-      const effects = taskEffects(prior, current);
-      if (effects.length) plan.entries.push({ entity: { kind: "task", taskId, ...(taskId !== file.path ? { parentId: file.path } : {}) }, displayName: (current ?? prior)!.displayName, effects });
-    }
-    const index = plan.afterParents.findIndex((parent) => parent.id === file.path);
-    if (index < 0) fail("NOT_FOUND", "履歴の親タスクを再取得してください。");
-    plan.afterParents[index] = next; plan.writes.push({ path: file.path, before, after });
+    plan.writes.push({ path: current, before, after, taskId, ...(afterTarget !== current ? { afterPath: afterTarget } : {}) });
   }
   if (plan.daily) {
     const dates = new Set(plan.daily.files.map((file) => file.date));
@@ -118,7 +126,7 @@ export async function historyPlan(id: "V20" | "V21", input: OperationInputMap["V
 export async function executeHistoryPlan(plan: HistoryPlan, history: HistoryManager, vault: Parameters<HistoryManager["undo"]>[0], signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) fail("POLICY_DENIED", "履歴操作を停止しました。");
   const current = history.inspectTransition(plan.direction);
-  if (current.busy || current.historyRevision !== plan.historyRevision || current.entry?.label !== plan.label || canonical(current.entry.files) !== canonical(plan.writes.map((file) => ({ path: file.path, before: plan.direction === "undo" ? file.after : file.before, after: plan.direction === "undo" ? file.before : file.after })))) fail("REVISION_CONFLICT", "履歴先頭が変更されました。再プレビューしてください。");
+  if (current.busy || current.historyRevision !== plan.historyRevision || current.entry?.label !== plan.label || canonical(current.entry.files) !== canonical(plan.entryFiles)) fail("REVISION_CONFLICT", "履歴先頭が変更されました。再プレビューしてください。");
   const result = await history[plan.direction](vault);
   if (result.kind !== "success") fail(result.kind === "empty" ? "NOT_FOUND" : result.kind === "invalidated" ? "PARTIAL" : "REVISION_CONFLICT", `履歴操作結果: ${result.kind}。${result.kind === "invalidated" ? result.reason : "再取得してください。"}`);
 }

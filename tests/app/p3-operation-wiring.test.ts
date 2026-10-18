@@ -4,11 +4,11 @@ import { ViewStateService } from "../../src/app/view-state-service";
 import { catalogTools } from "../../src/agent-tools/catalog-tools";
 import { validatePreviewOutcome } from "../../src/contracts/preview";
 import type { Capability } from "../../src/contracts/context";
-import { buildFullNote, parseTaskFile } from "../../src/core/note-format";
+import { newNoteText } from "../../src/app/task-operations";
 import { todayStr } from "../../src/core/utils";
 import { contentRevision } from "../../src/app/operations/runtime";
 import { runtimeFixture } from "./operation-runtime-fixture";
-import { PARENT_ID } from "../contracts/fixtures";
+import { PARENT_ID, PARENT_PATH } from "../contracts/fixtures";
 
 const capabilities: Capability[] = ["read", "propose", "ui", "external", "diagnostic", "chat-control"];
 describe("P3 merged operation wiring", () => {
@@ -48,37 +48,25 @@ describe("P3 merged operation wiring", () => {
     session.dispose(); f.service.dispose();
   });
 
-  it.each(["T30", "S05"] as const)("%s freezes auto priorities, preserves manual values and saves service-state only after bytes", async (id) => {
+  it.each(["T30", "S05"] as const)("%s only saves the setting and run date; notes are never rewritten", async (id) => {
     const f = await runtimeFixture(); f.settings.autoPriorityEnabled = id === "T30"; f.settings.lastAutoPriorityUpdate = "";
-    const row = f.parent.subtasks!.get("review")!; row.dueDate = todayStr(); row.priority = 0;
-    f.parent.priorityMode = "manual"; f.parent.priority = 2;
-    await f.vault.modify(f.vault.getFileByPath(PARENT_ID)!, buildFullNote(f.parent, f.parent.subtasks)); f.vault.resetCounters();
+    f.vault.resetCounters(); const notes = f.vault.snapshot();
     const preview = await f.service.propose(id, id === "T30" ? { force: true } : { autoPriorityEnabled: true }, f.context);
     expect(preview.entries.some((entry) => entry.effects.some((effect) => effect.kind === "service-state"))).toBe(true);
+    expect(preview.entries.every((entry) => entry.entity.kind !== "task")).toBe(true);
     expect(f.settings.lastAutoPriorityUpdate).toBe(""); expect(f.vault.getModifyCallCount()).toBe(0);
     const outcome = await f.service.humanApprovalPort.approve(preview.previewId); expect(outcome.status).toBe("success"); expect(validatePreviewOutcome(preview, outcome)).toEqual(outcome);
-    const saved = parseTaskFile({ path: PARENT_ID }, f.vault.getFileContent(PARENT_ID)!, { ...f.settings, autoPriorityEnabled: false })!;
-    expect(saved.priority).toBe(2); expect(saved.subtasks!.get("review")!.priority).toBe(5); expect(f.settings.lastAutoPriorityUpdate).toBe(todayStr()); f.service.dispose();
+    expect(f.vault.snapshot()).toEqual(notes); expect(f.vault.getModifyCallCount()).toBe(0); expect(f.settings.lastAutoPriorityUpdate).toBe(todayStr()); f.service.dispose();
   });
 
-  it("failed management persistence reports the saved priority without claiming the run date", async () => {
-    const f = await runtimeFixture(); f.settings.lastAutoPriorityUpdate = ""; const row = f.parent.subtasks!.get("review")!; row.dueDate = todayStr(); row.priority = 0;
-    await f.vault.modify(f.vault.getFileByPath(PARENT_ID)!, buildFullNote(f.parent, f.parent.subtasks));
+  it("failed management persistence does not claim the run date", async () => {
+    const f = await runtimeFixture(); f.settings.lastAutoPriorityUpdate = "";
     const preview = await f.service.propose("T30", { force: true }, f.context);
     f.persistSettings.mockRejectedValueOnce(new Error("disk"));
     const outcome = await f.service.humanApprovalPort.approve(preview.previewId);
-    expect(outcome.status).toBe("partial"); expect(outcome.actualProjection?.after.serviceState?.lastAutoPriorityUpdate).toBe(""); expect(f.settings.lastAutoPriorityUpdate).toBe("");
+    expect(outcome.status).toBe("failed"); expect(f.settings.lastAutoPriorityUpdate).toBe("");
     expect(outcome.actions.find((action) => preview.entries.find((entry) => entry.actionId === action.actionId)?.entity.kind === "integration")?.state).toBe("failed");
     expect(validatePreviewOutcome(preview, outcome)).toEqual(outcome); f.service.dispose();
-  });
-
-  it("a priority file failure leaves both the toggle and management date unsaved", async () => {
-    const f = await runtimeFixture(); f.settings.autoPriorityEnabled = false; f.settings.lastAutoPriorityUpdate = "";
-    f.parent.subtasks!.get("review")!.dueDate = todayStr(); await f.vault.modify(f.vault.getFileByPath(PARENT_ID)!, buildFullNote(f.parent, f.parent.subtasks));
-    const preview = await f.service.propose("S05", { autoPriorityEnabled: true }, f.context);
-    vi.spyOn(f.vault, "modify").mockRejectedValueOnce(new Error("disk"));
-    const outcome = await f.service.humanApprovalPort.approve(preview.previewId);
-    expect(outcome.status).toBe("failed"); expect(outcome.actualProjection).toBeNull(); expect(f.persistSettings).not.toHaveBeenCalled(); expect(f.settings.autoPriorityEnabled).toBe(false); expect(f.settings.lastAutoPriorityUpdate).toBe(""); f.service.dispose();
   });
 
   it("Daily read/query uses real hashes, bound cursors and optional items", async () => {
@@ -112,9 +100,9 @@ describe("P3 merged operation wiring", () => {
   });
   it("history compensation failure publishes only files still matching the approved transition", async () => {
     const f = await runtimeFixture(), other = structuredClone(f.parent);
-    other.id = "tasks/second.md"; other.file.path = other.id; other.subtasks = new Map();
-    await f.vault.create(other.id, buildFullNote(other, other.subtasks));
-    const changed = await f.service.propose("T27", { changes: [{ taskId: PARENT_ID, patch: { displayName: "親変更" } }, { taskId: other.id, patch: { displayName: "別変更" } }] }, f.context);
+    other.id = "t-second"; other.file.path = "tasks/ンの二.md"; other.subtasks = new Map();
+    await f.vault.create(other.file.path, newNoteText(f.vault, other));
+    const changed = await f.service.propose("T27", { changes: [{ taskId: PARENT_ID, patch: { notes: "親変更" } }, { taskId: other.id, patch: { notes: "別変更" } }] }, f.context);
     await f.service.humanApprovalPort.approve(changed.previewId);
     const undo = await f.service.propose("V20", {}, f.context);
     let calls = 0;
@@ -124,7 +112,7 @@ describe("P3 merged operation wiring", () => {
     } });
     const outcome = await f.service.humanApprovalPort.approve(undo.previewId);
     expect(outcome.status).toBe("partial"); expect(outcome.actions.filter((action) => action.state === "committed")).toHaveLength(1); expect(outcome.actualProjection?.targets).toHaveLength(1);
-    expect(f.vault.getFileContent(PARENT_ID)).not.toContain("親変更"); expect(f.vault.getFileContent(other.id)).toContain("別変更"); expect(validatePreviewOutcome(undo, outcome)).toEqual(outcome); f.service.dispose();
+    expect(f.vault.getFileContent(PARENT_PATH)).not.toContain("親変更"); expect(f.vault.getFileContent(other.file.path)).toContain("別変更"); expect(validatePreviewOutcome(undo, outcome)).toEqual(outcome); f.service.dispose();
   });
 
   it("diagnostic receipt reports a new recording retained during approved file creation", async () => {

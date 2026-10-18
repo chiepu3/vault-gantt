@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { build } from "esbuild";
 import { builtinModules } from "node:module";
 import { connectCdp, pollUntil, enablePlugin } from "./obsidian-runtime.mjs";
-import { loadNoteFormatModule } from "./gen-fixtures.mjs";
+import { loadNoteFormatModule, writeTaskNotes } from "./gen-fixtures.mjs";
 
 const mode = process.argv[2];
 if (!["chat", "ghost"].includes(mode)) throw new Error("Specify chat or ghost");
@@ -31,13 +31,13 @@ for (const file of ["styles.css", "manifest.json"]) fs.copyFileSync(path.join(so
 fs.writeFileSync(path.join(vault, ".obsidian/community-plugins.json"), '["vault-gantt"]');
 fs.writeFileSync(path.join(vault, ".obsidian/appearance.json"), JSON.stringify({ theme: "moonstone" }));
 fs.writeFileSync(path.join(pluginDir, "data.json"), JSON.stringify({ taskFolder: "tasks", autoPriorityEnabled: false, ganttSyncEnabled: false, ganttFeatureSyncEnabled: false, ganttFeatureWorkloadEnabled: false, ganttFeatureEventsEnabled: false, ganttFeatureDailyTodoEnabled: false, agentToolsEnabled: false, ganttZoom: 36 }));
-const { buildFullNote } = await loadNoteFormatModule();
+const noteModule = await loadNoteFormatModule();
 const notePath = "tasks/合成デザイン確認.md";
 const common = { statusLabel: "active", completed: false, createdAt: "2026-10-01", updatedAt: "2026-10-01", priority: 0, priorityMode: "manual", currentStatus: "", notes: "", tags: [] };
 const child = { ...common, kind: "subtask", id: notePath + "::design", key: "design", file: { path: notePath, parentPath: notePath, heading: "デザイン確認" }, title: "デザイン確認", displayName: "デザイン確認", ganttEnabled: false, plannedStartDate: "2026-10-01", plannedEndDate: "2026-10-03" };
 const parent = { ...common, kind: "parent", id: notePath, file: { path: notePath }, title: "合成デザイン確認", displayName: "合成デザイン確認", ganttEnabled: true, ganttOrder: 0, subtasks: new Map([["design", child]]) };
 fs.mkdirSync(path.join(vault, "tasks"));
-fs.writeFileSync(path.join(vault, notePath), buildFullNote(parent, parent.subtasks));
+const written = writeTaskNotes(noteModule, vault, parent, parent.subtasks); // v2: parent note + one note per subtask
 fs.writeFileSync(path.join(vault, "合成UIテスト.md"), "# 合成UIテスト\n\n固定FakeProvider / ライブLLM未接続。\n\n新規の合成Vaultと独立プロファイルのみを使用しています。\n");
 const profileConfig = path.join(profile, "obsidian.json");
 fs.writeFileSync(profileConfig, JSON.stringify({ vaults: { a1b2c3d4e5f60718: { path: vault, ts: Date.now(), open: true } } }));
@@ -141,7 +141,7 @@ try {
     const footerOverlap = !!footer && footer.height > 0 && footer.left < composer.right && footer.right > composer.left && footer.top < composer.bottom;
     const old = document.querySelector('.vg-ai-ghost'); const current = document.querySelector('.vg-ai-target');
     const oldRect = old?.getBoundingClientRect(); const currentRect = current?.getBoundingClientRect();
-    const ghost = old ? { oldHeight: oldRect.height, oldBorder: getComputedStyle(old).borderTopStyle, currentHeight: currentRect?.height, laneGap: currentRect ? currentRect.top - oldRect.bottom : null, currentOutline: current ? getComputedStyle(current).outlineStyle : null, oldStartArrow: getComputedStyle(old, '::before').content, oldEndArrow: getComputedStyle(old, '::after').content, currentStartArrow: current ? getComputedStyle(current.querySelector('.task-gantt-resize-start'), '::after').content : null, currentEndArrow: current ? getComputedStyle(current.querySelector('.task-gantt-resize-end'), '::after').content : null, legend: document.querySelector('.vg-ai-legend')?.textContent, label: document.querySelector('.vg-ai-target-label')?.textContent, oldLeft: old.style.left, currentLeft: current?.style.left, rowHeight: old.parentElement.style.height } : null;
+    const ghost = old ? { oldHeight: oldRect.height, oldBorder: getComputedStyle(old).borderTopStyle, currentHeight: currentRect?.height, laneGap: currentRect ? currentRect.top - oldRect.bottom : null, currentOutline: current ? getComputedStyle(current).outlineStyle : null, oldStartArrow: getComputedStyle(old, '::before').content, oldEndArrow: getComputedStyle(old, '::after').content, currentStartArrow: current ? getComputedStyle(current, '::before').content : null, currentEndArrow: current ? getComputedStyle(current, '::after').content : null, legend: document.querySelector('.vg-ai-legend')?.textContent, label: document.querySelector('.vg-ai-target-label')?.textContent, oldLeft: old.style.left, currentLeft: current?.style.left, rowHeight: old.parentElement.style.height } : null;
     return { vault: app.vault.adapter.getBasePath(), width: r.width, headerHeight: root.querySelector('.vg-ai-header').getBoundingClientRect().height, composerBottomGap: r.bottom - composer.bottom, footerOverlap, theme: document.body.classList.contains('theme-dark') ? 'dark' : 'light', modelTag: model?.tagName, modelVisible: !!model && model.getBoundingClientRect().height > 0, model: model?.dataset.model, modelWidth: model?.getBoundingClientRect().width, modelTruncated: root.querySelector('.vg-ai-model-label').scrollWidth > root.querySelector('.vg-ai-model-label').clientWidth, nativeComposerSelects: root.querySelectorAll('.vg-ai-composer select').length, grid: { headerLeft: header.left, userLeft: user.left, composerLeft: composer.left, headerWidth: header.width, userWidth: user.width, composerWidth: composer.width }, controls, undoDisabled: undo?.disabled, resultTimelineRows: root.querySelectorAll('.vg-ai-mini-row').length, resultStatusCount: root.querySelectorAll('.vg-ai-result-status').length, modal: !!document.querySelector('.modal-container'), overflow: root.scrollWidth > root.clientWidth, ghost, text: root.innerText };
   })()`);
   await cdp.evaluate("document.activeElement?.blur()");
