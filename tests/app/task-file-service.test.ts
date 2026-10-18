@@ -197,12 +197,12 @@ describe("TaskFileService", () => {
       expect(subtask).toBeNull();
     });
 
-    it("opens the parent file after creation and invokes onCreated", async () => {
+    it("opens the new subtask note after creation and invokes onCreated", async () => {
       const parent = await createTask(vault, settings, "Open Parent");
       const prompt = scriptedPrompt(["Sub Opens Parent"]);
       const onCreated = vi.fn();
 
-      await service.addSubtaskInteractively(
+      const created = await service.addSubtaskInteractively(
         app,
         vault,
         settings,
@@ -214,7 +214,8 @@ describe("TaskFileService", () => {
       expect(getLeaf).toHaveBeenCalledWith(true);
       expect(openFile).toHaveBeenCalledTimes(1);
       const opened = openFile.mock.calls[0][0] as TFile;
-      expect(opened.path).toBe(parent.file.path);
+      expect(opened.path).toBe(created!.file.path);
+      expect(opened.path).not.toBe(parent.file.path);
       expect(onCreated).toHaveBeenCalledTimes(1);
       expect(onCreated.mock.calls[0][0].displayName).toBe(
         "Sub Opens Parent"

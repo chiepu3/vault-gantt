@@ -97,7 +97,7 @@ export class TaskFileService {
 
     const subtask = create ? await create(name, parentRow) : await addSubtask(vault, settings, parentRow, name);
     new Notice(`サブタスクを追加しました: ${subtask.displayName}`);
-    await this.openInEditor(app, parentRow.file.path);
+    await this.openInEditor(app, subtask.file.path);
 
     if (onCreated) {
       onCreated(subtask);
