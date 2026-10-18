@@ -27,7 +27,7 @@ describe("actual SDK tool recovery", () => {
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const request = JSON.parse(init!.body as string);
       if (++round === 1) return response({ name: "operations_propose", input: JSON.stringify({ operationId: "T07", input: { taskId: CHILD_ID, name: 123 } }) });
-      if (round === 3) { expect(request.tools).toBeUndefined(); return response(undefined, "名前を更新する案を作りました。カードで承認すると保存されます。"); }
+      if (round === 3) { expect(request.tools).toBeDefined(); return response(undefined, "名前を更新する案を作りました。カードで承認すると保存されます。"); }
       const assistant = request.messages.find((message: { tool_calls?: unknown }) => message.tool_calls);
       expect(assistant.content).toBeNull(); expect(assistant.reasoning_content).toBe("reasoning fixture");
       expect(assistant.tool_calls[0].id).toBe("call-fixture");
@@ -38,7 +38,7 @@ describe("actual SDK tool recovery", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const events = await collect(new SdkChatProvider(f.registry, () => null, f.service));
-    // The extra step after the proposal has no tools and explains the change in the model's own words.
+    // The step after the proposal may propose more; answering with text ends the turn and explains the change.
     expect(fetchMock).toHaveBeenCalledTimes(3); expect(events.filter((event) => event.type === "plan")).toHaveLength(1);
     expect(events.filter((event) => event.type === "text").map((event) => event.text).join("")).toBe("名前を更新する案を作りました。カードで承認すると保存されます。");
     expect(events.at(-1)).toMatchObject({ type: "completion", completion: { kind: "proposal-created", toolErrors: 1 } });
@@ -57,6 +57,18 @@ describe("actual SDK tool recovery", () => {
     expect(events.filter((event) => event.type === "plan")).toHaveLength(0);
     expect(events.at(-1)).toMatchObject({ type: "completion", completion: { kind: "tool-refused", proposalIds: [] } });
     expect(f.vault.getModifyCallCount()).toBe(0); f.service.dispose();
+  });
+  it("lets a model that proposes one change per step propose the others too, and ends at the limit with a tool-less explanation", async () => {
+    const f = await runtimeFixture(); let round = 0;
+    // eslint-disable-next-line no-undef
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const request = JSON.parse(init!.body as string);
+      if (++round <= 6) return response({ name: "operations_propose", input: JSON.stringify({ operationId: "T07", input: { taskId: CHILD_ID, name: "案" + round } }) });
+      expect(request.tools).toBeUndefined(); return response(undefined, "6件の案を作りました。");
+    }));
+    const events = await collect(new SdkChatProvider(f.registry, () => null, f.service));
+    expect(round).toBe(7); expect(events.filter((event) => event.type === "plan")).toHaveLength(6);
+    expect(events.at(-1)).toMatchObject({ type: "completion", completion: { kind: "proposal-created" } }); f.service.dispose();
   });
   it("returns a distinct step-limit ending after six nonproductive calls", async () => {
     const f = await runtimeFixture(); vi.stubGlobal("fetch", vi.fn(async () => response({ name: "operations_describe", input: "{}" })));
