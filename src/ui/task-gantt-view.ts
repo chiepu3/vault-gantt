@@ -483,6 +483,9 @@ export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
  */
   activateView(): Promise<void>;
 
+  /** Opens the AI chat where the settings say (right sidebar by default). */
+  openAIChat?(): Promise<void>;
+
 
 
 
@@ -2191,6 +2194,15 @@ export class TaskGanttView extends ItemView {
       void this.host.activateView();
     });
     this.toolbarEl.appendChild(workbenchButton);
+
+    if (this.host.openAIChat) {
+      const aiButton = document.createElement("button");
+      aiButton.classList.add("task-gantt-ai");
+      aiButton.textContent = "AI";
+      aiButton.title = "AIチャットを開く";
+      aiButton.addEventListener("click", () => { void this.host.openAIChat?.(); });
+      this.toolbarEl.appendChild(aiButton);
+    }
 
     // 「今日へ」 — extends the range to include
     // today, re-renders, then (next frame, so the fresh content has layout)
