@@ -75,6 +75,7 @@ import { HistoryManager } from "./app/history-manager";
 import { OperationRegistry } from "./app/operation-registry";
 import { ScheduleGhostStore } from "./app/schedule-ghost";
 import { ChatSession } from "./ai/chat-session";
+import { CHAT_HISTORY_FILE, restoreChatHistory, serializeChatHistory } from "./ai/chat-history";
 import { SdkChatProvider } from "./ai/sdk-provider";
 import { aiKeyOriginError, aiSecretId, connectionOrigin, defaultAiStore, listModels, newAiProfileId, normalizeAiProfile, normalizeAiSettings, normalizeAiStore, toConnectionConfig, uniqueStrings, type AiProfile, type AiSettingsPatch, type AiStore, type ModelListResult } from "./ai/connection-settings";
 import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
@@ -731,6 +732,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === aiSecretId(this.aiSettings.id) ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
+    await this.restoreChatHistory();
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,
       previewPorts: this.previewUiPorts("chat"),
@@ -905,8 +907,35 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  private chatHistoryPath(): string { return `${this.app.vault.configDir}/${CHAT_HISTORY_FILE}`; }
+  private chatHistoryTimer?: ReturnType<typeof setTimeout>;
+  private chatHistoryWrite: Promise<void> = Promise.resolve();
+  /** Conversations live in the vault config folder, not in the plugin folder, so updates and restarts keep them. */
+  private async restoreChatHistory(): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter, path = this.chatHistoryPath();
+      if (await adapter.exists(path)) {
+        const { conversations, activeId } = restoreChatHistory(JSON.parse(await adapter.read(path)));
+        this.chatSession.restore(conversations, activeId);
+      }
+    } catch { /* A missing or corrupt history starts empty; it is rewritten on the next change. */ }
+    this.chatSession.subscribe(() => {
+      if (this.unloading) return;
+      clearTimeout(this.chatHistoryTimer);
+      this.chatHistoryTimer = setTimeout(() => this.saveChatHistory(), 1000);
+    });
+  }
+  private saveChatHistory(): void {
+    clearTimeout(this.chatHistoryTimer);
+    const session = this.chatSession;
+    if (!session) return;
+    const body = JSON.stringify(serializeChatHistory(session.conversations, session.active?.id));
+    this.chatHistoryWrite = this.chatHistoryWrite.then(() => this.app.vault.adapter.write(this.chatHistoryPath(), body)).catch(() => undefined);
+  }
+
   onunload(): void {
     this.unloading = true;
+    this.saveChatHistory();
     void this.queueMcp(async () => { await this.mcpServer?.stop(); this.mcpServer = undefined; }).catch(() => { /* Shutdown still releases the listener. */ });
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_APPROVAL);
     this.chatSession?.dispose();

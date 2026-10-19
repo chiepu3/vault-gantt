@@ -121,6 +121,15 @@ export class ChatSession {
     }
     this.emit();
   }
+  /** Replaces the initial empty conversation with saved ones; the saved active one (or a fresh one) becomes active. */
+  restore(saved: readonly Conversation[], activeId?: string): void {
+    if (!saved.length || this.conversations.some((conversation) => conversation.messages.length)) return;
+    for (const conversation of saved) for (const message of conversation.messages) settleParts(message);
+    this.conversations.splice(0, this.conversations.length, ...saved);
+    this.counter = Math.max(this.counter, ...saved.map((conversation) => Number(conversation.id) || 0));
+    const active = saved.find((conversation) => conversation.id === activeId);
+    if (active) { this.active = active; this.emit(); } else this.newConversation();
+  }
   get connected(): boolean { return !this.config.connectionError && this.provider.connected(this.config); }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private emit(): void { for (const listener of this.listeners) listener(); }
