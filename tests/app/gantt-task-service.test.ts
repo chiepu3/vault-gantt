@@ -71,22 +71,24 @@ describe("addGanttEvent", () => {
     expect(settings.ganttEvents).toEqual([created]);
   });
 
-  it("base key is event-${Date.now()} when there is no collision", () => {
+  it("base key is event-<millisecond stamp> when there is no collision", () => {
     const settings = makeSettings({ ganttEvents: [] });
     const created = addGanttEvent(settings, "会議", "2026-09-02");
-    expect(created.key).toBe(`event-${Date.now()}`);
+    expect(created.key).toMatch(/^event-\d+$/);
+    expect(Number(created.key.slice(6))).toBeGreaterThanOrEqual(Date.now());
   });
 
-  it("appends a random suffix on key collision via a while loop", () => {
-    const settings = makeSettings({
-      ganttEvents: [{ key: `event-${Date.now()}`, title: "既存", date: "2026-09-01" }],
-    });
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5); // -> 500
-    const created = addGanttEvent(settings, "新規", "2026-09-03");
+  it("never hands out the same key twice, even for settings copies that do not know each other (same millisecond)", () => {
+    const keys = [0, 1, 2].map((i) => addGanttEvent(makeSettings({ ganttEvents: [] }), "会議" + i, "2026-09-02").key);
+    expect(new Set(keys).size).toBe(3);
+  });
 
-    expect(created.key).toBe(`event-${Date.now()}-500`);
-    expect(settings.ganttEvents).toHaveLength(2);
-    randomSpy.mockRestore();
+  it("skips a key that already exists in the settings", () => {
+    const taken = addGanttEvent(makeSettings({ ganttEvents: [] }), "既存", "2026-09-01").key;
+    const settings = makeSettings({ ganttEvents: [{ key: `event-${Number(taken.slice(6)) + 1}`, title: "既存", date: "2026-09-01" }] });
+    const created = addGanttEvent(settings, "新規", "2026-09-03");
+    expect(settings.ganttEvents.map((event) => event.key)).toContain(created.key);
+    expect(new Set(settings.ganttEvents.map((event) => event.key)).size).toBe(2);
   });
 
   it("empty title is replaced with 「新しいタスク」", () => {

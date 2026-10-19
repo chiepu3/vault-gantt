@@ -148,6 +148,8 @@ describe("results", () => {
     const card = render(CREATE_PREVIEW, { outcome, handlers: { onRepreview: vi.fn() } });
     expect(text(byClass(card, "vg-pv-status")[0])).toBe("失敗"); expect(button(card, "undo")).toBeUndefined(); expect(text(button(card, "repreview"))).toBe("再プレビュー");
     expect(text(card)).not.toContain("Ganttの表示に影響しません");
+    const used = render(CREATE_PREVIEW, { outcome, superseded: true, handlers: { onRepreview: vi.fn() } });
+    expect(button(used, "repreview")).toBeUndefined(); expect(text(used)).toContain("再プレビュー済みです");
   });
 });
 

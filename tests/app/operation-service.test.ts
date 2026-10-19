@@ -68,6 +68,40 @@ describe("frozen catalog operation runtime", () => {
       expect(outcome.status).toBe("stale"); expect(outcome.actions.every((action) => action.state === "not-attempted")).toBe(true); expect(vault.getModifyCallCount()).toBe(0); vi.useRealTimers();
     }
   });
+  it("several E01 previews on the same date stay applicable one after another under their own ids", async () => {
+    const { service, context, settings } = await runtimeFixture();
+    const first = await service.propose("E01", operationInputSchemas.E01.parse({ title: "会議A", date: "2026-10-14" }), context);
+    const second = await service.propose("E01", operationInputSchemas.E01.parse({ title: "会議B", date: "2026-10-14" }), context);
+    expect(first.previewId).not.toBe(second.previewId);
+    const a = first.entries[0].entity, b = second.entries[0].entity;
+    expect(a.kind === "event" && b.kind === "event" && a.eventKey !== b.eventKey).toBe(true);
+    expect((await service.humanApprovalPort.approve(first.previewId)).status).toBe("success");
+    await service.invalidatePreviews();
+    expect(service.previewPort.inspect(second.previewId)!.status).toBe("pending");
+    const outcome = await service.humanApprovalPort.approve(second.previewId);
+    expect(outcome.status).toBe("success"); expect(service.previewPort.inspect(second.previewId)!.status).toBe("success");
+    const added = settings.ganttEvents.filter((event) => ["会議A", "会議B"].includes(event.title));
+    expect(added).toHaveLength(2); expect(new Set(settings.ganttEvents.map((event) => event.key)).size).toBe(settings.ganttEvents.length);
+  });
+  it("a preview rebases when its sibling was applied before it is even looked at again", async () => {
+    const { service, context, settings } = await runtimeFixture();
+    const first = await service.propose("E01", operationInputSchemas.E01.parse({ title: "会議A", date: "2026-10-14" }), context);
+    const second = await service.propose("E01", operationInputSchemas.E01.parse({ title: "会議B", date: "2026-10-14" }), context);
+    await service.humanApprovalPort.approve(first.previewId);
+    expect((await service.humanApprovalPort.approve(second.previewId)).status).toBe("success");
+    expect(settings.ganttEvents.map((event) => event.title)).toEqual(expect.arrayContaining(["会議A", "会議B"]));
+  });
+  it("a sibling that changes the same thing still makes the preview stale", async () => {
+    for (const invalidateFirst of [true, false]) {
+      const { service, context, settings } = await runtimeFixture();
+      const first = await service.propose("E02", { eventKey: "event-1", title: "改名A" }, context);
+      const second = await service.propose("E02", { eventKey: "event-1", title: "改名B" }, context);
+      await service.humanApprovalPort.approve(first.previewId);
+      if (invalidateFirst) { await service.invalidatePreviews(); expect(service.previewPort.inspect(second.previewId)!.status).toBe("stale"); }
+      else expect((await service.humanApprovalPort.approve(second.previewId)).status).toBe("stale");
+      expect(settings.ganttEvents[0].title).toBe("改名A");
+    }
+  });
   it("an edit made between preflight and write is never overwritten", async () => {
     for (const injectAt of [1, 2, 3, 4]) {
       const { service, context, vault } = await runtimeFixture();
@@ -209,6 +243,10 @@ describe("operation meaning and lifecycle boundaries", () => {
     await vault.modify(file, newNoteText(vault, child, parent));
     await service.invalidatePreviews(); expect(service.previewPort.inspect(preview.previewId)!.status).toBe("stale"); expect(service.previewPort.focusedPreviewId()).toBeNull(); expect(listener).toHaveBeenCalled();
     const fresh = await service.request("Q08", { previewId: preview.previewId }, context); expect(fresh.previewId).not.toBe(preview.previewId); expect(fresh.origin).toEqual(context.origin);
+    // The stale card is used up: a second re-preview from it creates nothing new.
+    expect(service.previewPort.supersededBy(preview.previewId)).toBe(fresh.previewId);
+    const count = service.previewPort.list().length;
+    await expect(service.request("Q08", { previewId: preview.previewId }, context)).rejects.toThrow(); expect(service.previewPort.list()).toHaveLength(count);
   });
   it("retains at most 50 pending plans and unload prevents saving queued work", async () => {
     const { service, context, vault } = await runtimeFixture();

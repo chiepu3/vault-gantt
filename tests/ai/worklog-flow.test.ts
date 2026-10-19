@@ -26,7 +26,8 @@ describe("daily work log through the real provider loop", () => {
         expect(result.results[0].subtasks[0].subtaskId).toBe(CHILD_ID);
         return response({ name: "worklog_propose", input: { date: "2026-10-13", entries: [{ subtaskId: CHILD_ID, hours: 3 }, { parentId: PARENT_ID, newSubtaskName: "不具合修正", hours: 1.5 }, { eventTitle: "部長の呼び出し", hours: 0.5 }] } });
       }
-      expect(request.tools).toBeUndefined();
+      // After a proposal the tools stay available for the request's other changes; the model ends the turn by explaining.
+      expect(request.tools).toBeDefined(); expect(JSON.stringify(request.messages[0])).toContain("続けてそれぞれの変更案");
       return response(undefined, "3件の実績を登録する案を作りました。カードで承認すると保存されます。");
     });
     vi.stubGlobal("fetch", fetchMock);

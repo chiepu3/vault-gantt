@@ -369,7 +369,7 @@ export class AgentView extends ItemView {
   }
   private activityPartItem(key: string, part: Extract<ChatPart, { type: "reasoning" | "tool" }>): SyncItem {
     return part.type === "reasoning"
-      ? { key, sig: part.state + part.text, build: () => this.reasoningRow(key, part) }
+      ? { key, sig: part.state, build: () => this.reasoningRow(key, part), update: (el) => this.updateReasoningText(el, part.text) }
       : { key, sig: [part.state, part.input !== undefined, part.output !== undefined, part.error ?? ""].join("|"), build: () => this.toolRow(key, part) };
   }
   /** One foldable row for a run of thinking and tool calls, open while something in it is still going. */
@@ -388,7 +388,16 @@ export class AgentView extends ItemView {
       const body = this.element(details, "div"); body.className = "vg-ai-activity-body";
       for (const child of children) body.appendChild(child.build());
       return details;
-    } };
+    }, update: (el) => { const body = this.childByClass(el, "vg-ai-activity-body"); if (body) children.forEach((child, i) => { const row = body.children[i] as HTMLElement | undefined; if (row) child.update?.(row); }); } };
+  }
+  private childByClass(parent: HTMLElement, className: string): HTMLElement | undefined { return (Array.from(parent.children) as HTMLElement[]).find((child) => child.className === className); }
+  /** Streams new reasoning text into the existing body, so the spinner and the reader's scroll position survive; follows the bottom only if the reader was already there. */
+  private updateReasoningText(details: HTMLElement, text: string): void {
+    const body = this.childByClass(details, "vg-ai-reasoning-body");
+    if (!body || body.textContent === text) return;
+    const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+    body.textContent = text;
+    if (follow) body.scrollTop = body.scrollHeight;
   }
   private statusMark(parent: HTMLElement, state: "running" | "done" | "error"): void {
     const mark = this.element(parent, "span"); mark.className = "vg-ai-mark is-" + state; mark.setAttribute("aria-hidden", "true");
@@ -410,7 +419,6 @@ export class AgentView extends ItemView {
     this.statusMark(summary, streaming ? "running" : "done");
     this.element(summary, "span").textContent = streaming ? "考え中…" : "考えた内容";
     const body = this.element(details, "div"); body.className = "vg-ai-reasoning-body"; body.textContent = part.text;
-    if (streaming) body.scrollTop = body.scrollHeight;
     return details;
   }
   private toolRow(key: string, part: Extract<ChatPart, { type: "tool" }>): HTMLElement {

@@ -44,6 +44,15 @@ const rowOf = (parents: readonly TaskRow[], taskId: string): TaskRow => flatten(
 /** What a note keeps of a row; marker keys are derived when reading, so they do not take part. */
 const stateOf = (row: TaskRow): string => canonical({ ...taskPublicState(row), ganttOrder: null, priority: row.priorityMode === "manual" ? row.priority : null, ganttMarkers: (row.ganttMarkers ?? []).map((marker) => ({ title: marker.title, date: marker.date, tags: marker.tags ?? [] })) });
 interface StoredPlan { copyFrom?: string; preview: OperationPreviewV1; input: unknown; context: RequestContext; snapshot: TaskSnapshot; afterParents: TaskRow[]; afterSettings: TaskWorkbenchSettings; writes: WriteUnit[]; settingKeys: (keyof TaskWorkbenchSettings)[]; changes: TaskChange[]; noopActions: string[]; daily?: DailyPlan; history?: HistoryPlan; diagnostic?: DiagnosticPlan; integration?: IntegrationPlan }
+/** Entries compared by meaning: generated identifiers (new event keys, task ids, paths, revisions) and action ids are ignored. */
+const GENERATED_KEYS = new Set(["key", "id", "taskId", "eventKey", "scheduleKey", "path", "revision", "actionId", "createdAt", "updatedAt"]);
+const equivalentEntries = (a: OperationPreviewV1, b: OperationPreviewV1): boolean => {
+  const norm = (preview: OperationPreviewV1) => canonical(preview.entries.map((entry) => {
+    const creates = entry.effects.some((effect) => effect.kind === "presence" && (effect.action === "create" || effect.action === "duplicate"));
+    return JSON.parse(JSON.stringify(entry, (key, value) => key === "actionId" || (creates && GENERATED_KEYS.has(key)) ? undefined : value));
+  }));
+  return norm(a) === norm(b);
+};
 export interface OperationServiceHost {
   readonly settings: TaskWorkbenchSettings;
   readonly historyManager: HistoryManager;
@@ -85,7 +94,28 @@ export class OperationService implements OperationServicePort {
   async invalidatePreviews(): Promise<void> {
     if (this.disposed || !this.pending.size) return;
     const snapshot = await this.contextPort.snapshot();
-    for (const [id, plan] of this.pending) if (plan.snapshot.revision !== snapshot.revision) { this.pending.delete(id); this.previewPort.setStatus(id, "stale"); }
+    for (const [id, plan] of [...this.pending]) {
+      if (plan.snapshot.revision === snapshot.revision) continue;
+      const next = await this.rebase(id, plan, snapshot);
+      if (this.pending.get(id) !== plan) continue;
+      if (next) { this.pending.set(id, next); this.stored.set(id, next); this.previewPort.replace(id, next.preview); }
+      else { this.pending.delete(id); this.previewPort.setStatus(id, "stale"); }
+    }
+  }
+  /** Re-plans a preview against newer data (e.g. after a sibling proposal was applied); undefined when its effects would differ, i.e. it genuinely conflicts. Keeps the previewId. */
+  private async rebase(id: string, plan: StoredPlan, fresh: TaskSnapshot): Promise<StoredPlan | undefined> {
+    if (this.disposed || todayStr() !== plan.snapshot.today || (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC") !== plan.snapshot.timezone) return undefined;
+    // Settings the plan does not write (calendar, tags, ...) changing underneath is not something to merge silently; the parent order follows other plans.
+    const own = new Set<string>([...plan.settingKeys, "ganttParentOrder"]);
+    if ((Object.keys(fresh.settings) as (keyof TaskWorkbenchSettings)[]).some((key) => !own.has(key) && canonical(fresh.settings[key]) !== canonical(plan.snapshot.settings[key]))) return undefined;
+    // A note this plan writes must still be exactly what it was planned against (an edit to it is never merged blindly).
+    if (plan.writes.some((write) => write.before === null ? fresh.contents.has(write.path) : fresh.contents.get(write.path) !== write.before)) return undefined;
+    const { expectedRevision: _revision, ...input } = structuredClone(plan.input) as Record<string, unknown>; void _revision;
+    if (Array.isArray(input.changes)) input.changes = (input.changes as Record<string, unknown>[]).map(({ expectedRevision: _expected, ...change }) => { void _expected; return change; });
+    try {
+      const next = await this.planProposal(plan.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], plan.context, plan.copyFrom, id);
+      return equivalentEntries(plan.preview, next.preview) ? { ...next, input: plan.input } : undefined;
+    } catch { return undefined; }
   }
   clearSavedProjection(): void {
     this.projectionChangeGeneration++;
@@ -176,11 +206,22 @@ export class OperationService implements OperationServicePort {
         return preview;
       }
     }
+    const previewId = `preview-${this.vaultInstanceId}-${++this.counter}`;
+    const stored = await this.planProposal(id, parsed, context, copyFrom, previewId);
+    const preview = stored.preview;
+    while (this.pending.size >= 50) { const oldest = this.pending.keys().next().value!; this.pending.delete(oldest); this.previewPort.setStatus(oldest, "expired"); }
+    this.pending.set(previewId, stored); this.stored.set(previewId, stored);
+    while (this.stored.size > 100) this.stored.delete(this.stored.keys().next().value!);
+    if (intentKey) { this.intents.set(intentKey, { binding, previewId }); while (this.intents.size > 100) this.intents.delete(this.intents.keys().next().value!); }
+    this.previewPort.put(preview);
+    return structuredClone(preview);
+  }
+  /** Plans `id` against the current snapshot without registering anything; the caller decides what to do with the result. */
+  private async planProposal<K extends WriteOperationId>(id: K, parsed: OperationInputMap[K], context: RequestContext, copyFrom: string | undefined, previewId: string): Promise<StoredPlan> {
     const snapshot = await this.contextPort.snapshot();
     const parseSettings = { ...snapshot.settings, autoPriorityEnabled: false };
     let afterParents = structuredClone(snapshot.parents);
     let afterSettings = structuredClone(snapshot.settings);
-    const previewId = `preview-${this.vaultInstanceId}-${++this.counter}`;
     let entries: PreviewEntry[] = [], changes: TaskChange[] = [], settingKeys: (keyof TaskWorkbenchSettings)[] = [];
     const warnings: OperationPreviewV1["warnings"][number][] = [];
     const vault = this.vaultFactory();
@@ -300,13 +341,8 @@ export class OperationService implements OperationServicePort {
       projection: daily ? await dailyProjection(daily, snapshot, entries, afterParents) : project(snapshot, afterParents, afterSettings, entries) });
     if (this.disposed || context.signal?.aborted) fail("POLICY_DENIED", "停止した要求の計画は破棄しました。");
     if (new TextEncoder().encode(JSON.stringify(preview)).length > 12 * 1024 * 1024) fail("INVALID_INPUT", "提案が12MiBを超えます。対象を分けて再提案してください。");
-    while (this.pending.size >= 50) { const oldest = this.pending.keys().next().value!; this.pending.delete(oldest); this.previewPort.setStatus(oldest, "expired"); }
     const stored: StoredPlan = { copyFrom, preview, input: structuredClone(parsed), context: { ...context, origin: structuredClone(context.origin), capabilities: [...context.capabilities], signal: undefined }, snapshot, afterParents, afterSettings, writes, settingKeys, changes, noopActions, daily, history: historyPlanData, diagnostic, integration };
-    this.pending.set(previewId, stored); this.stored.set(previewId, stored);
-    while (this.stored.size > 100) this.stored.delete(this.stored.keys().next().value!);
-    if (intentKey) { this.intents.set(intentKey, { binding, previewId }); while (this.intents.size > 100) this.intents.delete(this.intents.keys().next().value!); }
-    this.previewPort.put(preview);
-    return structuredClone(preview);
+    return stored;
   }
   inspect(previewId: string, context: RequestContext): OperationPreviewV1 {
     const stored = this.stored.get(previewId);
@@ -337,6 +373,7 @@ export class OperationService implements OperationServicePort {
   }
   private async repreview(id: string): Promise<OperationPreviewV1> {
     const stored = this.stored.get(id); if (!stored) fail("NOT_FOUND", "対象を再取得して新しく提案してください。");
+    const newer = this.previewPort.supersededBy(id); if (newer) fail("PLAN_CONSUMED", `再プレビュー済みです。新しい提案 ${newer} を使ってください。`);
     const outcome = this.previewPort.inspectOutcome(id);
     if (outcome?.actions.some((action) => action.state === "committed") && !["T27", "T28"].includes(stored.preview.operationId)) fail("POLICY_DENIED", "保存済みがあるため、未保存対象を指定した新規提案を作成してください。");
     let input = structuredClone(stored.input) as Record<string, unknown>;
@@ -346,12 +383,13 @@ export class OperationService implements OperationServicePort {
       input.changes = (input.changes as Record<string, unknown>[]).filter((change) => !committed.has(String(change.taskId))).map(({ expectedRevision: _expected, ...change }) => { void _expected; return change; });
     }
     const preview = await this.proposeBound(stored.preview.operationId as WriteOperationId, input as OperationInputMap[WriteOperationId], { ...stored.context, callerIntentId: undefined, requestId: `repreview-${++this.counter}` }, stored.copyFrom);
-    this.discard(id); return preview;
+    this.discard(id); this.previewPort.markSuperseded(id, preview.previewId); return preview;
   }
   private executeApproved(id: string, signal?: AbortSignal): Promise<OperationOutcomeV1> {
     signal = signal ? AbortSignal.any([signal, this.lifecycle.signal]) : this.lifecycle.signal;
-    const stored = this.pending.get(id);
-    if (!stored) return Promise.reject(new Error("PLAN_CONSUMED"));
+    const approved = this.pending.get(id);
+    if (!approved) return Promise.reject(new Error("PLAN_CONSUMED"));
+    let stored: StoredPlan = approved;
     const projectionGeneration = this.projectionChangeGeneration;
     if (Date.parse(stored.preview.expiresAt) > Date.now()) this.previewPort.markApproved(id);
     else this.previewPort.setStatus(id, "expired");
@@ -365,7 +403,12 @@ export class OperationService implements OperationServicePort {
         if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
         if (Date.parse(stored.preview.expiresAt) <= Date.now()) throw new Error("PLAN_EXPIRED");
         const fresh = await this.contextPort.snapshot();
-        if (fresh.revision !== stored.snapshot.revision) throw new Error("REVISION_CONFLICT");
+        if (fresh.revision !== stored.snapshot.revision) {
+          // A sibling proposal may have been applied meanwhile: keep this one if it still means the same thing.
+          const next = await this.rebase(id, stored, fresh);
+          if (!next) throw new Error("REVISION_CONFLICT");
+          stored = next; this.stored.set(id, next); this.previewPort.replace(id, next.preview);
+        }
         // The snapshot's settings revision already covers the stored settings plus the completed parent order, so a
         // plain re-hash of the live settings is not comparable (the order may not be persisted yet). It is kept only
         // to detect a settings change while this approval is being applied.

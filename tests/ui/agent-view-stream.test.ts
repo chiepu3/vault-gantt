@@ -123,6 +123,17 @@ describe("AgentView streams ordered parts", () => {
     expect(details().open).toBe(true);
     await view.onClose(); session.dispose();
   });
+  it("streams reasoning text into the same element instead of rebuilding it", async () => {
+    const { view, session, root } = await open();
+    const part = { type: "reasoning" as const, id: "0:r", text: "考え", state: "streaming" as const };
+    session.active.messages = [user("質問"), assistant([part, { type: "tool", id: "c", name: "tasks_search", state: "running" }])]; session.active.status = "running"; view.render();
+    const rows = () => findAll(root, (el) => el.classList.contains("vg-ai-reasoning"));
+    const before = rows()[0]; const mark = findAll(before, (el) => el.classList.contains("vg-ai-mark"))[0];
+    part.text = "考えている途中"; view.render();
+    expect(rows()[0]).toBe(before); expect(findAll(before, (el) => el.classList.contains("vg-ai-mark"))[0]).toBe(mark);
+    expect(deepText(findAll(before, (el) => el.classList.contains("vg-ai-reasoning-body"))[0])).toBe("考えている途中");
+    await view.onClose(); session.dispose();
+  });
   it("truncates long tool output behind もっと見る", async () => {
     const { view, session, root } = await open();
     const output = { text: "あ".repeat(4000) };

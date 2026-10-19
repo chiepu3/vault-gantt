@@ -64,7 +64,7 @@ describe("P0 preview contracts", () => {
     expectTypeOf<keyof OperationService>().toEqualTypeOf<"describe" | "read" | "propose" | "request" | "inspect" | "inspectOutcome">();
     expectTypeOf<Parameters<OperationService["inspectOutcome"]>>().toEqualTypeOf<[previewId: string, context: RequestContext]>();
     expectTypeOf<ReturnType<OperationService["inspectOutcome"]>>().toEqualTypeOf<OperationOutcomeV1 | undefined>();
-    expectTypeOf<keyof PreviewPort>().toEqualTypeOf<"list" | "inspect" | "focusedPreviewId" | "inspectOutcome" | "subscribe" | "focus" | "reject" | "requestRepreview" | "getProjectionPage" | "invalidate" | "subscribeEvents">();
+    expectTypeOf<keyof PreviewPort>().toEqualTypeOf<"list" | "inspect" | "focusedPreviewId" | "inspectOutcome" | "subscribe" | "focus" | "reject" | "requestRepreview" | "getProjectionPage" | "invalidate" | "subscribeEvents" | "supersededBy">();
     expectTypeOf<PreviewUiHostPorts["humanApprovalPort"]>().toEqualTypeOf<HumanApprovalPort>();
     expect(PREVIEW_FIXTURES.mcpOrigin.origin).toEqual({ kind: "mcp", principalId: "principal-fixture", clientLabel: "ローカルMCPクライアント" });
     expect(PREVIEW_FIXTURES.mcpOrigin.status).toBe("pending");
