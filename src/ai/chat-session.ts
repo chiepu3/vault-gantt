@@ -167,7 +167,7 @@ export class ChatSession {
     if (conversation.messages.length >= 100) { conversation.error = "会話の上限です。新しい会話を開始してください。"; this.emit(); return; }
     const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
     conversation.status = "running"; conversation.error = ""; conversation.draft = ""; conversation.completion = undefined;
-    conversation.title = text.trim().slice(0, 32);
+    if (!conversation.messages.length) conversation.title = text.trim().replace(/\s+/g, " ").slice(0, 32);
     conversation.messages.push({ role: "user", text, proposals: [], parts: [{ type: "text", id: "text:0", text }] });
     const assistant: ChatMessage = { role: "assistant", text: "", proposals: [], parts: [] };
     conversation.messages.push(assistant);
