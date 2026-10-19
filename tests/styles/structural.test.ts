@@ -965,7 +965,7 @@ describe("part 4 — Gantt structure", () => {
     expectDecl(
       ".task-gantt-workload-summary-cell",
       "background",
-      "linear-gradient(to right, rgba(var(--color-green-rgb), 0.22) 0 var(--twb-workload-actual-ratio, 0%), transparent var(--twb-workload-actual-ratio, 0%) 100%) top / 100% 50% no-repeat, linear-gradient(to right, rgba(var(--color-blue-rgb), 0.22) 0 var(--twb-workload-plan-ratio, 0%), transparent var(--twb-workload-plan-ratio, 0%) 100%) bottom / 100% 50% no-repeat, transparent"
+      "linear-gradient(to right, color-mix(in srgb, var(--twb-workload-actual-color, rgb(var(--color-green-rgb))) 30%, transparent) 0 var(--twb-workload-actual-ratio, 0%), transparent var(--twb-workload-actual-ratio, 0%) 100%) top / 100% 50% no-repeat, linear-gradient(to right, color-mix(in srgb, var(--twb-workload-plan-color, rgb(var(--color-blue-rgb))) 30%, transparent) 0 var(--twb-workload-plan-ratio, 0%), transparent var(--twb-workload-plan-ratio, 0%) 100%) bottom / 100% 50% no-repeat, transparent"
     );
     expectDecl(
       ".task-gantt-workload-summary-cell.is-over-capacity",

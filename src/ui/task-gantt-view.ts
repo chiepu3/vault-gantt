@@ -177,6 +177,8 @@ function formatWorkloadBadgeHours(hours: number): string {
 }
 
 /** Planned-mode fill color from low-hours blue to at-capacity red-orange. */
+const WORKLOAD_LABEL_INK = "hsl(220 15% 14%)";
+
 function workloadPlannedFillColor(hours: number, maxHours: number): string {
   const ratio = Math.max(0, Math.min(1, hours / Math.max(0.5, maxHours)));
   const hue = 205 - ratio * 195;
@@ -3019,6 +3021,7 @@ export class TaskGanttView extends ItemView {
 
     const totalsByDate = this.getWorkloadSummaryValues(parents, dates);
     const capacityHours = getCapacityHours(this.host.settings);
+    const maxHours = getMaxHours(this.host.settings);
     for (const date of dates) {
       const cell = document.createElement("div");
       cell.classList.add("task-gantt-workload-summary-cell");
@@ -3070,16 +3073,24 @@ export class TaskGanttView extends ItemView {
         "--twb-workload-actual-ratio",
         `${(actualRatio * 100).toFixed(1)}%`
       );
+      // Same cyan-to-red scale as the bar workload popover: the closer a
+      // day's total gets to maxHours (7h by default), the redder it turns.
+      setRatio("--twb-workload-actual-color", workloadPlannedFillColor(actualTotal, maxHours));
+      setRatio("--twb-workload-plan-color", workloadPlannedFillColor(planTotal, maxHours));
+      // The label chips are always light-to-mid tones, so they need dark ink in both themes.
+      setRatio("--twb-workload-label-ink", WORKLOAD_LABEL_INK);
 
 
       const actualLabel = document.createElement("span");
       actualLabel.classList.add("task-gantt-workload-summary-actual");
       actualLabel.textContent = formatWorkloadHours(actualTotal);
+      actualLabel.classList.toggle("has-value", actualTotal > 0);
       cell.appendChild(actualLabel);
 
       const planLabel = document.createElement("span");
       planLabel.classList.add("task-gantt-workload-summary-plan");
       planLabel.textContent = formatWorkloadHours(planTotal);
+      planLabel.classList.toggle("has-value", planTotal > 0);
       cell.appendChild(planLabel);
 
       // match the bar-level workload popup's

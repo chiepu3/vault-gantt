@@ -302,7 +302,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-workload-settings-button:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .task-gantt-workload-settings-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 
-.task-gantt-workload-summary-cell { position: relative; flex-shrink: 0; height: 100%; overflow: hidden; font-size: var(--vg-font-micro); line-height: 1; border: var(--vg-border-subtle); background: linear-gradient(to right, rgba(var(--color-green-rgb), 0.22) 0 var(--twb-workload-actual-ratio, 0%), transparent var(--twb-workload-actual-ratio, 0%) 100%) top / 100% 50% no-repeat, linear-gradient(to right, rgba(var(--color-blue-rgb), 0.22) 0 var(--twb-workload-plan-ratio, 0%), transparent var(--twb-workload-plan-ratio, 0%) 100%) bottom / 100% 50% no-repeat, transparent; }
+.task-gantt-workload-summary-cell { position: relative; flex-shrink: 0; height: 100%; overflow: hidden; font-size: var(--vg-font-micro); line-height: 1; border: var(--vg-border-subtle); background: linear-gradient(to right, color-mix(in srgb, var(--twb-workload-actual-color, rgb(var(--color-green-rgb))) 30%, transparent) 0 var(--twb-workload-actual-ratio, 0%), transparent var(--twb-workload-actual-ratio, 0%) 100%) top / 100% 50% no-repeat, linear-gradient(to right, color-mix(in srgb, var(--twb-workload-plan-color, rgb(var(--color-blue-rgb))) 30%, transparent) 0 var(--twb-workload-plan-ratio, 0%), transparent var(--twb-workload-plan-ratio, 0%) 100%) bottom / 100% 50% no-repeat, transparent; }
 
 .task-gantt-workload-summary-cell.is-non-working { opacity: 0.35; pointer-events: none; }
 
@@ -312,6 +312,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 
 .task-gantt-workload-summary-actual { position: absolute; white-space: nowrap; font-weight: var(--vg-weight-strong); pointer-events: none; left: 2px; top: 2px; color: var(--text-normal); }
 .task-gantt-workload-summary-plan { position: absolute; white-space: nowrap; font-weight: var(--vg-weight-strong); pointer-events: none; right: 2px; bottom: 2px; color: var(--text-muted); }
+.task-gantt-workload-summary-actual.has-value { background: var(--twb-workload-actual-color); }
+.task-gantt-workload-summary-plan.has-value { background: var(--twb-workload-plan-color); }
+.task-gantt-workload-summary-actual.has-value, .task-gantt-workload-summary-plan.has-value { padding: 1px 3px; border-radius: var(--vg-radius-s); color: var(--twb-workload-label-ink); }
 .task-gantt-workload-day-label { position: absolute; z-index: 2; pointer-events: none; text-align: center; font-size: var(--vg-font-micro); font-weight: var(--vg-weight-strong); }
 .task-gantt-workload-day-label.is-dual { display: flex; flex-direction: column; justify-content: center; height: 20px; line-height: 10px; white-space: nowrap; }
 
