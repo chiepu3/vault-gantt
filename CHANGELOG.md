@@ -2,6 +2,19 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.9.0 (2026-10-19)
+
+### 新機能
+
+- 毎日の作業時間（実績/想定）を7hに近づくほど赤くなる色で表示 ([#68](https://github.com/chiepu3/vault-gantt/pull/68))
+
+### 修正
+
+- OpenRouter経由のOpenAI系モデルが即座に打ち切られる問題 ([#64](https://github.com/chiepu3/vault-gantt/pull/64))
+- AIチャットの思考表示のリセットと、同じ日の複数イベント案の表示・連続適用 ([#67](https://github.com/chiepu3/vault-gantt/pull/67))
+- 定例作業を実績にも入れ、定例作業設定の入力を軽くする ([#66](https://github.com/chiepu3/vault-gantt/pull/66))
+- 「ガントを開く」向けに足した語を戻す(不要になった) ([#65](https://github.com/chiepu3/vault-gantt/pull/65))
+
 ## v0.8.1 (2026-10-18)
 
 ### 修正
