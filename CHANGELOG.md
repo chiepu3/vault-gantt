@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.10.0 (2026-10-19)
+
+### 新機能
+
+- AIチャットを更新後も右サイドバーに残し、起動時自動オープンとガントのAIボタンを追加 ([#71](https://github.com/chiepu3/vault-gantt/pull/71))
+
 ## v0.9.1 (2026-10-19)
 
 ### 修正
