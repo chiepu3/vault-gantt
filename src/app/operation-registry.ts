@@ -17,7 +17,9 @@ const date = z.string().refine((value) => {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }, "実在するYYYY-MM-DDまたは空文字");
 const text = z.string().max(20000);
+// eslint-disable-next-line no-control-regex
 const singleLine = z.string().max(20000).regex(/^[^\r\n\u0000]*$/, "改行や制御文字は使用できません");
+// eslint-disable-next-line no-control-regex
 const tag = z.string().max(200).regex(/^[^\r\n\u0000]*$/, "タグに改行は使用できません");
 const schedule = z.object({ plannedStartDate: date.optional(), plannedEndDate: date.optional(), dueDate: date.optional() }).strict();
 const workload = z.record(date, z.number().finite().min(0).max(24));
@@ -27,6 +29,7 @@ export const patchSchema = schedule.extend({
   priorityMode: z.enum(["auto", "manual"]).optional(), tags: z.array(tag).max(100).optional(),
   completed: z.boolean().optional(), ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(),
   currentStatus: text.optional(), notes: text.optional(), workloadPlan: workload.optional(), workloadActual: workload.optional(),
+  // eslint-disable-next-line no-control-regex
   ganttMarkers: z.array(z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\u0000:,[\]]+$/), title: singleLine, date, tags: z.array(tag).max(100).optional() }).strict()).max(100).optional(),
 }).strict();
 const id = z.string().min(1).max(1000);

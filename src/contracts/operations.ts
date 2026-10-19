@@ -23,6 +23,7 @@ export const operationIdSchema = z.enum(OPERATION_IDS);
 export type OperationId = z.infer<typeof operationIdSchema>;
 export type OperationClassification = "read" | "view" | "write" | "control";
 
+// eslint-disable-next-line no-control-regex
 const singleLine = z.string().max(20000).regex(/^[^\r\n\u0000]*$/);
 const name = singleLine.trim().min(1).max(200);
 const text = z.string().max(20000);
@@ -31,6 +32,7 @@ const expectedRevision = revisionSchema.optional();
 const dateRange = z.object({ from: dateOnlySchema, to: dateOnlySchema }).strict().refine(({ from, to }) => from <= to, "日付範囲が逆転しています");
 const dailyHours = z.number().finite().positive().max(24).multipleOf(0.5);
 const workload = z.record(dateOnlySchema, z.number().finite().min(0).max(24));
+// eslint-disable-next-line no-control-regex
 const marker = z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\u0000:,[\]]+$/), title: singleLine.trim().min(1), date: dateOnlySchema, tags: tagNamesSchema.optional() }).strict();
 const markers = z.array(marker).max(100).refine((items) => new Set(items.map((item) => item.key)).size === items.length, "マーカーkeyは一意");
 export const taskScheduleInputSchema = z.object({ plannedStartDate: clearableDate.optional(), plannedEndDate: clearableDate.optional(), dueDate: clearableDate.optional() }).strict();
