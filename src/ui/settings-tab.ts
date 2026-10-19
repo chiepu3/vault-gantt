@@ -444,6 +444,28 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
 
     // tab 5, AI チャット
     const ai = panelFor("ai");
+    new Setting(ai).setName("AIチャットの表示位置").setHeading();
+    new Setting(ai)
+      .setName("開く場所")
+      .setDesc("ツールバーのAIボタンや起動時の自動オープンで使う場所です。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions({ right: "右サイドバー", left: "左サイドバー", tab: "タブ" })
+          .setValue(this.hostPlugin.settings.aiChatPlacement)
+          .onChange(async (value: string) => {
+            this.hostPlugin.settings.aiChatPlacement = value === "left" || value === "tab" ? value : "right";
+            await this.hostPlugin.saveSettings();
+          })
+      );
+    new Setting(ai)
+      .setName("起動時に自動で開く")
+      .setDesc("AIチャットが開いていなければ、起動のたびに上の場所へ開きます。")
+      .addToggle((toggle) =>
+        toggle.setValue(!!this.hostPlugin.settings.aiChatAutoOpen).onChange(async (value: boolean) => {
+          this.hostPlugin.settings.aiChatAutoOpen = value;
+          await this.hostPlugin.saveSettings();
+        })
+      );
     this.renderAiSettings(ai.createDiv({ cls: "vg-settings-ai" }));
 
     const integration = panelFor("integration");

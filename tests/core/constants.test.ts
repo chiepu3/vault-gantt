@@ -152,12 +152,12 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.agentToolsEnabled).toBe(false);
   });
 
-  it("DEFAULT_SETTINGS has exactly 33 keys", () => {
+  it("DEFAULT_SETTINGS has exactly 35 keys", () => {
     const keys = Object.keys(DEFAULT_SETTINGS);
-    expect(keys.length).toBe(33);
+    expect(keys.length).toBe(35);
   });
 
-  it("DEFAULT_SETTINGS has all 33 required keys", () => {
+  it("DEFAULT_SETTINGS has all 35 required keys", () => {
     const required = [
       // Task storage settings.
       "taskFolder",
@@ -175,6 +175,8 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
       "ganttSpecialHolidays",
       // Gantt display and synchronization settings.
       "ganttZoom",
+      "aiChatPlacement",
+      "aiChatAutoOpen",
       "ganttSyncEnabled",
       "ganttSyncUrl",
       "ganttSyncIntervalMinutes",
@@ -204,7 +206,7 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     ];
 
     // Verify we have exactly 32 required keys
-    expect(required.length).toBe(33);
+    expect(required.length).toBe(35);
 
     for (const key of required) {
       expect(key in DEFAULT_SETTINGS).toBe(true);
