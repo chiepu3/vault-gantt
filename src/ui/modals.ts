@@ -483,22 +483,65 @@ export interface WeeklyWorkScheduleModalCallbacks {
   delete(key: string): void | Promise<void>;
 }
 
+/** Idle time after the last keystroke before text/number edits are persisted. */
+const WEEKLY_SCHEDULE_UPDATE_DEBOUNCE_MS = 500;
+
 /**
  *
- * Live editor for the weekly recurring work-time schedule list. Every field
- * edit is sent to the injected callback immediately; there is no separate
- * save or cancel operation. The callbacks may return a Promise so the caller
- * can persist settings and refresh the Gantt after each mutation.
+ * Live editor for the weekly recurring work-time schedule list. There is no
+ * separate save or cancel operation. Select changes, add and delete are sent
+ * to the injected callbacks immediately; text/number typing is debounced and
+ * flushed on change/blur and on close, so persisting does not run per
+ * keystroke. The callbacks may return a Promise so the caller can persist
+ * settings and refresh the Gantt after each mutation.
  */
 export class WeeklyWorkScheduleModal extends Modal {
   private listEl: HTMLElement | null = null;
+  private readonly pendingPatches = new Map<string, Partial<WeeklyWorkSchedule>>();
+  private pendingTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     app: App,
-    private readonly schedules: WeeklyWorkSchedule[],
+    private readonly schedulesSource:
+      | WeeklyWorkSchedule[]
+      | (() => WeeklyWorkSchedule[]),
     private readonly callbacks: WeeklyWorkScheduleModalCallbacks
   ) {
     super(app);
+  }
+
+  /** Read freshly so settings reloads / mutations by the host are reflected. */
+  private get schedules(): WeeklyWorkSchedule[] {
+    return typeof this.schedulesSource === "function"
+      ? this.schedulesSource()
+      : this.schedulesSource;
+  }
+
+  private queueUpdate(key: string, patch: Partial<WeeklyWorkSchedule>): void {
+    this.pendingPatches.set(key, { ...this.pendingPatches.get(key), ...patch });
+  }
+
+  private scheduleFlush(): void {
+    if (this.pendingTimer !== undefined) {
+      clearTimeout(this.pendingTimer);
+    }
+    this.pendingTimer = setTimeout(() => {
+      this.pendingTimer = undefined;
+      this.flushPending();
+    }, WEEKLY_SCHEDULE_UPDATE_DEBOUNCE_MS);
+  }
+
+  /** Sends every queued edit to the update callback now. */
+  private flushPending(): void {
+    if (this.pendingTimer !== undefined) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = undefined;
+    }
+    const entries = Array.from(this.pendingPatches.entries());
+    this.pendingPatches.clear();
+    for (const [key, patch] of entries) {
+      this.invokeCallback(() => this.callbacks.update(key, patch));
+    }
   }
 
   onOpen(): void {
@@ -520,6 +563,7 @@ export class WeeklyWorkScheduleModal extends Modal {
     addButton.className = "mod-cta";
     addButton.addEventListener("click", () => {
       // a new row starts blank on Sunday for 30 minutes.
+      this.flushPending();
       this.invokeCallback(() => this.callbacks.add("", 0, 30));
       this.renderRows();
     });
@@ -535,6 +579,7 @@ export class WeeklyWorkScheduleModal extends Modal {
   }
 
   onClose(): void {
+    this.flushPending();
     this.contentEl.replaceChildren();
     this.listEl = null;
   }
@@ -572,10 +617,10 @@ export class WeeklyWorkScheduleModal extends Modal {
     titleInput.value = schedule.title;
     titleInput.setAttribute("aria-label", "作業名");
     titleInput.addEventListener("input", () => {
-      this.invokeCallback(() =>
-        this.callbacks.update(schedule.key, { title: titleInput.value })
-      );
+      this.queueUpdate(schedule.key, { title: titleInput.value });
+      this.scheduleFlush();
     });
+    titleInput.addEventListener("change", () => this.flushPending());
     titleLabel.appendChild(titleInput);
     row.appendChild(titleLabel);
 
@@ -592,11 +637,8 @@ export class WeeklyWorkScheduleModal extends Modal {
     });
     daySelect.value = String(schedule.dayOfWeek);
     daySelect.addEventListener("change", () => {
-      this.invokeCallback(() =>
-        this.callbacks.update(schedule.key, {
-          dayOfWeek: Number(daySelect.value),
-        })
-      );
+      this.queueUpdate(schedule.key, { dayOfWeek: Number(daySelect.value) });
+      this.flushPending();
     });
     dayLabel.appendChild(daySelect);
     row.appendChild(dayLabel);
@@ -610,12 +652,12 @@ export class WeeklyWorkScheduleModal extends Modal {
     minutesInput.value = String(schedule.minutesPerWeek);
     minutesInput.setAttribute("aria-label", "週の分数");
     minutesInput.addEventListener("input", () => {
-      this.invokeCallback(() =>
-        this.callbacks.update(schedule.key, {
-          minutesPerWeek: Number(minutesInput.value),
-        })
-      );
+      this.queueUpdate(schedule.key, {
+        minutesPerWeek: Number(minutesInput.value),
+      });
+      this.scheduleFlush();
     });
+    minutesInput.addEventListener("change", () => this.flushPending());
     minutesLabel.appendChild(minutesInput);
     row.appendChild(minutesLabel);
 
@@ -623,6 +665,7 @@ export class WeeklyWorkScheduleModal extends Modal {
     deleteButton.textContent = "削除";
     deleteButton.className = "mod-warning";
     deleteButton.addEventListener("click", () => {
+      this.flushPending();
       this.invokeCallback(() => this.callbacks.delete(schedule.key));
       this.renderRows();
     });

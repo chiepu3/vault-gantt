@@ -645,36 +645,104 @@ describe("WeeklyWorkScheduleModal", () => {
     expect(add).toHaveBeenCalledWith("", 0, 30);
   });
 
-  it("editing fields calls update immediately with the schedule key and patch", () => {
-    const schedules: WeeklyWorkSchedule[] = [
-      { key: "schedule-1", title: "習字", dayOfWeek: 3, minutesPerWeek: 30 },
-    ];
-    const update = vi.fn();
-    const { contentEl } = openModal(schedules, {
+  it("typing is debounced; the select change and change/blur events flush immediately", () => {
+    vi.useFakeTimers();
+    try {
+      const schedules: WeeklyWorkSchedule[] = [
+        { key: "schedule-1", title: "習字", dayOfWeek: 3, minutesPerWeek: 30 },
+      ];
+      const update = vi.fn();
+      const { contentEl } = openModal(schedules, {
+        add: vi.fn(),
+        update,
+        delete: vi.fn(),
+      });
+      const row = byClass(contentEl, "task-gantt-weekly-work-schedule-row")[0];
+      const rowInputs = byTag(row, "input");
+      const daySelect = byTag(row, "select")[0];
+
+      rowInputs[0].value = "新";
+      dispatch(rowInputs[0], "input");
+      rowInputs[0].value = "新しい作業";
+      dispatch(rowInputs[0], "input");
+      vi.advanceTimersByTime(499);
+      expect(update).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenLastCalledWith("schedule-1", { title: "新しい作業" });
+
+      daySelect.value = "5";
+      dispatch(daySelect, "change");
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(update).toHaveBeenLastCalledWith("schedule-1", { dayOfWeek: 5 });
+
+      rowInputs[1].value = "60";
+      dispatch(rowInputs[1], "input");
+      expect(update).toHaveBeenCalledTimes(2);
+      dispatch(rowInputs[1], "change");
+      expect(update).toHaveBeenCalledTimes(3);
+      expect(update).toHaveBeenLastCalledWith("schedule-1", { minutesPerWeek: 60 });
+
+      // the timer was cleared by the flush: nothing fires later
+      vi.advanceTimersByTime(1000);
+      expect(update).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closing the modal flushes a pending edit", () => {
+    vi.useFakeTimers();
+    try {
+      const schedules: WeeklyWorkSchedule[] = [
+        { key: "schedule-1", title: "習字", dayOfWeek: 3, minutesPerWeek: 30 },
+      ];
+      const update = vi.fn();
+      const { modal, contentEl } = openModal(schedules, {
+        add: vi.fn(),
+        update,
+        delete: vi.fn(),
+      });
+      const rowInputs = byTag(
+        byClass(contentEl, "task-gantt-weekly-work-schedule-row")[0],
+        "input"
+      );
+      rowInputs[0].value = "閉じる直前";
+      dispatch(rowInputs[0], "input");
+      rowInputs[1].value = "45";
+      dispatch(rowInputs[1], "input");
+      expect(update).not.toHaveBeenCalled();
+
+      modal.onClose();
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenCalledWith("schedule-1", {
+        title: "閉じる直前",
+        minutesPerWeek: 45,
+      });
+      vi.advanceTimersByTime(1000);
+      expect(update).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads schedules through a getter so reloaded settings are shown", () => {
+    let current: WeeklyWorkSchedule[] = [];
+    const modal = new WeeklyWorkScheduleModal({} as any, () => current, {
       add: vi.fn(),
-      update,
+      update: vi.fn(),
       delete: vi.fn(),
     });
-    const row = byClass(contentEl, "task-gantt-weekly-work-schedule-row")[0];
-    const rowInputs = byTag(row, "input");
-    const daySelect = byTag(row, "select")[0];
+    (modal as any).titleEl = makeTitleEl();
+    (modal as any).contentEl = makeFakeEl();
+    modal.onOpen();
+    const contentEl = (modal as any).contentEl as FakeEl;
+    expect(byClass(contentEl, "task-gantt-weekly-work-schedule-row")).toHaveLength(0);
 
-    rowInputs[0].value = "新しい作業";
-    dispatch(rowInputs[0], "input");
-    daySelect.value = "5";
-    dispatch(daySelect, "change");
-    rowInputs[1].value = "60";
-    dispatch(rowInputs[1], "input");
-
-    expect(update).toHaveBeenNthCalledWith(1, "schedule-1", {
-      title: "新しい作業",
-    });
-    expect(update).toHaveBeenNthCalledWith(2, "schedule-1", {
-      dayOfWeek: 5,
-    });
-    expect(update).toHaveBeenNthCalledWith(3, "schedule-1", {
-      minutesPerWeek: 60,
-    });
+    current = [{ key: "s", title: "x", dayOfWeek: 1, minutesPerWeek: 30 }];
+    const addButton = buttons(contentEl).find((button) => button.textContent === "追加");
+    dispatch(addButton as FakeEl, "click");
+    expect(byClass(contentEl, "task-gantt-weekly-work-schedule-row")).toHaveLength(1);
   });
 
   it("clicking 削除 calls delete with the schedule key", () => {

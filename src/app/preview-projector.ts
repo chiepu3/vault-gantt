@@ -21,7 +21,7 @@ export function period(parent: TaskRow) {
   return { start: starts[0] ?? null, end: ends.at(-1) ?? null };
 }
 export function progress(parent: TaskRow): number { const children = [...parent.subtasks?.values() ?? []]; return children.length ? children.filter((child) => child.completed).length / children.length : 0; }
-export function aggregates(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[]): DailyAggregateV1[] {
+export function aggregates(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[], today: string): DailyAggregateV1[] {
   const children = parents.flatMap((parent) => [...parent.subtasks?.values() ?? []]);
   const holidays = holidaySet(settings);
   const all = [...children, ...settings.ganttEvents], weeklyHours = new Map<number, number>();
@@ -32,8 +32,10 @@ export function aggregates(parents: readonly TaskRow[], settings: TaskWorkbenchS
   };
   return dates.map((date) => {
     let plan = all.reduce((total, entity) => total + (entity.workloadPlan?.[date] ?? 0), 0);
-    const actual = all.reduce((total, entity) => total + (entity.workloadActual?.[date] ?? 0), 0);
-    plan += weekly(new Date(date + "T00:00:00Z").getUTCDay());
+    let actual = all.reduce((total, entity) => total + (entity.workloadActual?.[date] ?? 0), 0);
+    const weeklyTotal = weekly(new Date(date + "T00:00:00Z").getUTCDay());
+    plan += weeklyTotal;
+    if (date <= today) actual += weeklyTotal; // routine work counts as actual only up to today
     const capacity = isBusinessDay(date, holidays) ? settings.ganttWorkloadDailyCapacityHours : 0;
     return { date, plan, actual, capacity, overCapacity: plan > capacity || actual > capacity };
   });
@@ -50,14 +52,14 @@ function appearance(tags: readonly string[], parentTags: readonly string[], sett
   return { color: (own[0] ? color(own[0]) : null) || (parent[0] ? color(parent[0]) : null),
     tags: show ? [...own.map((name) => ({ name: definition(name)?.name ?? name, color: color(name), origin: "own" as const })), ...inherited.map((name) => ({ name: definition(name)?.name ?? name, color: color(name), origin: "parent" as const }))] : [] };
 }
-export function ganttState(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[]): GanttStateV1 {
+export function ganttState(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[], today: string): GanttStateV1 {
   return {
     parents: parents.map((parent) => ({ id: parent.id, name: parent.displayName, enabled: parent.ganttEnabled, order: parent.ganttOrder ?? 999999, tags: [...parent.tags], period: period(parent), progress: progress(parent), effectivePriority: getEffectivePriority(parent, settings.autoPriorityEnabled), appearance: appearance(parent.tags, [], settings, true),
       children: [...parent.subtasks?.values() ?? []].map((child) => ({ id: child.id, parentId: parent.id, name: child.displayName, status: child.statusLabel, completed: child.completed, tags: [...child.tags], period: { start: child.plannedStartDate || null, end: child.plannedEndDate || null }, due: child.dueDate || null,
         markers: (child.ganttMarkers ?? []).map((marker) => ({ ...marker, tags: [...marker.tags ?? []] })), hours: hours(child), effectivePriority: getEffectivePriority(child, settings.autoPriorityEnabled), appearance: appearance(child.tags, parent.tags, settings, false) })) })),
     serviceState: { lastAutoPriorityUpdate: settings.lastAutoPriorityUpdate, ganttNationalHolidaysUpdatedAt: settings.ganttNationalHolidaysUpdatedAt, ganttNationalHolidays: [...settings.ganttNationalHolidays], ganttHolidays: [...settings.ganttHolidays] },
     events: settings.ganttEvents.map((event) => ({ key: event.key, title: event.title, date: event.date, hours: hours(event) })), weekly: structuredClone(settings.weeklyWorkSchedules), daily: [], tagDefinitions: structuredClone(settings.ganttTags), settings: publicSettings(settings),
-    calendar: { weekends: [0, 6], manual: [...settings.ganttManualHolidays], special: [...settings.ganttSpecialHolidays], national: [...settings.ganttNationalHolidays] }, aggregates: aggregates(parents, settings, dates),
+    calendar: { weekends: [0, 6], manual: [...settings.ganttManualHolidays], special: [...settings.ganttSpecialHolidays], national: [...settings.ganttNationalHolidays] }, aggregates: aggregates(parents, settings, dates, today),
   };
 }
 export function taskEffects(before: TaskRow | undefined, after: TaskRow | undefined, requested: Record<string, unknown> = {}): PreviewEffect[] {
@@ -100,7 +102,7 @@ export function project(snapshot: TaskSnapshot, afterParents: readonly TaskRow[]
   };
   scan(snapshot.parents, snapshot.settings); scan(afterParents, afterSettings);
   const affectedDates = [...dates].sort();
-  const before = ganttState(snapshot.parents, snapshot.settings, affectedDates), after = ganttState(afterParents, afterSettings, affectedDates);
+  const before = ganttState(snapshot.parents, snapshot.settings, affectedDates, snapshot.today), after = ganttState(afterParents, afterSettings, affectedDates, snapshot.today);
   const owners = new Map<string, string>();
   for (const parent of [...snapshot.parents, ...afterParents]) { owners.set(parent.id, parent.id); for (const child of parent.subtasks?.values() ?? []) owners.set(child.id, parent.id); }
   const ownerOf = (entity: EntityRef & { taskId: string }) => (entity.kind === "task" ? entity.parentId : undefined) ?? owners.get(entity.taskId) ?? entity.taskId;

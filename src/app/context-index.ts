@@ -255,11 +255,11 @@ export class ContextIndex implements ContextReadPort {
         for (let date = from; date <= to; date = addDays(date, 1)) dates.push(date);
         const parents = snapshot.parents.filter((parent) => !args.parentIds || args.parentIds.includes(parent.id));
         const mask = <T extends { plan: number; actual: number }>(cell: T): T => ({ ...cell, plan: args.mode === "actual" ? 0 : cell.plan, actual: args.mode === "plan" ? 0 : cell.actual });
-        data = { kind: "workload", days: aggregates(parents, snapshot.settings, dates).map((day) => { const masked = mask(day); return { ...masked, overCapacity: masked.plan > day.capacity || masked.actual > day.capacity }; }),
+        data = { kind: "workload", days: aggregates(parents, snapshot.settings, dates, snapshot.today).map((day) => { const masked = mask(day); return { ...masked, overCapacity: masked.plan > day.capacity || masked.actual > day.capacity }; }),
           ...(args.detail ? { contributions: [
             ...parents.flatMap((parent) => [...parent.subtasks?.values() ?? []]).map((row) => ({ kind: "task" as const, id: row.id, cells: hours(row).filter((cell) => cell.date >= from && cell.date <= to).map(mask) })),
             ...snapshot.settings.ganttEvents.map((event) => ({ kind: "event" as const, id: event.key, cells: hours(event).filter((cell) => cell.date >= from && cell.date <= to).map(mask) })),
-            ...snapshot.settings.weeklyWorkSchedules.map((weekly) => ({ kind: "weekly" as const, id: weekly.key, cells: dates.filter((date) => new Date(date + "T00:00:00Z").getUTCDay() === weekly.dayOfWeek).map((date) => mask({ date, plan: weekly.minutesPerWeek / 60, actual: 0 })) })),
+            ...snapshot.settings.weeklyWorkSchedules.map((weekly) => ({ kind: "weekly" as const, id: weekly.key, cells: dates.filter((date) => new Date(date + "T00:00:00Z").getUTCDay() === weekly.dayOfWeek).map((date) => mask({ date, plan: weekly.minutesPerWeek / 60, actual: date <= snapshot.today ? weekly.minutesPerWeek / 60 : 0 })) })),
           ] } : {}) };
       } else fail("INVALID_INPUT", "対応するcontext queryを指定してください。");
       const result = readResultSchema.parse({ ...base, data });

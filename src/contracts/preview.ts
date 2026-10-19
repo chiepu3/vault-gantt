@@ -415,7 +415,9 @@ function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: 
   const totals = (state: GanttStateV1, date: string) => {
     const cells = [...state.parents.flatMap((parent) => parent.children.flatMap((child) => child.hours)), ...state.events.flatMap((event) => event.hours)].filter((cell) => cell.date === date);
     const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
-    return { plan: cells.reduce((sum, cell) => sum + cell.plan, 0) + state.weekly.filter((schedule) => schedule.dayOfWeek === weekday).reduce((sum, schedule) => sum + schedule.minutesPerWeek / 60, 0), actual: cells.reduce((sum, cell) => sum + cell.actual, 0) };
+    const weeklyHours = state.weekly.filter((schedule) => schedule.dayOfWeek === weekday).reduce((sum, schedule) => sum + schedule.minutesPerWeek / 60, 0);
+    // Routine (weekly) work counts toward the actual only up to the evaluated day.
+    return { plan: cells.reduce((sum, cell) => sum + cell.plan, 0) + weeklyHours, actual: cells.reduce((sum, cell) => sum + cell.actual, 0) + (date <= projection.evaluatedDate ? weeklyHours : 0) };
   };
   checkRecords(before.aggregates, after.aggregates, (day) => day.date, (date, old, next) => {
     if (!old || !next) { issue(`actualProjectionの集計にはbefore/afterの同日snapshotが必要です: ${date}`); return; }

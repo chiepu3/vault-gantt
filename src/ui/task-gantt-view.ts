@@ -43,6 +43,7 @@ import {
   computeLaneOffsets,
   computeRowFingerprint,
   collectWorkloadEntriesForDate,
+  compareWorkloadEntries,
   computeRowHeight,
   computeLaneWindow,
   laneWindowCoversViewport,
@@ -2735,6 +2736,10 @@ export class TaskGanttView extends ItemView {
       Array.from(this.holidaySet).sort().join(","),
       this.todayForRender,
     ];
+    // Weekly schedules feed both plan and actual totals; AI operations persist them without going through the modal.
+    for (const schedule of this.host.settings.weeklyWorkSchedules ?? []) {
+      parts.push(`@${schedule.key}:${schedule.dayOfWeek}:${schedule.minutesPerWeek}`);
+    }
     for (const parent of parents) {
       parts.push(`#${parent.file.path}`);
       if (parent.subtasks === undefined) continue;
@@ -2774,20 +2779,25 @@ export class TaskGanttView extends ItemView {
         add(subtask.workloadActual, actuals);
       }
     }
-    // weekly schedules are plan-only and match indefinitely
-    // by calendar weekday, regardless of any subtask date range.
+    // weekly schedules match indefinitely by calendar weekday, regardless of any
+    // subtask date range. They count toward the plan on every date and toward the
+    // actual only up to today (future dates have no actual yet).
     const schedules: WeeklyWorkSchedule[] = Array.isArray(this.host.settings.weeklyWorkSchedules)
       ? this.host.settings.weeklyWorkSchedules
       : [];
     dates.forEach((date, index) => {
       let plan = plans[index];
+      let actual = actuals[index];
       if (schedules.length > 0) {
         const dayOfWeek = moment(date, "YYYY-MM-DD").day();
+        const countsAsActual = date <= this.todayForRender;
         for (const schedule of schedules) {
-          if (dayOfWeek === schedule.dayOfWeek) plan += schedule.minutesPerWeek / 60;
+          if (dayOfWeek !== schedule.dayOfWeek) continue;
+          plan += schedule.minutesPerWeek / 60;
+          if (countsAsActual) actual += schedule.minutesPerWeek / 60;
         }
       }
-      totalsByDate.set(date, { plan, actual: actuals[index] });
+      totalsByDate.set(date, { plan, actual });
     });
     return totalsByDate;
   }
@@ -2941,18 +2951,17 @@ export class TaskGanttView extends ItemView {
 
       const saveAndRender = async (): Promise<void> => {
         await this.host.saveSettings();
-        // The incremental renderer caches workload totals independently of
-        // the header fingerprint, so invalidate that cache after schedule CRUD.
-        this.workloadSummaryFingerprint = undefined;
-        this.workloadSummaryTotals = undefined;
-        await this.render();
+        // Settings-only change: the tasks are untouched, so skip refreshTasks and
+        // rebuild just the chart. The workload totals cache is keyed by a
+        // fingerprint that includes the schedules, so totals update.
+        this.renderChart();
       };
 
       const settingsButton = document.createElement("button");
       settingsButton.classList.add("task-gantt-workload-settings-button");
       settingsButton.textContent = "定例作業設定";
       settingsButton.addEventListener("click", () => {
-        new WeeklyWorkScheduleModal(this.app, schedules, {
+        new WeeklyWorkScheduleModal(this.app, () => this.host.settings.weeklyWorkSchedules ?? [], {
           add: (title, dayOfWeek, minutesPerWeek) => {
             addWeeklyWorkSchedule(
               this.host.settings,
@@ -3136,8 +3145,8 @@ export class TaskGanttView extends ItemView {
       const entries = collectWorkloadEntriesForDate(date, this.tasks, mode);
 
 
-      if (mode === "plan") {
-        // recurring schedules appear in the plan section only.
+      // recurring schedules count toward the plan on every date, and toward the actual up to today.
+      if (mode === "plan" || date <= this.todayForRender) {
         const schedules: WeeklyWorkSchedule[] = Array.isArray(
           this.host.settings.weeklyWorkSchedules
         )
@@ -3153,18 +3162,7 @@ export class TaskGanttView extends ItemView {
             });
           }
         }
-        entries.sort((a, b) => {
-          if (a.hours !== b.hours) {
-            return b.hours - a.hours;
-          }
-          if (a.parentName !== b.parentName) {
-            return a.parentName < b.parentName ? -1 : 1;
-          }
-          if (a.subtaskName !== b.subtaskName) {
-            return a.subtaskName < b.subtaskName ? -1 : 1;
-          }
-          return 0;
-        });
+        entries.sort(compareWorkloadEntries);
       }
 
 
