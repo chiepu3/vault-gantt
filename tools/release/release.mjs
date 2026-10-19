@@ -15,6 +15,15 @@ if (lastRelease === head) {
   console.log("HEAD is a release commit; nothing to do.");
   process.exit(0);
 }
+// A newer push to main means a later run of this workflow will release these commits too; releasing
+// from a stale HEAD would make the push below fail after the tag was created.
+if (!dryRun) {
+  git("fetch", "origin", "main");
+  if (git("rev-parse", "origin/main") !== head) {
+    console.log("main has moved on since this run started; leaving the release to the newer run.");
+    process.exit(0);
+  }
+}
 const range = lastRelease ? `${lastRelease}..${head}` : `${head}~1..${head}`;
 const raw = git("log", "--first-parent", "--format=%s%x1f%b%x1e", range);
 const commits = raw
@@ -55,7 +64,8 @@ git("add", "package.json", "manifest.json", "versions.json", "CHANGELOG.md");
 git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
   "commit", "-m", `chore(release): v${next}`);
 git("tag", `v${next}`);
-git("push", "origin", "HEAD:main", `v${next}`);
+// --atomic: either main and the tag both land or neither does, so a rejected push leaves no orphan tag.
+git("push", "--atomic", "origin", "HEAD:main", `v${next}`);
 writeFileSync(process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/release-notes.md` : "release-notes.md", notes);
 execFileSync("gh", ["release", "create", `v${next}`, "--title", `v${next}`, "--notes-file",
   process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/release-notes.md` : "release-notes.md"], { stdio: "inherit" });
