@@ -183,6 +183,9 @@ export interface TaskWorkbenchSettings {
 
   // Gantt Display/Sync
   ganttZoom: number;
+  /** Where the AI chat opens, and whether it opens by itself at start-up when it is not already open. */
+  aiChatPlacement: "right" | "left" | "tab";
+  aiChatAutoOpen: boolean;
   ganttSyncEnabled: boolean;
   ganttSyncUrl: string;
   ganttSyncIntervalMinutes: number;

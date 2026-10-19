@@ -837,6 +837,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
   private async runDeferredStartup(): Promise<void> {
     if (this.unloading) return;
+    void this.ensureAIChatOpen().catch((err) => this.logger.error("TaskWorkbenchPlugin", "AI chat auto-open failed", err));
     try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
     // fire-and-forget background holiday refresh.
     // The caller never awaits or catches: an unexpected rejection surfaces as
@@ -899,6 +900,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.refreshOpenViews();
   }
 
+  /** Opens the AI chat in its configured place at start-up unless it is already open (e.g. restored from the saved layout). */
+  private async ensureAIChatOpen(): Promise<void> {
+    if (this.unloading || !this.settings.aiChatAutoOpen || this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_CHAT).length) return;
+    const place = this.settings.aiChatPlacement;
+    const leaf = place === "left" ? this.app.workspace.getLeftLeaf(false) : place === "tab" ? this.app.workspace.getLeaf("tab") : this.app.workspace.getRightLeaf(false);
+    if (leaf) await leaf.setViewState({ type: VIEW_TYPE_AI_CHAT, active: false });
+  }
+
+  /** Opens (or focuses) the AI chat where the settings say. */
+  openAIChatConfigured(): Promise<void> { return this.openAIChat(this.settings.aiChatPlacement); }
+
   async openAIChat(position: "tab" | "left" | "right" = "tab"): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_CHAT)[0];
     const leaf = existing ?? (position === "left" ? this.app.workspace.getLeftLeaf(false) : position === "right" ? this.app.workspace.getRightLeaf(false) : this.app.workspace.getLeaf("tab"));
@@ -937,11 +949,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
     this.unloading = true;
     this.saveChatHistory();
     void this.queueMcp(async () => { await this.mcpServer?.stop(); this.mcpServer = undefined; }).catch(() => { /* Shutdown still releases the listener. */ });
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_APPROVAL);
     this.chatSession?.dispose();
     this.operationService.dispose();
     this.scheduleGhosts.clear();
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_CHAT);
     // stop the Gantt sync timer; with a null handle
     // clearInterval is not called. Global clearInterval is used instead of
     // window.clearInterval — identical in the Obsidian renderer where
@@ -953,9 +963,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.ganttSyncIntervalId = null;
     }
 
-    // removing leaves of an already closed view is a no-op
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TASK_WORKBENCH);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TASK_GANTT);
+    // Views are deliberately NOT detached here: Obsidian saves the layout after onunload, so
+    // detaching would drop the user's tabs and sidebar panes on every update or reload.
 
     // Obsidian automatically removes registered commands, ribbon icons,
     // processors, and views on unload.
@@ -2089,6 +2098,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       activateView: async (): Promise<void> => {
         await this.navigation.activateView();
       },
+      openAIChat: (): Promise<void> => this.openAIChatConfigured(),
       // The toolbar's 「同期」 button calls this plugin's manual sync method.
       syncReadonlyGanttNow: (): Promise<void> => this.syncReadonlyGanttNow(),
       undoLastAction: (): Promise<void> => this.undoLastAction(),
