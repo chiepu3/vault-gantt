@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.10.1 (2026-10-20)
+
+### 修正
+
+- Daily ToDoの長い文字を折り返して全文表示 ([#72](https://github.com/chiepu3/vault-gantt/pull/72))
+
 ## v0.10.0 (2026-10-19)
 
 ### 新機能
