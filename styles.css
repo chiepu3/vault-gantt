@@ -492,9 +492,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
   font-weight: var(--vg-weight-strong);
 }
 .task-gantt-daily-todo-list { display: flex; flex-direction: column; gap: var(--vg-space-1); }
-.task-gantt-daily-todo-row { display: flex; align-items: center; gap: var(--vg-space-2); }
-.task-gantt-daily-todo-check { flex: none; margin: 0; }
-.task-gantt-daily-todo-input { flex: 1 1 auto; min-width: 0; }
+.task-gantt-daily-todo-row { display: flex; align-items: flex-start; gap: var(--vg-space-2); }
+.task-gantt-daily-todo-check { flex: none; margin: 5px 0 0; }
+.task-gantt-daily-todo-input { flex: 1 1 auto; min-width: 0; resize: none; overflow: hidden; overflow-wrap: anywhere; line-height: 1.4; field-sizing: content; }
 .task-gantt-daily-todo-more { flex: none; }
 .task-gantt-daily-todo-add { margin-top: var(--vg-space-1); }
 .task-gantt-daily-todo-empty { padding: var(--vg-space-2) 0; color: var(--text-faint); font-size: var(--vg-font-s); }

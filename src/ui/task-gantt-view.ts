@@ -258,7 +258,7 @@ interface DailyTodoPopoverRow {
   item: DailyTodoItem | null;
   rowEl: HTMLElement;
   checkEl: HTMLInputElement;
-  inputEl: HTMLInputElement;
+  inputEl: HTMLTextAreaElement;
 }
 
 interface DailyTodoPopoverState {
@@ -3948,8 +3948,9 @@ export class TaskGanttView extends ItemView {
     checkEl.checked = item?.completed ?? false;
     rowEl.appendChild(checkEl);
 
-    const inputEl = document.createElement("input");
-    inputEl.type = "text";
+    // A one-row textarea that grows with its content, so a long ToDo wraps and can be read in full.
+    const inputEl = document.createElement("textarea");
+    inputEl.rows = 1;
     inputEl.classList.add("task-gantt-daily-todo-input", "vg-input-sm");
     inputEl.placeholder = "ToDoを入力";
     inputEl.value = item?.text ?? "";
@@ -3975,10 +3976,23 @@ export class TaskGanttView extends ItemView {
     };
     checkEl.addEventListener("change", save);
     inputEl.addEventListener("change", save);
+    const fit = (): void => {
+      if (!inputEl.style) return;
+      inputEl.style.height = "auto";
+      if (inputEl.scrollHeight > 0) inputEl.style.height = `${inputEl.scrollHeight}px`;
+    };
+    inputEl.addEventListener("input", fit);
+    // Enter commits (as the single-line input did); IME confirmation keeps its own Enter.
+    inputEl.addEventListener("keydown", (evt: KeyboardEvent) => {
+      if (evt.key !== "Enter" || evt.isComposing) return;
+      evt.preventDefault();
+      inputEl.blur();
+    });
     moreButton.addEventListener("click", (evt: MouseEvent) => {
       this.openDailyTodoRowMenu(state, row, evt);
     });
 
+    requestAnimationFrame(fit);
     if (focus) {
       inputEl.focus();
     }
