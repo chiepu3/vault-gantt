@@ -616,16 +616,20 @@ describe("WORKLOAD_ACTUAL_COLOR", () => {
 // Workload entries grouped by date.
 
 
+const PERIOD = { plannedStartDate: "2026-08-01", plannedEndDate: "2026-08-31" };
+
 describe("collectWorkloadEntriesForDate", () => {
   it("collects one entry per subtask with hours on the date, sorted hours DESC then parentName then subtaskName", () => {
     const parentA = withSubtasks(
       makeRow({ ganttEnabled: true, displayName: "Alpha" }),
       [
         makeSubtask("s1", {
+          ...PERIOD,
           displayName: "Low",
           workloadPlan: { "2026-08-10": 1 },
         }),
         makeSubtask("s2", {
+          ...PERIOD,
           displayName: "High",
           workloadPlan: { "2026-08-10": 5 },
         }),
@@ -635,6 +639,7 @@ describe("collectWorkloadEntriesForDate", () => {
       makeRow({ ganttEnabled: true, displayName: "Beta" }),
       [
         makeSubtask("s3", {
+          ...PERIOD,
           displayName: "Mid",
           workloadPlan: { "2026-08-10": 5 },
         }),
@@ -659,6 +664,7 @@ describe("collectWorkloadEntriesForDate", () => {
       makeRow({ ganttEnabled: true, displayName: "P" }),
       [
         makeSubtask("s1", {
+          ...PERIOD,
           displayName: "S1",
           workloadPlan: { "2026-08-10": 4 },
           workloadActual: { "2026-08-10": 2 },
@@ -678,6 +684,7 @@ describe("collectWorkloadEntriesForDate", () => {
       makeRow({ ganttEnabled: true, displayName: "", title: "" }),
       [
         makeSubtask("s1", {
+          ...PERIOD,
           displayName: "",
           title: "",
           workloadPlan: { "2026-08-10": 3 },
@@ -694,6 +701,7 @@ describe("collectWorkloadEntriesForDate", () => {
       makeRow({ ganttEnabled: true, displayName: "P" }),
       [
         makeSubtask("s1", {
+          ...PERIOD,
           displayName: "S1",
           workloadPlan: { "2026-08-11": 3, "2026-08-10": 0 },
         }),
@@ -709,6 +717,24 @@ describe("collectWorkloadEntriesForDate", () => {
     expect(
       collectWorkloadEntriesForDate("2026-08-10", [parent], "plan")
     ).toEqual([]);
+  });
+  it("skips leftover hours on a subtask with no planned dates or outside its period (same rule as the day totals)", () => {
+    const parent = withSubtasks(
+      makeRow({ ganttEnabled: true, displayName: "P" }),
+      [
+        makeSubtask("ok", { ...PERIOD, displayName: "OK", workloadPlan: { "2026-08-10": 2 } }),
+        makeSubtask("nodates", { displayName: "NoDates", workloadPlan: { "2026-08-10": 9 } }),
+        makeSubtask("outside", {
+          plannedStartDate: "2026-08-01",
+          plannedEndDate: "2026-08-05",
+          displayName: "Outside",
+          workloadPlan: { "2026-08-10": 9 },
+        }),
+      ]
+    );
+    expect(
+      collectWorkloadEntriesForDate("2026-08-10", [parent], "plan")
+    ).toEqual([{ parentName: "P", subtaskName: "OK", hours: 2 }]);
   });
 });
 
