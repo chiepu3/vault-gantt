@@ -513,6 +513,10 @@ export function collectWorkloadEntriesForDate(
     }
     const parentName = parent.displayName || parent.title || "親タスク";
     for (const subtask of parent.subtasks.values()) {
+      // Same rule as the day totals: leftover hours on a subtask with no bar or outside its period are not counted.
+      if (!hasPlannedDates(subtask) || date < subtask.plannedStartDate || date > subtask.plannedEndDate) {
+        continue;
+      }
       const map = mode === "plan" ? subtask.workloadPlan : subtask.workloadActual;
       const hours = map?.[date] ?? 0;
       if (hours <= 0) {
