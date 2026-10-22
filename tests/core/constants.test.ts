@@ -152,9 +152,9 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.agentToolsEnabled).toBe(false);
   });
 
-  it("DEFAULT_SETTINGS has exactly 35 keys", () => {
+  it("DEFAULT_SETTINGS has exactly 36 keys", () => {
     const keys = Object.keys(DEFAULT_SETTINGS);
-    expect(keys.length).toBe(35);
+    expect(keys.length).toBe(36);
   });
 
   it("DEFAULT_SETTINGS has all 35 required keys", () => {
@@ -203,10 +203,11 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
       "incrementalGanttRender",
       "compactRowsToViewport",
       "agentToolsEnabled",
+      "checkUpdateOnStartup",
     ];
 
     // Verify we have exactly 32 required keys
-    expect(required.length).toBe(35);
+    expect(required.length).toBe(36);
 
     for (const key of required) {
       expect(key in DEFAULT_SETTINGS).toBe(true);
