@@ -537,6 +537,15 @@ export class TaskWorkbenchSettingTab extends PluginSettingTab {
       );
 
     this.renderMcpSettings(integration);
+    new Setting(integration)
+      .setName("起動時に新しいバージョンを確認")
+      .setDesc("Obsidian の起動時に1回だけ確認し、新しい正式版があれば通知します。ガントのバージョン表示をクリックしても確認できます。")
+      .addToggle((toggle) =>
+        toggle.setValue(!!this.hostPlugin.settings.checkUpdateOnStartup).onChange(async (value: boolean) => {
+          this.hostPlugin.settings.checkUpdateOnStartup = value;
+          await this.hostPlugin.saveSettings();
+        })
+      );
     renderUpdaterSection(integration, this.app, this.hostPlugin);
     showTab(this.activeTab);
     const { version, commit, builtAt } = getBuildInfo();

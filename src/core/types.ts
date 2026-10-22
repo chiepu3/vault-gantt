@@ -186,6 +186,8 @@ export interface TaskWorkbenchSettings {
   /** Where the AI chat opens, and whether it opens by itself at start-up when it is not already open. */
   aiChatPlacement: "right" | "left" | "tab";
   aiChatAutoOpen: boolean;
+  /** Look for a newer release once at start-up and offer to install it. */
+  checkUpdateOnStartup: boolean;
   ganttSyncEnabled: boolean;
   ganttSyncUrl: string;
   ganttSyncIntervalMinutes: number;
