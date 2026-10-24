@@ -1,0 +1,102 @@
+{
+  "repository": "chiepu3/vault-gantt",
+  "defaultBranch": "main",
+  "targets": [
+    {
+      "branch": "main",
+      "sha": "a7c28ce119a0b2814e7cf877f480099666110a93",
+      "kind": "main",
+      "pr": null,
+      "commitTime": "2026-10-20T09:58:16Z",
+      "slug": "main",
+      "infoHash": "778645d4156fa42c",
+      "status": "success",
+      "plugin": true,
+      "shots": true
+    },
+    {
+      "branch": "claude/project-thread-kh3601-all",
+      "sha": "e77c54b9e97a36f24bbd48acf1a6a93b8161d621",
+      "kind": "all",
+      "pr": null,
+      "combines": [],
+      "commitTime": "2026-10-16T13:24:46Z",
+      "slug": "claude-project-thread-kh3601-all",
+      "infoHash": "8b10fe58fd9c758e",
+      "status": "failure",
+      "error": "preview build failed",
+      "logTail": "$ git init -q\n\n$ git fetch -q --depth 1 https://github.com/chiepu3/vault-gantt.git e77c54b9e97a36f24bbd48acf1a6a93b8161d621\n\n$ git checkout -q FETCH_HEAD\n\n$ npm ci --no-audit --no-fund\n\nadded 211 packages in 3s\nnpm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported\nnpm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.\nnpm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me\nnpm warn deprecated @humanwhocodes/config-array@0.13.0: Use @eslint/config-array instead\nnpm warn deprecated @humanwhocodes/object-schema@2.0.3: Use @eslint/object-schema instead\nnpm warn deprecated eslint@8.57.1: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n\npreview tools: --tools (no tools of its own, no main fallback)\n$ node /home/runner/work/vault-gantt/vault-gantt/tools-src/tools/web-preview/build.mjs --app /home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all --out /home/runner/work/vault-gantt/vault-gantt/site/b/claude-project-thread-kh3601-all --label claude/project-thread-kh3601-all --sha e77c54b9e97a36f24bbd48acf1a6a93b8161d621 --info /home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all.info.json\n✘ [ERROR] Could not resolve \"./core/note-v2\" [plugin web-preview]\n\n    ../../tools-src/tools/web-preview/shell/seed.ts:5:29:\n      5 │ import { buildNewNote } from \"@app/core/note-v2\";\n        ╵                              ~~~~~~~~~~~~~~~~~~~\n\n/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:1476\n  let error = new Error(text);\n              ^\n\nError: Build failed with 1 error:\n../../tools-src/tools/web-preview/shell/seed.ts:5:29: ERROR: [plugin: web-preview] Could not resolve \"./core/note-v2\"\n    at failureErrorWithLog (/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:1476:15)\n    at /home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:945:25\n    at runOnEndCallbacks (/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:1316:45)\n    at buildResponseToResult (/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:943:7)\n    at /home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/runner/work/vault-gantt/vault-gantt/apps/claude-project-thread-kh3601-all/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:519:28)\n    at addChunk (node:internal/streams/readable:561:12) {\n  errors: [Getter/Setter],\n  warnings: [Getter/Setter]\n}\n\nNode.js v22.23.3\n\n"
+    },
+    {
+      "branch": "claude/project-thread-cdhytq",
+      "sha": "d57084f8b7cac755f61f4abbf3458f8845f9fdb5",
+      "kind": "pr",
+      "pr": {
+        "number": 74,
+        "title": "feat: 新しいバージョンの通知と更新（起動時／バージョン表示クリック）",
+        "url": "https://github.com/chiepu3/vault-gantt/pull/74",
+        "createdAt": "2026-10-22T03:19:50Z"
+      },
+      "commitTime": "2026-10-22T03:19:40Z",
+      "slug": "claude-project-thread-cdhytq",
+      "infoHash": "e9a60946555a1dd5",
+      "status": "success",
+      "plugin": true,
+      "shots": true
+    },
+    {
+      "branch": "claude/project-thread-979hop",
+      "sha": "da266f95cb49859bc66ab7d7a9556ee3dc42347f",
+      "kind": "pr",
+      "pr": {
+        "number": 73,
+        "title": "fix: 作業時間ポップオーバーに存在しないタスクの残存時間が出る問題を修正",
+        "url": "https://github.com/chiepu3/vault-gantt/pull/73",
+        "createdAt": "2026-10-22T02:46:50Z"
+      },
+      "commitTime": "2026-10-22T02:46:40Z",
+      "slug": "claude-project-thread-979hop",
+      "infoHash": "213960dc125b5063",
+      "status": "success",
+      "plugin": true,
+      "shots": true
+    },
+    {
+      "branch": "claude/project-thread-0ft0zb",
+      "sha": "63216508052651ba35217392c8cf0767c04877c8",
+      "kind": "pr",
+      "pr": {
+        "number": 69,
+        "title": "ci: 連続マージでリリースが競合し、孤立タグを残さないようにする",
+        "url": "https://github.com/chiepu3/vault-gantt/pull/69",
+        "createdAt": "2026-10-19T00:22:28Z"
+      },
+      "commitTime": "2026-10-19T00:22:18Z",
+      "slug": "claude-project-thread-0ft0zb",
+      "infoHash": "3ac566c6a54df786",
+      "status": "success",
+      "plugin": true,
+      "shots": true
+    },
+    {
+      "branch": "codex/perf-gantt-range",
+      "sha": "1820499dfc9d4fefa85d00f2e11efdec4c0cbd17",
+      "kind": "pr",
+      "pr": {
+        "number": 4,
+        "title": "perf: optimize Gantt rendering (two reviewable slices)",
+        "url": "https://github.com/chiepu3/vault-gantt/pull/4",
+        "createdAt": "2026-10-03T08:40:37Z"
+      },
+      "commitTime": "2026-10-12T04:15:31Z",
+      "slug": "codex-perf-gantt-range",
+      "infoHash": "c5760b7247875ebb",
+      "status": "failure",
+      "error": "preview build failed",
+      "logTail": "$ git init -q\n\n$ git fetch -q --depth 1 https://github.com/chiepu3/vault-gantt.git 1820499dfc9d4fefa85d00f2e11efdec4c0cbd17\n\n$ git checkout -q FETCH_HEAD\n\nreused node_modules (lockfile 66807d52)\npreview tools: --tools (no tools of its own, no main fallback)\n$ node /home/runner/work/vault-gantt/vault-gantt/tools-src/tools/web-preview/build.mjs --app /home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range --out /home/runner/work/vault-gantt/vault-gantt/site/b/codex-perf-gantt-range --label codex/perf-gantt-range --sha 1820499dfc9d4fefa85d00f2e11efdec4c0cbd17 --info /home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range.info.json\n✘ [ERROR] Could not resolve \"./core/note-v2\" [plugin web-preview]\n\n    ../../tools-src/tools/web-preview/shell/seed.ts:5:29:\n      5 │ import { buildNewNote } from \"@app/core/note-v2\";\n        ╵                              ~~~~~~~~~~~~~~~~~~~\n\n/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:1476\n  let error = new Error(text);\n              ^\n\nError: Build failed with 1 error:\n../../tools-src/tools/web-preview/shell/seed.ts:5:29: ERROR: [plugin: web-preview] Could not resolve \"./core/note-v2\"\n    at failureErrorWithLog (/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:1476:15)\n    at /home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:945:25\n    at runOnEndCallbacks (/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:1316:45)\n    at buildResponseToResult (/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:943:7)\n    at /home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/runner/work/vault-gantt/vault-gantt/apps/codex-perf-gantt-range/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:519:28)\n    at addChunk (node:internal/streams/readable:561:12) {\n  errors: [Getter/Setter],\n  warnings: [Getter/Setter]\n}\n\nNode.js v22.23.3\n\n"
+    }
+  ],
+  "toolsHash": "445971403bbdcce5",
+  "builtDay": "2026-10-24",
+  "shotsEnabled": true
+}

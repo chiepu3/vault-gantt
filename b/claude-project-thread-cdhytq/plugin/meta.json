@@ -1,0 +1,20 @@
+{
+  "branch": "claude/project-thread-cdhytq",
+  "sha": "d57084f8b7cac755f61f4abbf3458f8845f9fdb5",
+  "version": "0.10.1",
+  "builtAt": "2026-10-24T01:24:03.245Z",
+  "files": {
+    "main.js": {
+      "size": 1811246,
+      "sha256": "41a69039f8856537caad863cea58b409beab5cde730f4975d2a22b90536f0af7"
+    },
+    "manifest.json": {
+      "size": 278,
+      "sha256": "9908bc4202caf1c13f9d8f5daede03754a4eb48bec2ee786ba7699b189b8fc46"
+    },
+    "styles.css": {
+      "size": 98564,
+      "sha256": "4d890243f56fa95b97a4fe981ec047d0940d0ab88fb23fe80eb7d3e7da58ec3e"
+    }
+  }
+}

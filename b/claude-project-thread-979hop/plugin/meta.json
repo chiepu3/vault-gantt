@@ -1,0 +1,20 @@
+{
+  "branch": "claude/project-thread-979hop",
+  "sha": "da266f95cb49859bc66ab7d7a9556ee3dc42347f",
+  "version": "0.10.1",
+  "builtAt": "2026-10-24T01:24:34.585Z",
+  "files": {
+    "main.js": {
+      "size": 1808311,
+      "sha256": "01bccaa149442eb1dc605c0088f6a32cbff99cddd1a547f1da33ffbe0ad97dc3"
+    },
+    "manifest.json": {
+      "size": 278,
+      "sha256": "9908bc4202caf1c13f9d8f5daede03754a4eb48bec2ee786ba7699b189b8fc46"
+    },
+    "styles.css": {
+      "size": 98547,
+      "sha256": "a6a8246d871d38931e072075f6684fd6fbe5d7386d0b66a75b1cf697b879d3ef"
+    }
+  }
+}

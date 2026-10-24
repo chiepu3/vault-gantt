@@ -1,0 +1,20 @@
+{
+  "branch": "claude/project-thread-0ft0zb",
+  "sha": "63216508052651ba35217392c8cf0767c04877c8",
+  "version": "0.8.1",
+  "builtAt": "2026-10-24T01:25:06.241Z",
+  "files": {
+    "main.js": {
+      "size": 1803821,
+      "sha256": "3be55866a305920c0a08fd0795bbb01d388d40cc402db32b8e8b475ddd3262b8"
+    },
+    "manifest.json": {
+      "size": 277,
+      "sha256": "e20ca30f5df9ae3cbd5d657b884f784b7f10f9913d63ca95f759bb2c52f7abc5"
+    },
+    "styles.css": {
+      "size": 98439,
+      "sha256": "f7404be37d4bbac360e07a52f75a3bc3e0475853d174d7efea529e954f18b294"
+    }
+  }
+}
