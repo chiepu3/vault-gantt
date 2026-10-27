@@ -1094,6 +1094,7 @@ button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(
 .twb-milestone-date { color: var(--text-muted); }
 .twb-milestone.is-overdue .twb-milestone-date { color: var(--vg-color-danger); font-weight: var(--vg-weight-strong); }
 .twb-milestone.is-today .twb-milestone-date { color: var(--text-warning); font-weight: var(--vg-weight-strong); }
+.task-gantt-milestone[style*="--vg-milestone-color"], .twb-milestone[style*="--vg-milestone-color"] { border-color: var(--vg-milestone-color); background: color-mix(in srgb, var(--vg-milestone-color) 22%, var(--background-primary)); }
 .twb-milestone-add { border-style: dashed; background: transparent; color: var(--text-muted); }
 .twb-milestone .task-workbench-tag-chip { height: 14px; padding: 0 var(--vg-space-1); font-size: var(--vg-font-micro); }
 .twb-milestone-popover { position: fixed; z-index: var(--layer-popover, 40); display: flex; flex-direction: column; gap: var(--vg-space-3); width: 260px; padding: var(--vg-space-4); border: var(--vg-border-width) solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary); box-shadow: var(--shadow-s); }

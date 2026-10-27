@@ -40,7 +40,7 @@ import {
 import type { VirtualRange } from "../app/workbench-virtual";
 import { TaskFinderModal } from "./task-finder-modal";
 import { registerHistoryHotkeys } from "./history-hotkeys";
-import { appendTagChips, findGanttTagDefinition } from "./tag-chip";
+import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
@@ -1595,7 +1595,7 @@ export class TaskWorkbenchView extends ItemView {
             .find((color) => color !== "") ?? ""
         : "";
       if (frameColor !== "") {
-        chip.style.borderColor = frameColor;
+        setStyleVar(chip, "--vg-milestone-color", frameColor);
       }
       const star = document.createElement("span");
       star.classList.add("twb-milestone-star");

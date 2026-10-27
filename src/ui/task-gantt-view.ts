@@ -5319,7 +5319,7 @@ export class TaskGanttView extends ItemView {
             ""
           : "";
         if (frameColor !== "") {
-          deadline.style.borderColor = frameColor;
+          setStyleVar(deadline, "--vg-milestone-color", frameColor);
         }
 
         const deadlineStar = document.createElement("span");
