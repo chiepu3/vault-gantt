@@ -36,13 +36,13 @@ const workload = z.record(dateOnlySchema, z.number().finite().min(0).max(24));
 const marker = z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\u0000:,[\]]+$/), title: singleLine.trim().min(1), date: dateOnlySchema, tags: tagNamesSchema.optional() }).strict();
 const markers = z.array(marker).max(100).refine((items) => new Set(items.map((item) => item.key)).size === items.length, "マーカーkeyは一意");
 export const taskScheduleInputSchema = z.object({ plannedStartDate: clearableDate.optional(), plannedEndDate: clearableDate.optional(), dueDate: clearableDate.optional() }).strict();
-/** Legacy 19 fields. updatedAt is accepted for compatibility, but remains server managed. */
+/** Legacy 19 fields plus parent milestones. updatedAt is accepted for compatibility, but remains server managed. */
 export const taskPatchInputSchema = taskScheduleInputSchema.extend({
   displayName: singleLine.optional(), title: singleLine.optional(), statusLabel: statusSchema.optional(),
   createdAt: clearableDate.optional(), updatedAt: clearableDate.optional(), priority: z.number().finite().min(0).max(5).optional(),
   priorityMode: z.enum(["auto", "manual"]).optional(), tags: tagNamesSchema.optional(), completed: z.boolean().optional(),
   ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(), currentStatus: text.optional(), notes: text.optional(),
-  workloadPlan: workload.optional(), workloadActual: workload.optional(), ganttMarkers: markers.optional(),
+  workloadPlan: workload.optional(), workloadActual: workload.optional(), ganttMarkers: markers.optional(), milestones: markers.optional(),
 }).strict();
 export type TaskPatchInput = DeepReadonly<z.infer<typeof taskPatchInputSchema>>;
 const task = { taskId: idSchema, expectedRevision };

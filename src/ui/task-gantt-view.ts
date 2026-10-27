@@ -6759,9 +6759,9 @@ export class TaskGanttView extends ItemView {
     this.activateContextMenu(menu);
 
     menu.addItem((item) => {
-      item.setTitle("編集");
+      item.setTitle("名前を変更");
       item.onClick(() => {
-        void this.editMilestoneInteractively(parent, milestone);
+        this.renameMilestoneInteractively(parent, milestone);
       });
     });
 
@@ -6817,48 +6817,29 @@ export class TaskGanttView extends ItemView {
     await this.render();
   }
 
-  private async editMilestoneInteractively(
-    parent: TaskRow,
-    milestone: GanttMarker
-  ): Promise<void> {
-    const result = await this.host.openMarkerModal(
-      "マイルストーンを編集",
-      milestone.title,
-      milestone.date
-    );
-    if (result === null) {
-      return; // cancelled
-    }
-    this.closeRichPopover();
-    await this.saveTaskPatch(
-      parent,
-      {
-        milestones: this.replaceMilestone(parent, milestone.key, {
-          title: result.title || milestone.title,
-          date: result.date,
-        }),
-      },
-      { checkWorkload: false }
-    );
+  private renameMilestoneInteractively(parent: TaskRow, milestone: GanttMarker): void {
+    this.host.openTextPrompt("マイルストーン名を変更", "マイルストーン名", milestone.title, (value) => {
+      void this.saveMilestoneTitleEdit(parent, milestone.key, value);
+    });
   }
 
-  /** Asks for a name and adds a milestone on `date`. */
-  private async addMilestoneInteractively(
-    parent: TaskRow,
-    date: string
-  ): Promise<void> {
-    const result = await this.host.openMarkerModal("マイルストーンを追加", "", date);
-    if (result === null) {
-      return; // cancelled
-    }
-    const current = getMilestones(parent);
-    const title = result.title || "マイルストーン";
-    await this.saveTaskPatch(
-      parent,
-      { milestones: [...current, { key: newMilestoneKey(title, current), title, date: result.date }] },
-      { checkWorkload: false }
-    );
+
+  /** Asks for a name, like a new subtask, and adds a milestone on `date`. The date then moves by dragging only. */
+  private addMilestoneInteractively(parent: TaskRow, date: string): void {
+    this.host.openTextPrompt("新規マイルストーン", "マイルストーン名", "", (value) => {
+      const title = value.trim();
+      if (title === "") {
+        return;
+      }
+      const current = getMilestones(parent);
+      void this.saveTaskPatch(
+        parent,
+        { milestones: [...current, { key: newMilestoneKey(title, current), title, date }] },
+        { checkWorkload: false }
+      );
+    });
   }
+
 
   private openEmptyCellMenu(
     evt: MouseEvent,
@@ -6927,7 +6908,7 @@ export class TaskGanttView extends ItemView {
     menu.addItem((item) => {
       item.setTitle(`マイルストーンを ${clickedDate} に追加`);
       item.onClick(() => {
-        void this.addMilestoneInteractively(parent, clickedDate);
+        this.addMilestoneInteractively(parent, clickedDate);
       });
     });
 

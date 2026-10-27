@@ -4,23 +4,20 @@ import { setStyleVar } from "./tag-chip";
 export interface MilestonePopoverOptions {
   anchor: HTMLElement;
   settings: TaskWorkbenchSettings;
-  /** The milestone being edited; null adds a new one. */
-  milestone: GanttMarker | null;
-  /** Date a new milestone starts with. */
-  defaultDate: string;
-  onSave(result: { title: string; date: string; tags: string[] }): void;
+  milestone: GanttMarker;
+  onSave(result: { title: string; tags: string[] }): void;
   onDelete?(): void;
 }
 
 /**
- * A small popover under `anchor` for one milestone: name, date and tags. Closes on save, delete, Escape or a click
+ * A small popover under `anchor` for one milestone: name and tags (its date moves by dragging it in the gantt). Closes on save, delete, Escape or a click
  * outside, and returns its closer.
  */
 export function openMilestonePopover(options: MilestonePopoverOptions): () => void {
   const { anchor, settings, milestone } = options;
   const root = document.createElement("div");
   root.classList.add("twb-milestone-popover");
-  let tags = [...(milestone?.tags ?? [])];
+  let tags = [...(milestone.tags ?? [])];
 
   const field = (label: string, input: HTMLInputElement): void => {
     const wrap = root.createDiv({ cls: "twb-milestone-popover-field" });
@@ -29,13 +26,9 @@ export function openMilestonePopover(options: MilestonePopoverOptions): () => vo
   };
   const titleInput = document.createElement("input");
   titleInput.type = "text";
-  titleInput.value = milestone?.title ?? "";
+  titleInput.value = milestone.title;
   titleInput.placeholder = "マイルストーン名";
-  const dateInput = document.createElement("input");
-  dateInput.type = "date";
-  dateInput.value = milestone?.date ?? options.defaultDate;
   field("名前", titleInput);
-  field("日付", dateInput);
 
   const definitions = settings.ganttFeatureTagsEnabled && Array.isArray(settings.ganttTags)
     ? settings.ganttTags.filter((definition) => definition.name.trim() !== "")
@@ -56,18 +49,14 @@ export function openMilestonePopover(options: MilestonePopoverOptions): () => vo
 
   const buttons = root.createDiv({ cls: "twb-milestone-popover-buttons" });
   const save = buttons.createEl("button", { text: "保存", cls: "mod-cta" });
-  const refresh = (): void => { save.disabled = dateInput.value === ""; };
-  refresh();
-  dateInput.addEventListener("input", refresh);
-  if (milestone && options.onDelete) {
+  if (options.onDelete) {
     const remove = buttons.createEl("button", { text: "削除", cls: "mod-warning" });
     remove.addEventListener("click", () => { close(); options.onDelete?.(); });
   }
   buttons.createEl("button", { text: "キャンセル" }).addEventListener("click", () => close());
 
   const submit = (): void => {
-    if (dateInput.value === "") return;
-    const result = { title: titleInput.value.trim() || milestone?.title || "マイルストーン", date: dateInput.value, tags };
+    const result = { title: titleInput.value.trim() || milestone.title, tags };
     close();
     options.onSave(result);
   };
