@@ -1577,6 +1577,7 @@ function fingerprintParent(): TaskRow {
       title: "Parent",
       displayName: "Parent Display",
       dueDate: "2026-02-01",
+      milestones: [{ key: "review", title: "Review", date: "2026-02-01", tags: ["ptag"] }],
       ganttOrder: 42,
       tags: ["ptag"],
       completed: false,
@@ -1598,6 +1599,9 @@ describe("computeRowFingerprint", () => {
     ["parent title", (row) => void (row.title = "Other")],
     ["parent displayName", (row) => void (row.displayName = "Other")],
     ["parent dueDate", (row) => void (row.dueDate = "2026-02-02")],
+    // Renaming or re-tagging a milestone keeps dueDate, so these must count on their own.
+    ["milestone title", (row) => void (row.milestones = [{ key: "review", title: "Final", date: "2026-02-01", tags: ["ptag"] }])],
+    ["milestone tags", (row) => void (row.milestones = [{ key: "review", title: "Review", date: "2026-02-01", tags: ["other"] }])],
     ["parent Gantt order", (row) => void (row.ganttOrder = 43)],
     ["parent tags", (row) => void (row.tags = ["other"])],
     ["parent completion", (row) => void (row.completed = true)],

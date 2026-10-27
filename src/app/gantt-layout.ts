@@ -1299,6 +1299,8 @@ export function computeRowFingerprint(parent: TaskRow): string {
     title: parent.title,
     displayName: parent.displayName,
     dueDate: parent.dueDate ?? "",
+    // Renaming or re-tagging a milestone leaves dueDate as it is, so the milestones themselves are part of the row.
+    milestones: parent.milestones ?? [],
     ganttOrder: parent.ganttOrder ?? null,
     tags: parent.tags,
     completed: parent.completed,

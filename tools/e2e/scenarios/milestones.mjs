@@ -5,10 +5,11 @@
 //    → the parent note gets `due` and `milestones` on that date.
 // 2. Gantt: drag the milestone to the right → its date (and `due`) moves later.
 // 3. Workbench: the ＋ chip → name + Enter → a second milestone is saved.
+// 3b. Workbench: click a chip → popover → rename + Enter.
 // 4. Workbench: click a milestone chip → popover 削除 → it is removed from the note.
 
 import { pickAnchorMonday, toIsoStr, addDaysIso, writeDragFixture, readFrontmatterField, readNoteText } from "./drag-fixture.mjs";
-import { centerOf, dragGesture, setFieldValue, keydownOn, dismissTrustDialogIfPresent, moveMouse, mouseDown, mouseUp, rectOf, sleep } from "./cdp-input.mjs";
+import { centerOf, dblclickAt, dragGesture, setFieldValue, keydownOn, dismissTrustDialogIfPresent, moveMouse, mouseDown, mouseUp, rectOf, sleep } from "./cdp-input.mjs";
 
 const GANTT = "vault-gantt:open-task-gantt";
 const WORKBENCH = "vault-gantt:open-task-workbench";
@@ -98,6 +99,49 @@ export async function run({ cdp, vaultDir }) {
   }
   details.push(`OK drag → due ${moved}`);
 
+  // 2b. Rename by double-click (inline editor + Enter), then from the right-click menu (prompt + Enter).
+  {
+    const at = centerOf(await rectOf(cdp, ".task-gantt-milestone"));
+    await dblclickAt(cdp, at.x, at.y);
+    try {
+      await cdp.waitForExpression(`!!document.querySelector(".task-gantt-inline-editor")`, { timeoutMs: 5000, label: "inline editor" });
+    } catch (err) {
+      return fail(`double-click opened no editor: ${err.message}`);
+    }
+    await setFieldValue(cdp, ".task-gantt-inline-editor", "設計レビュー");
+    await keydownOn(cdp, ".task-gantt-inline-editor", "Enter");
+    try {
+      await waitFor(() => milestoneTitles(readNoteText(parentAbsPath)).includes("設計レビュー"), "dblclick rename");
+    } catch (err) {
+      return fail(`double-click rename did not save (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
+    }
+    try {
+      await cdp.waitForExpression(`[...document.querySelectorAll(".task-gantt-milestone")].some((e) => e.textContent.includes("設計レビュー"))`, { timeoutMs: 5000, label: "renamed label shown" });
+    } catch (err) {
+      return fail(`double-click rename saved but the chart still shows the old name: ${err.message}`);
+    }
+    details.push("OK dblclick rename");
+
+    await sleep(500);
+    const at2 = centerOf(await rectOf(cdp, ".task-gantt-milestone"));
+    await clickAt(cdp, at2.x, at2.y, "right");
+    const found = await cdp.evaluate(`(() => { const el = [...document.querySelectorAll(".menu-item")].find((e) => e.textContent.includes("名前を変更")); if (!el) return false; el.setAttribute("data-e2e", "rename"); return true; })()`);
+    if (!found) return fail("milestone menu has no 名前を変更");
+    await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=rename]"))));
+    await answerPrompt(cdp, "最終レビュー");
+    try {
+      await waitFor(() => milestoneTitles(readNoteText(parentAbsPath)).includes("最終レビュー"), "menu rename");
+    } catch (err) {
+      return fail(`menu rename did not save (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
+    }
+    try {
+      await cdp.waitForExpression(`[...document.querySelectorAll(".task-gantt-milestone")].some((e) => e.textContent.includes("最終レビュー"))`, { timeoutMs: 5000, label: "renamed label shown" });
+    } catch (err) {
+      return fail(`menu rename saved but the chart still shows the old name: ${err.message}`);
+    }
+    details.push("OK menu rename");
+  }
+
   // 3. Workbench ＋ chip.
   await cdp.evaluate(`app.commands.executeCommandById(${JSON.stringify(WORKBENCH)}), true`);
   try {
@@ -108,19 +152,44 @@ export async function run({ cdp, vaultDir }) {
   await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, ".twb-milestone-add"))));
   await answerPrompt(cdp, "β版");
   try {
-    await waitFor(() => { const t = milestoneTitles(readNoteText(parentAbsPath)); return t.includes("β版") && t.includes("中間レビュー"); }, "second milestone");
+    await waitFor(() => { const t = milestoneTitles(readNoteText(parentAbsPath)); return t.includes("β版") && t.includes("最終レビュー"); }, "second milestone");
   } catch (err) {
     return fail(`workbench add did not save (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
   }
   details.push("OK workbench add");
 
+  // 3b. Rename from the workbench popover (name + Enter); the chip must show the new name.
+  {
+    try {
+      await cdp.waitForExpression(`[...document.querySelectorAll(".twb-milestone[data-twb-act=milestone]")].some((e) => e.textContent.includes("β版"))`, { timeoutMs: 10000, label: "β版 chip shown" });
+    } catch (err) {
+      return fail(`added chip not shown (${err.message})`);
+    }
+    await cdp.evaluate(`[...document.querySelectorAll(".twb-milestone[data-twb-act=milestone]")].find((e) => e.textContent.includes("β版")).setAttribute("data-e2e", "beta0"), true`);
+    await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=beta0]"))));
+    try {
+      await cdp.waitForExpression(`!!document.querySelector(".twb-milestone-popover input")`, { timeoutMs: 5000, label: "popover" });
+    } catch (err) {
+      return fail(err.message);
+    }
+    await setFieldValue(cdp, ".twb-milestone-popover input", "β版リリース");
+    await keydownOn(cdp, ".twb-milestone-popover input", "Enter");
+    try {
+      await waitFor(() => milestoneTitles(readNoteText(parentAbsPath)).includes("β版リリース"), "popover rename");
+      await cdp.waitForExpression(`[...document.querySelectorAll(".twb-milestone")].some((e) => e.textContent.includes("β版リリース"))`, { timeoutMs: 5000, label: "renamed chip shown" });
+    } catch (err) {
+      return fail(`workbench rename failed (${err.message})`);
+    }
+    details.push("OK workbench rename");
+  }
+
   // 4. Delete one from its popover.
   try {
-    await cdp.waitForExpression(`[...document.querySelectorAll(".twb-milestone[data-twb-act=milestone]")].some((e) => e.textContent.includes("β版"))`, { timeoutMs: 10000, label: "β版 chip" });
+    await cdp.waitForExpression(`[...document.querySelectorAll(".twb-milestone[data-twb-act=milestone]")].some((e) => e.textContent.includes("β版リリース"))`, { timeoutMs: 10000, label: "β版 chip" });
   } catch (err) {
     return fail(err.message);
   }
-  await cdp.evaluate(`[...document.querySelectorAll(".twb-milestone[data-twb-act=milestone]")].find((e) => e.textContent.includes("β版")).setAttribute("data-e2e", "beta"), true`);
+  await cdp.evaluate(`[...document.querySelectorAll(".twb-milestone[data-twb-act=milestone]")].find((e) => e.textContent.includes("β版リリース")).setAttribute("data-e2e", "beta"), true`);
   await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=beta]"))));
   try {
     await cdp.waitForExpression(`!!document.querySelector(".twb-milestone-popover")`, { timeoutMs: 5000, label: "popover" });
@@ -130,7 +199,7 @@ export async function run({ cdp, vaultDir }) {
   await cdp.evaluate(`[...document.querySelectorAll(".twb-milestone-popover button")].find((b) => b.textContent === "削除").setAttribute("data-e2e", "delete"), true`);
   await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=delete]"))));
   try {
-    await waitFor(() => { const t = milestoneTitles(readNoteText(parentAbsPath)); return !t.includes("β版") && t.includes("中間レビュー"); }, "β版 removed");
+    await waitFor(() => { const t = milestoneTitles(readNoteText(parentAbsPath)); return !t.includes("β版") && t.includes("最終レビュー"); }, "β版 removed");
   } catch (err) {
     return fail(`delete did not save (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
   }

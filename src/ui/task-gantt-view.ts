@@ -6813,8 +6813,8 @@ export class TaskGanttView extends ItemView {
     if (title === "") {
       return;
     }
-    await this.saveItem(parent, { milestones: this.replaceMilestone(parent, key, { title }) });
-    await this.render();
+    // savePopoverPatch reports a failed save instead of dropping it silently.
+    await this.savePopoverPatch(parent, { milestones: this.replaceMilestone(parent, key, { title }) });
   }
 
   private renameMilestoneInteractively(parent: TaskRow, milestone: GanttMarker): void {
