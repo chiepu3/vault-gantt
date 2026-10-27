@@ -96,10 +96,10 @@ describe("P0 operation ledger", () => {
 });
 
 describe("legacy six-tool compatibility", () => {
-  it("preserves the tool names and 19-field compatibility patch", () => {
+  it("preserves the tool names and the 19-field compatibility patch plus milestones", () => {
     expect(Object.keys(LEGACY_OPERATION_IDS)).toEqual(Object.keys(OPERATION_MANIFEST));
     expect(Object.keys(taskPatchInputSchema.shape)).toEqual(Object.keys(patchSchema.shape));
-    expect(Object.keys(taskPatchInputSchema.shape)).toHaveLength(19);
+    expect(Object.keys(taskPatchInputSchema.shape)).toHaveLength(20);
     expect(adaptLegacyOperationInput("create", { name: "Parent" }).operationId).toBe("T03");
     expect(adaptLegacyOperationInput("create", { name: "Child", parentTaskId: "tasks/parent.md" }).operationId).toBe("T04");
   });
