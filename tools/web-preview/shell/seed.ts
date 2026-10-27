@@ -11,10 +11,10 @@ const plus = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); 
 const range = (a: number, b: number, h: number) => { const o: Record<string, number> = {}; for (let i = a; i <= b; i++) { const d = new Date(); d.setDate(d.getDate() + i); if (d.getDay() % 6) o[iso(d)] = h; } return o; };
 
 interface Sub { key: string; title: string; from: number; to: number; status?: string; tags?: string[]; plan?: number; actual?: [number, number, number]; markers?: Array<[string, string, number]>; note?: string; status_text?: string; due?: number }
-interface Parent { name: string; tags: string[]; due?: number; prio: number; created: number; gantt?: boolean; completed?: boolean; status?: string; subs: Sub[]; current?: string; notes?: string }
+interface Parent { name: string; tags: string[]; due?: number; milestones?: Array<[string, number, string[]?]>; prio: number; created: number; gantt?: boolean; completed?: boolean; status?: string; subs: Sub[]; current?: string; notes?: string }
 
 const PARENTS: Parent[] = [
-  { name: "新機能リリース準備", tags: ["開発"], due: 14, prio: 4, created: -12, current: "仕様はレビュー済み。実装を進めつつ、デザイン確認の日程を調整中。", notes: "リリース判定は来週後半。", subs: [
+  { name: "新機能リリース準備", tags: ["開発"], due: 14, milestones: [["仕様確定", 5], ["β版公開", 14, ["開発"]], ["正式リリース", 24]], prio: 4, created: -12, current: "仕様はレビュー済み。実装を進めつつ、デザイン確認の日程を調整中。", notes: "リリース判定は来週後半。", subs: [
     { key: "spec", title: "仕様書レビュー", from: -8, to: -4, status: "done", plan: 3, actual: [-8, -4, 3] },
     { key: "impl", title: "実装", from: -3, to: 6, status: "in_progress", tags: ["開発"], plan: 5, actual: [-3, 0, 4.5], markers: [["m1", "中間レビュー", 2]], status_text: "API層まで完了。画面は着手前。" },
     { key: "design", title: "デザイン確認", from: 1, to: 3, status: "active", tags: ["デザイン"], plan: 2 },
@@ -66,7 +66,9 @@ function toNotes(p: Parent, idx: number): { files: Record<string, string>; paren
     subs.set(id, row); subIds.push(id);
     files[path] = buildNewNote(row as any, stringifyYaml, { parentLink: `[[${stem}]]` });
   });
-  const parent = { ...common, kind: "parent", id: parentId, file: { path: parentPath }, title: p.name, displayName: p.name, statusLabel: p.status ?? "in_progress", completed: !!p.completed, dueDate: p.due !== undefined ? plus(p.due) : undefined,
+  // Named milestones win over `due`, which then mirrors the earliest one (same rule as the plugin's note reader).
+  const milestones = p.milestones?.map(([title, offset, tags]) => ({ key: title, title, date: plus(offset), tags }));
+  const parent = { ...common, kind: "parent", id: parentId, file: { path: parentPath }, title: p.name, displayName: p.name, statusLabel: p.status ?? "in_progress", completed: !!p.completed, milestones, dueDate: milestones ? milestones.map((m) => m.date).sort()[0] : p.due !== undefined ? plus(p.due) : undefined,
     priority: p.prio, priorityMode: "manual", tags: p.tags, ganttEnabled: p.gantt ?? true, currentStatus: p.current ?? "", notes: p.notes ?? "", subtasks: subs };
   files[parentPath] = buildNewNote(parent as any, stringifyYaml);
   return { files, parentId, subIds };

@@ -35,6 +35,7 @@ import {
 } from "../core/constants";
 import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
+import { getMilestones, newMilestoneKey } from "../core/milestones";
 import { normalizeWorkloadMap } from "../core/task-patch";
 import {
   addDays,
@@ -648,6 +649,8 @@ const EXTERNAL_LABEL_MAX_WIDTH_PX = 340;
 // gap (px) below the deadline-marker band (mirrors the DEADLINE
 // addition inside computeRowHeight).
 const DEADLINE_MARKER_GAP_PX = 6;
+// width (px) of a milestone's ★, date and padding, before its name is added at ~12px per character
+const MILESTONE_FULL_LABEL_PX = 70;
 // at most four tag chips in the LEFT column.
 const MAX_TAG_CHIPS = 4;
 
@@ -4678,7 +4681,7 @@ export class TaskGanttView extends ItemView {
     }
     const laneOffsets = computeLaneOffsets(laneHeights);
 
-    const hasDeadlineMarker = Boolean(parent.dueDate);
+    const hasDeadlineMarker = getMilestones(parent).length > 0;
     const baseRowHeight = computeRowHeight(
       laneCount,
       topRowCounts,
@@ -5289,54 +5292,85 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(node);
     }
 
-    // Render the due-date marker in the row's bottom band. It is shown only
-    // when the due date is within the visible timeline and includes a star,
-    // the "期限" label, and the formatted date.
-    if (hasDeadlineMarker && parent.dueDate) {
-      const deadlineLeft = diffDays(baseDate, parent.dueDate) * dayWidth;
+    // Milestones sit in the row's bottom band: ★ + name + M/D (+ primary tag). Several can share the band, so a
+    // milestone whose label would run into the next one shows its ★ and date only (the name stays in the tooltip).
+    if (hasDeadlineMarker) {
+      const milestones = getMilestones(parent);
       const timelineWidth = dates.length * dayWidth;
-      if (deadlineLeft >= 0 && deadlineLeft <= timelineWidth) {
-        // The marker is not rendered when its date is outside the visible range.
+      const lefts = milestones.map((milestone) => diffDays(baseDate, milestone.date) * dayWidth);
+      milestones.forEach((milestone, index) => {
+        const left = lefts[index];
+        if (left < 0 || left > timelineWidth) {
+          return; // not rendered when its date is outside the visible range
+        }
+        const next = lefts[index + 1];
+        const full = next === undefined || next - left >= MILESTONE_FULL_LABEL_PX + milestone.title.length * 12;
         const deadline = document.createElement("div");
-        deadline.classList.add("task-gantt-deadline-marker");
-        deadline.style.left = `${deadlineLeft}px`;
+        deadline.classList.add("task-gantt-deadline-marker", "task-gantt-milestone");
+        deadline.style.left = `${left}px`;
         deadline.style.top = `${
           rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - MARKER_ROW_HEIGHT - DEADLINE_MARKER_GAP_PX
         }px`;
-        // ★ + "期限" label + M/D date.
+        deadline.title = `${milestone.title} ${milestone.date}`;
+        // The frame takes the milestone's tag color (else the parent's), like a subtask's callout frame.
+        const frameColor = this.host.settings.ganttFeatureTagsEnabled
+          ? getPrimaryGanttTagDefinition(this.host.settings, milestone.tags ?? [])?.color ||
+            getPrimaryGanttTagDefinition(this.host.settings, parent.tags)?.color ||
+            ""
+          : "";
+        if (frameColor !== "") {
+          setStyleVar(deadline, "--vg-milestone-color", frameColor);
+        }
 
         const deadlineStar = document.createElement("span");
         deadlineStar.classList.add("task-gantt-deadline-marker-star");
         deadlineStar.textContent = "★";
         deadline.appendChild(deadlineStar);
-        // Explicit space text nodes (not just CSS margin) so textContent/
-        // copied text still reads "★ 期限 8/25" instead of "★期限8/25".
+        // Explicit space text nodes (not just CSS margin) so copied text reads "★ 期限 8/25".
         deadline.appendChild(document.createTextNode(" "));
 
-        const deadlineLabel = document.createElement("span");
-        deadlineLabel.classList.add("task-gantt-deadline-marker-label");
-        deadlineLabel.textContent = "期限";
-        deadline.appendChild(deadlineLabel);
-        deadline.appendChild(document.createTextNode(" "));
+        if (full) {
+          const deadlineLabel = document.createElement("span");
+          deadlineLabel.classList.add("task-gantt-deadline-marker-label");
+          deadlineLabel.textContent = milestone.title;
+          deadline.appendChild(deadlineLabel);
+          deadline.appendChild(document.createTextNode(" "));
+        }
 
         const deadlineDate = document.createElement("span");
         deadlineDate.classList.add("task-gantt-deadline-marker-date");
-        deadlineDate.textContent = this.formatMonthDay(parent.dueDate);
+        deadlineDate.textContent = this.formatMonthDay(milestone.date);
         deadline.appendChild(deadlineDate);
 
-        // parent due-date drag starts only on the ★ (deadline
-        // marker) element.
+        if (full && this.host.settings.ganttFeatureTagsEnabled) {
+          const primaryTag = getPrimaryGanttTagDefinition(this.host.settings, milestone.tags ?? []);
+          if (primaryTag !== undefined) {
+            const badge = document.createElement("span");
+            badge.classList.add("task-gantt-marker-tag", "vg-chip", "is-tag");
+            badge.textContent = primaryTag.name;
+            if (primaryTag.color) {
+              setStyleVar(badge, "--vg-chip-color", primaryTag.color);
+            }
+            deadline.appendChild(badge);
+          }
+        }
+
+        // Dragging starts on the milestone itself; a double-click renames, like a marker.
         deadline.addEventListener("pointerdown", (evt: PointerEvent) => {
-          this.onParentDuePointerDown(evt, deadline, parent);
+          this.onParentDuePointerDown(evt, deadline, parent, milestone);
         });
-        // right-click menu — 「期限を削除」/「ノートを
-        // 開く」, same real obsidian.Menu + activeContextMenu dedupe idiom
-        // as openParentContextMenu/openMarkerContextMenu.
+        deadline.addEventListener("dblclick", () => {
+          this.startInlineEdit({
+            hostEl: deadline,
+            initialValue: milestone.title,
+            onCommit: (value) => this.saveMilestoneTitleEdit(parent, milestone.key, value),
+          });
+        });
         deadline.addEventListener("contextmenu", (evt: MouseEvent) => {
-          this.openDeadlineMarkerContextMenu(evt, parent);
+          this.openDeadlineMarkerContextMenu(evt, parent, milestone);
         });
         timeline.appendChild(deadline);
-      }
+      });
     }
 
   }
@@ -5927,7 +5961,8 @@ export class TaskGanttView extends ItemView {
   private onParentDuePointerDown(
     evt: PointerEvent,
     deadlineEl: HTMLElement,
-    parent: TaskRow
+    parent: TaskRow,
+    milestone: GanttMarker
   ): void {
     if (evt.button !== 0) {
       return;
@@ -5935,7 +5970,7 @@ export class TaskGanttView extends ItemView {
     evt.preventDefault();
     evt.stopPropagation();
     deadlineEl.setPointerCapture(evt.pointerId);
-    this.runParentDueDrag(parent, deadlineEl, evt.clientX, evt.pointerId);
+    this.runParentDueDrag(parent, milestone, deadlineEl, evt.clientX, evt.pointerId);
   }
 
 
@@ -6604,11 +6639,12 @@ export class TaskGanttView extends ItemView {
 
   private runParentDueDrag(
     parent: TaskRow,
+    milestone: GanttMarker,
     deadlineEl: HTMLElement,
     startClientX: number,
     pointerId: number
   ): void {
-    const originalDue = parent.dueDate ?? "";
+    const originalDue = milestone.date;
     const dayWidth = this.dayWidth;
     const holidaySet = this.holidaySet;
     const originalLeft = parseFloat(deadlineEl.style.left || "0");
@@ -6685,7 +6721,7 @@ export class TaskGanttView extends ItemView {
       }
       void this.saveTaskPatch(
         parent,
-        { dueDate: newDue },
+        { milestones: this.replaceMilestone(parent, milestone.key, { date: newDue }) },
         { checkWorkload: false }
       ); // saveTaskPatch's unconditional render covers this.
     };
@@ -6711,24 +6747,33 @@ export class TaskGanttView extends ItemView {
 
   private openDeadlineMarkerContextMenu(
     evt: MouseEvent,
-    parent: TaskRow
+    parent: TaskRow,
+    milestone: GanttMarker
   ): void {
     evt.preventDefault();
     evt.stopPropagation();
+    this.armRichPopoverSuppress(MENU_POPOVER_SUPPRESS_MS);
+    this.closeRichPopover();
 
     const menu = new Menu();
     this.activateContextMenu(menu);
 
     menu.addItem((item) => {
-      item.setTitle("期限を削除");
+      item.setTitle("編集");
       item.onClick(() => {
-        void this.saveTaskPatch(
-          parent,
-          { dueDate: "" },
-          { checkWorkload: false }
-        );
+        void this.editMilestoneInteractively(parent, milestone);
       });
     });
+
+    menu.addSeparator();
+
+    this.addTagToggleItems(menu, milestone.tags ?? [], (nextTags) => {
+      void this.savePopoverPatch(parent, {
+        milestones: this.replaceMilestone(parent, milestone.key, { tags: nextTags }),
+      });
+    });
+
+    menu.addSeparator();
 
     menu.addItem((item) => {
       item.setTitle("ノートを開く");
@@ -6737,35 +6782,83 @@ export class TaskGanttView extends ItemView {
       });
     });
 
+    menu.addItem((item) => {
+      item.setTitle("削除");
+      item.setWarning(true);
+      item.onClick(() => {
+        void this.savePopoverPatch(parent, {
+          milestones: getMilestones(parent).filter((m) => m.key !== milestone.key),
+        });
+      });
+    });
+
     menu.showAtMouseEvent(evt);
   }
 
+  /** The parent's milestones with one of them changed; the patch value for `milestones`. */
+  private replaceMilestone(
+    parent: TaskRow,
+    key: string,
+    change: Partial<Pick<GanttMarker, "title" | "date" | "tags">>
+  ): GanttMarker[] {
+    return getMilestones(parent).map((m) => (m.key === key ? { ...m, ...change } : m));
+  }
 
+  private async saveMilestoneTitleEdit(
+    parent: TaskRow,
+    key: string,
+    value: string
+  ): Promise<void> {
+    const title = value.trim();
+    if (title === "") {
+      return;
+    }
+    await this.saveItem(parent, { milestones: this.replaceMilestone(parent, key, { title }) });
+    await this.render();
+  }
 
+  private async editMilestoneInteractively(
+    parent: TaskRow,
+    milestone: GanttMarker
+  ): Promise<void> {
+    const result = await this.host.openMarkerModal(
+      "マイルストーンを編集",
+      milestone.title,
+      milestone.date
+    );
+    if (result === null) {
+      return; // cancelled
+    }
+    this.closeRichPopover();
+    await this.saveTaskPatch(
+      parent,
+      {
+        milestones: this.replaceMilestone(parent, milestone.key, {
+          title: result.title || milestone.title,
+          date: result.date,
+        }),
+      },
+      { checkWorkload: false }
+    );
+  }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  /** Asks for a name and adds a milestone on `date`. */
+  private async addMilestoneInteractively(
+    parent: TaskRow,
+    date: string
+  ): Promise<void> {
+    const result = await this.host.openMarkerModal("マイルストーンを追加", "", date);
+    if (result === null) {
+      return; // cancelled
+    }
+    const current = getMilestones(parent);
+    const title = result.title || "マイルストーン";
+    await this.saveTaskPatch(
+      parent,
+      { milestones: [...current, { key: newMilestoneKey(title, current), title, date: result.date }] },
+      { checkWorkload: false }
+    );
+  }
 
   private openEmptyCellMenu(
     evt: MouseEvent,
@@ -6832,28 +6925,11 @@ export class TaskGanttView extends ItemView {
 
 
     menu.addItem((item) => {
-      item.setTitle(`親タスク期限を ${clickedDate} に設定`);
+      item.setTitle(`マイルストーンを ${clickedDate} に追加`);
       item.onClick(() => {
-        void this.saveTaskPatch(
-          parent,
-          { dueDate: clickedDate },
-          { checkWorkload: false }
-        );
+        void this.addMilestoneInteractively(parent, clickedDate);
       });
     });
-    if (parent.dueDate) {
-      // only shown when a due date is already set.
-      menu.addItem((item) => {
-        item.setTitle("親タスク期限を削除");
-        item.onClick(() => {
-          void this.saveTaskPatch(
-            parent,
-            { dueDate: "" },
-            { checkWorkload: false }
-          );
-        });
-      });
-    }
 
     menu.addSeparator();
 
