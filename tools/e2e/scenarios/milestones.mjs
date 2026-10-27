@@ -102,6 +102,14 @@ export async function run({ cdp, vaultDir }) {
 
   // 2b. Rename by double-click (inline editor + Enter), then from the right-click menu (prompt + Enter).
   {
+    // The note is written before the chart re-renders; a double-click on the old element would be lost.
+    const md = `${Number(moved.slice(5, 7))}/${Number(moved.slice(8, 10))}`;
+    try {
+      await cdp.waitForExpression(`[...document.querySelectorAll(".task-gantt-milestone")].some((e) => e.textContent.includes(${JSON.stringify(md)}))`, { timeoutMs: 10000, label: "moved milestone rendered" });
+    } catch (err) {
+      return fail(`drag saved but the chart did not move the milestone: ${err.message}`);
+    }
+    await sleep(300);
     const at = centerOf(await rectOf(cdp, ".task-gantt-milestone"));
     await dblclickAt(cdp, at.x, at.y);
     try {
