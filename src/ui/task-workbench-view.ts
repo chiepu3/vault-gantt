@@ -4,6 +4,7 @@ import type { PreviewUiHostPorts, ViewStateV1 } from "../contracts/ports";
 import { NotePreservationError } from "../core/note-v2";
 import { getMilestones, newMilestoneKey } from "../core/milestones";
 import { openMilestonePopover } from "./milestone-popover";
+import { TextInputModal } from "./modals";
 import { ItemView, moment, Notice, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
@@ -1623,28 +1624,36 @@ export class TaskWorkbenchView extends ItemView {
     return strip;
   }
 
-  /** Opens the milestone popover for `key` (an existing milestone) or, with null, for a new one. */
+  /** Opens the milestone popover for `key`, or, with null, asks for the name of a new milestone dated today. */
   private openMilestoneEditor(row: TaskRow, anchor: HTMLElement, key: string | null): void {
     this.closeMilestonePopover?.();
     const current = getMilestones(row);
-    const milestone = key === null ? null : current.find((m) => m.key === key) ?? null;
-    if (key !== null && !milestone) {
+    if (key === null) {
+      // Named like a new subtask (Enter confirms); the date is moved by dragging it in the gantt.
+      new TextInputModal(this.app, "新規マイルストーン", "マイルストーン名", "", (value) => {
+        const title = value.trim();
+        if (title === "") {
+          return;
+        }
+        const date = moment().format("YYYY-MM-DD");
+        void this.savePatch(row, { milestones: [...current, { key: newMilestoneKey(title, current), title, date }] });
+      }).open();
+      return;
+    }
+    const milestone = current.find((m) => m.key === key);
+    if (!milestone) {
       return;
     }
     this.closeMilestonePopover = openMilestonePopover({
       anchor,
       settings: this.host.settings,
       milestone,
-      defaultDate: (current[current.length - 1]?.date) ?? moment().format("YYYY-MM-DD"),
-      onSave: ({ title, date, tags }) => {
-        const next = milestone
-          ? current.map((m) => (m.key === milestone.key ? { ...m, title, date, tags } : m))
-          : [...current, { key: newMilestoneKey(title, current), title, date, tags }];
-        void this.savePatch(row, { milestones: next });
+      onSave: ({ title, tags }) => {
+        void this.savePatch(row, {
+          milestones: current.map((m) => (m.key === milestone.key ? { ...m, title, tags } : m)),
+        });
       },
-      onDelete: milestone
-        ? () => void this.savePatch(row, { milestones: current.filter((m) => m.key !== milestone.key) })
-        : undefined,
+      onDelete: () => void this.savePatch(row, { milestones: current.filter((m) => m.key !== milestone.key) }),
     });
   }
 

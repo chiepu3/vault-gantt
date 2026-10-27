@@ -10443,25 +10443,21 @@ describe("empty-cell menu and Bulk-Move", () => {
 
 
 
-  it("「マイルストーンを [date] に追加」asks for a name and appends a milestone", async () => {
+  it("「マイルストーンを [date] に追加」asks for a name only and appends a milestone on that date", async () => {
     const { h, timeline, parent } = await openViewWithParent([], {
       dueDate: dateOffset(20),
-    });
-    h.openMarkerModal.mockResolvedValueOnce({
-      title: "中間レビュー",
-      date: dateOffset(0),
     });
     h.loadTasks.mockClear();
     const bg = bgAt(timeline, 14);
     dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
     dispatch(menuItemWithText(`マイルストーンを ${dateOffset(0)} に追加`), "click");
+
+    expect(h.openTextPrompt).toHaveBeenCalledTimes(1);
+    const [title, label, initialValue, onSubmit] = h.openTextPrompt.mock.calls[0];
+    expect([title, label, initialValue]).toEqual(["新規マイルストーン", "マイルストーン名", ""]);
+    onSubmit("中間レビュー");
     await flush();
 
-    expect(h.openMarkerModal).toHaveBeenCalledWith(
-      "マイルストーンを追加",
-      "",
-      dateOffset(0)
-    );
     expect(h.updateTaskItem).toHaveBeenCalledWith(parent, {
       milestones: [
         { key: "due", title: "期限", date: dateOffset(20) },
@@ -10471,11 +10467,11 @@ describe("empty-cell menu and Bulk-Move", () => {
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
   });
 
-  it("cancelling the milestone modal saves nothing", async () => {
+  it("an empty milestone name saves nothing", async () => {
     const { h, timeline } = await openViewWithParent([], { dueDate: "" });
-    h.openMarkerModal.mockResolvedValueOnce(null);
     dispatch(bgAt(timeline, 14), "contextmenu", { clientX: 100, clientY: 50 });
     dispatch(menuItemWithText(`マイルストーンを ${dateOffset(0)} に追加`), "click");
+    h.openTextPrompt.mock.calls[0][3]("  ");
     await flush();
 
     expect(h.updateTaskItem).not.toHaveBeenCalled();
