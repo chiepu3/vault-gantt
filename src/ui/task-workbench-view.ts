@@ -40,7 +40,7 @@ import {
 import type { VirtualRange } from "../app/workbench-virtual";
 import { TaskFinderModal } from "./task-finder-modal";
 import { registerHistoryHotkeys } from "./history-hotkeys";
-import { appendTagChips } from "./tag-chip";
+import { appendTagChips, findGanttTagDefinition } from "./tag-chip";
 
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
@@ -1589,6 +1589,14 @@ export class TaskWorkbenchView extends ItemView {
       chip.dataset.twbAct = "milestone";
       chip.dataset.key = milestone.key;
       chip.title = `${milestone.title} ${milestone.date}`;
+      const frameColor = this.host.settings.ganttFeatureTagsEnabled
+        ? [...(milestone.tags ?? []), ...row.tags]
+            .map((tag) => findGanttTagDefinition(this.host.settings, tag)?.color ?? "")
+            .find((color) => color !== "") ?? ""
+        : "";
+      if (frameColor !== "") {
+        chip.style.borderColor = frameColor;
+      }
       const star = document.createElement("span");
       star.classList.add("twb-milestone-star");
       star.textContent = "★";

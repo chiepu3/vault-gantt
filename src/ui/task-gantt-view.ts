@@ -5312,6 +5312,15 @@ export class TaskGanttView extends ItemView {
           rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - MARKER_ROW_HEIGHT - DEADLINE_MARKER_GAP_PX
         }px`;
         deadline.title = `${milestone.title} ${milestone.date}`;
+        // The frame takes the milestone's tag color (else the parent's), like a subtask's callout frame.
+        const frameColor = this.host.settings.ganttFeatureTagsEnabled
+          ? getPrimaryGanttTagDefinition(this.host.settings, milestone.tags ?? [])?.color ||
+            getPrimaryGanttTagDefinition(this.host.settings, parent.tags)?.color ||
+            ""
+          : "";
+        if (frameColor !== "") {
+          deadline.style.borderColor = frameColor;
+        }
 
         const deadlineStar = document.createElement("span");
         deadlineStar.classList.add("task-gantt-deadline-marker-star");
