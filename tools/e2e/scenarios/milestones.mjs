@@ -212,9 +212,16 @@ export async function run({ cdp, vaultDir }) {
     const result = await cdp.evaluate(`(async () => {
       const service = app.plugins.plugins["vault-gantt"].operationService;
       const context = { ...service.legacyContext(), principalId: "e2e", origin: { kind: "chat", conversationId: "e2e" } };
-      const found = await service.contextPort.query("tasks.search", { name: "E2E Milestones", kind: "parent", fields: ["schedule"] }, context);
-      if (found.status !== "success") return { error: JSON.stringify(found) };
-      const item = found.result.data.items[0];
+      // The delete above is on disk but Obsidian may not have re-indexed it yet; a read from before that would make
+      // the approval stale (correctly), so wait until the read matches the note.
+      let found, item;
+      for (let i = 0; i < 50; i++) {
+        found = await service.contextPort.query("tasks.search", { name: "E2E Milestones", kind: "parent", fields: ["schedule"] }, context);
+        if (found.status !== "success") return { error: JSON.stringify(found) };
+        item = found.result.data.items[0];
+        if (item && Array.isArray(item.milestones) && !item.milestones.some((m) => m.title.startsWith("β版"))) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
       if (!item || !Array.isArray(item.milestones)) return { error: "no milestones in read: " + JSON.stringify(item) };
       const next = [...item.milestones.map((m) => (m.title === "最終レビュー" ? { ...m, title: "AIで改名" } : m)), { key: "ai", title: "AI追加", date: ${JSON.stringify(addDaysIso(start, 40))}, tags: [] }];
       const preview = await service.propose("T29", { taskId: item.id, patch: { milestones: next } }, context);
