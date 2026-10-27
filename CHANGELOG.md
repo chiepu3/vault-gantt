@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.11.0 (2026-10-27)
+
+### 新機能
+
+- 親タスクに名前付きマイルストーンを複数設定できるようにする ([#75](https://github.com/chiepu3/vault-gantt/pull/75))
+
 ## v0.10.1 (2026-10-20)
 
 ### 修正
