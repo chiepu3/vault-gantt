@@ -83,7 +83,9 @@ export interface TaskRow {
   // Time tracking
   createdAt: string; // YYYY-MM-DD
   updatedAt: string; // YYYY-MM-DD
-  dueDate?: string; // YYYY-MM-DD or empty/undefined
+  dueDate?: string; // YYYY-MM-DD or empty/undefined. For a parent with milestones: the earliest milestone date.
+  /** Parent only: named, taggable deadlines. Absent = the legacy single `dueDate` stands for one "期限" milestone. */
+  milestones?: GanttMarker[];
 
   // Priority
   priority: number; // constrained to [0,5]
@@ -137,6 +139,7 @@ export interface TaskPatch {
   workloadPlan?: WorkloadMap;
   workloadActual?: WorkloadMap;
   ganttMarkers?: GanttMarker[];
+  milestones?: GanttMarker[];
 }
 
 

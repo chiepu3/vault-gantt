@@ -2499,12 +2499,18 @@ describe("TaskGanttView", () => {
         clientY: 50,
       });
 
+      const milestone = { key: "due", title: "期限", date: due };
       expect(duePointerDownSpy).toHaveBeenCalledWith(
         pointerEvent,
         deadline,
-        parent
+        parent,
+        milestone
       );
-      expect(contextMenuSpy).toHaveBeenCalledWith(contextMenuEvent, parent);
+      expect(contextMenuSpy).toHaveBeenCalledWith(
+        contextMenuEvent,
+        parent,
+        milestone
+      );
     });
 
     it("hides the marker when the computed X falls past the visible timeline width", async () => {
@@ -2531,7 +2537,7 @@ describe("TaskGanttView", () => {
   });
 
   describe("deadline marker context menu", () => {
-    it("「期限を削除」clears the parent's dueDate with no confirmation dialog", async () => {
+    it("「削除」removes the milestone with no confirmation dialog", async () => {
       const due = todayStr();
       const parent = makeParent({ ganttEnabled: true, dueDate: due });
       const { container, h } = await openView([parent]);
@@ -2540,13 +2546,13 @@ describe("TaskGanttView", () => {
         "task-gantt-deadline-marker"
       )[0];
       dispatch(deadline, "contextmenu", { clientX: 100, clientY: 50 });
-      dispatch(menuItemWithText("期限を削除"), "click");
+      dispatch(menuItemWithText("削除"), "click");
       await flush();
 
       expect(h.updateTaskItem).toHaveBeenCalledTimes(1);
       const [savedTask, patch] = h.updateTaskItem.mock.calls[0];
       expect(savedTask).toBe(parent);
-      expect(patch).toEqual({ dueDate: "" });
+      expect(patch).toEqual({ milestones: [] });
     });
 
     it("「ノートを開く」opens the parent task's note", async () => {
@@ -5304,7 +5310,9 @@ describe("TaskGanttView", () => {
 
       // unchanged; now Saturday is non-working too, so it snaps through
       // Sunday (dateOffset(12)) to the following Monday (dateOffset(13)).
-      expect(patch.dueDate).toBe(dateOffset(13));
+      expect(patch.milestones).toEqual([
+        { key: "due", title: "期限", date: dateOffset(13) },
+      ]);
       // analog: due-date drag never checks workload-actual.
       expect(h.confirmWorkloadShift).not.toHaveBeenCalled();
     });
@@ -10292,7 +10300,7 @@ describe("empty-cell menu and Bulk-Move", () => {
       menuItemWithText(`新規サブタスクを ${dateOffset(6)} に作成`)
     ).toBeDefined();
     expect(
-      menuItemWithText(`親タスク期限を ${dateOffset(6)} に設定`)
+      menuItemWithText(`マイルストーンを ${dateOffset(6)} に追加`)
     ).toBeDefined();
   });
 
@@ -10435,59 +10443,43 @@ describe("empty-cell menu and Bulk-Move", () => {
 
 
 
-  it("「親タスク期限を [date] に設定」sets dueDate without confirmation and re-renders", async () => {
+  it("「マイルストーンを [date] に追加」asks for a name and appends a milestone", async () => {
     const { h, timeline, parent } = await openViewWithParent([], {
-      dueDate: "",
+      dueDate: dateOffset(20),
+    });
+    h.openMarkerModal.mockResolvedValueOnce({
+      title: "中間レビュー",
+      date: dateOffset(0),
     });
     h.loadTasks.mockClear();
     const bg = bgAt(timeline, 14);
     dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
-    dispatch(menuItemWithText(`親タスク期限を ${dateOffset(0)} に設定`), "click");
+    dispatch(menuItemWithText(`マイルストーンを ${dateOffset(0)} に追加`), "click");
     await flush();
 
+    expect(h.openMarkerModal).toHaveBeenCalledWith(
+      "マイルストーンを追加",
+      "",
+      dateOffset(0)
+    );
     expect(h.updateTaskItem).toHaveBeenCalledWith(parent, {
-      dueDate: dateOffset(0),
+      milestones: [
+        { key: "due", title: "期限", date: dateOffset(20) },
+        { key: "中間レビュー", title: "中間レビュー", date: dateOffset(0) },
+      ],
     });
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
   });
 
-  it("overwrites an already-set dueDate without confirmation", async () => {
-    const { h, timeline, parent } = await openViewWithParent([], {
-      dueDate: dateOffset(20),
-    });
-    const bg = bgAt(timeline, 14);
-    dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
-    dispatch(menuItemWithText(`親タスク期限を ${dateOffset(0)} に設定`), "click");
-    await flush();
-
-    expect(h.updateTaskItem).toHaveBeenCalledWith(parent, {
-      dueDate: dateOffset(0),
-    });
-  });
-
-  it("「親タスク期限を削除」only appears when a dueDate is already set", async () => {
-    const { timeline } = await openViewWithParent([], { dueDate: "" });
+  it("cancelling the milestone modal saves nothing", async () => {
+    const { h, timeline } = await openViewWithParent([], { dueDate: "" });
+    h.openMarkerModal.mockResolvedValueOnce(null);
     dispatch(bgAt(timeline, 14), "contextmenu", { clientX: 100, clientY: 50 });
-    expect(
-      menuItems().some((el) => deepText(el).includes("親タスク期限を削除"))
-    ).toBe(false);
-  });
-
-  it("「親タスク期限を削除」clears the parent's dueDate", async () => {
-    const { h, timeline, parent } = await openViewWithParent([], {
-      dueDate: dateOffset(20),
-    });
-    const bg = bgAt(timeline, 14);
-    dispatch(bg, "contextmenu", { clientX: 100, clientY: 50 });
-    dispatch(menuItemWithText("親タスク期限を削除"), "click");
+    dispatch(menuItemWithText(`マイルストーンを ${dateOffset(0)} に追加`), "click");
     await flush();
 
-    expect(h.updateTaskItem).toHaveBeenCalledWith(parent, { dueDate: "" });
+    expect(h.updateTaskItem).not.toHaveBeenCalled();
   });
-
-
-
-
 
   it("bulkMoveState is populated with parentKey/anchorKey/anchorStart when Bulk-Move mode starts", async () => {
     const { view, timeline, parent } = await openViewWithParent([

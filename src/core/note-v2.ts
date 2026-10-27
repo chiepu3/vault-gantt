@@ -1,3 +1,4 @@
+import { earliestMilestoneDate, isLegacyOnlyMilestones } from "./milestones";
 import type { GanttMarker, StatusLabel, TaskRow, TaskWorkbenchSettings, WorkloadMap } from "./types";
 import {
   calculateAutoPriority,
@@ -25,7 +26,7 @@ export type NoteKind = "parent" | "subtask";
 /** Frontmatter keys the plugin owns and rewrites through diffs. Everything else is the user's. */
 export const MANAGED_KEYS = [
   "title", "status", "completed", "created", "updated", "start", "end", "due",
-  "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers",
+  "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers", "milestones",
 ] as const;
 
 // ---------------------------------------------------------------- value readers
@@ -137,7 +138,9 @@ export function parseNote(
   const title = readString(fm.title) || basename;
   const statusLabel = (normalizeStatusValue(fm.status) || (readBoolean(fm.completed) ? "done" : "active")) as StatusLabel;
   const priorityMode = readString(fm.priorityMode) === "manual" ? "manual" : "auto";
-  const dueDate = readDate(fm.due) || undefined;
+  // A parent's milestones win; `due` then only mirrors the earliest one (and is the whole story for old notes).
+  const milestones = kind === "parent" ? readMarkers(fm.milestones) : undefined;
+  const dueDate = (milestones ? earliestMilestoneDate(milestones) : undefined) || readDate(fm.due) || undefined;
   let priority = normalizePriority(fm.priority as number | string | undefined);
   if (priorityMode === "auto" && settings.autoPriorityEnabled) priority = calculateAutoPriority(dueDate);
   const row: TaskRow = {
@@ -169,6 +172,7 @@ export function parseNote(
     if (dependsOn.length) row.dependsOn = dependsOn;
   } else {
     row.subtasks = new Map();
+    if (milestones) row.milestones = milestones;
   }
   return { kind, row, parentLink: kind === "subtask" ? readString(fm.parent) || undefined : undefined };
 }
@@ -204,6 +208,9 @@ export function managedFrontmatter(row: TaskRow): Frontmatter {
     markers: subtask && row.ganttMarkers?.length
       ? row.ganttMarkers.map((marker) => ({ title: marker.title, date: marker.date, ...(marker.tags?.length ? { tags: [...marker.tags] } : {}) }))
       : undefined,
+    milestones: !subtask && row.milestones?.length && !isLegacyOnlyMilestones(row.milestones)
+      ? row.milestones.map((milestone) => ({ title: milestone.title, date: milestone.date, ...(milestone.tags?.length ? { tags: [...milestone.tags] } : {}) }))
+      : undefined,
   };
 }
 
@@ -237,7 +244,7 @@ export function newNoteFrontmatter(row: TaskRow, options: { parentLink?: string 
     title: managed.title,
   };
   if (subtask && options.parentLink) ordered.parent = options.parentLink;
-  for (const key of ["status", "completed", "created", "updated", "start", "end", "due", "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers"]) {
+  for (const key of ["status", "completed", "created", "updated", "start", "end", "due", "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers", "milestones"]) {
     if (managed[key] !== undefined) ordered[key] = managed[key];
   }
   ordered.cssclasses = ["task"];
