@@ -77,7 +77,7 @@ const LEDGER = {
   "T13": {
     "purpose": "期限設定・移動・解除／一覧・親期限drag・メニュー",
     "input": "taskId, dueDate",
-    "constraints": "日付/空、親子可。UI親期限dragは営業日補正。期限変更は自動priorityにも影響",
+    "constraints": "日付/空、親子可。UI親期限dragは営業日補正。期限変更は自動priorityにも影響。親に名前付きマイルストーンがあれば最も早いものの日付を移す（無ければ「期限」を作る）。名前付きの追加・変更はT29のpatch.milestones",
     "undo": "○"
   },
   "T14": {
@@ -173,7 +173,7 @@ const LEDGER = {
   "T29": {
     "purpose": "1タスクの複合フィールド更新",
     "input": "taskId, patch, expectedRevision?",
-    "constraints": "strict19キー、種別検証、正規化、暗黙の更新日・priority変化、round trip照合",
+    "constraints": "strict20キー（親のmilestonesを含む）、種別検証、正規化、暗黙の更新日・priority変化、round trip照合",
     "undo": "○"
   },
   "T30": {
@@ -777,7 +777,7 @@ const PARAMETER_DOCS: Record<string, string> = {
   expectedRevision: "詳細取得の内容SHA-256（settings操作はsettings.getのsnapshotRevision（投影settingsRevisionも可）、親順はsnapshotRevision）。不一致時は再取得して再提案。省略してもplan後の競合ガードは有効。",
   calendarDelta: "暦日の整数差。営業日差ではない。正は未来、負は過去。", shiftDays: "暦日の整数差。アンカー以降を一括移動。",
   date: "実在するYYYY-MM-DD。TZ変換しない暦日。", start: "子の予定開始日。省略は保持、空文字は解除。", end: "子の予定終了日。省略は保持、空文字は解除。",
-  patch: "指定fieldのみ部分更新。日付の空文字は解除。tags/markers/workload mapはfield全体を置換。updatedAtは常に今日。",
+  patch: "指定fieldのみ部分更新。日付の空文字は解除。tags/markers/workload mapはfield全体を置換。updatedAtは常に今日。親のmilestonesは名前付き期限[{key,title,date,tags?}]の全置換（[]で全削除）で、dueDateは最も早い日付になる。",
   workloadPlan: "日付→hoursの計画map全置換。0.5hへ丸め、0は削除、最大24h/日。省略日も削除。", workloadActual: "日付→hoursの実績map全置換。計画とは独立。0.5h、0で削除、最大24h/日。",
   plan: "日付→hoursの計画map全置換。0.5hへ丸め、0で削除、最大24h/日。", actual: "日付→hoursの実績map全置換。計画を保持。0.5hへ丸め、0で削除、最大24h/日。",
   tags: "タグ名文字列の配列全置換。[]で全解除。定義keyとは異なる。", markers: "マーカー配列全置換。[]で全削除。一意key、非空title、実在date。",
@@ -795,7 +795,7 @@ export function operationDescription<K extends OperationId>(id: K): OperationDef
     "IDは検索または詳細取得で解決し、同名対象を推測しない。日付は実在するYYYY-MM-DD、期間は両端を含む。",
   ];
   const sideEffects = write ? ["この呼出しは保存しない。previewIdを返し、Obsidianで人間が承認してから保存する。未承認を実行済みと回答しない。", "保留10分。元内容・設定・休日・評価日/TZが変わると失効。複数ファイルは一部保存があり得る。保存済みを再送しない。"] : ["取得結果と保存済み結果と未承認提案を区別する。"];
-  if (id.startsWith("T") || id.startsWith("M")) constraints.push("親期間は子からのderived値。予定・マーカー・時間は子のみ。親はGantt管理可否・順序を持つ。名前変更はpath/keyを変更しない。", "statusとcompletedは連動し、doneなら完了true。通常のタスク変更時updatedAtは今日、T30はupdatedAtを保持。自動priority対象は期限によって派生変更する。", "tags・markers・時間mapは全置換。時間単位hours、0.5h刻みへ丸め、0で日を削除、24h/日上限。休日の明示map保存は許可し、UIペイントの休日不可と区別する。");
+  if (id.startsWith("T") || id.startsWith("M")) constraints.push("親期間は子からのderived値。予定・マーカー・時間は子のみ。親はGantt管理可否・順序と、名前付きのマイルストーン（schedule groupのmilestones）を持つ。名前変更はpath/keyを変更しない。", "statusとcompletedは連動し、doneなら完了true。通常のタスク変更時updatedAtは今日、T30はupdatedAtを保持。自動priority対象は期限によって派生変更する。", "tags・markers・時間mapは全置換。時間単位hours、0.5h刻みへ丸め、0で日を削除、24h/日上限。休日の明示map保存は許可し、UIペイントの休日不可と区別する。");
   if (id === "T19" || id === "T28" || id === "T29" || id === "T27") constraints.push("直接日付設定では休日snap、マーカー・時間map移動を行わない。片側省略時も保存済み反対側と開始<=終了を検証。");
   if (id === "T20") constraints.push("開始を移動方向の営業日に補正し、営業日数を保って終了を計算。マーカーを営業日相対位置で移し期間内へ収める。単体移動は計画・実績mapを保持。実績ありは警告。");
   if (id === "T21" || id === "T22") constraints.push("伸縮は既存Ganttの営業日snapと交差防止に従う。マーカーと時間mapは保持。実績ありは警告。");

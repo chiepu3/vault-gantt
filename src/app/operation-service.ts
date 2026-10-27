@@ -42,7 +42,9 @@ import type { Logger } from "../core/logger";
 interface WriteUnit { path: string; before: string | null; after: string | null; afterPath?: string; change?: NoteChange; taskId?: string; actionIds: string[] }
 const rowOf = (parents: readonly TaskRow[], taskId: string): TaskRow => flatten(parents).find((row) => row.id === taskId)!;
 /** What a note keeps of a row; marker keys are derived when reading, so they do not take part. */
-const stateOf = (row: TaskRow): string => canonical({ ...taskPublicState(row), ganttOrder: null, priority: row.priorityMode === "manual" ? row.priority : null, ganttMarkers: (row.ganttMarkers ?? []).map((marker) => ({ title: marker.title, date: marker.date, tags: marker.tags ?? [] })) });
+const stateOf = (row: TaskRow): string => canonical({ ...taskPublicState(row), ganttOrder: null, priority: row.priorityMode === "manual" ? row.priority : null, ganttMarkers: (row.ganttMarkers ?? []).map((marker) => ({ title: marker.title, date: marker.date, tags: marker.tags ?? [] })),
+  // Milestone keys are derived from titles when a note is read, so only title/date/tags must survive the round trip.
+  milestones: (taskPublicState(row).milestones as { title: string; date: string; tags: string[] }[]).map(({ title, date, tags }) => ({ title, date, tags })) });
 interface StoredPlan { copyFrom?: string; preview: OperationPreviewV1; input: unknown; context: RequestContext; snapshot: TaskSnapshot; afterParents: TaskRow[]; afterSettings: TaskWorkbenchSettings; writes: WriteUnit[]; settingKeys: (keyof TaskWorkbenchSettings)[]; changes: TaskChange[]; noopActions: string[]; daily?: DailyPlan; history?: HistoryPlan; diagnostic?: DiagnosticPlan; integration?: IntegrationPlan }
 /** Entries compared by meaning: generated identifiers (new event keys, task ids, paths, revisions) and action ids are ignored. */
 const GENERATED_KEYS = new Set(["key", "id", "taskId", "eventKey", "scheduleKey", "path", "revision", "actionId", "createdAt", "updatedAt"]);

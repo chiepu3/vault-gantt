@@ -339,3 +339,35 @@ describe("preserving AI writers", () => {
     expect(historyManager.inspectTransition("undo").entry).toEqual(prior);
   });
 });
+describe("parent milestones from the AI chat", () => {
+  const milestonesOf = async (service: Awaited<ReturnType<typeof runtimeFixture>>["service"], context: Awaited<ReturnType<typeof runtimeFixture>>["context"]) => {
+    const read = await service.contextPort.query("tasks.get-many", { taskIds: [PARENT_ID], include: ["schedule"] }, context);
+    if (read.status !== "success") throw new Error("read failed");
+    const item = read.result.data.items[0];
+    return { due: "due" in item ? item.due : undefined, milestones: "milestones" in item ? item.milestones : undefined };
+  };
+  it("adds, renames and removes milestones with T29, and reads them back", async () => {
+    const { service, context, vault } = await runtimeFixture();
+    expect(await milestonesOf(service, context)).toEqual({ due: null, milestones: [] });
+    const add = await service.propose("T29", { taskId: PARENT_ID, patch: { milestones: [{ key: "b", title: "リリース", date: "2026-12-01" }, { key: "a", title: "仕様確定", date: "2026-11-05", tags: ["リリース"] }] } }, context);
+    expect(add.entries[0].effects).toContainEqual(expect.objectContaining({ kind: "fields", fields: expect.arrayContaining([expect.objectContaining({ field: "milestones" })]) }));
+    expect((await service.humanApprovalPort.approve(add.previewId)).status).toBe("success");
+    expect(vault.getFileContentById(PARENT_ID)).toContain("milestones:");
+    const added = await milestonesOf(service, context);
+    expect(added.due).toBe("2026-11-05");
+    expect(added.milestones?.map((m) => [m.title, m.date, m.tags])).toEqual([["仕様確定", "2026-11-05", ["リリース"]], ["リリース", "2026-12-01", []]]);
+    // Rename the first one the way the chat is told to: keep the read entries and change only the asked one.
+    const renamed = added.milestones!.map((m) => (m.title === "仕様確定" ? { ...m, title: "設計レビュー" } : m));
+    const rename = await service.propose("T29", { taskId: PARENT_ID, patch: { milestones: renamed } }, context);
+    expect((await service.humanApprovalPort.approve(rename.previewId)).status).toBe("success");
+    expect((await milestonesOf(service, context)).milestones?.map((m) => m.title)).toEqual(["設計レビュー", "リリース"]);
+    // A plain due change moves the earliest milestone.
+    const due = await service.propose("T13", { taskId: PARENT_ID, dueDate: "2026-11-10" }, context);
+    expect((await service.humanApprovalPort.approve(due.previewId)).status).toBe("success");
+    expect((await milestonesOf(service, context)).milestones?.map((m) => [m.title, m.date])).toEqual([["設計レビュー", "2026-11-10"], ["リリース", "2026-12-01"]]);
+    const clear = await service.propose("T29", { taskId: PARENT_ID, patch: { milestones: [] } }, context);
+    expect((await service.humanApprovalPort.approve(clear.previewId)).status).toBe("success");
+    expect(vault.getFileContentById(PARENT_ID)).not.toContain("milestones:");
+    expect(await milestonesOf(service, context)).toEqual({ due: null, milestones: [] });
+  });
+});

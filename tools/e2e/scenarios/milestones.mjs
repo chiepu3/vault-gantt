@@ -7,6 +7,7 @@
 // 3. Workbench: the ＋ chip → name + Enter → a second milestone is saved.
 // 3b. Workbench: click a chip → popover → rename + Enter.
 // 4. Workbench: click a milestone chip → popover 削除 → it is removed from the note.
+// 5. AI chat path: read milestones via tasks.search, propose T29 (rename + add), approve; both views show it.
 
 import { pickAnchorMonday, toIsoStr, addDaysIso, writeDragFixture, readFrontmatterField, readNoteText } from "./drag-fixture.mjs";
 import { centerOf, dblclickAt, dragGesture, setFieldValue, keydownOn, dismissTrustDialogIfPresent, moveMouse, mouseDown, mouseUp, rectOf, sleep } from "./cdp-input.mjs";
@@ -204,6 +205,33 @@ export async function run({ cdp, vaultDir }) {
     return fail(`delete did not save (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
   }
   details.push("OK workbench delete");
+
+  // 5. The AI chat path: read the parent's milestones the way the chat tools do, then propose + approve an update
+  //    (operation T29 with patch.milestones). Only the language model is left out.
+  {
+    const result = await cdp.evaluate(`(async () => {
+      const service = app.plugins.plugins["vault-gantt"].operationService;
+      const context = { ...service.legacyContext(), principalId: "e2e", origin: { kind: "chat", conversationId: "e2e" } };
+      const found = await service.contextPort.query("tasks.search", { name: "E2E Milestones", kind: "parent", fields: ["schedule"] }, context);
+      if (found.status !== "success") return { error: JSON.stringify(found) };
+      const item = found.result.data.items[0];
+      if (!item || !Array.isArray(item.milestones)) return { error: "no milestones in read: " + JSON.stringify(item) };
+      const next = [...item.milestones.map((m) => (m.title === "最終レビュー" ? { ...m, title: "AIで改名" } : m)), { key: "ai", title: "AI追加", date: ${JSON.stringify(addDaysIso(start, 40))}, tags: [] }];
+      const preview = await service.propose("T29", { taskId: item.id, patch: { milestones: next } }, context);
+      const approved = await service.humanApprovalPort.approve(preview.previewId);
+      return { read: item.milestones.map((m) => m.title), status: approved.status };
+    })()`);
+    if (!result || result.error || result.status !== "success") return fail(`AI path failed: ${JSON.stringify(result)}`);
+    try {
+      await waitFor(() => { const t = milestoneTitles(readNoteText(parentAbsPath)); return t.includes("AIで改名") && t.includes("AI追加") && !t.includes("最終レビュー"); }, "AI update saved");
+      await cdp.waitForExpression(`["AIで改名", "AI追加"].every((name) => [...document.querySelectorAll(".twb-milestone")].some((e) => e.textContent.includes(name)))`, { timeoutMs: 10000, label: "AI chips shown" });
+      await cdp.evaluate(`app.commands.executeCommandById(${JSON.stringify(GANTT)}), true`);
+      await cdp.waitForExpression(`[...document.querySelectorAll(".task-gantt-milestone")].some((e) => e.textContent.includes("AIで改名"))`, { timeoutMs: 10000, label: "AI rename on gantt" });
+    } catch (err) {
+      return fail(`AI update not reflected (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
+    }
+    details.push(`OK AI read (${result.read.join(",")}) + update`);
+  }
 
   // E2E_SHOTS=<dir>: also save light/dark screenshots of both views (for reviewing the look by eye).
   if (process.env.E2E_SHOTS) {

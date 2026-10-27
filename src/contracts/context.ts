@@ -117,7 +117,7 @@ const taskCommon = {
 export const hoursTotalSchema = z.object({ plan: z.number().finite().nonnegative(), actual: z.number().finite().nonnegative(), planDays: countSchema, actualDays: countSchema }).strict();
 export const compactTaskSchema = z.discriminatedUnion("kind", [
   z.object({ ...taskCommon, kind: z.literal("parent"), parentId: z.null(),
-    due: dateOnlySchema.nullable().optional(),
+    due: dateOnlySchema.nullable().optional(), milestones: z.array(markerStateSchema).optional(),
     gantt: z.object({ enabled: z.boolean(), order: z.number().finite() }).strict().optional(),
     derived: z.object({ period: periodSchema, progress: z.number().min(0).max(1), effectivePriority: z.number().min(0).max(5) }).strict().optional(),
     children: z.array(idSchema).optional(), hoursTotal: hoursTotalSchema.optional(),
