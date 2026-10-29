@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.12.0 (2026-10-29)
+
+### 新機能
+
+- サブタスクを一時無効にできるようにする ([#82](https://github.com/chiepu3/vault-gantt/pull/82))
+
 ## v0.11.3 (2026-10-29)
 
 ### 修正
