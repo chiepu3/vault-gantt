@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.11.3 (2026-10-29)
+
+### 修正
+
+- タグ付きサブタスクが吹き出しになりにくい問題を修正 ([#81](https://github.com/chiepu3/vault-gantt/pull/81))
+
 ## v0.11.2 (2026-10-29)
 
 ### 修正
