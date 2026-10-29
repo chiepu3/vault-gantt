@@ -2473,6 +2473,9 @@ export class TaskGanttView extends ItemView {
       this.activateContextMenu(menu);
       menu.addItem((item) => { item.setTitle("すべて開く"); item.onClick(() => this.setAllMemosOpen(true)); });
       menu.addItem((item) => { item.setTitle("すべて閉じる"); item.onClick(() => this.setAllMemosOpen(false)); });
+      // The その他 row's right-click stays "add an event"; memos without a task start here, on today (drag the dot to move).
+      menu.addSeparator();
+      menu.addItem((item) => { item.setTitle("その他にメモを追加（今日）"); item.onClick(() => this.beginMemo(undefined, todayStr())); });
       menu.showAtMouseEvent(evt);
     });
     this.toolbarEl.appendChild(button);
@@ -3763,17 +3766,8 @@ export class TaskGanttView extends ItemView {
         this.dayWidth,
         this.rangeStart
       );
-      const addEvent = (): void => {
-        addGanttEvent(this.host.settings, "", date);
-        void this.host.saveSettings().then(() => this.render());
-      };
-      if (!this.host.memos) { addEvent(); return; }
-      // With memos on, the row offers both: the event add stays one click away.
-      const menu = new Menu();
-      this.activateContextMenu(menu);
-      menu.addItem((item) => { item.setTitle("予定を追加"); item.onClick(addEvent); });
-      menu.addItem((item) => { item.setTitle("この日にメモを追加"); item.onClick(() => this.beginMemo(undefined, date)); });
-      menu.showAtMouseEvent(evt);
+      addGanttEvent(this.host.settings, "", date);
+      void this.host.saveSettings().then(() => this.render());
     });
 
     for (const placed of packedEvents) {

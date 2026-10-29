@@ -6,12 +6,12 @@
 // 2. Drag the bubble by its header → its offset is saved to the plugin settings (view state), not to the note.
 // 3. Close the bubble to a pin → settings say open:false; the pin stays, the note is untouched.
 // 4. Workbench: the 「メモ n」 chip → popover → 「Ganttで表示」 → the Gantt is back with the bubble open again.
-// 5. Undo (the plugin's own history) → the note is gone again.
+// 5. Double-click → edit → Enter saves the body. 6. 「削除」 removes the note. 7. Undo brings it back.
 
 import fs from "node:fs";
 import path from "node:path";
 import { pickAnchorMonday, toIsoStr, addDaysIso, writeDragFixture } from "./drag-fixture.mjs";
-import { centerOf, dragGesture, setFieldValue, keydownOn, dismissTrustDialogIfPresent, moveMouse, mouseDown, mouseUp, rectOf, sleep } from "./cdp-input.mjs";
+import { centerOf, dblclickAt, dragGesture, setFieldValue, keydownOn, dismissTrustDialogIfPresent, moveMouse, mouseDown, mouseUp, rectOf, sleep } from "./cdp-input.mjs";
 
 const GANTT = "vault-gantt:open-task-gantt";
 const WORKBENCH = "vault-gantt:open-task-workbench";
@@ -95,7 +95,7 @@ export async function run({ cdp, vaultDir }) {
   if (failures.length) return { ok: false, failures, details: details.join(" | ") };
   const memoId = note.match(/^id: (m-[0-9a-z]{6})$/m)[1];
   try {
-    await cdp.waitForExpression(`!!document.querySelector(".vg-memo[data-memo-id=${JSON.stringify(memoId)}]")`, { timeoutMs: 10000, label: "bubble drawn" });
+    await cdp.waitForExpression(`!!document.querySelector(".vg-memo[data-memo-id='${memoId}']")`, { timeoutMs: 10000, label: "bubble drawn" });
   } catch (err) {
     return fail(`the bubble is not drawn: ${err.message}`);
   }
@@ -149,18 +149,44 @@ export async function run({ cdp, vaultDir }) {
   await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, ".twb-memo-popover .twb-memo-popover-reveal"))));
   try {
     await waitFor(() => layoutOf(vaultDir)[memoId]?.open === true, "reopened state saved");
-    await cdp.waitForExpression(`!!document.querySelector(".vg-memo[data-memo-id=${JSON.stringify(memoId)}]")`, { timeoutMs: 15000, label: "bubble open again on the gantt" });
+    await cdp.waitForExpression(`!!document.querySelector(".vg-memo[data-memo-id='${memoId}']")`, { timeoutMs: 15000, label: "bubble open again on the gantt" });
   } catch (err) {
     return fail(`「Ganttで表示」 did not bring the bubble back: ${err.message}`);
   }
   details.push("OK workbench chip → Gantt");
 
-  // 5. Undo removes the note again.
+  // 5. Edit the text: double-click, type, Enter → the note body changes.
+  const edited = `${MEMO_TEXT}（木曜の定例で）`;
+  await dblclickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, `.vg-memo[data-memo-id='${memoId}'] .vg-memo-text`))));
+  try {
+    await cdp.waitForExpression(`!!document.querySelector(".vg-memo-edit")`, { timeoutMs: 5000, label: "edit textarea" });
+    await setFieldValue(cdp, ".vg-memo-edit", edited, { multiline: true });
+    await keydownOn(cdp, ".vg-memo-edit", "Enter");
+    await waitFor(() => fs.existsSync(notePath) && fs.readFileSync(notePath, "utf8").trimEnd().endsWith(edited), "edited body saved");
+  } catch (err) {
+    return fail(`editing the text did not save it: ${err.message}`);
+  }
+  details.push("OK edit");
+
+  // 6. Delete from the memo's own menu → the note is gone.
+  await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, `.vg-memo[data-memo-id='${memoId}'] .vg-memo-head`))), "right");
+  const deleteShown = await cdp.evaluate(`(() => { const el = [...document.querySelectorAll(".menu-item")].find((e) => e.textContent.trim() === "削除"); if (!el) return false; el.setAttribute("data-e2e", "delete-memo"); return true; })()`);
+  if (!deleteShown) return fail("the memo menu has no 「削除」");
+  await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=delete-memo]"))));
+  try {
+    await waitFor(() => memoFiles(vaultDir).length === 0, "note deleted");
+    await cdp.waitForExpression(`!document.querySelector(".vg-memo, .vg-memo-pin")`, { timeoutMs: 5000, label: "bubble removed" });
+  } catch (err) {
+    return fail(`「削除」 did not remove the memo: ${err.message}`);
+  }
+  details.push("OK delete");
+
+  // 7. Undo brings the deleted memo back with its edited text.
   await cdp.evaluate(`app.plugins.plugins[${JSON.stringify(PLUGIN_ID)}].undoLastAction(), true`);
   try {
-    await waitFor(() => memoFiles(vaultDir).length === 0, "note removed by undo");
+    await waitFor(() => memoFiles(vaultDir).some((file) => fs.readFileSync(file, "utf8").trimEnd().endsWith(edited)), "note restored by undo");
   } catch (err) {
-    return fail(`undo did not remove the memo note: ${err.message}`);
+    return fail(`undo did not restore the deleted memo: ${err.message}`);
   }
   details.push("OK undo");
 
