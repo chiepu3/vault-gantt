@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { stringifyYaml } from "obsidian";
 import { generateMemoId, isMemoId, isTaskId } from "../../src/core/ids";
 import {
-  MEMO_MAX_WIDTH, MEMO_MIN_WIDTH, buildMemoNote, isMemoPath, memoBody, memoFileStem, memoHeadline, memoRoot, normalizeMemoLayout, parseMemoMeta, replaceMemoBody,
+  MEMO_MAX_WIDTH, MEMO_MIN_WIDTH, buildMemoNote, isMemoPath, memoBody, memoFileStem, memoHeadline, memoRoot, normalizeMemoLayout, parseMemoMeta, replaceMemoAnchor, replaceMemoBody, setMemosOpen, MEMO_DEFAULT_OFFSET,
 } from "../../src/core/memo";
 import { noteKindOf } from "../../src/core/note-v2";
 import { parseYaml } from "obsidian";
@@ -87,5 +87,32 @@ describe("normalizeMemoLayout", () => {
     });
     expect(normalizeMemoLayout(undefined)).toEqual({});
     expect(normalizeMemoLayout([])).toEqual({});
+  });
+});
+
+describe("replaceMemoAnchor", () => {
+  const base = buildMemoNote({ id: "m-aaaaaa", taskId: "s-bbbbbb", at: 2, date: "2026-10-14", created: "2026-10-01", updated: "2026-10-01" }, "本文", stringifyYaml);
+  it("rewrites only the anchor keys and stamps updated, keeping the body and the key order", () => {
+    const next = replaceMemoAnchor(base, { taskId: "t-cccccc", date: "2026-10-20" }, "2026-10-09", stringifyYaml);
+    expect(fmOf(next)).toEqual({ type: "gantt-memo", id: "m-aaaaaa", task: "t-cccccc", date: "2026-10-20", created: "2026-10-01", updated: "2026-10-09" });
+    expect(Object.keys(fmOf(next))).toEqual(["type", "id", "task", "date", "created", "updated"]);
+    expect(memoBody(next)).toBe("本文");
+  });
+  it("drops task and at when the memo goes to the その他 row", () => {
+    expect(fmOf(replaceMemoAnchor(base, { date: "2026-10-20" }, "2026-10-09", stringifyYaml))).not.toHaveProperty("task");
+    expect(fmOf(replaceMemoAnchor(base, { date: "2026-10-20" }, "2026-10-09", stringifyYaml))).not.toHaveProperty("at");
+  });
+});
+
+describe("setMemosOpen", () => {
+  const layout = { "m-aaaaaa": { open: true, dx: 5, dy: 6, w: 300 } };
+  it("closes named memos, keeping their placement, and gives never-placed ones the default offsets", () => {
+    const next = setMemosOpen(layout, [], ["m-aaaaaa", "m-bbbbbb"], false);
+    expect(next["m-aaaaaa"]).toEqual({ open: false, dx: 5, dy: 6, w: 300 });
+    expect(next["m-bbbbbb"]).toMatchObject({ open: false, ...MEMO_DEFAULT_OFFSET });
+    expect(layout["m-aaaaaa"].open).toBe(true);
+  });
+  it("treats * as every memo", () => {
+    expect(Object.keys(setMemosOpen({}, ["m-aaaaaa", "m-bbbbbb"], ["*"], true)).sort()).toEqual(["m-aaaaaa", "m-bbbbbb"]);
   });
 });

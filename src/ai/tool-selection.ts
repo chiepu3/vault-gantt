@@ -1,7 +1,8 @@
 import type { OperationId } from "../contracts/operations";
-export type ToolFamily = "tasks" | "schedule" | "markers" | "workload" | "events" | "weekly" | "settings" | "daily" | "view" | "control";
+export type ToolFamily = "tasks" | "schedule" | "markers" | "workload" | "events" | "weekly" | "settings" | "daily" | "memos" | "view" | "control";
 export function operationFamily(id: OperationId): ToolFamily {
   if (id.startsWith("D")) return "daily";
+  if (id.startsWith("N")) return id === "N06" ? "view" : "memos";
   if (id.startsWith("V")) return "view";
   if (id.startsWith("Q")) return "control";
   if (id.startsWith("M")) return id === "M07" || id === "M08" ? "workload" : "markers";
@@ -12,7 +13,7 @@ export function operationFamily(id: OperationId): ToolFamily {
 }
 export function selectToolFamilies(text: string): readonly ToolFamily[] {
   const families = new Set<ToolFamily>(["tasks", "schedule"]);
-  for (const [family, words] of [["daily", /daily|デイリー|日次|ToDo/i], ["view", /画面|表示|ビュー|view|filter/i], ["control", /チャット|会話|conversation/i], ["markers", /マーカー|marker/i], ["workload", /時間|工数|実績|workload|hours/i], ["events", /イベント|event/i], ["weekly", /定例|毎週|weekly/i], ["settings", /設定(?:画面|値|変更)|プラグイン設定|休日|タグ定義|ソース|settings|holiday|source/i]] as const) if (words.test(text)) families.add(family);
+  for (const [family, words] of [["daily", /daily|デイリー|日次|ToDo/i], ["memos", /メモ|吹き出し|付箋|memo/i], ["view", /画面|表示|ビュー|view|filter/i], ["control", /チャット|会話|conversation/i], ["markers", /マーカー|marker/i], ["workload", /時間|工数|実績|workload|hours/i], ["events", /イベント|event/i], ["weekly", /定例|毎週|weekly/i], ["settings", /設定(?:画面|値|変更)|プラグイン設定|休日|タグ定義|ソース|settings|holiday|source/i]] as const) if (words.test(text)) families.add(family);
   return [...families];
 }
 
@@ -20,6 +21,7 @@ export function selectToolFamilies(text: string): readonly ToolFamily[] {
 export function selectOperationIds(text: string): readonly OperationId[] {
   if (/元に戻|undo/i.test(text)) return ["V20"];
   if (/やり直|redo/i.test(text)) return ["V21"];
+  if (/メモ|吹き出し|memo/i.test(text)) return /消|削除/.test(text) ? ["N05"] : /開い|閉じ/.test(text) ? ["N06"] : /移動|付け替/.test(text) ? ["N04"] : /書き換|修正|変更|直/.test(text) ? ["N03"] : /追加|作成|残|書/.test(text) ? ["N02"] : ["N01"];
   if (/Daily|ToDo|デイリー|日次/i.test(text)) return ["D07", "D03", "D05"];
   if (/マーカー|marker/i.test(text)) return /移動|動か|ずら/.test(text) ? ["M03"] : ["M01"];
   if (/イベント|event/i.test(text)) return /時間|実績|計画|工数|hours/i.test(text) ? ["E01", "E06", "E07"] : ["E01"];

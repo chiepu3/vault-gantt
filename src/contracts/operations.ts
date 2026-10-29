@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   dateOnlySchema, idSchema, revisionSchema, statusSchema, tagNamesSchema,
-  readResultSchema, type TaskReadResultV1, type DailyReadResultV1, type DeepReadonly, type Capability,
+  readResultSchema, type TaskReadResultV1, type DailyReadResultV1, type MemoReadResultV1, type DeepReadonly, type Capability,
   type RequestOrigin, type OperationErrorV1,
 } from "./context";
 import {
@@ -16,6 +16,7 @@ export const OPERATION_IDS = [
   "E01", "E02", "E03", "E04", "E05", "E06", "E07", "W01", "W02", "W03",
   "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09",
   "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11", "S12", "S13", "S14", "S15", "S16", "S17", "S18", "S19", "S20", "S21", "S22", "S23", "S24", "S25", "S26", "S27", "S28", "S29", "S30", "S31", "S32", "S33", "S34", "S35",
+  "N01", "N02", "N03", "N04", "N05", "N06",
   "V01", "V02", "V03", "V04", "V05", "V06", "V07", "V08", "V09", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19", "V20", "V21", "V22", "V23",
   "Q01", "Q02", "Q03", "Q04", "Q05", "Q06", "Q07", "Q08",
 ] as const;
@@ -61,6 +62,8 @@ const orderedIds = z.array(idSchema).min(1).max(1000).refine((ids) => new Set(id
 const openView = z.object({ position: z.enum(["tab", "left", "right"]).optional(), viewId: idSchema.optional() }).strict();
 const force = z.object({ force: z.boolean().optional() }).strict();
 const empty = z.object({}).strict();
+const memoText = z.string().max(20000).refine((value) => value.trim().length > 0, "メモ本文は空にできません");
+const memoAnchorTask = z.union([idSchema, z.literal("")]);
 const feature = z.object({ enabled: z.boolean(), expectedRevision }).strict();
 const weeklyPatch = z.object({ title: name.optional(), dayOfWeek: z.number().int().min(0).max(6).optional(), minutesPerWeek: z.number().finite().nonnegative().optional() }).strict().refine((patch) => Object.keys(patch).length > 0, "変更項目が必要");
 
@@ -127,6 +130,14 @@ export const operationInputSchemas = {
   S29: z.object({ ...source, label: singleLine.max(200) }).strict(), S30: z.object({ ...source, momentFormat: z.string().max(1000) }).strict(),
   S31: z.object({ ...source, templatePath: z.string().max(1000) }).strict(), S32: z.object({ ...source, creatableFromGantt: z.boolean() }).strict(),
   S33: z.object({ orderedKeys: orderedIds, expectedRevision }).strict(), S34: z.object(source).strict(), S35: empty,
+  // Floating memos. taskId omitted = the 「その他」 row (N02) / keep the current task (N04, where "" moves it to the 「その他」 row).
+  N01: z.object({ from: dateOnlySchema.optional(), to: dateOnlySchema.optional(), taskId: idSchema.optional(), query: z.string().max(1000).optional(), includeClosed: z.boolean().optional(), limit: z.number().int().min(1).max(200).optional() }).strict()
+    .refine(({ from, to }) => !from || !to || from <= to, "日付範囲が逆転しています"),
+  N02: z.object({ text: memoText, taskId: idSchema.optional(), date: dateOnlySchema.optional(), open: z.boolean().optional() }).strict(),
+  N03: z.object({ memoId: idSchema, text: memoText, expectedRevision }).strict(),
+  N04: z.object({ memoId: idSchema, taskId: memoAnchorTask.optional(), date: dateOnlySchema.optional(), expectedRevision }).strict().refine((v) => v.taskId !== undefined || v.date !== undefined, "付け替え先のtaskIdまたはdateが必要"),
+  N05: z.object({ memoId: idSchema, expectedRevision }).strict(),
+  N06: z.object({ memoIds: z.array(idSchema).min(1).max(1000), open: z.boolean() }).strict(),
   V01: openView, V02: openView, V03: z.object({ query: z.string().max(1000).optional() }).strict(),
   V04: z.object({ taskId: idSchema }).strict(), V05: z.object({ date: dateOnlySchema }).strict(), V06: openView,
   V07: z.object({ ...view, text: z.string().max(1000) }).strict(), V08: z.object({ ...view, status: z.union([statusSchema, z.literal("all")]) }).strict(),
@@ -182,6 +193,7 @@ export const OPERATION_CONTRACTS = {
   S25: ["write", ["tag-definition", "order"], ["propose"]], S26: ["write", ["tag-definition"], ["propose"]], S27: ["write", ["tag-definition", "fields", "marker"], ["propose"]],
   S28: ["write", ["settings", "view"], ["propose"]], S29: ["write", ["settings", "view"], ["propose"]], S30: ["write", ["settings", "view"], ["propose"]],
   S31: ["write", ["settings"], ["propose"]], S32: ["write", ["settings"], ["propose"]], S33: ["write", ["settings", "order", "view"], ["propose"]], S34: ["write", ["settings", "view"], ["propose"]], S35: ["write", ["settings", "view"], ["propose"]],
+  N01: ["read", [], ["read"]], N02: ["write", ["memo"], ["propose"]], N03: ["write", ["memo"], ["propose"]], N04: ["write", ["memo"], ["propose"]], N05: ["write", ["memo"], ["propose"]], N06: ["view", ["view"], ["ui"]],
   V01: ["view", ["view"], ["ui"]], V02: ["view", ["view"], ["ui"]], V03: ["view", ["view"], ["ui"]], V04: ["view", ["view"], ["ui"]], V05: ["view", ["view"], ["ui"]], V06: ["view", ["view"], ["ui"]],
   V07: ["view", ["view"], ["ui"]], V08: ["view", ["view"], ["ui"]], V09: ["view", ["view"], ["ui"]], V10: ["view", ["view"], ["ui"]], V11: ["view", ["view"], ["ui"]], V12: ["view", ["view"], ["ui"]],
   V13: ["view", ["view"], ["ui"]], V14: ["view", ["view", "settings"], ["ui"]], V15: ["view", ["view"], ["ui"]], V16: ["view", ["view"], ["ui"]], V17: ["view", ["view"], ["ui"]], V18: ["view", ["view"], ["ui"]], V19: ["view", ["view"], ["ui"]],
@@ -198,7 +210,8 @@ export type WriteOperationId = { [K in OperationId]: (typeof OPERATION_CONTRACTS
 export type ControlOperationId = { [K in OperationId]: (typeof OPERATION_CONTRACTS)[K][0] extends "control" ? K : never }[OperationId];
 /** Exhaustive audit of immediate view/control requests. Q07 only requests human approval. */
 export const IMMEDIATE_PERSISTENCE = {
-  D08: "none", V01: "none", V02: "none", V03: "none", V04: "none", V05: "none", V06: "none",
+  // N06 keeps only which bubbles are open (view state in data.json, never a task or note), so it needs no direct-UI gate.
+  D08: "none", N06: "none", V01: "none", V02: "none", V03: "none", V04: "none", V05: "none", V06: "none",
   V07: "none", V08: "none", V09: "none", V10: "none", V11: "none", V12: "none", V13: "none", V14: "settings",
   V15: "none", V16: "none", V17: "none", V18: "none", V19: "none", V22: "none",
   Q01: "none", Q02: "none", Q03: "none", Q04: "none", Q05: "none", Q06: "none", Q07: "none", Q08: "none",
@@ -216,11 +229,12 @@ export function operationRequestDenial(id: OperationId, origin: RequestOrigin): 
 export type OperationOutputMap = {
   [K in OperationId]: K extends "T01" | "T02" ? TaskReadResultV1
     : K extends "D01" ? DailyReadResultV1
+    : K extends "N01" ? MemoReadResultV1
     : K extends WriteOperationId | "Q08" ? OperationPreviewV1 : OperationRequestResultV1;
 };
 /** Lazy DTO references avoid an initialization cycle with preview's operationId enum. */
 export const operationOutputSchemas = Object.fromEntries(OPERATION_IDS.map((id) => [id, z.lazy(() => {
-  if (OPERATION_CONTRACTS[id][0] === "read") return readResultSchema.refine((result) => result.data.kind === (id === "D01" ? "daily" : "tasks"), "操作とread DTOが不一致");
+  if (OPERATION_CONTRACTS[id][0] === "read") return readResultSchema.refine((result) => result.data.kind === (id === "D01" ? "daily" : id === "N01" ? "memos" : "tasks"), "操作とread DTOが不一致");
   if (OPERATION_CONTRACTS[id][0] === "write") return operationPreviewSchema.refine((result) => result.operationId === id, "操作IDが不一致");
   if (id === "Q08") return operationPreviewSchema;
   return operationRequestResultSchema.refine((result) => result.operationId === id, "操作IDが不一致");

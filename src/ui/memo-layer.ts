@@ -1,6 +1,6 @@
 import { setIcon } from "obsidian";
 import type { MemoAnchor } from "../app/memo-anchor";
-import { MEMO_DEFAULT_WIDTH, MEMO_MAX_WIDTH, MEMO_MIN_WIDTH, type MemoMeta } from "../core/memo";
+import { MEMO_DEFAULT_OFFSET, MEMO_DEFAULT_WIDTH, MEMO_MAX_WIDTH, MEMO_MIN_WIDTH, type MemoMeta } from "../core/memo";
 import type { MemoLayout, TaskWorkbenchSettings } from "../core/types";
 
 /**
@@ -434,7 +434,7 @@ export class MemoLayer {
     for (const entry of this.ctx.entries()) {
       if (!entry.meta) continue;
       const node = this.nodes.get(entry.id), stored = next[entry.id];
-      next[entry.id] = stored ? { ...stored, open } : { open, dx: node?.dx ?? DEFAULT_DX, dy: node?.dy ?? -(MIN_BUBBLE_HEIGHT + BUBBLE_GAP), w: node?.w ?? MEMO_DEFAULT_WIDTH };
+      next[entry.id] = stored ? { ...stored, open } : { open, dx: node?.dx ?? MEMO_DEFAULT_OFFSET.dx, dy: node?.dy ?? MEMO_DEFAULT_OFFSET.dy, w: node?.w ?? MEMO_DEFAULT_WIDTH };
     }
     settings.ganttMemoLayout = next;
     this.ctx.saveLayout();

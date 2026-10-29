@@ -946,6 +946,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-after { display: flex; gap: 6px; align-items: baseline; min-width: 0; color: var(--text-normal); font-weight: var(--font-semibold); }
 .vg-pv-side { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .vg-pv-value { min-width: 0; }
+.vg-pv-value.is-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-row.is-removed .vg-pv-after .vg-pv-value, .vg-pv-chip.is-removed { text-decoration: line-through; }
 .vg-pv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-text.is-multiline { display: block; max-height: 8em; overflow: auto; padding: 2px 6px; border-inline-start: 2px solid var(--background-modifier-border); }

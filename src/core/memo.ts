@@ -18,6 +18,8 @@ export const MEMO_TEXT_LIMIT = 20000;
 export const MEMO_MIN_WIDTH = 140;
 export const MEMO_MAX_WIDTH = 480;
 export const MEMO_DEFAULT_WIDTH = 220;
+/** Where a bubble sits relative to its anchor when nothing placed it yet: up and to the right. */
+export const MEMO_DEFAULT_OFFSET = { dx: 28, dy: -70 } as const;
 
 /** What a memo note says about itself. The text is read separately (lazily). */
 export interface MemoMeta {
@@ -88,6 +90,23 @@ export function replaceMemoBody(content: string, text: string, updated: string):
   return `${stamped}${normalizeMemoText(text)}\n`;
 }
 
+/**
+ * Rewrites the anchor keys (`task`, `at`, `date`) and stamps `updated`, keeping every other line and the body.
+ * The same edit `processFrontMatter` makes, as a pure text transform (a plan needs the exact bytes up front).
+ */
+export function replaceMemoAnchor(content: string, fields: Pick<MemoMeta, "taskId" | "at" | "date">, updated: string, stringifyYaml: (value: unknown) => string): string {
+  const { front, body } = splitFrontmatter(content);
+  const anchor: Frontmatter = {};
+  if (fields.taskId) anchor.task = fields.taskId;
+  if (fields.at !== undefined) anchor.at = fields.at;
+  if (fields.date) anchor.date = fields.date;
+  const added = Object.keys(anchor).length ? stringifyYaml(anchor).replace(/\n*$/, "").split("\n") : [];
+  const kept = front.split("\n").filter((line) => !/^(task|at|date):/.test(line)).map((line) => /^updated:/.test(line) ? `updated: ${updated}` : line);
+  const at = kept.findIndex((line) => /^id:/.test(line));
+  kept.splice(at >= 0 ? at + 1 : 1, 0, ...added);
+  return `${kept.join("\n")}${body}`;
+}
+
 /** File stem of a new memo: `YYYY-MM-DD <first line>`. */
 export function memoFileStem(text: string, dateStr: string): string {
   const firstLine = normalizeMemoText(text).split("\n")[0] ?? "";
@@ -125,4 +144,14 @@ export function normalizeMemoLayout(value: unknown): Record<string, MemoLayout> 
     };
   }
   return out;
+}
+
+/** Opens or closes the memos in `ids` (every memo in `all` when ids is ["*"]); one that was never placed gets the default offsets. */
+export function setMemosOpen(layout: Record<string, MemoLayout>, all: readonly string[], ids: readonly string[], open: boolean): Record<string, MemoLayout> {
+  const next = { ...layout };
+  for (const id of ids.includes("*") ? all : ids) {
+    const stored = next[id];
+    next[id] = stored ? { ...stored, open } : { open, dx: MEMO_DEFAULT_OFFSET.dx, dy: MEMO_DEFAULT_OFFSET.dy, w: MEMO_DEFAULT_WIDTH };
+  }
+  return next;
 }

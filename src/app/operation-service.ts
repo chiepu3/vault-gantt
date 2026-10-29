@@ -33,6 +33,7 @@ import { DailyReadHandler, dailyPlan, dailyProjection, executeDailyPlan, type Da
 import { viewRequest, diagnosticRequest, historyPlan, executeHistoryPlan, diagnosticPlan, executeDiagnosticPlan, type HistoryPlan, type DiagnosticPlan, type ViewRequestId } from "./operations/view-handlers";
 import { controlRequest, type ControlId } from "./operations/control-handlers";
 import { integrationPlan, executeExternalSend, INTEGRATION_OPERATION_IDS, type IntegrationPlan, type IntegrationPlanHost, type IntegrationId } from "./operations/integration-handlers";
+import { MemoReadHandler, memoPlan, executeMemoPlan, type MemoPlan, type MemoWriteId } from "./operations/memo-handlers";
 import { worklogPlan } from "./operations/worklog-handlers";
 import { priorityPlan } from "./operations/priority-handlers";
 import type { ChatSession } from "../ai/chat-session";
@@ -43,12 +44,12 @@ interface WriteUnit { path: string; before: string | null; after: string | null;
 const rowOf = (parents: readonly TaskRow[], taskId: string): TaskRow => flatten(parents).find((row) => row.id === taskId)!;
 /** What a note keeps of a row; marker keys are derived when reading, so they do not take part. */
 const stateOf = (row: TaskRow): string => canonical({ ...taskPublicState(row), ganttOrder: null, priority: row.priorityMode === "manual" ? row.priority : null, ganttMarkers: (row.ganttMarkers ?? []).map((marker) => ({ title: marker.title, date: marker.date, tags: marker.tags ?? [] })) });
-interface StoredPlan { copyFrom?: string; preview: OperationPreviewV1; input: unknown; context: RequestContext; snapshot: TaskSnapshot; afterParents: TaskRow[]; afterSettings: TaskWorkbenchSettings; writes: WriteUnit[]; settingKeys: (keyof TaskWorkbenchSettings)[]; changes: TaskChange[]; noopActions: string[]; daily?: DailyPlan; history?: HistoryPlan; diagnostic?: DiagnosticPlan; integration?: IntegrationPlan }
+interface StoredPlan { copyFrom?: string; preview: OperationPreviewV1; input: unknown; context: RequestContext; snapshot: TaskSnapshot; afterParents: TaskRow[]; afterSettings: TaskWorkbenchSettings; writes: WriteUnit[]; settingKeys: (keyof TaskWorkbenchSettings)[]; changes: TaskChange[]; noopActions: string[]; daily?: DailyPlan; history?: HistoryPlan; diagnostic?: DiagnosticPlan; integration?: IntegrationPlan; memo?: MemoPlan }
 /** Entries compared by meaning: generated identifiers (new event keys, task ids, paths, revisions) and action ids are ignored. */
-const GENERATED_KEYS = new Set(["key", "id", "taskId", "eventKey", "scheduleKey", "path", "revision", "actionId", "createdAt", "updatedAt"]);
+const GENERATED_KEYS = new Set(["key", "id", "taskId", "memoId", "eventKey", "scheduleKey", "path", "revision", "actionId", "createdAt", "updatedAt"]);
 const equivalentEntries = (a: OperationPreviewV1, b: OperationPreviewV1): boolean => {
   const norm = (preview: OperationPreviewV1) => canonical(preview.entries.map((entry) => {
-    const creates = entry.effects.some((effect) => effect.kind === "presence" && (effect.action === "create" || effect.action === "duplicate"));
+    const creates = entry.effects.some((effect) => (effect.kind === "presence" && (effect.action === "create" || effect.action === "duplicate")) || (effect.kind === "memo" && effect.before === null));
     return JSON.parse(JSON.stringify(entry, (key, value) => key === "actionId" || (creates && GENERATED_KEYS.has(key)) ? undefined : value));
   }));
   return norm(a) === norm(b);
@@ -68,6 +69,10 @@ export interface OperationServiceHost {
   sendExternal?(destination: string, body: string): Promise<void>;
   restartSync?(): void;
   requestApproval?(previewId: string): Promise<void>;
+  /** Opens/closes memo bubbles (view state in the settings, not part of any proposal). */
+  setMemosOpen?(ids: readonly string[], open: boolean): Promise<void>;
+  /** Memo notes were written by an approved proposal: redraw the memo layers (the chart is not rebuilt). */
+  memosChanged?(paths: readonly string[]): void | Promise<void>;
   /** `paths`: only these task files changed (no settings); omit to drop every cached task. */
   invalidate(paths?: readonly string[]): void | Promise<void>;
 }
@@ -81,6 +86,7 @@ export class OperationService implements OperationServicePort {
   private readonly intents = new Map<string, { binding: string; previewId: string }>();
   private readonly planningIntents = new Map<string, { binding: string; promise: Promise<OperationPreviewV1> }>();
   private readonly dailyReader = new DailyReadHandler();
+  private readonly memoReader = new MemoReadHandler();
   private counter = 0;
   private disposed = false;
   private readonly lifecycle = new AbortController();
@@ -163,6 +169,7 @@ export class OperationService implements OperationServicePort {
     this.guard(id, input, context);
     if (this.catalog.get(id).classification !== "read") fail("INVALID_INPUT", "read操作IDを指定してください。");
     const parsed = operationInputSchemas[id].parse(input);
+    if (id === "N01") return this.memoReader.read(parsed as OperationInputMap["N01"], context, await this.contextPort.snapshot(), this.host.settings.ganttMemoLayout ?? {}) as OperationOutputMap[K];
     if (id === "D01") return await this.dailyReader.read(parsed as OperationInputMap["D01"], context, await this.contextPort.snapshot(), this.vaultFactory()) as OperationOutputMap[K];
     const result = id === "T01" ? await this.contextPort.query("tasks.search", { name: (parsed as OperationInputMap["T01"]).query, cursor: (parsed as OperationInputMap["T01"]).cursor, limit: (parsed as OperationInputMap["T01"]).limit }, context)
       : await this.contextPort.query("tasks.get-many", { taskIds: [(parsed as OperationInputMap["T02"]).taskId], include: ["identity", ...(parsed as OperationInputMap["T02"]).include ?? ["status", "schedule", "priority", "tags"]] }, context);
@@ -227,9 +234,13 @@ export class OperationService implements OperationServicePort {
     const vault = this.vaultFactory();
     let daily: DailyPlan | undefined, historyPlanData: HistoryPlan | undefined, diagnostic: DiagnosticPlan | undefined, integration: IntegrationPlan | undefined;
     const assignEntries = (rows: Omit<PreviewEntry, "actionId">[]) => rows.map((entry, index) => ({ ...entry, actionId: `${previewId}:${index}` }));
+    let memo: MemoPlan | undefined;
     if (id.startsWith("D")) {
       daily = await dailyPlan(id as DailyWriteId, parsed as OperationInputMap[DailyWriteId], snapshot, vault);
       entries = assignEntries(daily.entries); warnings.push(...daily.warnings);
+    } else if (id.startsWith("N")) {
+      memo = memoPlan(id as MemoWriteId, parsed as OperationInputMap[MemoWriteId], snapshot, vault);
+      entries = assignEntries(memo.entries);
     } else if (id === "V20" || id === "V21") {
       historyPlanData = await historyPlan(id, parsed as OperationInputMap["V20"], snapshot, this.host.historyManager);
       daily = historyPlanData.daily;
@@ -323,7 +334,7 @@ export class OperationService implements OperationServicePort {
     const writes: WriteUnit[] = [], noopActions: string[] = [];
     applyStoredOrder(afterSettings, afterParents);
     if (historyPlanData) for (const write of historyPlanData.writes.filter((write) => !historyPlanData!.daily?.writes.some((other) => other.path === write.path))) writes.push({ ...write, actionIds: entries.filter((entry) => entry.entity.kind === "task" && entry.entity.taskId === write.taskId).map((entry) => entry.actionId) });
-    else if (!daily && !diagnostic) {
+    else if (!daily && !diagnostic && !memo) {
       const changes = diffTasks(snapshot.parents, afterParents, (row, parent) => newNoteText(vault, row, parent));
       for (const change of changes) {
         const actionIds = entries.filter((entry) => entry.entity.kind === "task" && entry.entity.taskId === change.taskId).map((entry) => entry.actionId);
@@ -334,14 +345,18 @@ export class OperationService implements OperationServicePort {
       noopActions.push(...entries.filter((entry) => entry.entity.kind === "task" && !written.has(entry.actionId)).map((entry) => entry.actionId));
     }
     for (const write of daily?.writes ?? diagnostic?.writes ?? []) writes.push({ ...write, actionIds: entries.filter((entry) => (entry.entity.kind === "daily-file" || entry.entity.kind === "daily-todo") ? entry.entity.path === write.path : entry.effects.some((effect) => effect.kind === "diagnostic" && effect.outputPath === write.path)).map((entry) => entry.actionId) });
+    if (memo) {
+      for (const write of memo.writes) writes.push({ path: write.path, before: write.before, after: write.after, actionIds: [`${previewId}:${write.entry}`] });
+      noopActions.push(...entries.filter((_entry, index) => !memo!.writes.some((write) => write.entry === index)).map((entry) => entry.actionId));
+    }
     const now = Date.now();
     const preview = operationPreviewSchema.parse({ schemaVersion: 1, previewId, vaultInstanceId: this.vaultInstanceId, operationId: id, operationLabel: this.catalog.get(id).description.purpose, origin: context.origin, status: "pending", createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 600000).toISOString(),
       summary: { targetCount: entries.length, actionCount: entries.length }, entries, warnings,
-      undo: settingKeys.some((key) => key !== "ganttParentOrder") || historyPlanData || diagnostic || daily?.unresolvedTemplates.length || writes.some((write) => write.before === null && !write.change) ? { support: "none", reason: "設定保存・Dailyの新規ファイル作成はUndo対象外です。" } : { support: "full", reason: "履歴先頭かつ内容一致時にMarkdown差分を戻せます。" },
-      projection: daily ? await dailyProjection(daily, snapshot, entries, afterParents) : project(snapshot, afterParents, afterSettings, entries) });
+      undo: memo ? { support: "full", reason: "メモのノートを履歴先頭かつ内容一致時に戻せます。" } : settingKeys.some((key) => key !== "ganttParentOrder") || historyPlanData || diagnostic || daily?.unresolvedTemplates.length || writes.some((write) => write.before === null && !write.change) ? { support: "none", reason: "設定保存・Dailyの新規ファイル作成はUndo対象外です。" } : { support: "full", reason: "履歴先頭かつ内容一致時にMarkdown差分を戻せます。" },
+      projection: memo ? null : daily ? await dailyProjection(daily, snapshot, entries, afterParents) : project(snapshot, afterParents, afterSettings, entries) });
     if (this.disposed || context.signal?.aborted) fail("POLICY_DENIED", "停止した要求の計画は破棄しました。");
     if (new TextEncoder().encode(JSON.stringify(preview)).length > 12 * 1024 * 1024) fail("INVALID_INPUT", "提案が12MiBを超えます。対象を分けて再提案してください。");
-    const stored: StoredPlan = { copyFrom, preview, input: structuredClone(parsed), context: { ...context, origin: structuredClone(context.origin), capabilities: [...context.capabilities], signal: undefined }, snapshot, afterParents, afterSettings, writes, settingKeys, changes, noopActions, daily, history: historyPlanData, diagnostic, integration };
+    const stored: StoredPlan = { copyFrom, preview, input: structuredClone(parsed), context: { ...context, origin: structuredClone(context.origin), capabilities: [...context.capabilities], signal: undefined }, snapshot, afterParents, afterSettings, writes, settingKeys, changes, noopActions, daily, history: historyPlanData, diagnostic, integration, memo };
     return stored;
   }
   inspect(previewId: string, context: RequestContext): OperationPreviewV1 {
@@ -417,7 +432,7 @@ export class OperationService implements OperationServicePort {
         for (const write of stored.writes) { const file = vault.getFileByPath(write.path); if (write.before === null ? !!file : !file || await vault.read(file) !== write.before) throw new Error("REVISION_CONFLICT"); }
         if (stored.history) this.clearSavedProjectionFocus();
         for (const [path, write] of this.ownWrites) if (write.until <= Date.now()) this.ownWrites.delete(path);
-        for (const write of stored.writes) for (const path of [write.path, ...(write.afterPath ? [write.afterPath] : [])]) this.ownWrites.set(path, { ...(stored.daily || stored.history || stored.diagnostic ? { content: write.after } : {}), until: Date.now() + 60_000 });
+        for (const write of stored.writes) for (const path of [write.path, ...(write.afterPath ? [write.afterPath] : [])]) this.ownWrites.set(path, { ...(stored.daily || stored.history || stored.diagnostic || stored.memo ? { content: write.after } : {}), until: Date.now() + 60_000 });
         if (stored.daily && !stored.history) {
           await executeDailyPlan(stored.daily, vault, (path) => {
             const write = stored.writes.find((write) => write.path === path)!;
@@ -425,6 +440,12 @@ export class OperationService implements OperationServicePort {
             if (write.before === null) this.host.historyManager.discardRedo();
             else history.push({ path, before: write.before, after: write.after });
           }, signal);
+        } else if (stored.memo) {
+          await executeMemoPlan(stored.memo, vault, (write) => {
+            stored.writes.find((item) => item.path === write.path)!.actionIds.forEach((action) => committed.add(action));
+            history.push({ path: write.path, before: write.before, after: write.after });
+          }, signal);
+          if (stored.memo.closed) await this.host.setMemosOpen?.([stored.memo.closed], false);
         } else if (stored.history) {
           await executeHistoryPlan(stored.history, this.host.historyManager, vault, signal);
           stored.preview.entries.forEach((entry) => committed.add(entry.actionId));
@@ -433,7 +454,7 @@ export class OperationService implements OperationServicePort {
           for (const entry of stored.preview.entries) actualEffects.set(entry.actionId, entry.effects.map((effect) => effect.kind === "diagnostic" ? { ...effect, recording: result.recording } : effect));
           stored.preview.entries.forEach((entry) => committed.add(entry.actionId)); this.host.historyManager.discardRedo();
         }
-        for (const write of stored.daily || stored.history || stored.diagnostic ? [] : byApplyOrder(stored.writes, (item) => item.change!)) {
+        for (const write of stored.daily || stored.history || stored.diagnostic || stored.memo ? [] : byApplyOrder(stored.writes, (item) => item.change!)) {
           if (this.disposed || signal?.aborted) throw new Error("CANCELLED");
           try {
             let applied: AppliedNote;
@@ -475,14 +496,14 @@ export class OperationService implements OperationServicePort {
           try { if (write.after === null ? !file : !!file && await vault.read(file) === write.after) write.actionIds.forEach((action) => committed.add(action)); } catch { /* Unknown bytes are not claimed as saved. */ }
         }
         errorCode = signal?.aborted || this.disposed ? "CANCELLED" : error instanceof OperationFailure ? error.error.code : error instanceof Error ? error.message : "SAVE_FAILED";
-        if (!failed.size && (stored.daily || stored.diagnostic || stored.history) && !["REVISION_CONFLICT", "PLAN_EXPIRED", "CANCELLED"].includes(errorCode)) {
+        if (!failed.size && (stored.daily || stored.diagnostic || stored.history || stored.memo) && !["REVISION_CONFLICT", "PLAN_EXPIRED", "CANCELLED"].includes(errorCode)) {
           const first = stored.preview.entries.find((entry) => !committed.has(entry.actionId)); if (first) failed.add(first.actionId);
         }
         status = committed.size ? errorCode === "CANCELLED" ? "cancelled" : "partial" : errorCode === "CANCELLED" ? "cancelled" : ["REVISION_CONFLICT", "PLAN_EXPIRED"].includes(errorCode) ? "stale" : "failed";
       }
       // The parent order (settings) is undoable together with the file changes; other settings are not.
-      const undoable = (history.length > 0 || orderPersisted) && stored.settingKeys.every((key) => key === "ganttParentOrder") && !stored.writes.some((write) => write.before === null && !write.change && write.actionIds.some((action) => committed.has(action)));
-      if (undoable) this.host.historyManager.push({ label: `タスク変更 ${id}`, files: mergeApplied(history), ...(orderPersisted ? { order: { before: stored.snapshot.settings.ganttParentOrder ?? [], after: stored.afterSettings.ganttParentOrder ?? [] } } : {}) });
+      const undoable = (history.length > 0 || orderPersisted) && stored.settingKeys.every((key) => key === "ganttParentOrder") && (!!stored.memo || !stored.writes.some((write) => write.before === null && !write.change && write.actionIds.some((action) => committed.has(action))));
+      if (undoable) this.host.historyManager.push({ label: `${stored.memo ? "メモ変更" : "タスク変更"} ${id}`, files: mergeApplied(history), ...(orderPersisted ? { order: { before: stored.snapshot.settings.ganttParentOrder ?? [], after: stored.afterSettings.ganttParentOrder ?? [] } } : {}) });
       for (const write of stored.writes) {
         if (!write.actionIds.some((action) => committed.has(action))) { this.ownWrites.delete(write.path); if (write.afterPath) this.ownWrites.delete(write.afterPath); }
         else if (stored.daily && !stored.history) this.ownWrites.set(write.path, { content: write.after, until: Date.now() + 60_000 });
@@ -506,8 +527,8 @@ export class OperationService implements OperationServicePort {
       }
       const actualEntries = stored.preview.entries.filter((entry) => committed.has(entry.actionId)).map((entry) => ({ ...entry, effects: actualEffects.get(entry.actionId) ?? entry.effects }));
       const outcome: OperationOutcomeV1 = { previewId: id, status, actions: stored.preview.entries.map((entry) => ({ actionId: entry.actionId, state: committed.has(entry.actionId) ? "committed" : failed.has(entry.actionId) ? "failed" : "not-attempted", actual: committed.has(entry.actionId) ? actualEffects.get(entry.actionId) ?? entry.effects : [], ...(committed.has(entry.actionId) ? {} : { errorCode: errorCode ?? "NOT_ATTEMPTED" }) })),
-        ...(undoable ? { undoEntryId: `タスク変更 ${id}` } : {}), actualProjection: actualEntries.length ? stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, orderPersisted || stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
-      if (committed.size && !this.disposed) { try { await this.host.invalidate(renamed || stored.settingKeys.length || stored.daily || stored.history || stored.diagnostic ? undefined : stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).flatMap((write) => [write.path, ...(write.afterPath ? [write.afterPath] : [])])); } catch { /* Saved bytes remain authoritative. */ } }
+        ...(undoable ? { undoEntryId: `${stored.memo ? "メモ変更" : "タスク変更"} ${id}` } : {}), actualProjection: actualEntries.length ? stored.memo ? null : stored.daily ? await dailyProjection({ ...stored.daily, files: stored.daily.files.map((file) => ({ ...file, after: stored.writes.some((write) => write.path === file.path && write.actionIds.some((action) => committed.has(action))) ? file.after : file.before })) }, stored.snapshot, actualEntries, parents) : project(stored.snapshot, parents, orderPersisted || stored.settingKeys.length && stored.preview.entries.some((entry) => entry.entity.kind !== "task" && committed.has(entry.actionId) && !entry.effects.some((effect) => effect.kind === "external-send")) ? stored.afterSettings : stored.snapshot.settings, actualEntries) : null };
+      if (committed.size && !this.disposed) { try { if (stored.memo) await this.host.memosChanged?.(stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).map((write) => write.path)); else await this.host.invalidate(renamed || stored.settingKeys.length || stored.daily || stored.history || stored.diagnostic ? undefined : stored.writes.filter((write) => write.actionIds.some((action) => committed.has(action))).flatMap((write) => [write.path, ...(write.afterPath ? [write.afterPath] : [])])); } catch { /* Saved bytes remain authoritative. */ } }
       const validated = validatePreviewOutcome(stored.preview, outcome);
       if (!this.disposed) {
         // An external change while applying cannot clear an outcome that

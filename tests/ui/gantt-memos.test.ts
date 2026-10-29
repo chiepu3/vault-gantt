@@ -13,6 +13,8 @@ import { addDays, diffDays } from "../../src/app/gantt-layout";
 import { BAR_HEIGHT, PARENT_COL_WIDTH } from "../../src/app/gantt-constants";
 import { byClass, createFakeDocument, deepText, dispatch, makeFakeEl } from "../stubs/fake-dom";
 import type { FakeEl } from "../stubs/fake-dom";
+import { FakePreviewPort } from "./preview-fakes";
+import { SETTINGS_PREVIEW } from "../contracts/fixtures";
 
 vi.mock("obsidian", async (importOriginal) => {
   const actual = await importOriginal<typeof import("obsidian")>();
@@ -60,7 +62,7 @@ interface Rig {
   parent: TaskRow;
 }
 
-async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; settings?: Record<string, unknown> } = {}): Promise<Rig> {
+async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; settings?: Record<string, unknown>; previewPort?: FakePreviewPort } = {}): Promise<Rig> {
   const sub = subtaskRow("sub1", dateOffset(0), dateOffset(5));
   const parent = parentRow([sub]);
   const settings = { ...DEFAULT_SETTINGS, ganttTags: [], ...opts.settings } as TaskWorkbenchSettings;
@@ -94,6 +96,7 @@ async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; settin
     activateView: vi.fn(async () => undefined),
     manifest: { version: "1.2.3", releaseNotes: "", description: "" },
     ...(opts.withMemos === false ? {} : { memos }),
+    ...(opts.previewPort ? { previewPort: opts.previewPort } : {}),
   } as unknown as TaskGanttViewHost;
   const view = new TaskGanttView({} as any, host);
   const container = (view as any).containerEl as FakeEl;
@@ -578,6 +581,46 @@ describe("Gantt floating memos", () => {
       layOut(r); await r.view.reloadMemos();
       await r.view.onClose();
       expect(layerOf(r.container)).toBeUndefined();
+    });
+  });
+
+  describe("AI proposals", () => {
+    const proposal = (previewId: string, memoId: string, before: unknown, after: unknown): any => ({
+      ...SETTINGS_PREVIEW, previewId, origin: { kind: "chat", conversationId: "c1" }, projection: null,
+      entries: [{ actionId: `${previewId}:0`, entity: { kind: "memo", memoId }, displayName: "メモ", effects: [{ kind: "memo", before, after }] }],
+    });
+    const at = (r: Rig, text: string, date = dateOffset(1)) => ({ text, taskId: r.sub.id, taskName: "sub1", date });
+
+    it("draws a dashed AI bubble for an added memo, marked 追加, and nothing is stored", async () => {
+      const port = new FakePreviewPort();
+      const r = await openGantt([], { previewPort: port });
+      layOut(r);
+      port.previews.set("p1", proposal("p1", "m-newaaa", null, at(r, "AIの提案メモ")));
+      port.focus("p1");
+      await flush();
+      const bubbles = byClass(layerOf(r.container) as FakeEl, "vg-memo");
+      expect(bubbles).toHaveLength(1);
+      expect(deepText(bubbles[0])).toContain("AI提案・追加");
+      expect(deepText(bubbles[0])).toContain("AIの提案メモ");
+      expect(bubbles[0].classList.contains("is-ai") || byClass(bubbles[0], "is-ai").length > 0).toBe(true);
+      expect(r.memos.create).not.toHaveBeenCalled();
+      port.focus(null);
+      await flush();
+      expect(byClass(layerOf(r.container) as FakeEl, "vg-memo")).toHaveLength(0);
+    });
+
+    it("replaces the stored bubble it deletes with a faded 削除 bubble", async () => {
+      const port = new FakePreviewPort();
+      const r = await openGantt([memoMeta("m-aaaaaa", { taskId: "tasks/parent-1.md::sub1", at: 1 })], { previewPort: port });
+      layOut(r); await r.view.reloadMemos();
+      expect(byClass(layerOf(r.container) as FakeEl, "vg-memo")).toHaveLength(1);
+      port.previews.set("p2", proposal("p2", "m-aaaaaa", at(r, "消される本文"), null));
+      port.focus("p2");
+      await flush();
+      const bubbles = byClass(layerOf(r.container) as FakeEl, "vg-memo");
+      expect(bubbles).toHaveLength(1);
+      expect(deepText(bubbles[0])).toContain("AI提案・削除");
+      expect(byClass(bubbles[0], "is-deleted").length + (bubbles[0].classList.contains("is-deleted") ? 1 : 0)).toBeGreaterThan(0);
     });
   });
 });

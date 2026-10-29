@@ -21,6 +21,7 @@ export const entityRefSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("view"), viewId: idSchema }).strict(),
   z.object({ kind: z.literal("conversation"), conversationId: idSchema }).strict(),
   z.object({ kind: z.literal("integration"), targetId: idSchema }).strict(),
+  z.object({ kind: z.literal("memo"), memoId: idSchema }).strict(),
 ]);
 export type EntityRef = DeepReadonly<z.infer<typeof entityRefSchema>>;
 /** Stable identity used for coverage and page unions; optional task parent hints are not identity. */
@@ -38,6 +39,7 @@ export function entityRefKey(entity: EntityRef): string {
     case "view": return JSON.stringify([entity.kind, entity.viewId]);
     case "conversation": return JSON.stringify([entity.kind, entity.conversationId]);
     case "integration": return JSON.stringify([entity.kind, entity.targetId]);
+    case "memo": return JSON.stringify([entity.kind, entity.memoId]);
   }
 }
 export const ENTITY_FIELDS = {
@@ -49,6 +51,7 @@ export const ENTITY_FIELDS = {
   view: ["position", "filterText", "statusFilter", "sortKey", "sortDir", "flatDueSort", "showCompleted", "expanded", "tagNames", "dayWidth", "date", "offset", "mode", "targetId", "selection"],
   conversation: ["provider", "endpoint", "model", "auth", "secretId", "title", "status", "activeConversationId", "messageCount"],
   integration: [...SERVICE_STATE_KEYS, "destination", "enabled", "intervalMinutes", "recording", "outputPath", "entryCount"],
+  memo: [],
 } as const satisfies Record<EntityRef["kind"], readonly string[]>;
 export type PublicEntityField = (typeof ENTITY_FIELDS)[keyof typeof ENTITY_FIELDS][number];
 export const fieldChangeSchema = z.object({
@@ -63,7 +66,10 @@ export const serviceStateChangeSchema = fieldChangeSchema.superRefine((change, c
   const schema = serviceStateSchema.shape[change.field as typeof SERVICE_STATE_KEYS[number]];
   if (!schema.safeParse(change.before).success || !schema.safeParse(change.after).success) ctx.addIssue({ code: "custom", message: "管理値の型が不正です" });
 });
-export const PREVIEW_EFFECT_KINDS = ["fields", "presence", "schedule", "deadline", "marker", "workload", "order", "membership", "tag-definition", "weekly", "daily-todo", "calendar", "settings", "view", "external-send", "diagnostic", "conversation", "service-state"] as const;
+export const PREVIEW_EFFECT_KINDS = ["fields", "presence", "schedule", "deadline", "marker", "workload", "order", "membership", "tag-definition", "weekly", "daily-todo", "calendar", "settings", "view", "external-send", "diagnostic", "conversation", "service-state", "memo"] as const;
+/** A memo as the preview shows it: the text and where it sits (taskId omitted = the 「その他」 row), with the real date. */
+export const memoStateSchema = z.object({ text: z.string().max(20000), taskId: idSchema.optional(), taskName: z.string().max(20000).optional(), date: dateOnlySchema, open: z.boolean().optional() }).strict();
+export type MemoStateV1 = DeepReadonly<z.infer<typeof memoStateSchema>>;
 export const previewEffectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fields"), fields: z.array(fieldChangeSchema) }).strict(),
   z.object({ kind: z.literal("presence"), before: jsonSchema, after: jsonSchema, action: z.enum(["create", "delete", "duplicate"]) }).strict(),
@@ -76,6 +82,7 @@ export const previewEffectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("tag-definition"), before: namedDefinitionSchema.nullable(), after: namedDefinitionSchema.nullable(), affectedCount: countSchema }).strict(),
   z.object({ kind: z.literal("weekly"), before: weeklyStateSchema.nullable(), after: weeklyStateSchema.nullable() }).strict(),
   z.object({ kind: z.literal("daily-todo"), before: dailyStateSchema.nullable(), after: dailyStateSchema.nullable() }).strict(),
+  z.object({ kind: z.literal("memo"), before: memoStateSchema.nullable(), after: memoStateSchema.nullable() }).strict(),
   z.object({ kind: z.literal("calendar"), added: z.array(dateOnlySchema), removed: z.array(dateOnlySchema), source: z.enum(["manual", "special", "national"]) }).strict(),
   z.object({ kind: z.literal("service-state"), fields: z.array(serviceStateChangeSchema) }).strict(),
   z.object({ kind: z.literal("settings"), fields: z.array(fieldChangeSchema) }).strict(),
@@ -154,7 +161,7 @@ function represented(entity: EntityRef, state: GanttStateV1): boolean {
     case "daily-todo": return state.daily.some((day) => day.items?.some((item) => item.path === entity.path && item.line === entity.line && item.itemFingerprint === entity.itemFingerprint));
     case "daily-file": return state.dailyFiles?.some((file) => file.path === entity.path && file.sourceKey === entity.sourceKey && file.exists) ?? false;
     // These have no natural Gantt entity; their view/panel details are in effects.
-    case "view": case "conversation": case "integration": return true;
+    case "view": case "conversation": case "integration": case "memo": return true;
   }
 }
 export const ganttProjectionSchema = z.object({

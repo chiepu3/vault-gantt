@@ -13,7 +13,7 @@ export class ContextBuilder {
       taskFolder: overview.data.settings.taskFolder, autoPriorityEnabled: overview.data.settings.autoPriorityEnabled,
       ganttWorkloadDailyCapacityHours: overview.data.settings.ganttWorkloadDailyCapacityHours,
     } } };
-    const json = JSON.stringify(compact);
+    const json = JSON.stringify(compact) + (overview.data.counts.memos ? `\nメモ: ${overview.data.counts.memos}件（内容はN01で取得）` : "");
     if (new TextEncoder().encode(json).length > this.byteBudget) return JSON.stringify({ schemaVersion: 1, today: overview.today, timezone: overview.timezone, snapshotRevision: overview.snapshotRevision, counts: overview.data.counts, capabilities: overview.data.capabilities, omitted: "parse error詳細はcontext.overviewで取得してください。" });
     return json;
   }

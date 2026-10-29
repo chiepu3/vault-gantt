@@ -39,6 +39,14 @@ export async function readMemoText(vault: VaultAdapter, meta: Pick<MemoMeta, "pa
   return memoBody(await vault.cachedRead(file));
 }
 
+/** The id, path and whole text of a new memo note; nothing is written. */
+export function newMemoNote(vault: VaultAdapter, settings: TaskWorkbenchSettings, input: MemoTarget & { text: string }): { meta: MemoMeta; content: string } {
+  const text = checkText(input.text), today = todayStr();
+  const meta: MemoMeta = { id: generateMemoId(collectTaskIds(vault, settings)), path: memoPath(vault, settings, text, today), ...anchorFields(input), created: today, updated: today };
+  const { path: _path, ...fields } = meta; void _path;
+  return { meta, content: buildMemoNote(fields, text, stringifyYaml) };
+}
+
 /** Creates the memo note `<taskFolder>/_memos/YYYY-MM-DD <first line>.md`. Recorded for undo. */
 export async function createMemo(
   vault: VaultAdapter,
@@ -47,10 +55,7 @@ export async function createMemo(
   historyManager?: HistoryManager,
   cache?: TaskCache
 ): Promise<MemoMeta> {
-  const text = checkText(input.text), today = todayStr();
-  const meta: MemoMeta = { id: generateMemoId(collectTaskIds(vault, settings)), path: memoPath(vault, settings, text, today), ...anchorFields(input), created: today, updated: today };
-  const { path: _path, ...fields } = meta; void _path;
-  const content = buildMemoNote(fields, text, stringifyYaml);
+  const { meta, content } = newMemoNote(vault, settings, input);
   const file = await vault.create(meta.path, content);
   await vault.afterWrite(file, true);
   cache?.delete(meta.path);

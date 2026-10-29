@@ -15,7 +15,7 @@ import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
 import { Logger } from "./core/logger";
-import { isMemoPath, normalizeMemoLayout } from "./core/memo";
+import { isMemoPath, normalizeMemoLayout, setMemosOpen } from "./core/memo";
 import { createMemoHost } from "./app/memo-controller";
 
 import {
@@ -63,7 +63,7 @@ import {
   deleteSubtaskTaskItem,
   loadTasks,
 } from "./app/task-operations";
-import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
+import { isUnderRoot, loadMemos, taskRoot, type TaskCache } from "./app/note-store";
 import { setNoteNotifier } from "./app/note-changes";
 import { findLegacyNotes, planMigration, runMigration } from "./app/migration-v1";
 import { MigrationModal } from "./ui/migration-modal";
@@ -409,6 +409,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
       restartSync: () => this.startGanttSyncTimer(false),
       requestApproval: async (previewId) => { await this.uiPort.requestApproval(previewId); },
+      setMemosOpen: (ids, open) => this.setMemosOpenState(ids, open),
+      memosChanged: async (paths) => { for (const path of paths) this.taskCache.delete(path); await this.reloadOpenMemos(); },
       invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   }
@@ -437,6 +439,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       finder.open(); finder.setQuery((args as OperationInputMap["V03"]).query ?? "");
     } else if (id === "V04") await this.navigation.openTaskItem?.(await this.operationService.get((args as OperationInputMap["V04"]).taskId));
     else if (id === "V05") await this.runOpenDailyTodoCommand((args as OperationInputMap["V05"]).date);
+    else if (id === "N06") { const target = args as OperationInputMap["N06"]; await this.setMemosOpenState(target.memoIds, target.open); }
     else if (id === "V06") await this.openAIChat((args as OperationInputMap["V06"]).position ?? "tab");
     else if (id === "D08") {
       const file = this.app.vault.getFileByPath((args as OperationInputMap["D08"]).path);
@@ -1164,6 +1167,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
         new Notice(`やり直し履歴を破棄しました: ${result.reason}`);
         return;
     }
+  }
+
+  /** Opens or closes memo bubbles (["*"] = every memo). View state only: saved without touching pending AI previews. */
+  private async setMemosOpenState(ids: readonly string[], open: boolean): Promise<void> {
+    const all = ids.includes("*") ? (await loadMemos(this.vaultAdapter(), this.settings, this.taskCache, this.logger)).map((memo) => memo.id) : [];
+    this.settings.ganttMemoLayout = setMemosOpen(this.settings.ganttMemoLayout, all, ids, open);
+    await this.settingsWriter().save();
+    await this.reloadOpenMemos();
   }
 
   /** Redraws the memo layer of every open Gantt view (no chart render). */

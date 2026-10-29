@@ -212,7 +212,8 @@ export function renderOperationPreviewCard(parent: HTMLElement, preview: Operati
 
   if (options.actionError) h(card, "p", "vg-pv-note is-error", options.actionError).setAttribute("role", "alert");
   const actions = h(card, "div", "vg-pv-actions");
-  const hasGantt = outcome ? !!outcome.actualProjection : !!preview.projection;
+  // A memo proposal has no projection but is drawn on the chart as a dashed bubble.
+  const hasGantt = outcome ? !!outcome.actualProjection : !!preview.projection || preview.entries.some((entry) => entry.entity.kind === "memo");
   const id = preview.previewId;
   const open = state === "pending";
   if (hasGantt && handlers.onFocus) {
@@ -250,19 +251,20 @@ export function renderReadResultCard(parent: HTMLElement, result: ReadResultV1, 
   const card = h(parent, "article", "vg-pv-card is-read");
   const data = result.data;
   card.dataset.state = "read"; card.setAttribute("role", "group");
-  const titles = { events: "イベントの取得結果", weekly: "定例作業の取得結果", tasks: "タスクの取得結果", daily: "Daily ToDoの取得結果", overview: "全体の概要", project: "親タスクの取得結果", calendar: "休日の取得結果", workload: "作業時間の取得結果", settings: "設定の取得結果", changes: "前回からの変更" } as const;
+  const titles = { memos: "メモの取得結果", events: "イベントの取得結果", weekly: "定例作業の取得結果", tasks: "タスクの取得結果", daily: "Daily ToDoの取得結果", overview: "全体の概要", project: "親タスクの取得結果", calendar: "休日の取得結果", workload: "作業時間の取得結果", settings: "設定の取得結果", changes: "前回からの変更" } as const;
   card.setAttribute("aria-label", titles[data.kind]);
   const header = h(card, "header", "vg-pv-header");
   const top = h(header, "div", "vg-pv-headtop"); h(top, "span", "vg-pv-status", "読み取り"); h(top, "strong", "vg-pv-title", titles[data.kind]);
   h(header, "div", "vg-pv-meta", `基準日 ${result.today} · ${result.timezone}`);
-  if (data.kind === "tasks" || data.kind === "daily" || data.kind === "events" || data.kind === "weekly") {
+  if (data.kind === "tasks" || data.kind === "daily" || data.kind === "events" || data.kind === "weekly" || data.kind === "memos") {
     const total = data.totalMatched;
     h(card, "div", "vg-pv-result", `該当 ${total}件のうち ${data.returned}件を取得`);
     const list = h(card, "ul", "vg-pv-readlist");
     if (data.kind === "tasks") for (const item of data.items) {
       const schedule = "schedule" in item && item.schedule ? `${item.schedule.start ?? "未設定"} ～ ${item.schedule.end ?? "未設定"}` : "";
       h(list, "li", "", `${item.kind === "parent" ? "親" : "子"} · ${item.name}${schedule ? ` · ${schedule}` : ""}`);
-    } else if (data.kind === "events") for (const item of data.items) h(list, "li", "", `${item.title} · ${item.date}`);
+    } else if (data.kind === "memos") for (const item of data.items) h(list, "li", "", `${item.anchor.taskName ?? "その他"} · ${item.anchor.date} · ${item.text.split("\n")[0]}${item.open ? "" : "（閉じている）"}`);
+    else if (data.kind === "events") for (const item of data.items) h(list, "li", "", `${item.title} · ${item.date}`);
     else if (data.kind === "weekly") for (const item of data.items) h(list, "li", "", `${item.title} · 曜日${item.dayOfWeek} · ${item.minutesPerWeek}分/週`);
     else for (const day of data.days) h(list, "li", "", `${day.date} · ${day.completedCount}/${day.totalCount}件完了`);
     if (data.truncated) {

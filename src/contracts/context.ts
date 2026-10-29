@@ -159,6 +159,11 @@ export const taskReadSchema = z.object({
   }
 });
 export type TaskReadV1 = DeepReadonly<z.infer<typeof taskReadSchema>>;
+/** Where a floating memo is attached, with the real date (never the stored day offset). */
+export const memoAnchorSchema = z.object({ kind: z.enum(["subtask", "parent", "free"]), taskId: idSchema.optional(), taskName: z.string().max(20000).optional(), date: dateOnlySchema }).strict();
+export const memoItemSchema = z.object({ memoId: idSchema, text: z.string().max(20000), open: z.boolean(), revision: revisionSchema, anchor: memoAnchorSchema }).strict();
+export const memoReadSchema = z.object({ kind: z.literal("memos"), items: z.array(memoItemSchema), ...pageInfoSchema.shape }).strict()
+  .superRefine((page, ctx) => { if (page.returned !== page.items.length || page.returned > page.totalMatched || page.truncated !== (page.returned < page.totalMatched) || page.nextCursor !== null) ctx.addIssue({ code: "custom", message: "メモの件数が不一致（メモにcursorはありません。条件を絞って再取得）" }); });
 export const dailyItemSchema = dailyStateSchema.extend({ line: countSchema, itemFingerprint: revisionSchema, revision: revisionSchema }).strict();
 export const dailySummarySchema = z.object({ date: dateOnlySchema, totalCount: countSchema, completedCount: countSchema, items: z.array(dailyItemSchema).optional() }).strict()
   .refine(({ completedCount, totalCount }) => completedCount <= totalCount, "完了件数は全件数以下");
@@ -167,8 +172,8 @@ export const calendarStateSchema = z.object({ weekends: z.array(z.number().int()
 export const dailyAggregateSchema = z.object({ date: dateOnlySchema, plan: z.number().finite().nonnegative(), actual: z.number().finite().nonnegative(), capacity: z.number().finite().nonnegative(), overCapacity: z.boolean() }).strict();
 export type DailyAggregateV1 = DeepReadonly<z.infer<typeof dailyAggregateSchema>>;
 export const readPayloadSchema = z.discriminatedUnion("kind", [
-  taskReadSchema, dailyReadSchema, eventReadSchema, weeklyReadSchema,
-  z.object({ kind: z.literal("overview"), counts: z.object({ parents: countSchema, children: countSchema, unplaced: countSchema, completed: countSchema, parseFailures: countSchema }).strict(), settings: publicSettingsSchema, capabilities: z.array(capabilitySchema), summaryRevision: revisionSchema }).strict(),
+  taskReadSchema, dailyReadSchema, eventReadSchema, weeklyReadSchema, memoReadSchema,
+  z.object({ kind: z.literal("overview"), counts: z.object({ parents: countSchema, children: countSchema, unplaced: countSchema, completed: countSchema, parseFailures: countSchema, memos: countSchema.optional() }).strict(), settings: publicSettingsSchema, capabilities: z.array(capabilitySchema), summaryRevision: revisionSchema }).strict(),
   z.object({ kind: z.literal("project"), parent: compactTaskSchema.refine((task) => task.kind === "parent", "projectは親タスク"), children: taskReadSchema.optional(), derived: z.object({ period: periodSchema, progress: z.number().min(0).max(1) }).strict() }).strict(),
   z.object({ kind: z.literal("calendar"), from: dateOnlySchema, to: dateOnlySchema, revision: revisionSchema, calendar: calendarStateSchema }).strict(),
   z.object({ kind: z.literal("workload"), days: z.array(dailyAggregateSchema), contributions: z.array(workloadContributionSchema).optional() }).strict(),
@@ -185,6 +190,7 @@ export type ReadResultV1 = DeepReadonly<z.infer<typeof readResultSchema>>;
 export type TaskReadResultV1 = ReadResultV1 & { readonly data: TaskReadV1 };
 export type EventReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof eventReadSchema>> };
 export type WeeklyReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof weeklyReadSchema>> };
+export type MemoReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof memoReadSchema>> };
 export type DailyReadResultV1 = ReadResultV1 & { readonly data: DeepReadonly<z.infer<typeof dailyReadSchema>> };
 
 export const operationErrorSchema = z.object({

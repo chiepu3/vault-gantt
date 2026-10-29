@@ -6,7 +6,7 @@ import { NotePreservationError } from "../core/note-v2";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
 import type { PreviewPort } from "../contracts/ports";
-import { PreviewGanttLayer } from "./preview-gantt-layer";
+import { PreviewGanttLayer, type MemoProposal } from "./preview-gantt-layer";
 import { displayedHours, eventWorkloadKey, hoursChangeText, type CellChange, type DailyChange, type HlState, type PhantomBar } from "./preview-highlights";
 import { SubtaskAddConflictError } from "../app/task-operations";
 import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
@@ -1451,6 +1451,7 @@ export class TaskGanttView extends ItemView {
       this.previewLayer = new PreviewGanttLayer(this.host.previewPort);
       this.unsubscribePreview = this.previewLayer.subscribe(() => {
         this.clearGhostLayer();
+        this.buildMemoEntries();
         this.renderChart();
         this.revealPreviewTarget();
         this.fadeInHighlights();
@@ -1687,7 +1688,7 @@ export class TaskGanttView extends ItemView {
   private revealPreviewTarget(): void {
     const layer = this.previewLayer;
     if (!layer?.active) { this.scrolledToPreviewId = undefined; return; }
-    if (this.scrolledToPreviewId === layer.previewId || !layer.highlights) return;
+    if (this.scrolledToPreviewId === layer.previewId || (!layer.highlights && !layer.memoProposals().length)) return;
     this.scrolledToPreviewId = layer.previewId;
     const { taskId, date } = layer.focusTarget();
     if (date) {
@@ -2245,11 +2246,28 @@ export class TaskGanttView extends ItemView {
       this.memoRows.set(row.id, row);
       for (const subtask of row.subtasks?.values() ?? []) this.memoRows.set(subtask.id, subtask);
     }
-    this.memoEntries = this.memoMetas.map((meta) => {
+    const stored = this.memoMetas.map((meta) => {
       const anchor = resolveMemoAnchor(meta, this.memoRows);
       return { id: meta.id, meta, anchor, where: this.memoWhere(anchor) };
     });
+    // An AI proposal replaces the stored bubble it changes or deletes, and adds the ones it creates.
+    const proposals = new Map((this.previewLayer?.memoProposals() ?? []).map((proposal) => [proposal.memoId, proposal]));
+    this.memoEntries = [
+      ...stored.map((entry) => {
+        const proposal = proposals.get(entry.id);
+        return proposal ? this.memoProposalEntry(proposal, entry.meta) : entry;
+      }),
+      ...[...proposals.values()].filter((proposal) => proposal.mark === "追加").map((proposal) => this.memoProposalEntry(proposal)),
+    ];
     this.updateMemoButton();
+  }
+
+  private memoProposalEntry(proposal: MemoProposal, meta?: MemoMeta): MemoEntry {
+    const { state } = proposal, row = state.taskId ? this.memoRows.get(state.taskId) : undefined;
+    const anchor: MemoAnchor = row
+      ? { kind: row.kind === "parent" ? "parent" : "subtask", taskId: row.id, taskName: state.taskName, parentId: row.kind === "parent" ? row.id : row.parentId, date: state.date }
+      : { kind: "free", date: state.date };
+    return { id: proposal.memoId, ...(meta ? { meta } : {}), anchor, where: this.memoWhere(anchor), text: state.text, proposal: proposal.mark };
   }
 
   private memoWhere(anchor: MemoAnchor): string {

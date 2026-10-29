@@ -23,7 +23,7 @@ export function h(parent: HTMLElement, tag: string, className = "", text?: strin
 export const EFFECT_TITLES: Record<PreviewEffectKind, string> = {
   fields: "項目の変更", presence: "作成・削除", schedule: "日程", deadline: "期限", marker: "マーカー", workload: "作業時間",
   order: "並び順", membership: "Ganttへの表示", "tag-definition": "タグ定義", weekly: "定例作業", "daily-todo": "Daily ToDo",
-  "service-state": "管理値の保存", calendar: "休日", settings: "設定", view: "表示", "external-send": "外部への送信", diagnostic: "診断ログ", conversation: "チャット",
+  "service-state": "管理値の保存", memo: "メモ", calendar: "休日", settings: "設定", view: "表示", "external-send": "外部への送信", diagnostic: "診断ログ", conversation: "チャット",
 };
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -415,6 +415,16 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
     const target = after ?? before;
     if (target) { const where = note(parent, `ファイル: ${target.path}`); where.title = `ソース: ${target.sourceKey}`; }
   },
+  memo: (parent, effect) => {
+    const { before, after } = effect;
+    if (!before && !after) { note(parent, "メモの変更はありません。"); return; }
+    const state = !before ? "追加" : !after ? "削除" : before.text !== after.text ? "変更" : "移動";
+    badge(parent, state, state === "追加" ? "create" : state === "削除" ? "delete" : "update");
+    const place = (memo: typeof before) => memo ? `${memo.taskName ?? "その他"} · ${fmtDate(memo.date)}` : "なし";
+    if (!before || !after || before.text !== after.text) beforeAfterRow(parent, "本文", (el) => { el.classList.add("is-pre"); el.textContent = before?.text ?? "なし"; }, (el) => { el.classList.add("is-pre"); el.textContent = after?.text ?? "なし"; }, !after ? "is-removed" : "");
+    if (!before || !after || place(before) !== place(after)) beforeAfterRow(parent, "場所", (el) => { el.textContent = place(before); }, (el) => { el.textContent = place(after); });
+    if (after?.open === false) note(parent, "閉じたピンとして追加されます。");
+  },
   calendar: (parent, effect) => {
     if (!effect.added.length && !effect.removed.length) { note(parent, "休日の変更はありません。"); return; }
     h(parent, "div", "vg-pv-subtitle", CALENDAR_SOURCES[effect.source]);
@@ -471,7 +481,7 @@ export function effectIsNoop(effect: PreviewEffect): boolean {
   switch (effect.kind) {
     case "fields": case "settings": case "service-state": return effect.fields.every((change) => same(change.before, change.after));
     case "presence": return false;
-    case "schedule": case "marker": case "tag-definition": case "weekly": case "daily-todo": case "view": return same(effect.before, effect.after);
+    case "schedule": case "marker": case "tag-definition": case "weekly": case "daily-todo": case "view": case "memo": return same(effect.before, effect.after);
     case "deadline": return effect.before === effect.after;
     case "workload": return effect.cells.every((cell) => same(cell.before, cell.after));
     case "order": return same(effect.before, effect.after);
@@ -532,6 +542,7 @@ export const OPERATION_LABELS: Record<string, string> = {
   V07: "一覧の検索文字を変更", V08: "状態の絞り込みを変更", V09: "並び替えを変更", V10: "期限順の表示を切り替え", V11: "完了タスクの表示を切り替え", V12: "親タスクの展開・折りたたみ",
   V13: "Ganttのタグ絞り込みを変更", V14: "Ganttの拡大率を変更", V15: "日付へ移動", V16: "一覧とGanttを再読み込み", V17: "詳細を表示", V18: "作業時間入力の対象を切り替え",
   V19: "まとめ移動の選択を切り替え", V20: "直前の操作を元に戻す", V21: "元に戻した操作をやり直す", V22: "診断記録を開始", V23: "診断記録を停止して保存",
+  N01: "メモを一覧", N02: "メモを追加", N03: "メモの本文を変更", N04: "メモを付け替え", N05: "メモを削除", N06: "メモを開く・閉じる",
   Q01: "接続設定を変更", Q02: "会話を作成", Q03: "会話を切り替え", Q04: "メッセージを送信", Q05: "応答を停止", Q06: "失敗した応答を再試行", Q07: "変更案の承認を要求", Q08: "変更案を再プレビュー",
 };
 export function operationLabel(operationId: string): string { return OPERATION_LABELS[operationId] ?? "操作"; }

@@ -6,9 +6,9 @@ import { fullDescription } from "../../src/agent-tools/descriptions";
 import { catalogTools } from "../../src/agent-tools/catalog-tools";
 import { runtimeFixture } from "../app/operation-runtime-fixture";
 import { CHILD_ID } from "../contracts/fixtures";
-describe("124-entry catalog documentation", () => {
+describe("130-entry catalog documentation", () => {
   it("every frozen ID has a valid example, schema, explicit availability and sufficient semantics", () => {
-    const catalog = new OperationCatalog(); expect(catalog.describe()).toHaveLength(124); expect(catalog.describe().filter((row) => row.available)).toHaveLength(124); expect(new Set(catalog.ids).size).toBe(124);
+    const catalog = new OperationCatalog(); expect(catalog.describe()).toHaveLength(130); expect(catalog.describe().filter((row) => row.available)).toHaveLength(130); expect(new Set(catalog.ids).size).toBe(130);
     for (const id of OPERATION_IDS) {
       const definition = catalog.get(id); expect(definition.id).toBe(id); expect(definition.description.purpose).toBeTruthy();
       for (const example of definition.description.examples) expect(operationInputSchemas[id].safeParse(example.input).success, id).toBe(true);
