@@ -28,7 +28,7 @@ export const patchSchema = schedule.extend({
   displayName: singleLine.optional(), title: singleLine.optional(), statusLabel: z.enum(["active", "in_progress", "waiting", "hold", "done"]).optional(),
   createdAt: date.optional(), updatedAt: date.optional(), priority: z.number().min(0).max(5).optional(),
   priorityMode: z.enum(["auto", "manual"]).optional(), tags: z.array(tag).max(100).optional(),
-  completed: z.boolean().optional(), ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(),
+  completed: z.boolean().optional(), disabled: z.boolean().optional(), ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(),
   currentStatus: text.optional(), notes: text.optional(), workloadPlan: workload.optional(), workloadActual: workload.optional(),
   // eslint-disable-next-line no-control-regex
   ganttMarkers: z.array(z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\u0000:,[\]]+$/), title: singleLine, date, tags: z.array(tag).max(100).optional() }).strict()).max(100).optional(),
@@ -87,6 +87,7 @@ function persisted(row: TaskRow): string {
   return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).filter((key) => key !== "ganttOrder").map((key) => [key,
     canonical(key === "ganttMarkers" ? row.ganttMarkers?.map(({ key: _key, ...marker }) => { void _key; return marker; })
       // A lone plain 期限 is stored as `due` only, so compare milestones as the parent shows them.
+      : key === "disabled" ? (row.kind === "subtask" && row.disabled ? true : undefined)
       : key === "milestones" ? (row.kind === "parent" ? getMilestones(row).map(({ key: _key, ...milestone }) => { void _key; return milestone; }) : undefined)
       : data[key])])));
 }

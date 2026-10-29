@@ -160,6 +160,7 @@ export function normalizeTaskPatch(
     "workloadPlan",
     "workloadActual",
     "ganttMarkers",
+    "disabled",
   ]);
 
   const writableFields =
@@ -244,9 +245,9 @@ export function normalizeTaskPatch(
         throw new Error(`invalid status: ${String(value)}`);
       }
       result.statusLabel = normalized as StatusLabel;
-    } else if (key === "completed" || key === "ganttEnabled") {
+    } else if (key === "completed" || key === "ganttEnabled" || key === "disabled") {
       // coerce via !!
-      result[key as "completed" | "ganttEnabled"] = !!value;
+      result[key as "completed" | "ganttEnabled" | "disabled"] = !!value;
     } else if (key === "priority") {
       // normalizePriority, never throws
       result.priority = normalizePriority(

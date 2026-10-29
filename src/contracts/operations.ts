@@ -40,7 +40,7 @@ export const taskScheduleInputSchema = z.object({ plannedStartDate: clearableDat
 export const taskPatchInputSchema = taskScheduleInputSchema.extend({
   displayName: singleLine.optional(), title: singleLine.optional(), statusLabel: statusSchema.optional(),
   createdAt: clearableDate.optional(), updatedAt: clearableDate.optional(), priority: z.number().finite().min(0).max(5).optional(),
-  priorityMode: z.enum(["auto", "manual"]).optional(), tags: tagNamesSchema.optional(), completed: z.boolean().optional(),
+  priorityMode: z.enum(["auto", "manual"]).optional(), tags: tagNamesSchema.optional(), completed: z.boolean().optional(), disabled: z.boolean().optional(),
   ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(), currentStatus: text.optional(), notes: text.optional(),
   workloadPlan: workload.optional(), workloadActual: workload.optional(), ganttMarkers: markers.optional(), milestones: markers.optional(),
 }).strict();
