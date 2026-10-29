@@ -4989,7 +4989,10 @@ export class TaskGanttView extends ItemView {
       );
       // Option (b): only add the badge when the measured bar width can fit it
       // beside the title and resize handles; very narrow bars stay readable.
+      // A bar whose title is shown in a callout leaves its tag to the callout,
+      // so the tag is not displayed twice.
       if (
+        !needsLabel &&
         width >= BAR_TAG_BADGE_MIN_WIDTH_PX &&
         primaryBadgeTag !== undefined
       ) {
