@@ -114,6 +114,12 @@ export function memoFileStem(text: string, dateStr: string): string {
   return `${prefix}${sanitizeFileStem(firstLine, Math.min(MEMO_FILE_TITLE_LENGTH, 100 - prefix.length))}`;
 }
 
+/** The first line of a memo as its file name keeps it (`YYYY-MM-DD <first line>.md`), so a list needs no note reads. */
+export function memoTitleFromPath(path: string): string {
+  const stem = (path.split("/").pop() ?? path).replace(/\.md$/i, "");
+  return stem.replace(/^\d{4}-\d{2}-\d{2}\s*/, "") || stem;
+}
+
 /** First line of the memo, for lists and labels. */
 export function memoHeadline(text: string, max = 24): string {
   const line = normalizeMemoText(text).split("\n")[0] ?? "";

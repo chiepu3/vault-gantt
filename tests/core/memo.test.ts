@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { stringifyYaml } from "obsidian";
 import { generateMemoId, isMemoId, isTaskId } from "../../src/core/ids";
 import {
-  MEMO_MAX_WIDTH, MEMO_MIN_WIDTH, buildMemoNote, isMemoPath, memoBody, memoFileStem, memoHeadline, memoRoot, normalizeMemoLayout, parseMemoMeta, replaceMemoAnchor, replaceMemoBody, setMemosOpen, MEMO_DEFAULT_OFFSET,
+  MEMO_MAX_WIDTH, MEMO_MIN_WIDTH, buildMemoNote, isMemoPath, memoBody, memoFileStem, memoHeadline, memoRoot, normalizeMemoLayout, parseMemoMeta, replaceMemoAnchor, replaceMemoBody, setMemosOpen, memoTitleFromPath, MEMO_DEFAULT_OFFSET,
 } from "../../src/core/memo";
 import { noteKindOf } from "../../src/core/note-v2";
 import { parseYaml } from "obsidian";
@@ -114,5 +114,12 @@ describe("setMemosOpen", () => {
   });
   it("treats * as every memo", () => {
     expect(Object.keys(setMemosOpen({}, ["m-aaaaaa", "m-bbbbbb"], ["*"], true)).sort()).toEqual(["m-aaaaaa", "m-bbbbbb"]);
+  });
+});
+
+describe("memoTitleFromPath", () => {
+  it("is the first line the file name keeps, without the date or extension", () => {
+    expect(memoTitleFromPath("タスク/_memos/2026-10-01 API仕様を確認.md")).toBe("API仕様を確認");
+    expect(memoTitleFromPath("タスク/_memos/2026-10-01.md")).toBe("2026-10-01");
   });
 });

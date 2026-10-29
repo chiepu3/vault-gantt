@@ -1177,6 +1177,14 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.reloadOpenMemos();
   }
 
+  /** 「Ganttで表示」 from the Workbench: shows and opens the memo, then brings the Gantt to it. */
+  private async revealMemo(id: string): Promise<void> {
+    this.settings.ganttMemosVisible = true;
+    await this.setMemosOpenState([id], true);
+    await this.navigation.activateGanttView();
+    await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { revealMemo?: (memoId: string) => Promise<void> } | null)?.revealMemo?.(id)));
+  }
+
   /** Redraws the memo layer of every open Gantt view (no chart render). */
   private async reloadOpenMemos(): Promise<void> {
     await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { reloadMemos?: () => Promise<void> } | null)?.reloadMemos?.()));
@@ -1903,6 +1911,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
         this.operations.updateFromUI([{ row, patch }]).then((results) => results[0]),
       openTaskItem: async (row: TaskRow): Promise<void> => {
         await this.navigation.openTaskItem?.(row);
+      },
+      memos: {
+        load: () => loadMemos(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        setOpen: (ids, open) => this.setMemosOpenState(ids, open),
+        reveal: (id) => this.revealMemo(id),
       },
       createTaskInteractively: async (onCreated: () => void) => {
 

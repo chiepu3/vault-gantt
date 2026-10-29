@@ -584,6 +584,22 @@ describe("Gantt floating memos", () => {
     });
   });
 
+  describe("revealMemo (the Workbench's 「Ganttで表示」)", () => {
+    it("scrolls to the memo's day and row, and ignores an unknown id", async () => {
+      const r = await openGantt([memoMeta("m-aaaaaa", { taskId: "tasks/parent-1.md::sub1", at: 3 })]);
+      layOut(r); await r.view.reloadMemos();
+      const wrap = wrapOf(r.container);
+      (parentRows(r.container)[0] as any).offsetTop = 500;
+      wrap.scrollLeft = 0; wrap.scrollTop = 0;
+      await r.view.revealMemo("m-aaaaaa");
+      expect(wrap.scrollLeft).toBeGreaterThan(0);
+      expect(wrap.scrollTop).toBe(340);
+      wrap.scrollTop = 0;
+      await r.view.revealMemo("m-unknown");
+      expect(wrap.scrollTop).toBe(0);
+    });
+  });
+
   describe("AI proposals", () => {
     const proposal = (previewId: string, memoId: string, before: unknown, after: unknown): any => ({
       ...SETTINGS_PREVIEW, previewId, origin: { kind: "chat", conversationId: "c1" }, projection: null,

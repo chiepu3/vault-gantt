@@ -1106,6 +1106,16 @@ button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(
 .twb-milestone-popover-tag { cursor: pointer; opacity: 0.55; }
 .twb-milestone-popover-tag.is-selected { opacity: 1; box-shadow: 0 0 0 1.5px var(--interactive-accent); }
 .twb-milestone-popover-buttons { display: flex; justify-content: flex-end; gap: var(--vg-space-2); }
+.twb-memo-popover { position: fixed; z-index: var(--layer-popover, 40); display: flex; flex-direction: column; gap: var(--vg-space-3); width: 340px; max-width: calc(100vw - 16px); max-height: 60vh; padding: var(--vg-space-4); border: var(--vg-border-width) solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary); box-shadow: var(--shadow-s); }
+.twb-memo-popover-head { display: flex; align-items: center; justify-content: space-between; gap: var(--vg-space-3); }
+.twb-memo-popover-title { font-weight: var(--font-semibold); }
+.twb-memo-popover-bulk { display: flex; gap: var(--vg-space-2); }
+.twb-memo-popover-list { display: flex; flex-direction: column; gap: var(--vg-space-2); overflow-y: auto; }
+.twb-memo-popover-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--vg-space-2); }
+.twb-memo-popover-row.is-closed .twb-memo-popover-text { opacity: 0.6; }
+.twb-memo-popover-text { min-width: 0; }
+.twb-memo-popover-headline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.twb-memo-popover-where, .twb-memo-popover-empty { color: var(--vg-color-muted); font-size: var(--vg-font-s); }
 
 /* Floating memos: one layer over the chart (the last child of the scroll container). It scrolls with the chart;
    only memos' own boxes take pointer events. A closed memo is a pin. */

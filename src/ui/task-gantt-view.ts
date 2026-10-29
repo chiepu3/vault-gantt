@@ -2283,6 +2283,20 @@ export class TaskGanttView extends ItemView {
     this.placeMemos();
   }
 
+  /** Scrolls to a memo's day and row (the bubble itself is opened by the caller through the layout state). */
+  async revealMemo(id: string): Promise<void> {
+    if (!this.host.memos) return;
+    await this.reloadMemos();
+    const entry = this.memoEntries.find((candidate) => candidate.id === id);
+    if (!entry) return;
+    const { date } = entry.anchor;
+    if (!this.dates.includes(date)) { this.rangeStart = addDays(date, -14); this.rangeDays = Math.max(this.rangeDays, 90); this.renderChart(); }
+    this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX + 180);
+    const row = entry.anchor.kind === "free" ? this.eventRowEl : this.memoRowGeometry.get(entry.anchor.parentId ?? "")?.rowEl;
+    if (row) this.wrapEl.scrollTop = Math.max(0, row.offsetTop - 160);
+    this.placeMemos();
+  }
+
   private placeMemos(): void {
     if (!this.memoLayer || this.wrapEl.offsetParent === null) return;
     this.memoLayer.place();
