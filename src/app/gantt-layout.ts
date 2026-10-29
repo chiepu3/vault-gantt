@@ -1151,7 +1151,7 @@ export function computeRowHeight(
   laneExternalTopRows: number[],
   laneExternalBottomRows: number[],
   markerRowCounts: number[],
-  hasDeadlineMarker: boolean
+  milestoneTiers: boolean | number
 ): number {
   let height = ROW_VERTICAL_PADDING;
   for (let lane = 0; lane < laneCount; lane += 1) {
@@ -1163,11 +1163,38 @@ export function computeRowHeight(
       (laneExternalBottomRows[lane] ?? 0) * EXTERNAL_LABEL_ROW_HEIGHT;
   }
   height += ROW_VERTICAL_PADDING;
-  if (hasDeadlineMarker) {
-
-    height += MARKER_ROW_HEIGHT + DEADLINE_MARKER_GAP;
-  }
+  height += milestoneBandHeight(milestoneTiers === true ? 1 : milestoneTiers === false ? 0 : milestoneTiers);
   return height;
+}
+
+/** Pitch (px) between stacked milestone tiers; a milestone pill is ~22px tall. */
+export const MILESTONE_TIER_HEIGHT = 24;
+/** Tiers a parent row stacks at most; a milestone that fits none shares the last tier, name dropped. */
+export const MAX_MILESTONE_TIERS = 3;
+
+/** Height (px) of the milestone band at the bottom of a parent row for `tiers` stacked tiers (0 = none). */
+export function milestoneBandHeight(tiers: number): number {
+  if (tiers <= 0) return 0;
+  return MARKER_ROW_HEIGHT + DEADLINE_MARKER_GAP + (tiers - 1) * MILESTONE_TIER_HEIGHT;
+}
+
+/**
+ * Packs date-sorted milestones into tiers like events: each goes to the first tier whose last label ends before
+ * it starts. With more than `maxTiers` needed, an unplaceable one gets `tier: maxTiers - 1` and `fits: false`
+ * (the caller then shows ★ and date only).
+ */
+export function layoutMilestoneTiers(
+  items: { left: number; width: number }[],
+  maxTiers = MAX_MILESTONE_TIERS
+): { tier: number; fits: boolean }[] {
+  const tierEnds: number[] = [];
+  return items.map(({ left, width }) => {
+    let tier = tierEnds.findIndex((end) => left >= end);
+    if (tier < 0 && tierEnds.length < maxTiers) tier = tierEnds.length;
+    if (tier < 0) return { tier: maxTiers - 1, fits: false };
+    tierEnds[tier] = left + width + MARKER_MIN_GAP;
+    return { tier, fits: true };
+  });
 }
 
 /**
@@ -1299,6 +1326,7 @@ export function computeRowFingerprint(parent: TaskRow): string {
     title: parent.title,
     displayName: parent.displayName,
     dueDate: parent.dueDate ?? "",
+    milestones: parent.milestones ?? null,
     ganttOrder: parent.ganttOrder ?? null,
     tags: parent.tags,
     completed: parent.completed,
