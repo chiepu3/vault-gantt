@@ -42,6 +42,10 @@ import {
   computeHeaderFingerprint,
   computeRowFingerprint,
   collectWorkloadEntriesForDate,
+  layoutMilestoneTiers,
+  milestoneBandHeight,
+  MILESTONE_TIER_HEIGHT,
+  MAX_MILESTONE_TIERS,
 } from "../../src/app/gantt-layout";
 import type {
   Bar,
@@ -1775,5 +1779,41 @@ describe("date helper memoization", () => {
       expect(diffDays("not-a-date", "2026-01-01")).toBe(0);
       expect(diffDays("2026-01-01", "")).toBe(0);
     }
+  });
+});
+
+
+describe("milestone tiers", () => {
+  it("keeps non-colliding milestones on tier 0", () => {
+    expect(layoutMilestoneTiers([{ left: 0, width: 100 }, { left: 200, width: 100 }])).toEqual([
+      { tier: 0, fits: true },
+      { tier: 0, fits: true },
+    ]);
+  });
+
+  it("stacks a milestone whose label would run into the previous one, and reuses a freed tier", () => {
+    const tiers = layoutMilestoneTiers([
+      { left: 0, width: 150 },
+      { left: 50, width: 100 },
+      { left: 100, width: 40 },
+      { left: 400, width: 50 },
+    ]);
+    expect(tiers.map((t) => t.tier)).toEqual([0, 1, 2, 0]);
+    expect(tiers.every((t) => t.fits)).toBe(true);
+  });
+
+  it("puts the overflow on the last tier without a name once the cap is reached", () => {
+    const items = Array.from({ length: MAX_MILESTONE_TIERS + 2 }, (_, i) => ({ left: i, width: 100 }));
+    const tiers = layoutMilestoneTiers(items);
+    expect(tiers.slice(MAX_MILESTONE_TIERS)).toEqual([
+      { tier: MAX_MILESTONE_TIERS - 1, fits: false },
+      { tier: MAX_MILESTONE_TIERS - 1, fits: false },
+    ]);
+  });
+
+  it("grows the row by one tier pitch per extra tier and not at all without milestones", () => {
+    expect(computeRowHeight(1, [0], [0], [0], 0)).toBe(computeRowHeight(1, [0], [0], [0], false));
+    expect(computeRowHeight(1, [0], [0], [0], 1)).toBe(computeRowHeight(1, [0], [0], [0], true));
+    expect(milestoneBandHeight(3) - milestoneBandHeight(1)).toBe(2 * MILESTONE_TIER_HEIGHT);
   });
 });

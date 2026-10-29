@@ -10239,6 +10239,8 @@ describe("empty-cell menu and Bulk-Move", () => {
   });
 
   /** A gantt-enabled parent with the given subtasks (may be empty). */
+  const timelineOfHeight = (timeline: FakeEl): string => timeline.style.height;
+
   async function openViewWithParent(
     subtasks: TaskRow[],
     parentOverrides: Record<string, unknown> = {},
@@ -10467,6 +10469,26 @@ describe("empty-cell menu and Bulk-Move", () => {
       ],
     });
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("stacks close milestones in tiers (each keeps its name) and grows the row for them", async () => {
+    const one = await openViewWithParent([], {
+      milestones: [{ key: "a", title: "レビュー", date: dateOffset(3) }],
+    });
+    const oneHeight = Number.parseFloat(timelineOfHeight(one.timeline));
+    const many = await openViewWithParent([], {
+      milestones: [
+        { key: "a", title: "レビュー", date: dateOffset(3) },
+        { key: "b", title: "リリース準備", date: dateOffset(4) },
+        { key: "c", title: "公開", date: dateOffset(5) },
+      ],
+    });
+    const nodes = byClass(many.timeline, "task-gantt-milestone");
+    expect(nodes).toHaveLength(3);
+    const tops = nodes.map((n) => Number.parseFloat(n.style.top));
+    expect(new Set(tops).size).toBe(3);
+    for (const n of nodes) expect(byClass(n, "task-gantt-deadline-marker-label")).toHaveLength(1);
+    expect(Number.parseFloat(timelineOfHeight(many.timeline))).toBe(oneHeight + 2 * 24);
   });
 
   it("an empty milestone name saves nothing", async () => {
