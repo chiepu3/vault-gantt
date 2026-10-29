@@ -15,6 +15,7 @@ import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
 import { Logger } from "./core/logger";
+import { normalizeMemoLayout } from "./core/memo";
 
 import {
   DailyTodoItem,
@@ -578,6 +579,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    // Memo view state may have been edited by hand.
+    this.settings.ganttMemosVisible = this.settings.ganttMemosVisible !== false;
+    this.settings.ganttMemoLayout = normalizeMemoLayout(this.settings.ganttMemoLayout);
     this.aiStore = normalizeAiStore(ai);
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };

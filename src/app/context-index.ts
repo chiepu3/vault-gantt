@@ -67,7 +67,8 @@ export class ContextIndex implements ContextReadPort {
     return path.startsWith(settings.taskFolder.replace(/\/$/, "") + "/") || !!getDailyTodoSourceForPath(path, settings);
   }
   async snapshot(): Promise<TaskSnapshot> {
-    const vault = this.vaultFactory(), settings = structuredClone(this.settings());
+    // Memo open/closed/position is view state: moving a bubble must not make a pending proposal stale.
+    const vault = this.vaultFactory(), settings = { ...structuredClone(this.settings()), ganttMemosVisible: true, ganttMemoLayout: {} };
     const today = todayStr(), timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const parseSettings = { ...settings, autoPriorityEnabled: false };
     const contents = new Map<string, string>(), revisions = new Map<string, string>(), statRevisions = new Map<string, string>(), parseFailures: string[] = [];
