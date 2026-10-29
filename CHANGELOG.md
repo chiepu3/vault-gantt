@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.11.2 (2026-10-29)
+
+### 修正
+
+- 近接するマイルストーンを段に積んで名前が隠れないようにする ([#80](https://github.com/chiepu3/vault-gantt/pull/80))
+
 ## v0.11.1 (2026-10-27)
 
 ### 修正
