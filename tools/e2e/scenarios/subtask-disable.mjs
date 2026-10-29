@@ -103,13 +103,16 @@ export async function run({ cdp, vaultDir }) {
   details.push(`OK disabled → plan total ${planDate}: ${await planLabel(cdp, planDate)}`);
 
   // 2. Hover → popover → 有効に戻す.
+  // Closing a context menu arms a 1200ms hover-popover suppression window; hovering sooner shows nothing.
+  await sleep(1500);
   const rect2 = await scrollBarIntoView(cdp, ".task-gantt-bar");
   const bar2 = centerOf(rect2);
   await hoverOnto(cdp, bar2.x, bar2.y);
   try {
     await cdp.waitForExpression(`!!document.querySelector(".task-gantt-rich-popover.is-subtask .task-gantt-popover-disabled-chip")`, { timeoutMs: 10000, label: "popover with 無効中 chip" });
   } catch (err) {
-    return fail(`popover missing the 無効中 chip: ${err.message}`);
+    const dbg = await cdp.evaluate(`JSON.stringify({pt: (() => { const e = document.elementFromPoint(${bar2.x}, ${bar2.y}); return e && e.className; })(), pops: [...document.querySelectorAll("[class*=popover],[class*=popup]")].map((e) => e.className)})`);
+    return fail(`popover missing the 無効中 chip: ${err.message} ${dbg} bar ${JSON.stringify(bar2)}`);
   }
   const chipText = await cdp.evaluate(`document.querySelector(".task-gantt-popover-disabled-chip").textContent`);
   if (chipText !== "無効中") failures.push(`chip text ${chipText}`);
