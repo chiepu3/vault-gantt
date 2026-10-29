@@ -1320,6 +1320,21 @@ describe("TaskGanttView", () => {
       expect(totals.get(dateOffset(5))!.plan).toBe(0.75);
     });
 
+    it("skips disabled subtasks and invalidates the fingerprint when the flag toggles", async () => {
+      const dates = [dateOffset(0), dateOffset(1)];
+      const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
+        makeSubtask("a", { id: "tasks/p0.md::a", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 1 }, workloadActual: { [dateOffset(1)]: 2 } }),
+        makeSubtask("b", { id: "tasks/p0.md::b", disabled: true, plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 4 }, workloadActual: { [dateOffset(1)]: 8 } }),
+      ]);
+      const { view } = await openView([parent]);
+      const totals = (view as any).computeWorkloadSummaryValues([parent], dates) as Map<string, { plan: number; actual: number }>;
+      expect(totals.get(dateOffset(1))).toMatchObject({ plan: 1, actual: 2 });
+      const fp = () => (view as any).workloadSummaryInputsFingerprint([parent], dates) as string;
+      const before = fp();
+      parent.subtasks!.get("b")!.disabled = false;
+      expect(fp()).not.toBe(before);
+    });
+
     it("changes the input fingerprint when a subtask's workload entry changes", async () => {
       const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
         makeSubtask("a", { id: "tasks/p0.md::a", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 1 } }),
@@ -1905,7 +1920,7 @@ describe("TaskGanttView", () => {
       expect(byClass(bar, "task-gantt-bar-tag-badge")).toHaveLength(0);
     });
 
-    it("renders a tag badge alongside an external label (bar wide enough for the badge but not the full title)", async () => {
+    it("shows the tag in the callout, not on the bar, when the title needs a callout", async () => {
       // Wide enough for the badge (168px ≥ 72px threshold) but the 60-char
       // title still needs to move outside because it exceeds the readable width.
       const parent = withChildren(makeParent({ ganttEnabled: true }), [
@@ -1921,7 +1936,9 @@ describe("TaskGanttView", () => {
       const bar = byClass(timeline, "task-gantt-bar")[0];
       expect(byClass(timeline, "task-gantt-external-label")).toHaveLength(1);
       expect(byClass(bar, "task-gantt-bar-title")).toHaveLength(0);
-      expect(byClass(bar, "task-gantt-bar-tag-badge")).toHaveLength(1);
+      // The tag moves to the callout together with the title instead of being doubled up on the bar.
+      expect(byClass(bar, "task-gantt-bar-tag-badge")).toHaveLength(0);
+      expect(byClass(byClass(timeline, "task-gantt-external-label")[0], "task-gantt-label-badge")).toHaveLength(1);
     });
 
     it("floors the bar width at 8px for a tiny dayWidth and moves the title outside", async () => {
@@ -10237,6 +10254,8 @@ describe("empty-cell menu and Bulk-Move", () => {
   });
 
   /** A gantt-enabled parent with the given subtasks (may be empty). */
+  const timelineOfHeight = (timeline: FakeEl): string => timeline.style.height;
+
   async function openViewWithParent(
     subtasks: TaskRow[],
     parentOverrides: Record<string, unknown> = {},
@@ -10465,6 +10484,26 @@ describe("empty-cell menu and Bulk-Move", () => {
       ],
     });
     expect(h.loadTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("stacks close milestones in tiers (each keeps its name) and grows the row for them", async () => {
+    const one = await openViewWithParent([], {
+      milestones: [{ key: "a", title: "レビュー", date: dateOffset(3) }],
+    });
+    const oneHeight = Number.parseFloat(timelineOfHeight(one.timeline));
+    const many = await openViewWithParent([], {
+      milestones: [
+        { key: "a", title: "レビュー", date: dateOffset(3) },
+        { key: "b", title: "リリース準備", date: dateOffset(4) },
+        { key: "c", title: "公開", date: dateOffset(5) },
+      ],
+    });
+    const nodes = byClass(many.timeline, "task-gantt-milestone");
+    expect(nodes).toHaveLength(3);
+    const tops = nodes.map((n) => Number.parseFloat(n.style.top));
+    expect(new Set(tops).size).toBe(3);
+    for (const n of nodes) expect(byClass(n, "task-gantt-deadline-marker-label")).toHaveLength(1);
+    expect(Number.parseFloat(timelineOfHeight(many.timeline))).toBe(oneHeight + 2 * 24);
   });
 
   it("an empty milestone name saves nothing", async () => {

@@ -792,6 +792,7 @@ const PARAMETER_DOCS: Record<string, string> = {
   priority: "優先度0〜5。手動操作T14はmanualも指定。T15は設定OFFでも期限由来priorityとautoを保存。",
   statusLabel: "active/in_progress/waiting/hold/doneの5値。doneはcompleted=true、その他は通常false。",
   completed: "完了boolean。単独trueはdone、falseはactiveへ連動。",
+  disabled: "サブタスクの一時無効。trueの間はガントに表示されるが予定・実績の作業時間の集計に含めない。statusLabel/completedとは独立。",
   dueDate: "親/子の期限YYYY-MM-DD。空文字で解除。自動priority対象は期限により再計算。",
   createdAt: "作成日YYYY-MM-DD。空はschema上受理するがparseで今日になる場合は安全な保存を拒否。",
   orderedParentIds: "親IDの指定順に1000刻みで並び順を設定。並び順は設定に保存され、ノートは変更しない。",

@@ -16,7 +16,8 @@ import { getDailyTodoSourceForPath, extractDateFromDailyPath } from "./daily-tod
 import { DailyReadHandler } from "./operations/daily-handlers";
 const DEFAULT_FIELDS: readonly TaskFieldGroup[] = ["identity", "status", "schedule", "priority", "tags"];
 function hoursTotal(row: TaskRow) {
-  const rows = row.kind === "parent" ? [...row.subtasks?.values() ?? []] : [row];
+  // A parent's totals leave out 一時無効 children; a subtask keeps its own raw hours (it carries the `disabled` flag).
+  const rows = row.kind === "parent" ? [...row.subtasks?.values() ?? []].filter((child) => !child.disabled) : [row];
   const sum = (maps: (Record<string, number> | undefined)[]) => maps.reduce((total, map) => total + Object.values(map ?? {}).reduce((a, b) => a + b, 0), 0);
   const days = (maps: (Record<string, number> | undefined)[]) => new Set(maps.flatMap((map) => Object.entries(map ?? {}).filter(([, value]) => value > 0).map(([date]) => date))).size;
   const plans = rows.map((child) => child.workloadPlan), actuals = rows.map((child) => child.workloadActual);
@@ -35,6 +36,7 @@ export function compactTask(row: TaskRow, snapshot: Pick<TaskSnapshot, "revision
     ...(fields.includes("children") ? { children: [...row.subtasks?.values() ?? []].map((child) => child.id) } : {}),
     ...(fields.includes("workload") ? { hoursTotal: hoursTotal(row) } : {}),
   } : { ...common, kind: "subtask", parentId: row.parentId ?? "",
+    ...(fields.includes("status") ? { disabled: row.disabled === true } : {}),
     ...(fields.includes("schedule") ? { schedule: { start: row.plannedStartDate || null, end: row.plannedEndDate || null, due: row.dueDate || null } } : {}),
     ...(fields.includes("markers") ? { markers: (row.ganttMarkers ?? []).map((marker) => ({ ...marker, tags: [...marker.tags ?? []] })) } : {}),
     ...(fields.includes("workload") ? { hours: hours(row), hoursTotal: hoursTotal(row) } : {}),

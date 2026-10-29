@@ -82,6 +82,8 @@ export interface TaskRow {
   // Status and completion
   statusLabel: StatusLabel; // default is "active"
   completed: boolean;
+  /** Subtask only: 一時無効. Absent = enabled. Independent of statusLabel/completed. */
+  disabled?: boolean;
 
   // Time tracking
   createdAt: string; // YYYY-MM-DD
@@ -143,6 +145,8 @@ export interface TaskPatch {
   workloadActual?: WorkloadMap;
   ganttMarkers?: GanttMarker[];
   milestones?: GanttMarker[];
+  /** Subtask only: 一時無効. Still shown on the Gantt, but its plan/actual hours are not counted. */
+  disabled?: boolean;
 }
 
 

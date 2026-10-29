@@ -51,6 +51,9 @@ import {
   collectWorkloadEntriesForDate,
   compareWorkloadEntries,
   computeRowHeight,
+  layoutMilestoneTiers,
+  milestoneBandHeight,
+  MILESTONE_TIER_HEIGHT,
   computeLaneWindow,
   laneWindowCoversViewport,
   filterSubtasksInWindow,
@@ -646,6 +649,8 @@ const MIN_BAR_WIDTH_PX = 8;
 // handles. Width-gating at render time keeps narrow bars uncluttered without
 // relying on CSS width-attribute selectors.
 const BAR_TAG_BADGE_MIN_WIDTH_PX = 72;
+// Badge margin plus the gap before it, counted off the title's room.
+const BAR_TAG_BADGE_GAP_PX = 10;
 
 // Compare the bar's inner width with half the estimated title width.
 const BAR_INNER_PADDING_PX = 14;
@@ -653,11 +658,17 @@ const BAR_INNER_PADDING_PX = 14;
 // edge and its rendered box never exceeds 340px (text + tag badge combined).
 const EXTERNAL_LABEL_GAP_PX = 8;
 const EXTERNAL_LABEL_MAX_WIDTH_PX = 340;
-// gap (px) below the deadline-marker band (mirrors the DEADLINE
-// addition inside computeRowHeight).
-const DEADLINE_MARKER_GAP_PX = 6;
 // width (px) of a milestone's ★, date and padding, before its name is added at ~12px per character
 const MILESTONE_FULL_LABEL_PX = 70;
+
+interface PlacedMilestone {
+  milestone: GanttMarker;
+  left: number;
+  tier: number;
+  full: boolean;
+  /** true when it counts toward the row's height (it is within the lane window) */
+  sizing: boolean;
+}
 // at most four tag chips in the LEFT column.
 const MAX_TAG_CHIPS = 4;
 
@@ -3110,7 +3121,7 @@ export class TaskGanttView extends ItemView {
       parts.push(`#${parent.file.path}`);
       if (parent.subtasks === undefined) continue;
       for (const subtask of parent.subtasks.values()) {
-        parts.push(subtask.id, subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
+        parts.push(subtask.id, subtask.disabled ? "x" : "", subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
       }
     }
     return parts.join("\u0001");
@@ -3130,7 +3141,8 @@ export class TaskGanttView extends ItemView {
     // exactly 0, and parents/subtasks are still visited in the old order, so every date's sum is bit-identical.
     for (const parent of parents) {
       for (const subtask of parent.subtasks?.values() ?? []) {
-        if (!hasPlannedDates(subtask)) continue;
+        // 一時無効 subtasks are shown on the Gantt but never counted.
+        if (subtask.disabled || !hasPlannedDates(subtask)) continue;
         const start = subtask.plannedStartDate;
         const end = subtask.plannedEndDate;
         const add = (values: Record<string, number> | undefined, into: number[]): void => {
@@ -4944,9 +4956,20 @@ export class TaskGanttView extends ItemView {
       // inner width is less than half the estimated title width. Written in
       // the equivalent form below so a title can remain in-bar until it is
       // substantially wider than the readable space, in the narrow layout.
+      // The tag badge sits inside the bar when it fits, taking its share of the
+      // width, so the title only gets what is left after the badge.
+      const primaryBadgeTag = getPrimaryGanttTagDefinition(
+        this.host.settings,
+        bar.task.tags
+      );
+      const badgeInsideWidth =
+        primaryBadgeTag !== undefined && width >= BAR_TAG_BADGE_MIN_WIDTH_PX
+          ? Math.min(estimateTextWidth(primaryBadgeTag.name), width * 0.46) +
+            BAR_TAG_BADGE_GAP_PX
+          : 0;
       const readableInsideWidth = Math.max(
         0,
-        width - BAR_INNER_PADDING_PX
+        width - BAR_INNER_PADDING_PX - badgeInsideWidth
       );
       const needsLabel =
         labelText.length > 0 &&
@@ -4956,10 +4979,6 @@ export class TaskGanttView extends ItemView {
       // rendered and could place labels that overlap after the badge is added.
       // The badge represents only a tag directly on the bar; parent tags may
       // color the bar but do not supply a badge name.
-      const primaryBadgeTag = getPrimaryGanttTagDefinition(
-        this.host.settings,
-        bar.task.tags
-      );
       const packedLabelText =
         primaryBadgeTag !== undefined
           ? `${labelText} ${primaryBadgeTag.name}`
@@ -5030,13 +5049,18 @@ export class TaskGanttView extends ItemView {
     }
     const laneOffsets = computeLaneOffsets(laneHeights);
 
-    const hasDeadlineMarker = getMilestones(parent).length > 0;
+    // Milestones stack in tiers like events; only those near the lane window size the row, as for subtasks.
+    const milestoneLayout = this.layoutParentMilestones(parent, baseDate, dayWidth, dates.length);
+    const milestoneTierCount =
+      milestoneLayout.length === 0
+        ? 0
+        : Math.max(1, milestoneLayout.reduce((n, m) => (m.sizing ? Math.max(n, m.tier + 1) : n), 0));
     const baseRowHeight = computeRowHeight(
       laneCount,
       topRowCounts,
       bottomRowCounts,
       markerRowCounts,
-      hasDeadlineMarker
+      milestoneTierCount
     );
     // Preview-only bars for rows the chart does not hold right now get their own strip below the lanes.
     const phantomLanes = this.layoutPhantomBars(parent.id);
@@ -5079,7 +5103,8 @@ export class TaskGanttView extends ItemView {
         markerRowCounts,
         laneOffsets,
         rowHeight,
-        hasDeadlineMarker,
+        milestoneLayout,
+        milestoneTierCount,
         phantomLanes,
         stickyBars
       );
@@ -5218,6 +5243,32 @@ export class TaskGanttView extends ItemView {
  * — overflow is the CSS layer's job. Runs when the row is populated (see
  * populateNearRows), not when its shell is built.
  */
+  /**
+   * Places a parent's in-range milestones in tiers. Only those whose label reaches the lane window are packed and
+   * size the row (`sizing`); the rest sit on tier 0 and re-pack once scrolling brings them into the window.
+   */
+  private layoutParentMilestones(parent: TaskRow, baseDate: string, dayWidth: number, dayCount: number): PlacedMilestone[] {
+    const milestones = getMilestones(parent);
+    if (milestones.length === 0) return [];
+    const timelineWidth = dayCount * dayWidth;
+    const win = this.laneWindow;
+    const winLeft = win ? diffDays(baseDate, win.start) * dayWidth : -Infinity;
+    const winRight = win ? (diffDays(baseDate, win.end) + 1) * dayWidth : Infinity;
+    const placed: PlacedMilestone[] = [];
+    const sizing: { milestone: GanttMarker; left: number; width: number }[] = [];
+    for (const milestone of milestones) {
+      const left = diffDays(baseDate, milestone.date) * dayWidth;
+      if (left < 0 || left > timelineWidth) continue; // not rendered when its date is outside the visible range
+      const width = MILESTONE_FULL_LABEL_PX + milestone.title.length * 12;
+      if (left + width >= winLeft && left <= winRight) sizing.push({ milestone, left, width });
+      else placed.push({ milestone, left, tier: 0, full: true, sizing: false });
+    }
+    layoutMilestoneTiers(sizing).forEach((slot, i) => {
+      placed.push({ ...sizing[i], tier: slot.tier, full: slot.fits, sizing: true });
+    });
+    return placed.sort((a, b) => a.left - b.left);
+  }
+
   private renderParentTimeline(
     timeline: HTMLElement,
     parent: TaskRow,
@@ -5231,7 +5282,8 @@ export class TaskGanttView extends ItemView {
     markerRowCounts: number[],
     laneOffsets: number[],
     rowHeight: number,
-    hasDeadlineMarker: boolean,
+    milestoneLayout: PlacedMilestone[],
+    milestoneTierCount: number,
     phantomLanes: PhantomLayout = { laneCount: 0, bars: [] },
     stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = []
   ): void {
@@ -5290,6 +5342,7 @@ export class TaskGanttView extends ItemView {
       const barEl = document.createElement("div");
       barEl.classList.add("task-gantt-bar");
       if (bar.task.completed) barEl.classList.add("is-completed");
+      if (bar.task.disabled) barEl.classList.add("is-disabled");
       const barMark = this.previewLayer?.rowState(bar.task.id);
       if (barMark) barEl.classList.add("vg-hl-bar", `is-${barMark}`);
       const ownTagColor =
@@ -5330,7 +5383,10 @@ export class TaskGanttView extends ItemView {
       );
       // Option (b): only add the badge when the measured bar width can fit it
       // beside the title and resize handles; very narrow bars stay readable.
+      // A bar whose title is shown in a callout leaves its tag to the callout,
+      // so the tag is not displayed twice.
       if (
+        !needsLabel &&
         width >= BAR_TAG_BADGE_MIN_WIDTH_PX &&
         primaryBadgeTag !== undefined
       ) {
@@ -5642,25 +5698,15 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(node);
     }
 
-    // Milestones sit in the row's bottom band: ★ + name + M/D (+ primary tag). Several can share the band, so a
-    // milestone whose label would run into the next one shows its ★ and date only (the name stays in the tooltip).
-    if (hasDeadlineMarker) {
-      const milestones = getMilestones(parent);
-      const timelineWidth = dates.length * dayWidth;
-      const lefts = milestones.map((milestone) => diffDays(baseDate, milestone.date) * dayWidth);
-      milestones.forEach((milestone, index) => {
-        const left = lefts[index];
-        if (left < 0 || left > timelineWidth) {
-          return; // not rendered when its date is outside the visible range
-        }
-        const next = lefts[index + 1];
-        const full = next === undefined || next - left >= MILESTONE_FULL_LABEL_PX + milestone.title.length * 12;
+    // Milestones sit in the row's bottom band: ★ + name + M/D (+ primary tag), stacked in tiers when their labels
+    // would collide. One that fits no tier (too many at once) shows its ★ and date only (name stays in the tooltip).
+    if (milestoneLayout.length > 0) {
+      const bandTop = rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - milestoneBandHeight(milestoneTierCount);
+      milestoneLayout.forEach(({ milestone, left, tier, full }) => {
         const deadline = document.createElement("div");
         deadline.classList.add("task-gantt-deadline-marker", "task-gantt-milestone");
         deadline.style.left = `${left}px`;
-        deadline.style.top = `${
-          rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - MARKER_ROW_HEIGHT - DEADLINE_MARKER_GAP_PX
-        }px`;
+        deadline.style.top = `${bandTop + tier * MILESTONE_TIER_HEIGHT}px`;
         deadline.title = `${milestone.title} ${milestone.date}`;
         // The frame takes the milestone's tag color (else the parent's), like a subtask's callout frame.
         const frameColor = this.host.settings.ganttFeatureTagsEnabled
@@ -5816,6 +5862,7 @@ export class TaskGanttView extends ItemView {
     const label = document.createElement("div");
     label.classList.add("task-gantt-external-label");
     if (bar.task.completed) label.classList.add("is-completed");
+    if (bar.task.disabled) label.classList.add("is-disabled");
     if (barTagColor !== "") {
       label.classList.add("is-tagged");
       label.style.borderColor = barTagColor;
@@ -5975,7 +6022,12 @@ export class TaskGanttView extends ItemView {
     const all = parent.subtasks ? Array.from(parent.subtasks.values()) : [];
     const inside = new Set(filterSubtasksInWindow(all, win.start, win.end));
     const excluded = all.filter((task) => !inside.has(task)).map((task) => task.id);
-    return excluded.length === 0 ? base : `${base}|x:${excluded.join(",")}`;
+    // Milestones size the row only inside the window, so the ones outside it belong to the fingerprint too.
+    const outside = getMilestones(parent)
+      .filter((m) => m.date < win.start || m.date > win.end)
+      .map((m) => m.key);
+    const tail = outside.length === 0 ? "" : `|m:${outside.join(",")}`;
+    return excluded.length === 0 ? `${base}${tail}` : `${base}|x:${excluded.join(",")}${tail}`;
   }
 
   /**
@@ -9028,6 +9080,18 @@ export class TaskGanttView extends ItemView {
     return button;
   }
 
+  /** 一時無効 toggle: saves only `disabled`, never touching status/completed. */
+  private buildDisabledToggleButton(task: TaskRow): HTMLElement {
+    const button = document.createElement("button");
+    button.classList.add("task-gantt-popover-toggle-disabled");
+    button.textContent = task.disabled ? "有効に戻す" : "一時無効にする";
+    this.bindRichPopoverInteraction(button);
+    button.addEventListener("click", () => {
+      void this.savePopoverPatch(task, { disabled: !task.disabled });
+    });
+    return button;
+  }
+
   /**
  *
  *
@@ -9075,6 +9139,14 @@ export class TaskGanttView extends ItemView {
       ? "完了"
       : this.statusDisplayLabel(task.statusLabel);
     chips.appendChild(statusChip);
+
+    // 一時無効 is independent of the status, so it gets its own chip next to it.
+    if (task.disabled) {
+      const disabledChip = document.createElement("span");
+      disabledChip.classList.add("task-gantt-popover-disabled-chip", "vg-chip");
+      disabledChip.textContent = "無効中";
+      chips.appendChild(disabledChip);
+    }
 
     // priority chip only when the task HAS a priority.
 
@@ -9157,6 +9229,7 @@ export class TaskGanttView extends ItemView {
     actions.classList.add("task-gantt-popover-actions");
     actions.appendChild(this.buildOpenNoteButton(task));
     actions.appendChild(this.buildCompletedToggleButton(task));
+    actions.appendChild(this.buildDisabledToggleButton(task));
     root.appendChild(actions);
   }
 
@@ -9857,6 +9930,13 @@ export class TaskGanttView extends ItemView {
           ? { completed: false, statusLabel: "active" }
           : { completed: true, statusLabel: "done" };
         void this.savePopoverPatch(task, patch);
+      });
+    });
+
+    menu.addItem((item) => {
+      item.setTitle(task.disabled ? "有効に戻す" : "一時無効にする");
+      item.onClick(() => {
+        void this.savePopoverPatch(task, { disabled: !task.disabled });
       });
     });
 

@@ -215,7 +215,7 @@ export const READ_FIXTURES = {
   tasks: {
     schemaVersion: 1, resultKind: "read", today: "2026-10-09", timezone: "Asia/Tokyo", snapshotRevision: "snapshot-sha256:fixture", errors: [],
     data: { kind: "tasks", fieldsIncluded: ["identity", "status", "schedule", "priority"],
-      items: [{ id: CHILD_ID, kind: "subtask", parentId: PARENT_ID, name: "レビュー", status: "in_progress", completed: false,
+      items: [{ id: CHILD_ID, kind: "subtask", parentId: PARENT_ID, name: "レビュー", status: "in_progress", completed: false, disabled: false,
         schedule: { start: DATE, end: "2026-10-15", due: null }, priority: { stored: 0, effective: 0, mode: "auto" }, revision }],
       totalMatched: 21, returned: 1, truncated: true, nextCursor: "opaque-query-snapshot-cursor" },
   },

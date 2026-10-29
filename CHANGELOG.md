@@ -2,6 +2,24 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.12.0 (2026-10-29)
+
+### 新機能
+
+- サブタスクを一時無効にできるようにする ([#82](https://github.com/chiepu3/vault-gantt/pull/82))
+
+## v0.11.3 (2026-10-29)
+
+### 修正
+
+- タグ付きサブタスクが吹き出しになりにくい問題を修正 ([#81](https://github.com/chiepu3/vault-gantt/pull/81))
+
+## v0.11.2 (2026-10-29)
+
+### 修正
+
+- 近接するマイルストーンを段に積んで名前が隠れないようにする ([#80](https://github.com/chiepu3/vault-gantt/pull/80))
+
 ## v0.11.1 (2026-10-27)
 
 ### 修正
