@@ -74,18 +74,13 @@ const previewCss = read(path.join(here, "shell/base.css")) + "\n" + read(path.jo
 fs.writeFileSync(path.join(outDir, "styles.css"), pluginCss);
 fs.writeFileSync(path.join(outDir, "preview.css"), previewCss);
 fs.writeFileSync(path.join(outDir, "version.json"), JSON.stringify({ label, sha, builtAt, version: manifest.version }, null, 2));
-// Design prototypes (tools/web-preview/proto/*.css|js) are layered over the real view on branches that carry them.
-const protoDir = path.join(here, "proto");
-const protoFiles = fs.existsSync(protoDir) ? fs.readdirSync(protoDir).filter((f) => /\.(css|js)$/.test(f)).sort() : [];
-for (const f of protoFiles) fs.copyFileSync(path.join(protoDir, f), path.join(outDir, f));
-const protoTags = protoFiles.map((f) => (f.endsWith(".css") ? `<link rel="stylesheet" href="${f}?v=${sha}">` : `<script src="${f}?v=${sha}"></script>`)).join("");
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 fs.writeFileSync(path.join(outDir, "index.html"), `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=1200">
 <title>${esc(manifest.name)} プレビュー (${esc(label)})</title>
 <link rel="stylesheet" href="preview.css?v=${sha}"><link rel="stylesheet" href="styles.css?v=${sha}">
-</head><body class="theme-light"><div id="vgp-root"></div><script src="app.js?v=${sha}"></script>${protoTags}</body></html>
+</head><body class="theme-light"><div id="vgp-root"></div><script src="app.js?v=${sha}"></script></body></html>
 `);
 
 // Heads-up for CSS variables the plugin stylesheet uses but neither it nor the preview theme defines.

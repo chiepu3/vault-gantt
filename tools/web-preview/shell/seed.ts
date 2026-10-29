@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { stringifyYaml } from "obsidian";
 import { buildNewNote } from "@app/core/note-v2";
+import { buildMemoNote, memoFileStem, type MemoMeta } from "@app/core/memo";
 import { FAKE_ORIGIN } from "./fake-llm";
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -45,6 +46,14 @@ const PARENTS: Parent[] = [
   { name: "採用面接の日程調整", tags: [], due: 6, prio: 2, created: -2, gantt: false, subs: [] },
 ];
 
+/** Floating memos: `at` counts days from the subtask's start, `date` is the day for parent and その他 rows. The last one is kept closed (see ganttMemoLayout below). */
+const MEMOS: Array<{ id: string; text: string; anchor: Pick<MemoMeta, "taskId" | "at"> & { date?: number } }> = [
+  { id: "m-sd0001", text: "API層の認可まわりを木曜までに確認\n・トークンの期限\n・権限チェックの抜け", anchor: { taskId: "s-sd0001", at: 2 } },
+  { id: "m-sd0002", text: "先方のデザイナーは午後のみ対応可。日程は午後に寄せる。", anchor: { taskId: "s-sd0002", at: 1 } },
+  { id: "m-sd0003", text: "判定会議の資料は前日までに共有する", anchor: { taskId: "t-sd0000", date: 5 } },
+  { id: "m-sd0004", text: "全社会議の前に月次の数字を見直す", anchor: { date: 2 } },
+];
+
 /** v2 notes: one parent note and one note per subtask (in a folder named like the parent). */
 function toNotes(p: Parent, idx: number): { files: Record<string, string>; parentId: string; subIds: string[] } {
   const t = today();
@@ -78,6 +87,11 @@ export function makeSeed(): { files: Record<string, string>; data: any; secrets:
   const files: Record<string, string> = {};
   const subtaskOrder: Record<string, string[]> = {}, ganttParentOrder: string[] = [];
   PARENTS.forEach((p, i) => { const n = toNotes(p, i); Object.assign(files, n.files); ganttParentOrder.push(n.parentId); if (n.subIds.length) subtaskOrder[n.parentId] = n.subIds; });
+  for (const memo of MEMOS) {
+    const created = plus(-1), date = memo.anchor.date !== undefined ? plus(memo.anchor.date) : undefined;
+    const fields = { id: memo.id, ...(memo.anchor.taskId ? { taskId: memo.anchor.taskId } : {}), ...(memo.anchor.at !== undefined ? { at: memo.anchor.at } : {}), ...(date ? { date } : {}), created, updated: created };
+    files[`tasks/_memos/${memoFileStem(memo.text, created)}.md`] = buildMemoNote(fields, memo.text, stringifyYaml);
+  }
   const t = new Date(), ymd = (d: Date) => ({ y: d.getFullYear(), m: String(d.getMonth() + 1).padStart(2, "0"), d: String(d.getDate()).padStart(2, "0") });
   for (const off of [-2, -1, 0, 1, 2]) {
     const d = new Date(t); d.setDate(d.getDate() + off); const { y, m, d: dd } = ymd(d);
@@ -95,6 +109,7 @@ export function makeSeed(): { files: Record<string, string>; data: any; secrets:
     ganttEvents: [{ key: "ev1", title: "全社会議", date: plus(3) }, { key: "ev2", title: "リリース", date: plus(14), workloadPlan: { [plus(14)]: 2 } }],
     weeklyWorkSchedules: [{ key: "w1", title: "定例会議", dayOfWeek: 1, minutesPerWeek: 60 }, { key: "w2", title: "1on1", dayOfWeek: 3, minutesPerWeek: 30 }],
     dailyTodoTargetSourceKey: "main",
+    ganttMemoLayout: { "m-sd0004": { open: false, dx: 28, dy: -70, w: 220 } },
     ai: { preset: "custom", baseUrl: FAKE_ORIGIN + "/v1", model: "fake-model", useApiKey: true, apiKeyOrigin: FAKE_ORIGIN },
   };
   return { files, data, secrets: { "vault-gantt-ai-api-key": "sk-preview-dummy-key" } };
