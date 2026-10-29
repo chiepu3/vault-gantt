@@ -41,7 +41,7 @@ export function entityRefKey(entity: EntityRef): string {
   }
 }
 export const ENTITY_FIELDS = {
-  task: ["displayName", "title", "statusLabel", "createdAt", "updatedAt", "dueDate", "priority", "priorityMode", "tags", "completed", "ganttEnabled", "ganttOrder", "currentStatus", "notes", "plannedStartDate", "plannedEndDate", "workloadPlan", "workloadActual", "ganttMarkers", "derivedPeriod", "progress", "effectivePriority", "children"],
+  task: ["displayName", "title", "statusLabel", "createdAt", "updatedAt", "dueDate", "priority", "priorityMode", "tags", "completed", "disabled", "ganttEnabled", "ganttOrder", "currentStatus", "notes", "plannedStartDate", "plannedEndDate", "workloadPlan", "workloadActual", "ganttMarkers", "derivedPeriod", "progress", "effectivePriority", "children"],
   marker: ["key", "title", "date", "tags"], event: ["key", "title", "date", "workloadPlan", "workloadActual"],
   weekly: ["key", "title", "dayOfWeek", "minutesPerWeek"], "daily-todo": ["text", "completed"],
   "daily-file": ["path", "sourceKey", "templatePath"], "tag-definition": ["key", "name", "color", "order"],
@@ -106,7 +106,7 @@ export type PreviewEntry = DeepReadonly<z.infer<typeof previewEntrySchema>>;
 /** Appearance is already resolved by the projector; UI does not infer tag inheritance. */
 const appearance = z.object({ color: z.string().nullable(), tags: z.array(z.object({ name: z.string(), color: z.string().nullable(), origin: z.enum(["own", "parent"]) }).strict()) }).strict();
 export const ganttChildStateSchema = z.object({
-  id: idSchema, parentId: idSchema, name: z.string(), status: statusSchema, completed: z.boolean(), tags: tagNamesSchema,
+  id: idSchema, parentId: idSchema, name: z.string(), status: statusSchema, completed: z.boolean(), disabled: z.boolean().optional(), tags: tagNamesSchema,
   period: periodSchema, due: dateOnlySchema.nullable(), markers: z.array(markerStateSchema), hours: z.array(hoursCellSchema),
   effectivePriority: z.number().min(0).max(5), appearance,
 }).strict();

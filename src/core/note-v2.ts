@@ -26,7 +26,7 @@ export type NoteKind = "parent" | "subtask";
 /** Frontmatter keys the plugin owns and rewrites through diffs. Everything else is the user's. */
 export const MANAGED_KEYS = [
   "title", "status", "completed", "created", "updated", "start", "end", "due",
-  "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers", "milestones",
+  "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers", "milestones", "disabled",
 ] as const;
 
 // ---------------------------------------------------------------- value readers
@@ -168,6 +168,7 @@ export function parseNote(
     row.workloadPlan = readWorkload(fm.plan);
     row.workloadActual = readWorkload(fm.actual);
     row.ganttMarkers = readMarkers(fm.markers);
+    if (readBoolean(fm.disabled)) row.disabled = true;
     const dependsOn = readLinkList(fm.dependsOn);
     if (dependsOn.length) row.dependsOn = dependsOn;
   } else {
@@ -208,6 +209,7 @@ export function managedFrontmatter(row: TaskRow): Frontmatter {
     markers: subtask && row.ganttMarkers?.length
       ? row.ganttMarkers.map((marker) => ({ title: marker.title, date: marker.date, ...(marker.tags?.length ? { tags: [...marker.tags] } : {}) }))
       : undefined,
+    disabled: subtask && row.disabled ? true : undefined,
     milestones: !subtask && row.milestones?.length && !isLegacyOnlyMilestones(row.milestones)
       ? row.milestones.map((milestone) => ({ title: milestone.title, date: milestone.date, ...(milestone.tags?.length ? { tags: [...milestone.tags] } : {}) }))
       : undefined,
@@ -244,7 +246,7 @@ export function newNoteFrontmatter(row: TaskRow, options: { parentLink?: string 
     title: managed.title,
   };
   if (subtask && options.parentLink) ordered.parent = options.parentLink;
-  for (const key of ["status", "completed", "created", "updated", "start", "end", "due", "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers", "milestones"]) {
+  for (const key of ["status", "completed", "created", "updated", "start", "end", "due", "priority", "priorityMode", "tags", "gantt", "dependsOn", "plan", "actual", "markers", "milestones", "disabled"]) {
     if (managed[key] !== undefined) ordered[key] = managed[key];
   }
   ordered.cssclasses = ["task"];

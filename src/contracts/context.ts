@@ -108,7 +108,7 @@ export const taskFieldGroupSchema = z.enum(["identity", "status", "schedule", "d
 export type TaskFieldGroup = z.infer<typeof taskFieldGroupSchema>;
 const taskCommon = {
   id: idSchema, name: z.string().max(20000), revision: revisionSchema,
-  status: statusSchema.optional(), completed: z.boolean().optional(),
+  status: statusSchema.optional(), completed: z.boolean().optional(), disabled: z.boolean().optional(),
   priority: z.object({ stored: z.number().min(0).max(5), effective: z.number().min(0).max(5), mode: z.enum(["auto", "manual"]) }).strict().optional(),
   tags: tagNamesSchema.optional(), content: z.object({ currentStatus: z.string(), notes: z.string(), createdAt: dateOnlySchema.nullable(), updatedAt: dateOnlySchema.nullable() }).strict().optional(),
 };
@@ -144,7 +144,7 @@ export const taskReadSchema = z.object({
   if (page.truncated !== (page.nextCursor !== null)) ctx.addIssue({ code: "custom", message: "省略には詳細取得cursorが必要です" });
   for (const item of page.items) {
     const fields: Partial<Record<TaskFieldGroup, readonly string[]>> = {
-      identity: ["id", "kind", "parentId", "name", "revision"], status: ["status", "completed"],
+      identity: ["id", "kind", "parentId", "name", "revision"], status: item.kind === "subtask" ? ["status", "completed", "disabled"] : ["status", "completed"],
       schedule: item.kind === "parent" ? ["due", "gantt"] : ["schedule"], priority: ["priority"],
       tags: ["tags"], content: ["content"], derived: item.kind === "parent" ? ["derived"] : [],
       children: item.kind === "parent" ? ["children"] : [], markers: item.kind === "subtask" ? ["markers"] : [],

@@ -193,6 +193,7 @@ export async function writeDragFixture({
   startDate,
   endDate,
   statusLabel = "active",
+  workloadPlan,
 }) {
   const mod = await loadNoteFormatModule();
   const today = toIsoStr(new Date());
@@ -216,6 +217,7 @@ export async function writeDragFixture({
     ganttEnabled: false,
     plannedStartDate: startDate,
     plannedEndDate: endDate,
+    ...(workloadPlan ? { workloadPlan } : {}),
   };
 
   const parent = {
