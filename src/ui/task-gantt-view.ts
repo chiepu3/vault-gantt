@@ -2206,6 +2206,7 @@ export class TaskGanttView extends ItemView {
       entries: () => this.memoEntries,
       pointOf: (entry) => this.memoPoint(entry),
       leftWidth: PARENT_COL_WIDTH,
+      contentSize: () => this.memoContentSize(),
       dateAtClient: (entry, clientX) => this.memoDateAt(entry, clientX),
       readText: (meta) => memos.readText(meta),
       saveText: async (meta, text) => {
@@ -2226,6 +2227,18 @@ export class TaskGanttView extends ItemView {
       saveLayout: () => memos.saveLayout(),
       openMenu: (evt, entry) => this.openMemoMenu(evt, entry),
     });
+  }
+
+  /** The scroll content's size without the memo layer: the date axis is known, the bottom is the last row's edge. */
+  private memoContentSize(): { width: number; height: number } {
+    const wrap = this.wrapEl, layer = this.memoLayer?.element;
+    let last = wrap.lastElementChild as HTMLElement | null;
+    if (last && last === layer) last = last.previousElementSibling as HTMLElement | null;
+    const bottom = last ? last.offsetTop + last.offsetHeight : 0;
+    return {
+      width: Math.max(wrap.clientWidth, PARENT_COL_WIDTH + this.dates.length * this.dayWidth),
+      height: Math.max(wrap.clientHeight, bottom),
+    };
   }
 
   private async refreshMemoMetas(): Promise<void> {

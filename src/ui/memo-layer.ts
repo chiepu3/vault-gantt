@@ -37,6 +37,8 @@ export interface MemoLayerContext {
   pointOf(entry: MemoEntry): MemoPoint | null;
   /** Width of the sticky name column, which the layer must not paint over. */
   leftWidth: number;
+  /** The scroll content's size without the layer, from what the view already knows (no layout read). Omitted: measured from the wrap's children. */
+  contentSize?(): { width: number; height: number };
   /** The day under a pointer x (clamped to the drawn range), snapped the way the entry may move; null = it cannot move there. */
   dateAtClient(entry: MemoEntry, clientX: number): string | null;
   readText(meta: MemoMeta): Promise<string>;
@@ -56,6 +58,8 @@ const MAX_BUBBLE_HEIGHT = 260;
 const PIN_RISE = 12;
 const LINE_HEIGHT = 17;
 const EDGE = 3;
+/** A measured height this close to the one placement used does not move the bubble. */
+const HEIGHT_TOLERANCE = 2;
 /** Memos whose anchor is within this many viewport widths of the visible dates get DOM nodes. */
 const NEAR_VIEWPORTS = 1;
 const FALLBACK_VIEWPORT = 1200;
@@ -73,6 +77,8 @@ interface MemoNode {
   dx: number;
   dy: number;
   w: number;
+  /** Measured bubble height; unknown until the first measurement, then kept current by the resize observer. */
+  h?: number;
   /** Offsets came from auto-placement (no stored layout). */
   auto: boolean;
   box?: HTMLElement;
@@ -114,6 +120,9 @@ export class MemoLayer {
   private placedScrollLeft = 0;
   private frame = 0;
   private disposed = false;
+  /** One observer for every open bubble: real heights arrive without a forced layout. */
+  private observer: ResizeObserver | undefined;
+  private readonly observed = new Map<Element, MemoNode>();
 
   constructor(private readonly ctx: MemoLayerContext) {}
 
@@ -139,6 +148,48 @@ export class MemoLayer {
     this.layer?.remove();
     this.layer = undefined;
     this.nodes.clear();
+    this.observed.clear();
+    this.observer?.disconnect();
+    this.observer = undefined;
+  }
+
+  private observe(node: MemoNode): void {
+    if (!node.box || typeof ResizeObserver === "undefined") return;
+    this.observer ??= new ResizeObserver((records) => this.onResized(records));
+    this.observed.set(node.box, node);
+    this.observer.observe(node.box);
+  }
+
+  private unobserve(node: MemoNode): void {
+    if (!node.box || !this.observed.delete(node.box)) return;
+    this.observer?.unobserve(node.box);
+  }
+
+  private dropNode(node: MemoNode): void {
+    this.unobserve(node);
+    node.group.remove();
+    this.nodes.delete(node.id);
+  }
+
+  /** A bubble got its real height (text loaded, edited, resized): redraw its tail, and place again when auto-placement used another guess. */
+  private onResized(records: readonly ResizeObserverEntry[]): void {
+    if (this.disposed) return;
+    let replace = false;
+    for (const record of records) {
+      const node = this.observed.get(record.target);
+      if (!node || node.box !== record.target) continue;
+      const h = record.borderBoxSize?.[0]?.blockSize ?? record.contentRect.height;
+      if (!(h > 0)) continue;
+      const before = this.heightOf(node);
+      node.h = h;
+      this.layoutTail(node);
+      if (node.auto && Math.abs(h - before) > HEIGHT_TOLERANCE) replace = true;
+    }
+    if (replace) this.schedulePlace();
+  }
+
+  private heightOf(node: MemoNode): number {
+    return node.h ?? estimateBubbleHeight(this.knownText(node.entry) ?? "", node.w);
   }
 
   /** Coalesces re-placement requests into one animation frame. */
@@ -161,23 +212,23 @@ export class MemoLayer {
   /**
    * Draws the memos. Keeps the layer the last child of the scroll container, sizes it to the content, and gives DOM
    * nodes only to memos whose anchor is within the visible dates plus one viewport width on each side.
+   * Reads layout once up front and only writes afterwards, so a call costs at most one reflow.
    */
   place(): void {
     if (this.disposed) return;
     const { wrap } = this.ctx;
     const layer = this.ensureLayer();
-    if (layer.parentNode !== wrap || layer.nextSibling !== null) wrap.appendChild(layer);
-    if (!this.ctx.settings().ganttMemosVisible) { layer.style.display = "none"; return; }
-    layer.style.display = "";
-    // A layer left at its old size would keep the content from shrinking.
-    layer.style.width = "0px"; layer.style.height = "0px";
-    const contentWidth = wrap.scrollWidth, contentHeight = wrap.scrollHeight;
-    layer.style.width = `${contentWidth}px`; layer.style.height = `${contentHeight}px`;
-    layer.style.clipPath = `inset(0 0 0 ${wrap.scrollLeft + this.ctx.leftWidth}px)`;
-    this.placedScrollLeft = wrap.scrollLeft;
+    if (!this.ctx.settings().ganttMemosVisible) {
+      if (layer.parentNode !== wrap || layer.nextSibling !== null) wrap.appendChild(layer);
+      layer.style.display = "none";
+      return;
+    }
 
+    // Read phase: everything the placement needs from layout.
+    const { width: contentWidth, height: contentHeight } = this.ctx.contentSize?.() ?? this.measureContent();
+    const scrollLeft = wrap.scrollLeft;
     const viewport = wrap.clientWidth || FALLBACK_VIEWPORT;
-    const from = wrap.scrollLeft - NEAR_VIEWPORTS * viewport, to = wrap.scrollLeft + (1 + NEAR_VIEWPORTS) * viewport;
+    const from = scrollLeft - NEAR_VIEWPORTS * viewport, to = scrollLeft + (1 + NEAR_VIEWPORTS) * viewport;
     const layoutOf = this.ctx.settings().ganttMemoLayout ?? {};
     const live = new Map<string, { entry: MemoEntry; pt: MemoPoint }>();
     for (const entry of this.ctx.entries()) {
@@ -186,16 +237,23 @@ export class MemoLayer {
     }
     // A draft stays while it is being typed, wherever the chart scrolled to.
     for (const node of this.nodes.values()) if (node.draftCommit && !live.has(node.id)) live.set(node.id, { entry: node.entry, pt: this.ctx.pointOf(node.entry) ?? node.pt });
-    for (const [id, node] of this.nodes) {
-      if (live.has(id)) continue;
-      node.group.remove();
-      this.nodes.delete(id);
+    const minTop = this.stickyTop();
+    for (const node of this.nodes.values()) {
+      const measured = node.open && node.box ? node.box.offsetHeight : 0;
+      if (measured > 0) node.h = measured;
     }
+
+    // Write phase: from here on nothing reads layout.
+    if (layer.parentNode !== wrap || layer.nextSibling !== null) wrap.appendChild(layer);
+    layer.style.display = "";
+    layer.style.width = `${contentWidth}px`; layer.style.height = `${contentHeight}px`;
+    layer.style.clipPath = `inset(0 0 0 ${scrollLeft + this.ctx.leftWidth}px)`;
+    this.placedScrollLeft = scrollLeft;
+    for (const [id, node] of [...this.nodes]) if (!live.has(id)) this.dropNode(node);
 
     // Stored layouts claim their space first; auto-placed memos then look for free space around them.
     // Anchor dots count as taken too, so no bubble hides another memo's anchor.
     const taken: Rect[] = [...live.values()].map(({ pt }) => ({ x: pt.x - DOT_CLEARANCE, y: pt.y - DOT_CLEARANCE, w: DOT_CLEARANCE * 2, h: DOT_CLEARANCE * 2 }));
-    const minTop = this.stickyTop();
     const pending: MemoNode[] = [];
     const order = [...live.values()].sort((a, b) => a.pt.x - b.pt.x || a.pt.y - b.pt.y);
     for (const { entry, pt } of order) {
@@ -217,7 +275,7 @@ export class MemoLayer {
       if (node.open) taken.push(this.rectOf(node));
     }
     for (const node of pending) {
-      const spot = this.freeSpot(node.pt, node.w, estimateBubbleHeight(this.knownText(node.entry) ?? "", node.w), taken, contentWidth, contentHeight, minTop);
+      const spot = this.freeSpot(node.pt, node.w, this.heightOf(node), taken, contentWidth, contentHeight, minTop);
       node.dx = spot.dx; node.dy = spot.dy;
       this.rebuildIfNeeded(node);
       taken.push(this.rectOf(node));
@@ -225,10 +283,20 @@ export class MemoLayer {
     this.layoutTails();
   }
 
+  /** The scroll content's size without the layer, for contexts that cannot say it: the farthest edge of the wrap's other children. */
+  private measureContent(): { width: number; height: number } {
+    const { wrap } = this.ctx;
+    let width = wrap.clientWidth, height = wrap.clientHeight;
+    for (const child of Array.from(wrap.children) as HTMLElement[]) {
+      if (child === this.layer) continue;
+      width = Math.max(width, child.offsetLeft + child.offsetWidth);
+      height = Math.max(height, child.offsetTop + child.offsetHeight);
+    }
+    return { width, height };
+  }
+
   private rectOf(node: MemoNode): Rect {
-    const box = node.box;
-    const h = box && box.offsetHeight > 0 ? box.offsetHeight : estimateBubbleHeight(this.knownText(node.entry) ?? "", node.w);
-    return { x: node.pt.x + node.dx, y: node.pt.y + node.dy, w: node.w, h };
+    return { x: node.pt.x + node.dx, y: node.pt.y + node.dy, w: node.w, h: this.heightOf(node) };
   }
 
   /**
@@ -275,9 +343,11 @@ export class MemoLayer {
     const signature = this.signatureOf(node);
     if (node.signature !== signature && !node.editing) {
       node.signature = signature;
+      this.unobserve(node);
       node.group.replaceChildren();
       node.box = node.pin = node.dot = node.tail = node.textEl = undefined;
-      if (node.open) this.buildBubble(node); else this.buildPin(node);
+      node.h = undefined;
+      if (node.open) { this.buildBubble(node); this.observe(node); } else this.buildPin(node);
     } else if (node.entry.meta && node.textEl && !node.editing) this.fillText(node);
     this.position(node);
   }
@@ -377,6 +447,8 @@ export class MemoLayer {
     void this.loadText(node.entry).then((text) => {
       if (text === undefined || node.textEl !== textEl || node.editing) return;
       textEl.textContent = text;
+      // With an observer the bubble's new height arrives by itself; without one, redraw from the new estimate.
+      if (this.observer) return;
       this.layoutTail(node);
       // Auto-placed bubbles were spaced by an estimate; place them again now that the real height is known.
       if (node.auto) this.schedulePlace();
@@ -402,19 +474,14 @@ export class MemoLayer {
 
   // ----------------------------------------------------------------- tails
 
-  /** Reads every bubble's size first, then writes every tail, so placing many memos costs one layout. */
+  /** Draws every open bubble's tail from its known (or estimated) size; reads no layout. */
   private layoutTails(): void {
-    const sizes: { node: MemoNode; rect: Rect }[] = [];
-    for (const node of this.nodes.values()) {
-      if (!node.open || !node.box) continue;
-      sizes.push({ node, rect: { x: node.pt.x + node.dx, y: node.pt.y + node.dy, w: node.box.offsetWidth || node.w, h: node.box.offsetHeight || estimateBubbleHeight(this.knownText(node.entry) ?? "", node.w) } });
-    }
-    for (const { node, rect } of sizes) this.drawTail(node, rect);
+    for (const node of this.nodes.values()) this.layoutTail(node);
   }
 
   private layoutTail(node: MemoNode): void {
     if (!node.open || !node.box) return;
-    this.drawTail(node, { x: node.pt.x + node.dx, y: node.pt.y + node.dy, w: node.box.offsetWidth || node.w, h: node.box.offsetHeight || MIN_BUBBLE_HEIGHT });
+    this.drawTail(node, this.rectOf(node));
   }
 
   /** A straight line from the anchor to the nearest point of the bubble's frame. */
@@ -557,7 +624,8 @@ export class MemoLayer {
     this.ensureLayer().appendChild(node.group);
     const taken: Rect[] = [];
     for (const other of this.nodes.values()) if (other !== node && other.open) taken.push(this.rectOf(other));
-    const spot = this.freeSpot(pt, node.w, MIN_BUBBLE_HEIGHT + 24, taken, this.ctx.wrap.scrollWidth, this.ctx.wrap.scrollHeight, this.stickyTop());
+    const { width, height } = this.ctx.contentSize?.() ?? this.measureContent();
+    const spot = this.freeSpot(pt, node.w, MIN_BUBBLE_HEIGHT + 24, taken, width, height, this.stickyTop());
     node.dx = spot.dx; node.dy = spot.dy;
     this.rebuildIfNeeded(node);
     this.layoutTail(node);
@@ -567,8 +635,7 @@ export class MemoLayer {
   private discardDraft(): void {
     for (const node of [...this.nodes.values()]) {
       if (!node.draftCommit) continue;
-      node.group.remove();
-      this.nodes.delete(node.id);
+      this.dropNode(node);
     }
   }
 

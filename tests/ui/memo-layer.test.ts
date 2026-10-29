@@ -27,7 +27,11 @@ interface Rig {
 
 function rig(entries: MemoEntry[], points: Record<string, MemoPoint> = {}, settingsOverrides: Partial<TaskWorkbenchSettings> = {}): Rig {
   const wrap = makeFakeEl();
-  wrap.scrollWidth = 5000; wrap.scrollHeight = 1200; wrap.clientWidth = 1000;
+  wrap.clientWidth = 1000;
+  // The layer measures the content from the wrap's other children.
+  const content = makeFakeEl() as any;
+  content.offsetLeft = 0; content.offsetWidth = 5000; content.offsetTop = 0; content.offsetHeight = 1200;
+  wrap.appendChild(content);
   const settings = { ...DEFAULT_SETTINGS, ganttMemosVisible: true, ganttMemoLayout: {}, ...settingsOverrides } as TaskWorkbenchSettings;
   const map = new Map(Object.entries(points));
   for (const e of entries) if (!map.has(e.id)) map.set(e.id, { x: 600, y: 200 });
@@ -157,13 +161,13 @@ describe("MemoLayer", () => {
       expect(r.layer.nodeCount).toBe(0);
     });
 
-    it("dispose removes the layer", () => {
+    it("dispose removes the layer (only the content stays)", () => {
       const r = rig([entry("m-aaaaaa")]);
       r.layer.place();
       r.layer.dispose();
-      expect(r.wrap.children).toHaveLength(0);
+      expect(r.wrap.children).toHaveLength(1);
       r.layer.place();
-      expect(r.wrap.children).toHaveLength(0);
+      expect(r.wrap.children).toHaveLength(1);
     });
   });
 
