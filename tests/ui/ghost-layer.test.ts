@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderGhost } from "../../src/ui/ghost-layer";
 import { TaskGanttView, type TaskGanttViewHost } from "../../src/ui/task-gantt-view";
 import { ScheduleGhostStore } from "../../src/app/schedule-ghost";
@@ -86,8 +86,7 @@ describe("before/current Gantt ghost layer", () => {
 });
 
 describe("Gantt preview overlay from the preview port", () => {
-  // The fixtures use fixed October dates; pin today so the chart range (today - 14 days) keeps covering them.
-  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-15T09:00:00")); });
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-09T03:05:00Z")); });
   const PARENT = "t-p", REVIEW = "s-review";
   const mapped = (value: unknown): any => JSON.parse(JSON.stringify(value).split(PARENT_ID).join(PARENT).split(CHILD_ID).join(REVIEW));
   const base = (): any => {
