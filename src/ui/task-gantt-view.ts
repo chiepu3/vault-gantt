@@ -46,6 +46,9 @@ import {
   collectWorkloadEntriesForDate,
   compareWorkloadEntries,
   computeRowHeight,
+  layoutMilestoneTiers,
+  milestoneBandHeight,
+  MILESTONE_TIER_HEIGHT,
   computeLaneWindow,
   laneWindowCoversViewport,
   filterSubtasksInWindow,
@@ -646,11 +649,17 @@ const BAR_INNER_PADDING_PX = 14;
 // edge and its rendered box never exceeds 340px (text + tag badge combined).
 const EXTERNAL_LABEL_GAP_PX = 8;
 const EXTERNAL_LABEL_MAX_WIDTH_PX = 340;
-// gap (px) below the deadline-marker band (mirrors the DEADLINE
-// addition inside computeRowHeight).
-const DEADLINE_MARKER_GAP_PX = 6;
 // width (px) of a milestone's ★, date and padding, before its name is added at ~12px per character
 const MILESTONE_FULL_LABEL_PX = 70;
+
+interface PlacedMilestone {
+  milestone: GanttMarker;
+  left: number;
+  tier: number;
+  full: boolean;
+  /** true when it counts toward the row's height (it is within the lane window) */
+  sizing: boolean;
+}
 // at most four tag chips in the LEFT column.
 const MAX_TAG_CHIPS = 4;
 
@@ -4681,13 +4690,18 @@ export class TaskGanttView extends ItemView {
     }
     const laneOffsets = computeLaneOffsets(laneHeights);
 
-    const hasDeadlineMarker = getMilestones(parent).length > 0;
+    // Milestones stack in tiers like events; only those near the lane window size the row, as for subtasks.
+    const milestoneLayout = this.layoutParentMilestones(parent, baseDate, dayWidth, dates.length);
+    const milestoneTierCount =
+      milestoneLayout.length === 0
+        ? 0
+        : Math.max(1, milestoneLayout.reduce((n, m) => (m.sizing ? Math.max(n, m.tier + 1) : n), 0));
     const baseRowHeight = computeRowHeight(
       laneCount,
       topRowCounts,
       bottomRowCounts,
       markerRowCounts,
-      hasDeadlineMarker
+      milestoneTierCount
     );
     // Preview-only bars for rows the chart does not hold right now get their own strip below the lanes.
     const phantomLanes = this.layoutPhantomBars(parent.id);
@@ -4729,7 +4743,8 @@ export class TaskGanttView extends ItemView {
         markerRowCounts,
         laneOffsets,
         rowHeight,
-        hasDeadlineMarker,
+        milestoneLayout,
+        milestoneTierCount,
         phantomLanes,
         stickyBars
       );
@@ -4868,6 +4883,32 @@ export class TaskGanttView extends ItemView {
  * — overflow is the CSS layer's job. Runs when the row is populated (see
  * populateNearRows), not when its shell is built.
  */
+  /**
+   * Places a parent's in-range milestones in tiers. Only those whose label reaches the lane window are packed and
+   * size the row (`sizing`); the rest sit on tier 0 and re-pack once scrolling brings them into the window.
+   */
+  private layoutParentMilestones(parent: TaskRow, baseDate: string, dayWidth: number, dayCount: number): PlacedMilestone[] {
+    const milestones = getMilestones(parent);
+    if (milestones.length === 0) return [];
+    const timelineWidth = dayCount * dayWidth;
+    const win = this.laneWindow;
+    const winLeft = win ? diffDays(baseDate, win.start) * dayWidth : -Infinity;
+    const winRight = win ? (diffDays(baseDate, win.end) + 1) * dayWidth : Infinity;
+    const placed: PlacedMilestone[] = [];
+    const sizing: { milestone: GanttMarker; left: number; width: number }[] = [];
+    for (const milestone of milestones) {
+      const left = diffDays(baseDate, milestone.date) * dayWidth;
+      if (left < 0 || left > timelineWidth) continue; // not rendered when its date is outside the visible range
+      const width = MILESTONE_FULL_LABEL_PX + milestone.title.length * 12;
+      if (left + width >= winLeft && left <= winRight) sizing.push({ milestone, left, width });
+      else placed.push({ milestone, left, tier: 0, full: true, sizing: false });
+    }
+    layoutMilestoneTiers(sizing).forEach((slot, i) => {
+      placed.push({ ...sizing[i], tier: slot.tier, full: slot.fits, sizing: true });
+    });
+    return placed.sort((a, b) => a.left - b.left);
+  }
+
   private renderParentTimeline(
     timeline: HTMLElement,
     parent: TaskRow,
@@ -4881,7 +4922,8 @@ export class TaskGanttView extends ItemView {
     markerRowCounts: number[],
     laneOffsets: number[],
     rowHeight: number,
-    hasDeadlineMarker: boolean,
+    milestoneLayout: PlacedMilestone[],
+    milestoneTierCount: number,
     phantomLanes: PhantomLayout = { laneCount: 0, bars: [] },
     stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = []
   ): void {
@@ -5292,25 +5334,15 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(node);
     }
 
-    // Milestones sit in the row's bottom band: ★ + name + M/D (+ primary tag). Several can share the band, so a
-    // milestone whose label would run into the next one shows its ★ and date only (the name stays in the tooltip).
-    if (hasDeadlineMarker) {
-      const milestones = getMilestones(parent);
-      const timelineWidth = dates.length * dayWidth;
-      const lefts = milestones.map((milestone) => diffDays(baseDate, milestone.date) * dayWidth);
-      milestones.forEach((milestone, index) => {
-        const left = lefts[index];
-        if (left < 0 || left > timelineWidth) {
-          return; // not rendered when its date is outside the visible range
-        }
-        const next = lefts[index + 1];
-        const full = next === undefined || next - left >= MILESTONE_FULL_LABEL_PX + milestone.title.length * 12;
+    // Milestones sit in the row's bottom band: ★ + name + M/D (+ primary tag), stacked in tiers when their labels
+    // would collide. One that fits no tier (too many at once) shows its ★ and date only (name stays in the tooltip).
+    if (milestoneLayout.length > 0) {
+      const bandTop = rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - milestoneBandHeight(milestoneTierCount);
+      milestoneLayout.forEach(({ milestone, left, tier, full }) => {
         const deadline = document.createElement("div");
         deadline.classList.add("task-gantt-deadline-marker", "task-gantt-milestone");
         deadline.style.left = `${left}px`;
-        deadline.style.top = `${
-          rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - MARKER_ROW_HEIGHT - DEADLINE_MARKER_GAP_PX
-        }px`;
+        deadline.style.top = `${bandTop + tier * MILESTONE_TIER_HEIGHT}px`;
         deadline.title = `${milestone.title} ${milestone.date}`;
         // The frame takes the milestone's tag color (else the parent's), like a subtask's callout frame.
         const frameColor = this.host.settings.ganttFeatureTagsEnabled
@@ -5624,7 +5656,12 @@ export class TaskGanttView extends ItemView {
     const all = parent.subtasks ? Array.from(parent.subtasks.values()) : [];
     const inside = new Set(filterSubtasksInWindow(all, win.start, win.end));
     const excluded = all.filter((task) => !inside.has(task)).map((task) => task.id);
-    return excluded.length === 0 ? base : `${base}|x:${excluded.join(",")}`;
+    // Milestones size the row only inside the window, so the ones outside it belong to the fingerprint too.
+    const outside = getMilestones(parent)
+      .filter((m) => m.date < win.start || m.date > win.end)
+      .map((m) => m.key);
+    const tail = outside.length === 0 ? "" : `|m:${outside.join(",")}`;
+    return excluded.length === 0 ? `${base}${tail}` : `${base}|x:${excluded.join(",")}${tail}`;
   }
 
   /**
