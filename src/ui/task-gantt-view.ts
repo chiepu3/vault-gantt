@@ -2325,8 +2325,11 @@ export class TaskGanttView extends ItemView {
     if (index < 0 || index >= this.dates.length) return null;
     const x = PARENT_COL_WIDTH + index * this.dayWidth + this.dayWidth / 2;
     if (anchor.kind === "free") {
+      // The その他 row's middle; with that row turned off, the top of the first parent row.
       const row = this.eventRowEl;
-      return row && row.isConnected ? { x, y: row.offsetTop + MEMO_ROW_ANCHOR_Y_PX } : null;
+      if (row && row.isConnected) return { x, y: row.offsetTop + row.offsetHeight / 2 };
+      const first = this.memoRowGeometry.values().next().value?.rowEl;
+      return first && first.isConnected ? { x, y: first.offsetTop + MEMO_ROW_ANCHOR_Y_PX } : null;
     }
     const geometry = anchor.parentId ? this.memoRowGeometry.get(anchor.parentId) : undefined;
     if (!geometry || !geometry.rowEl.isConnected) return null;

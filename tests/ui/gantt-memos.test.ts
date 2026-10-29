@@ -122,7 +122,7 @@ function layOut(r: Rig): { parentTop: number; eventTop: number } {
   const parentTop = 160, eventTop = 90;
   (parentRows(r.container)[0] as any).offsetTop = parentTop;
   const eventRow = (r.view as any).eventRowEl as FakeEl | undefined;
-  if (eventRow) (eventRow as any).offsetTop = eventTop;
+  if (eventRow) { (eventRow as any).offsetTop = eventTop; (eventRow as any).offsetHeight = 44; }
   return { parentTop, eventTop };
 }
 
@@ -221,6 +221,24 @@ describe("Gantt floating memos", () => {
       expect(byClass(r.container, "vg-memo-layer")).toHaveLength(1);
     });
 
+    it("auto-places memos on the same day without overlapping bubbles, and never above the scrolling rows", async () => {
+      const date = dateOffset(3);
+      const r = await openGantt([memoMeta("m-aaaaaa", { date }), memoMeta("m-bbbbbb", { date }), memoMeta("m-cccccc", { date })]);
+      layOut(r);
+      await r.view.reloadMemos();
+      const boxes = byClass(layerOf(r.container) as FakeEl, "vg-memo").map((box) => ({
+        x: Number.parseFloat(box.style.left), y: Number.parseFloat(box.style.top), w: Number.parseFloat(box.style.width), h: 56,
+      }));
+      expect(boxes).toHaveLength(3);
+      for (const box of boxes) expect(box.y).toBeGreaterThanOrEqual(0);
+      for (let i = 0; i < boxes.length; i += 1) {
+        for (let j = i + 1; j < boxes.length; j += 1) {
+          const a = boxes[i], b = boxes[j];
+          expect(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h).toBe(false);
+        }
+      }
+    });
+
     it("puts a 「その他」 memo on the event row at its date", async () => {
       const date = dateOffset(3);
       const r = await openGantt([memoMeta("m-aaaaaa", { date })]);
@@ -228,7 +246,7 @@ describe("Gantt floating memos", () => {
       await r.view.reloadMemos();
       const dot = byClass(layerOf(r.container) as FakeEl, "vg-memo-dot")[0] as FakeEl;
       expect(dot.style.left).toBe(`${xOfDate(r, date)}px`);
-      expect(dot.style.top).toBe(`${eventTop + 8}px`);
+      expect(dot.style.top).toBe(`${eventTop + 22}px`);
     });
 
     it("puts a parent memo on the parent row at its date", async () => {
@@ -267,7 +285,7 @@ describe("Gantt floating memos", () => {
       await r.view.reloadMemos();
       const dot = byClass(layerOf(r.container) as FakeEl, "vg-memo-dot")[0] as FakeEl;
       expect(dot.style.left).toBe(`${xOfDate(r, date)}px`);
-      expect(dot.style.top).toBe(`${eventTop + 8}px`);
+      expect(dot.style.top).toBe(`${eventTop + 22}px`);
       expect(byClass(layerOf(r.container) as FakeEl, "vg-memo-where")[0]?.textContent).toContain("元のタスクなし");
       expect(r.memos.remove).not.toHaveBeenCalled();
     });

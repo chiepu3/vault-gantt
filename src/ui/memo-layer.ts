@@ -50,6 +50,7 @@ export interface MemoLayerContext {
 const ICON_MEMO = "message-square-text";
 const DEFAULT_DX = 28;
 const BUBBLE_GAP = 14;
+const DOT_CLEARANCE = 8;
 const MIN_BUBBLE_HEIGHT = 56;
 const MAX_BUBBLE_HEIGHT = 260;
 const PIN_RISE = 12;
@@ -192,7 +193,9 @@ export class MemoLayer {
     }
 
     // Stored layouts claim their space first; auto-placed memos then look for free space around them.
-    const taken: Rect[] = [];
+    // Anchor dots count as taken too, so no bubble hides another memo's anchor.
+    const taken: Rect[] = [...live.values()].map(({ pt }) => ({ x: pt.x - DOT_CLEARANCE, y: pt.y - DOT_CLEARANCE, w: DOT_CLEARANCE * 2, h: DOT_CLEARANCE * 2 }));
+    const minTop = this.stickyTop();
     const pending: MemoNode[] = [];
     const order = [...live.values()].sort((a, b) => a.pt.x - b.pt.x || a.pt.y - b.pt.y);
     for (const { entry, pt } of order) {
@@ -214,7 +217,7 @@ export class MemoLayer {
       if (node.open) taken.push(this.rectOf(node));
     }
     for (const node of pending) {
-      const spot = this.freeSpot(node.pt, node.w, estimateBubbleHeight(this.knownText(node.entry) ?? "", node.w), taken, contentWidth, contentHeight);
+      const spot = this.freeSpot(node.pt, node.w, estimateBubbleHeight(this.knownText(node.entry) ?? "", node.w), taken, contentWidth, contentHeight, minTop);
       node.dx = spot.dx; node.dy = spot.dy;
       this.rebuildIfNeeded(node);
       taken.push(this.rectOf(node));
@@ -228,18 +231,34 @@ export class MemoLayer {
     return { x: node.pt.x + node.dx, y: node.pt.y + node.dy, w: node.w, h };
   }
 
-  /** Up-right of the anchor first, then down-right, then further down until the space is free. */
-  private freeSpot(pt: MemoPoint, w: number, h: number, taken: readonly Rect[], maxX: number, maxY: number): { dx: number; dy: number } {
-    const candidates = [-(h + BUBBLE_GAP), BUBBLE_GAP];
-    for (let step = 1; step <= 8; step += 1) candidates.push(BUBBLE_GAP + step * (MIN_BUBBLE_HEIGHT + 8));
-    for (const dy of candidates) {
-      const top = pt.y + dy;
-      if (top < 0 || (maxY > 0 && top + h > maxY)) continue;
-      const rect = { x: pt.x + DEFAULT_DX, y: top, w, h };
-      if (maxX > 0 && rect.x + w > maxX) continue;
-      if (!taken.some((other) => overlaps(rect, other))) return { dx: DEFAULT_DX, dy };
+  /**
+   * Up-right of the anchor first, then down-right, then further down; the same rows to the far right and to the left
+   * of the anchor next. A spot must stay below the sticky header rows (minTop) and clear of other bubbles and anchors.
+   */
+  private freeSpot(pt: MemoPoint, w: number, h: number, taken: readonly Rect[], maxX: number, maxY: number, minTop = 0): { dx: number; dy: number } {
+    const rows = [-(h + BUBBLE_GAP), BUBBLE_GAP];
+    for (let step = 1; step <= 8; step += 1) rows.push(BUBBLE_GAP + step * (MIN_BUBBLE_HEIGHT + 8));
+    const columns = [DEFAULT_DX, DEFAULT_DX + w + BUBBLE_GAP, -(w + DEFAULT_DX)];
+    for (const dx of columns) {
+      for (const dy of rows) {
+        const rect = { x: pt.x + dx, y: pt.y + dy, w, h };
+        if (rect.y < minTop || (maxY > 0 && rect.y + h > maxY)) continue;
+        if (rect.x < this.ctx.leftWidth || (maxX > 0 && rect.x + w > maxX)) continue;
+        if (!taken.some((other) => overlaps(rect, other))) return { dx, dy };
+      }
     }
-    return { dx: DEFAULT_DX, dy: BUBBLE_GAP };
+    return { dx: DEFAULT_DX, dy: Math.max(BUBBLE_GAP, minTop - pt.y) };
+  }
+
+  /** Content y where the scrolling rows start: everything above it is the sticky header (and sticky fixed rows). */
+  private stickyTop(): number {
+    let bottom = 0;
+    for (const child of Array.from(this.ctx.wrap.children) as HTMLElement[]) {
+      if (child === this.layer) continue;
+      if (typeof getComputedStyle !== "function" || getComputedStyle(child).position !== "sticky") break;
+      bottom = Math.max(bottom, child.offsetTop + child.offsetHeight);
+    }
+    return bottom;
   }
 
   private knownText(entry: MemoEntry): string | undefined {
@@ -359,6 +378,8 @@ export class MemoLayer {
       if (text === undefined || node.textEl !== textEl || node.editing) return;
       textEl.textContent = text;
       this.layoutTail(node);
+      // Auto-placed bubbles were spaced by an estimate; place them again now that the real height is known.
+      if (node.auto) this.schedulePlace();
     });
   }
 
@@ -536,7 +557,7 @@ export class MemoLayer {
     this.ensureLayer().appendChild(node.group);
     const taken: Rect[] = [];
     for (const other of this.nodes.values()) if (other !== node && other.open) taken.push(this.rectOf(other));
-    const spot = this.freeSpot(pt, node.w, MIN_BUBBLE_HEIGHT + 24, taken, this.ctx.wrap.scrollWidth, this.ctx.wrap.scrollHeight);
+    const spot = this.freeSpot(pt, node.w, MIN_BUBBLE_HEIGHT + 24, taken, this.ctx.wrap.scrollWidth, this.ctx.wrap.scrollHeight, this.stickyTop());
     node.dx = spot.dx; node.dy = spot.dy;
     this.rebuildIfNeeded(node);
     this.layoutTail(node);
