@@ -30,12 +30,12 @@ export function worklogTools(service: OperationService, context: RequestContext,
         const parents = top(snapshot.parents.map((parent) => ({ score: Math.max(matchScore(label, [parent.displayName || parent.title]), labelStartsWithName(label, parent.displayName || parent.title) ? 2 : 0), parentId: parent.id, name: parent.displayName || parent.title, childCount: parent.subtasks?.size ?? 0 })).filter((row) => row.score > 0), 3);
         const subtasks = top(snapshot.parents.flatMap((parent) => [...parent.subtasks?.values() ?? []].map((child) => ({
           score: matchScore(label, [child.displayName || child.title, `${parent.displayName} ${child.displayName}`]), subtaskId: child.id, name: child.displayName || child.title, parentName: parent.displayName || parent.title, parentId: parent.id,
-          completed: child.completed, actualOnDate: child.workloadActual?.[date] ?? 0, planOnDate: child.workloadPlan?.[date] ?? 0 }))).filter((row) => row.score > 0), 5);
+          completed: child.completed, ...(child.disabled ? { disabled: true } : {}), actualOnDate: child.workloadActual?.[date] ?? 0, planOnDate: child.workloadPlan?.[date] ?? 0 }))).filter((row) => row.score > 0), 5);
         const events = top(snapshot.settings.ganttEvents.map((event) => ({ score: matchScore(label, [event.title]), eventKey: event.key, title: event.title, date: event.date, actualOnDate: event.workloadActual?.[date] ?? 0 })).filter((row) => row.score > 0), 3);
         return { label, parents: parents.map(({ score: _s, ...rest }) => rest), subtasks: subtasks.map(({ score: _s, ...rest }) => rest), events: events.map(({ score: _s, ...rest }) => rest),
           matchQuality: subtasks[0] && subtasks[0].score >= 2 || parents[0] && parents[0].score >= 2 || events[0] && events[0].score >= 2 ? "match" : "near-or-none" };
       });
-      return { status: "success", date, results, note: "actualOnDate=その日の既存実績(0は未記録)。matchQualityがnear-or-noneの行は推測で確定せず、候補が無ければ新規作成/イベント扱いにする。" };
+      return { status: "success", date, results, note: "actualOnDate=その日の既存実績(0は未記録)。disabled=trueのサブタスクは一時無効で、実績を入れても集計に入らない。matchQualityがnear-or-noneの行は推測で確定せず、候補が無ければ新規作成/イベント扱いにする。" };
     }),
     worklog_propose: validatedTool("日報の実績時間をまとめて登録する変更案を1枚のカードで作成（保存は承認後）。entries各要素は hours(0.5刻み)と、既存サブタスク{subtaskId} / 親の下に新規サブタスク{parentId,newSubtaskName} / 既存イベント{eventKey} / 新規イベント{eventTitle} のいずれか。同じ対象の複数行は合算される。その日(date)の実績は指定値で置き換わり、他の日は保持される。", proposeSchema, async (input) => emit(await service.propose("T31", input, context), input)),
   };
