@@ -1905,7 +1905,7 @@ describe("TaskGanttView", () => {
       expect(byClass(bar, "task-gantt-bar-tag-badge")).toHaveLength(0);
     });
 
-    it("renders a tag badge alongside an external label (bar wide enough for the badge but not the full title)", async () => {
+    it("shows the tag in the callout, not on the bar, when the title needs a callout", async () => {
       // Wide enough for the badge (168px ≥ 72px threshold) but the 60-char
       // title still needs to move outside because it exceeds the readable width.
       const parent = withChildren(makeParent({ ganttEnabled: true }), [
@@ -1921,7 +1921,9 @@ describe("TaskGanttView", () => {
       const bar = byClass(timeline, "task-gantt-bar")[0];
       expect(byClass(timeline, "task-gantt-external-label")).toHaveLength(1);
       expect(byClass(bar, "task-gantt-bar-title")).toHaveLength(0);
-      expect(byClass(bar, "task-gantt-bar-tag-badge")).toHaveLength(1);
+      // The tag moves to the callout together with the title instead of being doubled up on the bar.
+      expect(byClass(bar, "task-gantt-bar-tag-badge")).toHaveLength(0);
+      expect(byClass(byClass(timeline, "task-gantt-external-label")[0], "task-gantt-label-badge")).toHaveLength(1);
     });
 
     it("floors the bar width at 8px for a tiny dayWidth and moves the title outside", async () => {
