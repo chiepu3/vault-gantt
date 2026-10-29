@@ -4,7 +4,7 @@ import { uniqueFileStem } from "../core/file-names";
 import { MEMO_TEXT_LIMIT, buildMemoNote, memoBody, memoFileStem, memoRoot, normalizeMemoText, replaceMemoBody, type MemoMeta } from "../core/memo";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { todayStr } from "../core/utils";
-import { dayOffsetFrom } from "./memo-anchor";
+import { memoAnchorFields } from "./memo-anchor";
 import type { HistoryManager } from "./history-manager";
 import type { TaskCache } from "./note-store";
 import { collectTaskIds, type VaultAdapter } from "./task-operations";
@@ -30,13 +30,7 @@ function checkText(text: string): string {
 }
 
 /** Offset stored for a subtask memo; a subtask without a planned start has no bar to follow. */
-function anchorFields(target: MemoTarget): Pick<MemoMeta, "taskId" | "at" | "date"> {
-  const task = target.task;
-  if (!task) return { date: target.date };
-  if (task.kind === "parent") return { taskId: task.id, date: target.date };
-  if (!task.plannedStartDate) throw new Error("Subtask has no planned start date");
-  return { taskId: task.id, at: dayOffsetFrom(task.plannedStartDate, target.date), date: target.date };
-}
+const anchorFields = (target: MemoTarget): Pick<MemoMeta, "taskId" | "at" | "date"> => memoAnchorFields(target.task, target.date);
 
 /** The memo text, read through the cache (only open memos and hovered pins need it). */
 export async function readMemoText(vault: VaultAdapter, meta: Pick<MemoMeta, "path">): Promise<string> {

@@ -11,6 +11,11 @@ import { displayedHours, eventWorkloadKey, hoursChangeText, type CellChange, typ
 import { SubtaskAddConflictError } from "../app/task-operations";
 import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
+import { MemoLayer, type MemoEntry, type MemoPoint } from "./memo-layer";
+import { TaskFinderModal } from "./task-finder-modal";
+import type { MemoHost } from "../app/memo-controller";
+import { resolveMemoAnchor, type MemoAnchor } from "../app/memo-anchor";
+import type { MemoMeta } from "../core/memo";
 
 import type { Logger } from "../core/logger";
 
@@ -333,6 +338,8 @@ export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
   /** Opens the note holding the ToDo, scrolled to its line. */
   openDailyTodoItem(item: DailyTodoItem): Promise<void>;
   saveSettings(): Promise<void>;
+  /** Floating memos. Absent = no memo UI is drawn. */
+  memos?: MemoHost;
 
 
 
@@ -657,6 +664,8 @@ const MAX_TAG_CHIPS = 4;
 // Center the 24px bar vertically within the 44px lane band, leaving 10px
 // above and below.
 const BAR_VERTICAL_INSET_PX = (LANE_BASE_HEIGHT - BAR_HEIGHT) / 2;
+/** Where a memo anchored to a whole row (a parent, or the 「その他」 row) points, from the row top. */
+const MEMO_ROW_ANCHOR_Y_PX = 8;
 
 
 // event-row height = Math.max(44, 12 + rows × 24).
@@ -1471,6 +1480,7 @@ export class TaskGanttView extends ItemView {
     // Row heights change when the lane window moves; we restore scrollTop ourselves.
     this.wrapEl.style.overflowAnchor = "none";
     container.appendChild(this.wrapEl);
+    this.memoLayer = this.createMemoLayer();
     // scroll handler drives range auto-extension + floating month.
     this.wrapEl.addEventListener("scroll", () => {
       this.onScroll();
@@ -1591,6 +1601,7 @@ export class TaskGanttView extends ItemView {
     this.clearGhostLayer();
     this.activeContextMenu?.hide();
     this.activeContextMenu = undefined;
+    this.memoLayer?.dispose(); this.memoLayer = undefined;
 
 
     this.tagFilterMenuEl?.remove();
@@ -1759,7 +1770,8 @@ export class TaskGanttView extends ItemView {
 
     const renderStartedAt = Date.now();
 
-    await Promise.all([this.refreshTasks(), this.refreshDailyTodoSummaries()]);
+    await Promise.all([this.refreshTasks(), this.refreshDailyTodoSummaries(), this.refreshMemoMetas()]);
+    this.buildMemoEntries();
     this.renderChart();
     if (opts?.fromHost) this.hostRefreshes++;
 
@@ -1879,6 +1891,7 @@ export class TaskGanttView extends ItemView {
     this.syncStickyHeaderHeight();
     this.populateNearRows();
     this.updateStickyTitles();
+    this.placeMemos();
   }
 
   /** Builds one row's deferred timeline contents (no-op once built). */
@@ -1961,6 +1974,7 @@ export class TaskGanttView extends ItemView {
     const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
     this.pendingRowFills.clear();
+    this.memoRowGeometry.clear();
 
     // header, then the fixed rows — rendered even when
     // the parent list turns out empty below.
@@ -2168,6 +2182,288 @@ export class TaskGanttView extends ItemView {
   }
 
 
+  // Floating memos
+  //
+  // The memo layer (memo-layer.ts) owns the bubbles. This side loads the memo notes, resolves where each one sits,
+  // and answers where an anchor is on the chart from geometry recorded while rows were built, so a memo never
+  // causes a row to be built or rebuilt.
+
+  private memoLayer: MemoLayer | undefined;
+  private memoMetas: MemoMeta[] = [];
+  private memoEntries: MemoEntry[] = [];
+  private readonly memoRows = new Map<string, TaskRow>();
+  private memoButtonEl: HTMLButtonElement | undefined;
+  /** Where each parent row is and the center of each of its bars (px from the row top); `shown` is set while a tag filter hides some bars. */
+  private readonly memoRowGeometry = new Map<string, { rowEl: HTMLElement; bars: Map<string, number>; shown?: Set<string> }>();
+
+  private createMemoLayer(): MemoLayer | undefined {
+    const memos = this.host.memos;
+    if (!memos) return undefined;
+    return new MemoLayer({
+      wrap: this.wrapEl,
+      settings: () => this.host.settings,
+      entries: () => this.memoEntries,
+      pointOf: (entry) => this.memoPoint(entry),
+      leftWidth: PARENT_COL_WIDTH,
+      dateAtClient: (entry, clientX) => this.memoDateAt(entry, clientX),
+      readText: (meta) => memos.readText(meta),
+      saveText: async (meta, text) => {
+        try {
+          await memos.updateText(meta, text);
+        } catch (err) {
+          this.host.logger.error("TaskGanttView", "failed to save memo text", err);
+          new Notice("メモを保存できませんでした。詳細は console を確認してください。");
+          throw err;
+        }
+        await this.refreshMemoMetas();
+        this.buildMemoEntries();
+        const saved = this.memoMetas.find((candidate) => candidate.id === meta.id);
+        if (saved) this.memoLayer?.rememberText(saved, text);
+        this.placeMemos();
+      },
+      moveAnchor: (entry, date) => this.runMemoWrite("メモを移動できませんでした", (host) => entry.meta ? host.reanchor(entry.meta, { task: this.memoTaskOf(entry), date }) : Promise.resolve()),
+      saveLayout: () => memos.saveLayout(),
+      openMenu: (evt, entry) => this.openMemoMenu(evt, entry),
+    });
+  }
+
+  private async refreshMemoMetas(): Promise<void> {
+    const memos = this.host.memos;
+    if (!memos) return;
+    try {
+      this.memoMetas = await memos.load();
+    } catch (err) {
+      this.host.logger.error("TaskGanttView", "failed to load memos", err);
+    }
+  }
+
+  /** Resolves every memo against the current rows. Cheap: no I/O. */
+  private buildMemoEntries(): void {
+    if (!this.host.memos) return;
+    this.memoRows.clear();
+    for (const row of this.tasks) {
+      this.memoRows.set(row.id, row);
+      for (const subtask of row.subtasks?.values() ?? []) this.memoRows.set(subtask.id, subtask);
+    }
+    this.memoEntries = this.memoMetas.map((meta) => {
+      const anchor = resolveMemoAnchor(meta, this.memoRows);
+      return { id: meta.id, meta, anchor, where: this.memoWhere(anchor) };
+    });
+    this.updateMemoButton();
+  }
+
+  private memoWhere(anchor: MemoAnchor): string {
+    if (anchor.kind !== "free") return anchor.taskName ?? "";
+    return anchor.orphan ? `その他 · ${anchor.date}（元のタスクなし）` : `その他 · ${anchor.date}`;
+  }
+
+  /** Re-reads the memo notes and redraws the layer only (the chart is not rendered). Used after memo edits and external note changes. */
+  async reloadMemos(): Promise<void> {
+    if (!this.host.memos) return;
+    await this.refreshMemoMetas();
+    this.buildMemoEntries();
+    this.placeMemos();
+  }
+
+  private placeMemos(): void {
+    if (!this.memoLayer || this.wrapEl.offsetParent === null) return;
+    this.memoLayer.place();
+  }
+
+  private recordMemoRow(
+    parent: TaskRow,
+    rowEl: HTMLElement,
+    renders: ParentRowBarRender[],
+    laneOffsets: number[],
+    topRowCounts: number[],
+    shown: TaskRow[] | undefined
+  ): void {
+    if (!this.host.memos) return;
+    const bars = new Map<string, number>();
+    for (const { bar } of renders) {
+      bars.set(bar.task.id, laneOffsets[bar.lane] + topRowCounts[bar.lane] * EXTERNAL_LABEL_ROW_HEIGHT + LANE_BASE_HEIGHT / 2);
+    }
+    this.memoRowGeometry.set(parent.id, { rowEl, bars, shown: shown && new Set(shown.map((task) => task.id)) });
+  }
+
+  /** The anchor in scroll-content px, or null when the memo is not on the chart (filtered out, no bar, outside the drawn days). */
+  private memoPoint(entry: MemoEntry): MemoPoint | null {
+    const { anchor } = entry;
+    const index = diffDays(this.rangeStart, anchor.date);
+    if (index < 0 || index >= this.dates.length) return null;
+    const x = PARENT_COL_WIDTH + index * this.dayWidth + this.dayWidth / 2;
+    if (anchor.kind === "free") {
+      const row = this.eventRowEl;
+      return row && row.isConnected ? { x, y: row.offsetTop + MEMO_ROW_ANCHOR_Y_PX } : null;
+    }
+    const geometry = anchor.parentId ? this.memoRowGeometry.get(anchor.parentId) : undefined;
+    if (!geometry || !geometry.rowEl.isConnected) return null;
+    const top = geometry.rowEl.offsetTop;
+    if (anchor.kind === "parent") return { x, y: top + MEMO_ROW_ANCHOR_Y_PX };
+    if (anchor.unplaced || !anchor.taskId || (geometry.shown && !geometry.shown.has(anchor.taskId))) return null;
+    // A bar outside the lane window has no lane yet; its memo sits at the first lane until the window follows.
+    return { x, y: top + (geometry.bars.get(anchor.taskId) ?? LANE_BASE_HEIGHT / 2) };
+  }
+
+  /** The day under a pointer x, within the drawn days. */
+  private dateAtClientX(clientX: number): string {
+    const date = dateFromClientX(clientX, this.wrapEl.getBoundingClientRect().left, this.wrapEl.scrollLeft, this.dayWidth, this.rangeStart);
+    const last = this.dates[this.dates.length - 1];
+    return last && date > last ? last : date;
+  }
+
+  /** A subtask memo can only move along its bar; the others along any day. */
+  private memoDateAt(entry: MemoEntry, clientX: number): string | null {
+    const date = this.dateAtClientX(clientX);
+    if (entry.anchor.kind !== "subtask") return date;
+    const range = this.barRangeOf(entry.anchor.taskId ? this.memoRows.get(entry.anchor.taskId) : undefined);
+    if (!range) return null;
+    return date < range.start ? range.start : date > range.end ? range.end : date;
+  }
+
+  private barRangeOf(task: TaskRow | undefined): { start: string; end: string } | null {
+    const start = task?.plannedStartDate;
+    if (!task || !start) return null;
+    return { start, end: task.plannedEndDate && task.plannedEndDate >= start ? task.plannedEndDate : start };
+  }
+
+  private memoTaskOf(entry: MemoEntry): TaskRow | undefined {
+    return entry.anchor.taskId ? this.memoRows.get(entry.anchor.taskId) : undefined;
+  }
+
+  /** Runs one memo write; a failure is reported, and the layer is redrawn from the notes either way. */
+  private async runMemoWrite(failure: string, write: (memos: MemoHost) => Promise<unknown>): Promise<void> {
+    const memos = this.host.memos;
+    if (!memos) return;
+    try {
+      await write(memos);
+    } catch (err) {
+      this.host.logger.error("TaskGanttView", failure, err);
+      new Notice(`${failure}。詳細は console を確認してください。`);
+    }
+    await this.reloadMemos();
+  }
+
+  /** Opens a new memo for editing at `date` on `task`'s bar or row (no task = the 「その他」 row). Nothing is written until the text is confirmed. */
+  private beginMemo(task: TaskRow | undefined, date: string): void {
+    const memos = this.host.memos, layer = this.memoLayer;
+    if (!memos || !layer) return;
+    const settings = this.host.settings;
+    if (!settings.ganttMemosVisible) {
+      settings.ganttMemosVisible = true;
+      memos.saveLayout();
+      this.updateMemoButton();
+    }
+    const name = task ? task.displayName || task.title : undefined;
+    const anchor: MemoAnchor = !task
+      ? { kind: "free", date }
+      : task.kind === "parent"
+        ? { kind: "parent", taskId: task.id, taskName: name, parentId: task.id, date }
+        : { kind: "subtask", taskId: task.id, taskName: name, parentId: task.parentId, date };
+    layer.beginDraft({ id: "draft", anchor, where: this.memoWhere(anchor), text: "" }, async (text) => {
+      try {
+        const created = await memos.create({ task, date, text });
+        await this.refreshMemoMetas();
+        this.buildMemoEntries();
+        return this.memoMetas.find((meta) => meta.id === created.id) ?? created;
+      } catch (err) {
+        this.host.logger.error("TaskGanttView", "failed to create memo", err);
+        new Notice("メモを追加できませんでした。詳細は console を確認してください。");
+        return null;
+      }
+    });
+  }
+
+  private openMemoMenu(evt: MouseEvent, entry: MemoEntry): void {
+    const meta = entry.meta, memos = this.host.memos;
+    if (!meta || !memos) return;
+    const menu = new Menu();
+    this.activateContextMenu(menu);
+    menu.addItem((item) => {
+      item.setTitle("付け替え…");
+      item.onClick(() => this.chooseMemoTarget(entry));
+    });
+    menu.addItem((item) => {
+      item.setTitle("ノートを開く");
+      item.onClick(() => { void memos.openNote(meta); });
+    });
+    menu.addSeparator();
+    // No confirmation: the deletion is in the undo history.
+    menu.addItem((item) => {
+      item.setTitle("削除");
+      item.onClick(() => { void this.runMemoWrite("メモを削除できませんでした", () => memos.remove(meta)); });
+    });
+    menu.showAtMouseEvent(evt);
+  }
+
+  /** 「付け替え…」: the task finder, with the 「その他」 row as the first choice. */
+  private chooseMemoTarget(entry: MemoEntry): void {
+    const free = { kind: "parent", id: "", title: "その他", displayName: "その他", file: { path: "" }, statusLabel: "active", tags: [] } as unknown as TaskRow;
+    const items: TaskRow[] = [free];
+    for (const parent of this.tasks) {
+      if (parent.kind !== "parent" || parent.ganttEnabled === false) continue;
+      items.push(parent);
+      for (const subtask of parent.subtasks?.values() ?? []) if (subtask.plannedStartDate) items.push(subtask);
+    }
+    new TaskFinderModal(
+      this.app,
+      { openTaskItem: (row) => { void this.reattachMemo(entry, row === free ? undefined : row); } },
+      items,
+      { placeholder: "付け替え先を検索...", metaOf: (item) => item === free ? "ガントの「その他」行" : undefined }
+    ).open();
+  }
+
+  /** Moves the memo to `task` (undefined = 「その他」), keeping its day; on a bar the day is held within the bar. */
+  private async reattachMemo(entry: MemoEntry, task: TaskRow | undefined): Promise<void> {
+    const meta = entry.meta;
+    if (!meta) return;
+    const range = task && task.kind === "subtask" ? this.barRangeOf(task) : null;
+    const date = range ? (entry.anchor.date < range.start ? range.start : entry.anchor.date > range.end ? range.end : entry.anchor.date) : entry.anchor.date;
+    await this.runMemoWrite("メモを付け替えできませんでした", (memos) => memos.reanchor(meta, { task, date }));
+  }
+
+  /** 「メモ n」: click shows or hides every memo; right-click opens or closes them all. */
+  private renderMemoButton(): void {
+    this.memoButtonEl = undefined;
+    if (!this.host.memos) return;
+    const button = document.createElement("button");
+    button.classList.add("task-gantt-memos");
+    button.addEventListener("click", () => {
+      const settings = this.host.settings;
+      settings.ganttMemosVisible = !settings.ganttMemosVisible;
+      this.host.memos?.saveLayout();
+      this.updateMemoButton();
+      this.placeMemos();
+    });
+    button.addEventListener("contextmenu", (evt: MouseEvent) => {
+      evt.preventDefault();
+      const menu = new Menu();
+      this.activateContextMenu(menu);
+      menu.addItem((item) => { item.setTitle("すべて開く"); item.onClick(() => this.setAllMemosOpen(true)); });
+      menu.addItem((item) => { item.setTitle("すべて閉じる"); item.onClick(() => this.setAllMemosOpen(false)); });
+      menu.showAtMouseEvent(evt);
+    });
+    this.toolbarEl.appendChild(button);
+    this.memoButtonEl = button;
+    this.updateMemoButton();
+  }
+
+  private updateMemoButton(): void {
+    const button = this.memoButtonEl;
+    if (!button) return;
+    const visible = this.host.settings.ganttMemosVisible !== false;
+    button.textContent = `メモ ${this.memoMetas.length}`;
+    button.classList.toggle("is-off", !visible);
+    button.title = visible ? "メモを隠す（右クリック: すべて開く / 閉じる）" : "メモを表示（右クリック: すべて開く / 閉じる）";
+  }
+
+  private setAllMemosOpen(open: boolean): void {
+    this.host.settings.ganttMemosVisible = true;
+    this.memoLayer?.setAllOpen(open);
+    this.updateMemoButton();
+  }
+
+
   // Toolbar (zoom controls + floating month)
 
 
@@ -2206,6 +2502,8 @@ export class TaskGanttView extends ItemView {
       aiButton.addEventListener("click", () => { void this.host.openAIChat?.(); });
       this.toolbarEl.appendChild(aiButton);
     }
+
+    this.renderMemoButton();
 
     // 「今日へ」 — extends the range to include
     // today, re-renders, then (next frame, so the fresh content has layout)
@@ -3433,8 +3731,17 @@ export class TaskGanttView extends ItemView {
         this.dayWidth,
         this.rangeStart
       );
-      addGanttEvent(this.host.settings, "", date);
-      void this.host.saveSettings().then(() => this.render());
+      const addEvent = (): void => {
+        addGanttEvent(this.host.settings, "", date);
+        void this.host.saveSettings().then(() => this.render());
+      };
+      if (!this.host.memos) { addEvent(); return; }
+      // With memos on, the row offers both: the event add stays one click away.
+      const menu = new Menu();
+      this.activateContextMenu(menu);
+      menu.addItem((item) => { item.setTitle("予定を追加"); item.onClick(addEvent); });
+      menu.addItem((item) => { item.setTitle("この日にメモを追加"); item.onClick(() => this.beginMemo(undefined, date)); });
+      menu.showAtMouseEvent(evt);
     });
 
     for (const placed of packedEvents) {
@@ -4697,6 +5004,7 @@ export class TaskGanttView extends ItemView {
     const row = document.createElement("div");
     row.classList.add("task-gantt-parent-row");
     row.style.height = `${rowHeight}px`;
+    this.recordMemoRow(parent, row, renders, laneOffsets, topRowCounts, this.activeTagFilter.size === 0 ? undefined : visibleSubtasks);
     // The exact size of the row while the browser skips its off-screen contents (content-visibility: auto).
     setStyleVar(row, "contain-intrinsic-size", `${PARENT_COL_WIDTH + dates.length * dayWidth}px ${rowHeight}px`);
 
@@ -5537,6 +5845,7 @@ export class TaskGanttView extends ItemView {
  * the visible position stable after prepending 60 days.
  */
   private onScroll(): void {
+    this.memoLayer?.onScroll();
     this.populateNearRows();
     this.updateStickyTitles();
     this.scheduleLaneRelayout();
@@ -6868,6 +7177,13 @@ export class TaskGanttView extends ItemView {
         );
       });
     });
+
+    if (this.host.memos) {
+      menu.addItem((item) => {
+        item.setTitle("この日にメモを追加");
+        item.onClick(() => this.beginMemo(parent, date));
+      });
+    }
 
     menu.addSeparator();
 
@@ -9510,6 +9826,16 @@ export class TaskGanttView extends ItemView {
         void this.addMarkerAtClick(task, bar, evt.clientX, barEl);
       });
     });
+
+    if (this.host.memos) {
+      menu.addItem((item) => {
+        item.setTitle("メモを追加");
+        item.onClick(() => {
+          const date = this.dateAtClientX(evt.clientX);
+          this.beginMemo(task, date < bar.start ? bar.start : date > bar.end ? bar.end : date);
+        });
+      });
+    }
 
     menu.addSeparator();
 

@@ -39,3 +39,11 @@ export function resolveMemoAnchor(meta: MemoMeta, rows: ReadonlyMap<string, Task
 
 /** `at` for a memo that should sit on `date` of the bar starting at `start`. */
 export const dayOffsetFrom = (start: string, date: string): number => Math.max(0, diffDays(start, date));
+
+/** The anchor keys a memo note stores for `date` on `task` (undefined = the 「その他」 row). A subtask needs a bar to count days from. */
+export function memoAnchorFields(task: TaskRow | undefined, date: string): Pick<MemoMeta, "taskId" | "at" | "date"> {
+  if (!task) return { date };
+  if (task.kind === "parent") return { taskId: task.id, date };
+  if (!task.plannedStartDate) throw new Error("Subtask has no planned start date");
+  return { taskId: task.id, at: dayOffsetFrom(task.plannedStartDate, date), date };
+}

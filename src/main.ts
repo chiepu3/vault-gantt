@@ -15,7 +15,8 @@ import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
 import { Logger } from "./core/logger";
-import { normalizeMemoLayout } from "./core/memo";
+import { isMemoPath, normalizeMemoLayout } from "./core/memo";
+import { createMemoHost } from "./app/memo-controller";
 
 import {
   DailyTodoItem,
@@ -808,8 +809,15 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
       // Frontmatter comes from the metadataCache: drop what it re-indexed and redraw once it settles.
       let indexed = false, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      // A memo note changing redraws only the memo layers; the chart itself is not rebuilt.
+      let memoTimer: ReturnType<typeof setTimeout> | undefined;
+      const refreshMemosSoon = () => { if (memoTimer) clearTimeout(memoTimer); memoTimer = setTimeout(() => { memoTimer = undefined; if (!this.unloading) void this.reloadOpenMemos(); }, 200); };
       const refreshSoon = () => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { refreshTimer = undefined; if (!this.unloading) void this.refreshOpenViews(); }, 300); };
-      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (!ownWrites.has(file.path)) refreshSoon(); }));
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (ownWrites.has(file.path)) return; if (isMemoPath(file.path, this.settings)) refreshMemosSoon(); else refreshSoon(); }));
+      const memoFileChanged = (file: { path: string }) => { if (isMemoPath(file.path, this.settings) && !ownWrites.has(file.path)) refreshMemosSoon(); };
+      this.registerEvent(this.app.vault.on("create", memoFileChanged));
+      this.registerEvent(this.app.vault.on("delete", memoFileChanged));
+      this.registerEvent(this.app.vault.on("rename", memoFileChanged));
       this.registerEvent(this.app.metadataCache.on("resolved", () => { if (indexed) return; indexed = true; this.taskCache.clear(); refreshSoon(); }));
     }
     this.registerCommands();
@@ -1156,6 +1164,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
         new Notice(`やり直し履歴を破棄しました: ${result.reason}`);
         return;
     }
+  }
+
+  /** Redraws the memo layer of every open Gantt view (no chart render). */
+  private async reloadOpenMemos(): Promise<void> {
+    await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { reloadMemos?: () => Promise<void> } | null)?.reloadMemos?.()));
   }
 
   private async refreshOpenViews(): Promise<void> {
@@ -1970,6 +1983,13 @@ export default class TaskWorkbenchPlugin extends Plugin {
       openDailyTodoItem: (item: DailyTodoItem): Promise<void> =>
         openDailyTodoFile(item, this.app.vault, this.app.workspace),
       saveSettings: (): Promise<void> => this.saveSettings(),
+      memos: createMemoHost({
+        vault: () => this.vaultAdapter(), settings: () => this.settings, history: this.historyManager, cache: this.taskCache, logger: this.logger,
+        coordinate: (run) => this.operations.coordinate(run),
+        openFile: async (path) => { const file = this.app.vault.getFileByPath(path); if (file) await this.app.workspace.getLeaf(false).openFile(file); },
+        // View state only: a layout drag must not invalidate pending AI previews.
+        saveSettings: () => this.settingsWriter().save(),
+      }),
       // single drag/edit save, same path as the Workbench's
       // own updateTaskItem wrapper above.
       updateTaskItem: (row: TaskRow, patch: TaskPatch) =>
