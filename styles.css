@@ -75,6 +75,7 @@ body {
 .vg-chip { display: inline-flex; align-items: center; gap: var(--vg-space-1); height: 18px; padding: 0 var(--vg-space-2); font-size: var(--vg-font-xs); font-weight: var(--vg-weight-medium); line-height: 1; white-space: nowrap; color: var(--vg-color-muted); background: var(--background-primary); border: var(--vg-border); border-radius: var(--vg-radius-pill); }
 .vg-chip.is-tag { color: var(--vg-chip-color, var(--vg-color-muted)); border-color: currentColor; }
 .vg-chip.is-done { color: var(--vg-color-success); }
+.task-gantt-popover-disabled-chip { color: var(--text-faint); border-style: dashed; }
 
 /* Shared compact button (24px) for small surfaces such as menus and popovers. */
 .vg-btn-sm { height: 24px; padding: 0 var(--vg-space-3); font-size: var(--vg-font-s); border-radius: var(--vg-radius-s); cursor: pointer; }
@@ -400,6 +401,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-bar.is-completed { background-color: color-mix(in srgb, var(--text-muted) 38%, var(--background-primary)); }
 .task-gantt-bar.is-tag-colored-completed { background-image: linear-gradient(color-mix(in srgb, var(--background-primary) 55%, transparent), color-mix(in srgb, var(--background-primary) 55%, transparent)); filter: saturate(.6); }
 .task-gantt-bar.is-completed .task-gantt-bar-title { color: var(--text-normal); }
+/* 一時無効: faded fill + diagonal stripes + dashed border (clearly unlike the flat grey of Done); also over tag-coloured bars. */
+.task-gantt-bar.is-disabled { opacity: .55; border-style: dashed; background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--background-primary) 65%, transparent) 0 4px, transparent 4px 8px); }
+.task-gantt-bar.is-disabled .task-gantt-bar-title { color: var(--text-normal); }
 .task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vg-font-m); line-height: 24px; color: var(--text-on-accent); cursor: text; }
 /* Sticky label: a bar scrolled under the left name column keeps its title start visible (320px column + 6px).
    Not position: sticky (one compositor layer per title made every layout and scroll frame expensive): gantt-sticky-titles.ts
@@ -434,6 +438,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 /* must match EXTERNAL_LABEL_ROW_HEIGHT (src/app/gantt-constants.ts) */
 .task-gantt-external-label { position: absolute; z-index: 1; display: flex; align-items: center; gap: var(--vg-space-1); height: 22px; padding: 0 var(--vg-space-1) 0 7px; border: 1px solid transparent; border-radius: var(--vg-radius-m); background: var(--background-primary); box-shadow: var(--vg-shadow-flat); white-space: nowrap; overflow: hidden; text-overflow: clip; font-size: var(--vg-font-s); font-weight: var(--vg-weight-strong); color: var(--text-normal); cursor: text; }
 .task-gantt-external-label.is-completed { color: var(--text-muted); }
+.task-gantt-external-label.is-disabled { color: var(--text-faint); border-style: dashed; opacity: .7; }
 
 /* The badge border follows the inline tag colour via
    currentColor; the badge color itself stays inline. */
@@ -672,9 +677,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-popover-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--vg-space-3); margin-top: 12px; padding-top: 8px; border-top: var(--vg-border); }
 .task-gantt-popover-open-note { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; }
 .task-gantt-popover-open-note:hover { background: var(--background-modifier-hover); }
-.task-gantt-popover-open-note:focus-visible, .task-gantt-popover-toggle-completed:focus-visible, .task-gantt-popover-status-select:focus-visible, .task-gantt-popover-due-input:focus-visible, .task-gantt-popover-current-value textarea:focus-visible, .task-gantt-popover-current-status:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
-.task-gantt-popover-toggle-completed:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
-.task-gantt-popover-toggle-completed { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
+.task-gantt-popover-open-note:focus-visible, .task-gantt-popover-toggle-completed:focus-visible, .task-gantt-popover-toggle-disabled:focus-visible, .task-gantt-popover-status-select:focus-visible, .task-gantt-popover-due-input:focus-visible, .task-gantt-popover-current-value textarea:focus-visible, .task-gantt-popover-current-status:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.task-gantt-popover-toggle-completed:hover, .task-gantt-popover-toggle-disabled:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
+.task-gantt-popover-toggle-completed, .task-gantt-popover-toggle-disabled { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
 
 .task-workbench-finder-title { font-weight: var(--vg-weight-strong); font-size: 1.05em; padding: 0; }
 .task-workbench-finder-meta { font-size: 0.85em; color: var(--text-muted); padding: 0; overflow-wrap: anywhere; }

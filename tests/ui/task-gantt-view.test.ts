@@ -1320,6 +1320,21 @@ describe("TaskGanttView", () => {
       expect(totals.get(dateOffset(5))!.plan).toBe(0.75);
     });
 
+    it("skips disabled subtasks and invalidates the fingerprint when the flag toggles", async () => {
+      const dates = [dateOffset(0), dateOffset(1)];
+      const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
+        makeSubtask("a", { id: "tasks/p0.md::a", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 1 }, workloadActual: { [dateOffset(1)]: 2 } }),
+        makeSubtask("b", { id: "tasks/p0.md::b", disabled: true, plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 4 }, workloadActual: { [dateOffset(1)]: 8 } }),
+      ]);
+      const { view } = await openView([parent]);
+      const totals = (view as any).computeWorkloadSummaryValues([parent], dates) as Map<string, { plan: number; actual: number }>;
+      expect(totals.get(dateOffset(1))).toMatchObject({ plan: 1, actual: 2 });
+      const fp = () => (view as any).workloadSummaryInputsFingerprint([parent], dates) as string;
+      const before = fp();
+      parent.subtasks!.get("b")!.disabled = false;
+      expect(fp()).not.toBe(before);
+    });
+
     it("changes the input fingerprint when a subtask's workload entry changes", async () => {
       const parent = withChildren(makeParent({ id: "p0", file: { path: "tasks/p0.md" }, ganttEnabled: true }), [
         makeSubtask("a", { id: "tasks/p0.md::a", plannedStartDate: dateOffset(0), plannedEndDate: dateOffset(3), workloadPlan: { [dateOffset(1)]: 1 } }),

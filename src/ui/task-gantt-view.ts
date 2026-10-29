@@ -2761,7 +2761,7 @@ export class TaskGanttView extends ItemView {
       parts.push(`#${parent.file.path}`);
       if (parent.subtasks === undefined) continue;
       for (const subtask of parent.subtasks.values()) {
-        parts.push(subtask.id, subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
+        parts.push(subtask.id, subtask.disabled ? "x" : "", subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
       }
     }
     return parts.join("\u0001");
@@ -2781,7 +2781,8 @@ export class TaskGanttView extends ItemView {
     // exactly 0, and parents/subtasks are still visited in the old order, so every date's sum is bit-identical.
     for (const parent of parents) {
       for (const subtask of parent.subtasks?.values() ?? []) {
-        if (!hasPlannedDates(subtask)) continue;
+        // 一時無効 subtasks are shown on the Gantt but never counted.
+        if (subtask.disabled || !hasPlannedDates(subtask)) continue;
         const start = subtask.plannedStartDate;
         const end = subtask.plannedEndDate;
         const add = (values: Record<string, number> | undefined, into: number[]): void => {
@@ -4940,6 +4941,7 @@ export class TaskGanttView extends ItemView {
       const barEl = document.createElement("div");
       barEl.classList.add("task-gantt-bar");
       if (bar.task.completed) barEl.classList.add("is-completed");
+      if (bar.task.disabled) barEl.classList.add("is-disabled");
       const barMark = this.previewLayer?.rowState(bar.task.id);
       if (barMark) barEl.classList.add("vg-hl-bar", `is-${barMark}`);
       const ownTagColor =
@@ -5466,6 +5468,7 @@ export class TaskGanttView extends ItemView {
     const label = document.createElement("div");
     label.classList.add("task-gantt-external-label");
     if (bar.task.completed) label.classList.add("is-completed");
+    if (bar.task.disabled) label.classList.add("is-disabled");
     if (barTagColor !== "") {
       label.classList.add("is-tagged");
       label.style.borderColor = barTagColor;
@@ -8670,6 +8673,18 @@ export class TaskGanttView extends ItemView {
     return button;
   }
 
+  /** 一時無効 toggle: saves only `disabled`, never touching status/completed. */
+  private buildDisabledToggleButton(task: TaskRow): HTMLElement {
+    const button = document.createElement("button");
+    button.classList.add("task-gantt-popover-toggle-disabled");
+    button.textContent = task.disabled ? "有効に戻す" : "一時無効にする";
+    this.bindRichPopoverInteraction(button);
+    button.addEventListener("click", () => {
+      void this.savePopoverPatch(task, { disabled: !task.disabled });
+    });
+    return button;
+  }
+
   /**
  *
  *
@@ -8717,6 +8732,14 @@ export class TaskGanttView extends ItemView {
       ? "完了"
       : this.statusDisplayLabel(task.statusLabel);
     chips.appendChild(statusChip);
+
+    // 一時無効 is independent of the status, so it gets its own chip next to it.
+    if (task.disabled) {
+      const disabledChip = document.createElement("span");
+      disabledChip.classList.add("task-gantt-popover-disabled-chip", "vg-chip");
+      disabledChip.textContent = "無効中";
+      chips.appendChild(disabledChip);
+    }
 
     // priority chip only when the task HAS a priority.
 
@@ -8799,6 +8822,7 @@ export class TaskGanttView extends ItemView {
     actions.classList.add("task-gantt-popover-actions");
     actions.appendChild(this.buildOpenNoteButton(task));
     actions.appendChild(this.buildCompletedToggleButton(task));
+    actions.appendChild(this.buildDisabledToggleButton(task));
     root.appendChild(actions);
   }
 
@@ -9499,6 +9523,13 @@ export class TaskGanttView extends ItemView {
           ? { completed: false, statusLabel: "active" }
           : { completed: true, statusLabel: "done" };
         void this.savePopoverPatch(task, patch);
+      });
+    });
+
+    menu.addItem((item) => {
+      item.setTitle(task.disabled ? "有効に戻す" : "一時無効にする");
+      item.onClick(() => {
+        void this.savePopoverPatch(task, { disabled: !task.disabled });
       });
     });
 
