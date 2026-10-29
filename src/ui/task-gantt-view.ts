@@ -642,6 +642,8 @@ const MIN_BAR_WIDTH_PX = 8;
 // handles. Width-gating at render time keeps narrow bars uncluttered without
 // relying on CSS width-attribute selectors.
 const BAR_TAG_BADGE_MIN_WIDTH_PX = 72;
+// Badge margin plus the gap before it, counted off the title's room.
+const BAR_TAG_BADGE_GAP_PX = 10;
 
 // Compare the bar's inner width with half the estimated title width.
 const BAR_INNER_PADDING_PX = 14;
@@ -4604,9 +4606,20 @@ export class TaskGanttView extends ItemView {
       // inner width is less than half the estimated title width. Written in
       // the equivalent form below so a title can remain in-bar until it is
       // substantially wider than the readable space, in the narrow layout.
+      // The tag badge sits inside the bar when it fits, taking its share of the
+      // width, so the title only gets what is left after the badge.
+      const primaryBadgeTag = getPrimaryGanttTagDefinition(
+        this.host.settings,
+        bar.task.tags
+      );
+      const badgeInsideWidth =
+        primaryBadgeTag !== undefined && width >= BAR_TAG_BADGE_MIN_WIDTH_PX
+          ? Math.min(estimateTextWidth(primaryBadgeTag.name), width * 0.46) +
+            BAR_TAG_BADGE_GAP_PX
+          : 0;
       const readableInsideWidth = Math.max(
         0,
-        width - BAR_INNER_PADDING_PX
+        width - BAR_INNER_PADDING_PX - badgeInsideWidth
       );
       const needsLabel =
         labelText.length > 0 &&
@@ -4616,10 +4629,6 @@ export class TaskGanttView extends ItemView {
       // rendered and could place labels that overlap after the badge is added.
       // The badge represents only a tag directly on the bar; parent tags may
       // color the bar but do not supply a badge name.
-      const primaryBadgeTag = getPrimaryGanttTagDefinition(
-        this.host.settings,
-        bar.task.tags
-      );
       const packedLabelText =
         primaryBadgeTag !== undefined
           ? `${labelText} ${primaryBadgeTag.name}`
@@ -5022,7 +5031,10 @@ export class TaskGanttView extends ItemView {
       );
       // Option (b): only add the badge when the measured bar width can fit it
       // beside the title and resize handles; very narrow bars stay readable.
+      // A bar whose title is shown in a callout leaves its tag to the callout,
+      // so the tag is not displayed twice.
       if (
+        !needsLabel &&
         width >= BAR_TAG_BADGE_MIN_WIDTH_PX &&
         primaryBadgeTag !== undefined
       ) {
