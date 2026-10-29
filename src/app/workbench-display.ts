@@ -450,7 +450,7 @@ export function pickWorkbenchPreviewSubtask(
   // exact ties, matching the previous stable sort without allocating/sorting.
   let preview: TaskRow | null = null;
   for (const child of children) {
-    if (child.completed === false && (preview === null || compare(child, preview) < 0)) {
+    if (child.completed === false && !child.disabled && (preview === null || compare(child, preview) < 0)) {
       preview = child;
     }
   }
