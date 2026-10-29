@@ -136,6 +136,8 @@ export interface ReadonlyGanttSnapshotSubtask {
   displayName: string;
   statusLabel: StatusLabel;
   completed: boolean;
+  /** 一時無効: shown on the Gantt but not counted in work-hour totals. */
+  disabled?: boolean;
   dueDate: string;
   priority: number;
   plannedStartDate: string;
@@ -267,6 +269,7 @@ function buildSnapshotSubtasks(parent: TaskRow): ReadonlyGanttSnapshotSubtask[] 
     displayName: subtask.displayName,
     statusLabel: subtask.statusLabel,
     completed: subtask.completed,
+    disabled: subtask.disabled === true,
     dueDate: subtask.dueDate ?? "",
     priority: subtask.priority,
     plannedStartDate: subtask.plannedStartDate ?? "",

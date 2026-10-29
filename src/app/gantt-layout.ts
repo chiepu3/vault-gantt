@@ -513,6 +513,7 @@ export function collectWorkloadEntriesForDate(
     }
     const parentName = parent.displayName || parent.title || "親タスク";
     for (const subtask of parent.subtasks.values()) {
+      if (subtask.disabled) continue;
       const map = mode === "plan" ? subtask.workloadPlan : subtask.workloadActual;
       const hours = map?.[date] ?? 0;
       if (hours <= 0) {
@@ -1287,6 +1288,7 @@ export function computeRowFingerprint(parent: TaskRow): string {
         tags: subtask.tags,
         statusLabel: subtask.statusLabel,
         completed: subtask.completed,
+        disabled: subtask.disabled === true,
         workloadPlan: subtask.workloadPlan ?? {},
         workloadActual: subtask.workloadActual ?? {},
         ganttMarkers: subtask.ganttMarkers ?? [],
