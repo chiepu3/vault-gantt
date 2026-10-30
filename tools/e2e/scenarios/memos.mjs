@@ -7,10 +7,14 @@
 // 3. Close the bubble to a pin → settings say open:false; the pin stays, the note is untouched.
 // 4. Workbench: the 「メモ n」 chip → popover → 「Ganttで表示」 → the Gantt is back with the bubble open again.
 // 5. Double-click → edit → Enter saves the body. 6. 「削除」 removes the note. 7. Undo brings it back.
+// 8. Drag the memo's anchor dot (real mouse) onto a subtask bar of another parent, onto the empty timeline of
+//    a parent row, and onto the 「その他」 row; the note's front matter on disk follows each drop.
+// 9. Right-click the 「その他」 row → 「この日にメモを追加」 → type + Enter → a note with no task on that day.
+//    With E2E_DRAG_SHOTS_DIR set, also saves mid-drag screenshots (light and dark) with the drop tooltip showing.
 
 import fs from "node:fs";
 import path from "node:path";
-import { pickAnchorMonday, toIsoStr, addDaysIso, writeDragFixture } from "./drag-fixture.mjs";
+import { pickAnchorMonday, toIsoStr, addDaysIso, diffDaysIso, readFrontmatterField, writeDragFixture } from "./drag-fixture.mjs";
 import { centerOf, dblclickAt, dragGesture, setFieldValue, keydownOn, dismissTrustDialogIfPresent, moveMouse, mouseDown, mouseUp, rectOf, sleep } from "./cdp-input.mjs";
 
 const GANTT = "vault-gantt:open-task-gantt";
@@ -189,6 +193,122 @@ export async function run({ cdp, vaultDir }) {
     return fail(`undo did not restore the deleted memo: ${err.message}`);
   }
   details.push("OK undo");
+
+  // 8. Drag the anchor dot onto other targets.
+  const { subtaskId: otherSubId, parentId: otherParentId } = await writeDragFixture({ vaultDir, parentName: "E2E Memos Other", subtaskName: "Other work", startDate: addDaysIso(start, 7), endDate: addDaysIso(start, 11) });
+  const barRects = async () => cdp.evaluate(`(() => Object.fromEntries([...document.querySelectorAll(".task-gantt-bar[data-task-id]")].map((el) => { const r = el.getBoundingClientRect(); return [el.dataset.taskId, { left: r.left, top: r.top, width: r.width, height: r.height }]; })))()`);
+  try {
+    await cdp.waitForExpression(`document.querySelectorAll(".task-gantt-bar[data-task-id]").length === 2`, { timeoutMs: 20000, label: "second parent's bar" });
+  } catch (err) {
+    return fail(`the second fixture did not appear on the gantt: ${err.message}`);
+  }
+  const memoNote = () => {
+    const file = memoFiles(vaultDir).find((candidate) => fs.readFileSync(candidate, "utf8").includes(`id: ${memoId}`));
+    return file ? fs.readFileSync(file, "utf8") : "";
+  };
+  const dotCenter = async () => centerOf(await rectOf(cdp, `.vg-memo-dot`));
+  const waitNote = async (label, check) => {
+    try {
+      await waitFor(() => check(memoNote()), label);
+      return null;
+    } catch (err) {
+      return `${label}: ${err.message}\n${memoNote()}`;
+    }
+  };
+  const subs = await barRects();
+  const ownBar = Object.entries(subs).find(([id]) => id !== otherSubId);
+  const otherBar = subs[otherSubId];
+  if (!ownBar || !otherBar) return fail(`bars by task id: ${JSON.stringify(subs)}`);
+  const [ownId, own] = ownBar;
+  const dayWidth = otherBar.width / 5;
+  const dot0 = await dotCenter();
+
+  // (a) onto the other parent's subtask bar, three days in.
+  await dragGesture(cdp, { fromX: dot0.x, fromY: dot0.y, toX: otherBar.left + dayWidth * 3.5, toY: otherBar.top + otherBar.height / 2 });
+  let problem = await waitNote("drop on another parent's subtask", (text) => readFrontmatterField(text, "task") === otherSubId);
+  if (problem) return fail(problem);
+  let text = memoNote();
+  if (readFrontmatterField(text, "at") !== "3" || readFrontmatterField(text, "date") !== addDaysIso(start, 10)) return fail(`bar drop saved the wrong anchor:\n${text}`);
+  details.push("OK drop on another parent's bar");
+
+  // (b) onto the empty timeline of the first parent's row, three days after its bar.
+  const dot1 = await dotCenter();
+  await dragGesture(cdp, { fromX: dot1.x, fromY: dot1.y, toX: own.left + dayWidth * 8.5, toY: own.top + own.height / 2 });
+  problem = await waitNote("drop on a parent row's empty timeline", (text2) => !!readFrontmatterField(text2, "task") && readFrontmatterField(text2, "task") !== otherSubId);
+  if (problem) return fail(problem);
+  text = memoNote();
+  if (readFrontmatterField(text, "task") === ownId || /^at: /m.test(text) || readFrontmatterField(text, "date") !== addDaysIso(start, 8)) return fail(`parent-row drop saved the wrong anchor (a parent id, no at, ${addDaysIso(start, 8)} expected):\n${text}`);
+  const savedParent = readFrontmatterField(text, "task");
+  details.push(`OK drop on a parent row → ${savedParent}`);
+
+  // (c) onto the その他 row.
+  const eventRow = await rectOf(cdp, ".task-gantt-event-row");
+  if (!eventRow) return fail("no その他 row to drop on");
+  const dot2 = await dotCenter();
+  await dragGesture(cdp, { fromX: dot2.x, fromY: dot2.y, toX: own.left + dayWidth * 1.5, toY: eventRow.top + eventRow.height / 2 });
+  problem = await waitNote("drop on the その他 row", (text2) => !/^task: /m.test(text2));
+  if (problem) return fail(problem);
+  text = memoNote();
+  if (/^at: /m.test(text) || readFrontmatterField(text, "date") !== addDaysIso(start, 1)) return fail(`その他 drop saved the wrong anchor (no task, no at, ${addDaysIso(start, 1)} expected):\n${text}`);
+  details.push("OK drop on the その他 row");
+
+  // A drop on the header leaves the note as it was.
+  const noteBefore = memoNote();
+  const dot3 = await dotCenter();
+  await dragGesture(cdp, { fromX: dot3.x, fromY: dot3.y, toX: dot3.x, toY: 6 });
+  await sleep(800);
+  if (memoNote() !== noteBefore) return fail("a drop outside the chart changed the note");
+  details.push("OK drop outside the chart saves nothing");
+
+  // 9. Right-click the その他 row → 「この日にメモを追加」.
+  const freeText = "その他の日のメモ";
+  await clickAt(cdp, own.left + dayWidth * 2.5, eventRow.top + eventRow.height / 2, "right");
+  const addShown = await cdp.evaluate(`(() => { const el = [...document.querySelectorAll(".menu-item")].find((e) => e.textContent.trim() === "この日にメモを追加"); if (!el) return false; el.setAttribute("data-e2e", "add-free-memo"); return true; })()`);
+  if (!addShown) return fail("the その他 row menu has no 「この日にメモを追加」");
+  await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=add-free-memo]"))));
+  try {
+    await cdp.waitForExpression(`!!document.querySelector(".vg-memo-edit")`, { timeoutMs: 5000, label: "draft textarea" });
+    await setFieldValue(cdp, ".vg-memo-edit", freeText, { multiline: true });
+    await keydownOn(cdp, ".vg-memo-edit", "Enter");
+    await waitFor(() => memoFiles(vaultDir).length === 2, "second memo note");
+  } catch (err) {
+    return fail(`the free memo was not created: ${err.message}`);
+  }
+  const freeNote = fs.readFileSync(memoFiles(vaultDir).find((file) => !fs.readFileSync(file, "utf8").includes(`id: ${memoId}`)), "utf8");
+  if (/^task: /m.test(freeNote) || readFrontmatterField(freeNote, "date") !== addDaysIso(start, 2) || !freeNote.trimEnd().endsWith(freeText)) return fail(`the free memo is wrong:\n${freeNote}`);
+  details.push("OK その他 row → 「この日にメモを追加」");
+
+  // Screenshots, mid-drag over another task's bar so the drop tooltip shows (only when asked for).
+  const shotsDir = process.env.E2E_DRAG_SHOTS_DIR;
+  if (shotsDir) {
+    const shoot = async (theme, file) => {
+      await cdp.evaluate(`app.changeTheme(${JSON.stringify(theme)}), true`);
+      await sleep(800);
+      const dot = await dotCenter();
+      const bars = await barRects();
+      const target = bars[otherSubId];
+      await moveMouse(cdp, dot.x, dot.y);
+      await sleep(30);
+      await mouseDown(cdp, dot.x, dot.y);
+      for (let i = 1; i <= 8; i++) {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: dot.x + ((target.left + dayWidth * 2.5 - dot.x) * i) / 8, y: dot.y + ((target.top + target.height / 2 - dot.y) * i) / 8, buttons: 1, pointerType: "mouse" });
+        await sleep(30);
+      }
+      await sleep(300);
+      await cdp.screenshot(path.join(shotsDir, file));
+      await mouseUp(cdp, target.left + dayWidth * 2.5, target.top + target.height / 2);
+      await sleep(600);
+    };
+    try {
+      fs.mkdirSync(shotsDir, { recursive: true });
+      await shoot("moonstone", "real-drag-light.png");
+      await shoot("obsidian", "real-drag-dark.png");
+      await cdp.evaluate(`app.changeTheme("moonstone"), true`);
+    } catch (err) {
+      return fail(`screenshots failed: ${err.message}`);
+    }
+    details.push(`screenshots in ${shotsDir}`);
+  }
 
   const errors = cdp.capturedErrors();
   if (errors.length) return fail(`console errors: ${JSON.stringify(errors).slice(0, 600)}`);
