@@ -122,6 +122,25 @@ export async function run({ cdp, vaultDir }) {
   if (fs.readFileSync(notePath, "utf8") !== note) return fail("dragging the bubble changed the memo note");
   details.push(`OK drag → ${JSON.stringify(layoutOf(vaultDir)[memoId])}`);
 
+  // 2b. The bubble move is on the undo history: undo puts the bubble back, redo moves it again.
+  const dragged = layoutOf(vaultDir)[memoId];
+  const plugin = `app.plugins.plugins[${JSON.stringify(PLUGIN_ID)}]`;
+  await cdp.evaluate(`${plugin}.undoLastAction(), true`);
+  try {
+    await waitFor(() => layoutOf(vaultDir)[memoId]?.dx !== dragged.dx || layoutOf(vaultDir)[memoId]?.dy !== dragged.dy, "layout restored by undo");
+  } catch (err) {
+    return fail(`undo did not move the bubble back: ${err.message}`);
+  }
+  await cdp.evaluate(`${plugin}.redoLastAction(), true`);
+  try {
+    await waitFor(() => layoutOf(vaultDir)[memoId]?.dx === dragged.dx && layoutOf(vaultDir)[memoId]?.dy === dragged.dy, "layout restored by redo");
+  } catch (err) {
+    return fail(`redo did not move the bubble again: ${err.message}`);
+  }
+  // The undo/redo toasts sit over the toolbar and would catch the clicks of the next steps.
+  await cdp.evaluate(`document.querySelectorAll(".notice").forEach((notice) => notice.remove()), true`);
+  details.push("OK bubble move undo/redo");
+
   // 3. Close to a pin.
   await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, ".vg-memo .vg-memo-btn"))));
   try {
