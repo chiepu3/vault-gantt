@@ -24,6 +24,10 @@
 
 ダウンロードしたファイルはサイズとチェックサムを確認してから置き換えます。ビルドは数分ごとに GitHub 側で更新されるため、直前にマージした変更が反映されるまで少し時間がかかることがあります。従来のインストーラー（`install.cmd`）もそのまま使えます。
 
+## ビルドなしで入れる・更新する（手動）
+
+git も Node.js もない環境では、GitHub の [Releases](https://github.com/chiepu3/vault-gantt/releases) から最新版の `main.js`・`manifest.json`・`styles.css` をダウンロードし、`<Vault>/.obsidian/plugins/vault-gantt/` に置く（上書きする）だけで導入・更新できます。`data.json` は別ファイルなので、設定は消えません。置き換えたら、Obsidian でプラグインを一度オフ→オンにするか、Obsidian を再読み込みしてください。
+
 ## 必要なもの
 
 - Windows PowerShell 5.1
