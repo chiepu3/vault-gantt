@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.14.0 (2026-10-30)
+
+### 新機能
+
+- attach main.js/manifest.json/styles.css to GitHub Releases ([#85](https://github.com/chiepu3/vault-gantt/pull/85))
+
 ## v0.13.0 (2026-10-30)
 
 ### 新機能
