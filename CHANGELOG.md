@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.14.1 (2026-10-30)
+
+### 修正
+
+- メモの吹き出し移動・サイズ変更をUndo/Redoの対象にする ([#84](https://github.com/chiepu3/vault-gantt/pull/84))
+
 ## v0.14.0 (2026-10-30)
 
 ### 新機能
