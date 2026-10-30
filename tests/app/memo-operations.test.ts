@@ -4,6 +4,8 @@ import { runtimeFixture } from "./operation-runtime-fixture";
 import { catalogTools } from "../../src/agent-tools/catalog-tools";
 import { operationInputSchemas } from "../../src/contracts/operations";
 import { INPUT_FIXTURES, CHILD_ID, PARENT_ID } from "../contracts/fixtures";
+import { newNoteText } from "../../src/app/task-operations";
+import type { TaskRow } from "../../src/core/types";
 
 const memoPath = (vault: { getFiles(): { path: string }[] }) => vault.getFiles().filter((file) => file.path.startsWith("tasks/_memos/")).map((file) => file.path);
 const args = { toolCallId: "test", messages: [], context: undefined };
@@ -130,6 +132,56 @@ describe("memo operations (N01-N05)", () => {
     const preview = await f.service.propose("N04", { memoId: id, date: "2026-10-15", expectedRevision: item.revision }, f.context);
     await f.service.humanApprovalPort.approve(preview.previewId);
     expect((await f.list())[0].anchor).toMatchObject({ kind: "subtask", taskId: CHILD_ID, date: "2026-10-15" });
+  });
+
+  describe("N04 moves a memo to any task", () => {
+    const OTHER_ID = "t-cccccc", OTHER_CHILD_ID = "s-dddddd";
+    /** A second parent with one subtask (10/20-10/22), next to the fixture's parent (子 10/13-10/15). */
+    async function withOtherParent() {
+      const f = await setup();
+      const otherPath = "tasks/別件.md", otherChildPath = "tasks/別件/調査.md";
+      const otherChild: TaskRow = { ...f.child, id: OTHER_CHILD_ID, key: OTHER_CHILD_ID, parentId: OTHER_ID, file: { path: otherChildPath, parentPath: otherPath } as TaskRow["file"], title: "調査", displayName: "調査", plannedStartDate: "2026-10-20", plannedEndDate: "2026-10-22", ganttMarkers: [] };
+      const other: TaskRow = { ...f.parent, id: OTHER_ID, file: { path: otherPath } as TaskRow["file"], title: "別件", displayName: "別件", ganttOrder: 2000, subtasks: new Map([[OTHER_CHILD_ID, otherChild]]) };
+      await f.vault.create(otherPath, newNoteText(f.vault, other));
+      await f.vault.create(otherChildPath, newNoteText(f.vault, otherChild, other));
+      f.settings.ganttParentOrder = [PARENT_ID, OTHER_ID];
+      const move = async (id: string, input: Record<string, unknown>) => {
+        const [item] = await f.list();
+        const preview = await f.service.propose("N04", { memoId: id, expectedRevision: item.revision, ...input } as never, f.context);
+        expect((await f.service.humanApprovalPort.approve(preview.previewId)).status).toBe("success");
+        return (await f.list())[0];
+      };
+      return { ...f, move };
+    }
+
+    it("parent -> another parent, keeping or changing the day", async () => {
+      const f = await withOtherParent();
+      const id = await f.add("親のメモ", { taskId: PARENT_ID, date: "2026-10-14" });
+      expect((await f.list())[0].anchor).toMatchObject({ kind: "parent", taskId: PARENT_ID });
+      expect((await f.move(id, { taskId: OTHER_ID })).anchor).toMatchObject({ kind: "parent", taskId: OTHER_ID, date: "2026-10-14" });
+      expect((await f.move(id, { taskId: PARENT_ID, date: "2026-11-30" })).anchor).toMatchObject({ kind: "parent", taskId: PARENT_ID, date: "2026-11-30" });
+    });
+
+    it("subtask -> a subtask of another parent, the day held within the bar", async () => {
+      const f = await withOtherParent();
+      const id = await f.add("子のメモ", { date: "2026-10-14" });
+      // No date: the memo's 10/14 is before the other bar, so it moves to the bar's start.
+      expect((await f.move(id, { taskId: OTHER_CHILD_ID })).anchor).toMatchObject({ kind: "subtask", taskId: OTHER_CHILD_ID, date: "2026-10-20" });
+      expect((await f.move(id, { taskId: OTHER_CHILD_ID, date: "2026-10-22" })).anchor).toMatchObject({ kind: "subtask", taskId: OTHER_CHILD_ID, date: "2026-10-22" });
+      // A day outside the bar is refused with a message that names the range.
+      const [item] = await f.list();
+      await expect(f.service.propose("N04", { memoId: id, taskId: OTHER_CHILD_ID, date: "2026-12-01", expectedRevision: item.revision }, f.context)).rejects.toMatchObject({ error: { code: "INVALID_INPUT" } });
+    });
+
+    it("subtask -> a parent, and a parent -> the その他 row with a day", async () => {
+      const f = await withOtherParent();
+      const id = await f.add("行き来するメモ", { date: "2026-10-14" });
+      expect((await f.move(id, { taskId: OTHER_ID, date: "2026-10-30" })).anchor).toMatchObject({ kind: "parent", taskId: OTHER_ID, date: "2026-10-30" });
+      expect((await f.move(id, { taskId: "", date: "2026-11-05" })).anchor).toMatchObject({ kind: "free", date: "2026-11-05" });
+      const note = f.vault.getFileContent(memoPath(f.vault)[0])!;
+      expect(note).not.toContain("task:");
+      expect(note).toContain("date: 2026-11-05");
+    });
   });
 
   it("N05 deletes the note and undo brings it back", async () => {
