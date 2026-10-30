@@ -2501,9 +2501,6 @@ export class TaskGanttView extends ItemView {
       this.activateContextMenu(menu);
       menu.addItem((item) => { item.setTitle("すべて開く"); item.onClick(() => this.setAllMemosOpen(true)); });
       menu.addItem((item) => { item.setTitle("すべて閉じる"); item.onClick(() => this.setAllMemosOpen(false)); });
-      // The その他 row's right-click stays "add an event"; memos without a task start here, on today (drag the dot to move).
-      menu.addSeparator();
-      menu.addItem((item) => { item.setTitle("その他にメモを追加（今日）"); item.onClick(() => this.beginMemo(undefined, todayStr())); });
       menu.showAtMouseEvent(evt);
     });
     this.toolbarEl.appendChild(button);
@@ -3757,7 +3754,7 @@ export class TaskGanttView extends ItemView {
     left.appendChild(title);
     const subtitle = document.createElement("div");
     subtitle.classList.add("task-gantt-fixed-subtitle");
-    subtitle.textContent = "右クリックで追加 / ドラッグで移動";
+    subtitle.textContent = "ダブルクリックで追加 / ドラッグで移動";
     left.appendChild(subtitle);
 
     const timeline = document.createElement("div");
@@ -3783,20 +3780,33 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(bg);
     });
 
-    // A right-click on the event timeline is the direct add gesture; event
-    // chips stop propagation and use their own delete menu instead.
+    // A double-click on the event timeline adds an event; a right-click offers an event or a memo on that day.
+    // Event chips stop propagation and use their own handlers instead.
+    const dayAtPointer = (evt: MouseEvent): string => dateFromClientX(
+      evt.clientX,
+      this.wrapEl.getBoundingClientRect().left,
+      this.wrapEl.scrollLeft,
+      this.dayWidth,
+      this.rangeStart
+    );
+    const addEventAt = (date: string): void => {
+      addGanttEvent(this.host.settings, "", date);
+      void this.host.saveSettings().then(() => this.render());
+    };
+    timeline.addEventListener("dblclick", (evt: MouseEvent) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      addEventAt(dayAtPointer(evt));
+    });
     timeline.addEventListener("contextmenu", (evt: MouseEvent) => {
       evt.preventDefault();
       evt.stopPropagation();
-      const date = dateFromClientX(
-        evt.clientX,
-        this.wrapEl.getBoundingClientRect().left,
-        this.wrapEl.scrollLeft,
-        this.dayWidth,
-        this.rangeStart
-      );
-      addGanttEvent(this.host.settings, "", date);
-      void this.host.saveSettings().then(() => this.render());
+      const date = dayAtPointer(evt);
+      const menu = new Menu();
+      this.activateContextMenu(menu);
+      menu.addItem((item) => { item.setTitle("この日に予定を追加"); item.onClick(() => addEventAt(date)); });
+      if (this.host.memos) menu.addItem((item) => { item.setTitle("この日にメモを追加"); item.onClick(() => this.beginMemo(undefined, date)); });
+      menu.showAtMouseEvent(evt);
     });
 
     for (const placed of packedEvents) {
@@ -3889,7 +3899,9 @@ export class TaskGanttView extends ItemView {
       // code in a real browser (verified via CDP-trusted input in the E2E
       // harness); the bar/marker surfaces work because their dblclick
       // listeners sit on the same element pointerdown is wired to.
-      chip.addEventListener("dblclick", () => {
+      chip.addEventListener("dblclick", (evt: MouseEvent) => {
+        // The timeline's own double-click adds an event.
+        evt.stopPropagation();
         this.startInlineEdit({
           hostEl: label,
           initialValue: placed.event.title || "新しいタスク",

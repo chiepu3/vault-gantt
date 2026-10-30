@@ -10,7 +10,7 @@ import type { MemoMeta } from "../../src/core/memo";
 import type { TaskRow, TaskWorkbenchSettings } from "../../src/core/types";
 import { addDays, diffDays } from "../../src/app/gantt-layout";
 import { BAR_HEIGHT, PARENT_COL_WIDTH } from "../../src/app/gantt-constants";
-import { byClass, createFakeDocument, deepText, dispatch, makeFakeEl } from "../stubs/fake-dom";
+import { byClass, createFakeDocument, deepText, dispatch, dispatchBubbling, makeFakeEl } from "../stubs/fake-dom";
 import type { FakeEl } from "../stubs/fake-dom";
 import { FakePreviewPort } from "./preview-fakes";
 import { SETTINGS_PREVIEW } from "../contracts/fixtures";
@@ -123,11 +123,16 @@ function layOut(r: Rig): { parentTop: number; eventTop: number } {
   const wrap = wrapOf(r.container);
   wrap.scrollWidth = 6000; wrap.scrollHeight = 900; wrap.clientWidth = 1000; wrap.scrollLeft = 0;
   const parentTop = 160, eventTop = 90;
-  (parentRows(r.container)[0] as any).offsetTop = parentTop;
+  parentRows(r.container).forEach((row, index) => { (row as any).offsetTop = parentTop + index * 100; });
   const eventRow = (r.view as any).eventRowEl as FakeEl | undefined;
   if (eventRow) { (eventRow as any).offsetTop = eventTop; (eventRow as any).offsetHeight = 44; }
   return { parentTop, eventTop };
 }
+
+const dateFromClientXForTest = (r: Rig, clientX: number): string => {
+  const wrap = wrapOf(r.container);
+  return addDays((r.view as any).rangeStart as string, Math.floor((clientX - ((wrap as any).getBoundingClientRect?.().left ?? 0) + wrap.scrollLeft - PARENT_COL_WIDTH) / ((r.view as any).dayWidth as number)));
+};
 
 const xOfDate = (r: Rig, date: string): number =>
   PARENT_COL_WIDTH + diffDays((r.view as any).rangeStart as string, date) * ((r.view as any).dayWidth as number) + ((r.view as any).dayWidth as number) / 2;
@@ -150,14 +155,14 @@ describe("Gantt floating memos", () => {
       expect(layerOf(r.container)).toBeUndefined();
     });
 
-    it("keeps the bar menu and the event-row right-click as they were", async () => {
+    it("keeps the bar menu and the event-row double-click as they were", async () => {
       const r = await openGantt([], { withMemos: false });
       const bar = byClass(r.container, "task-gantt-bar")[0] as FakeEl;
       dispatch(bar, "contextmenu", { clientX: 100, clientY: 50 });
       expect(menuItems().some((el) => deepText(el).includes("メモ"))).toBe(false);
       const eventTimeline = byClass(r.container, "task-gantt-event-row")[0] as FakeEl;
       const before = r.settings.ganttEvents.length;
-      dispatch(eventTimeline, "contextmenu", { clientX: 400, clientY: 50 });
+      dispatch(eventTimeline, "dblclick", { clientX: 400, clientY: 50 });
       await flush();
       expect(r.settings.ganttEvents.length).toBe(before + 1);
     });
@@ -406,29 +411,72 @@ describe("Gantt floating memos", () => {
       expect(call.date).toBe(addDays((r.view as any).rangeStart as string, 20));
     });
 
-    it("a memo without a task is added from the 「メモ n」 menu, on today", async () => {
+    it("the 「メモ n」 menu has only 開く / 閉じる", async () => {
       const r = await openGantt([]);
       layOut(r);
       dispatch(byClass(r.container, "task-gantt-memos")[0] as FakeEl, "contextmenu", { clientX: 700, clientY: 20 });
-      expect(menuItems().map((el) => deepText(el))).toContain("その他にメモを追加（今日）");
-      dispatch(menuItem("その他にメモを追加（今日）"), "click");
+      expect(menuItems().map((el) => deepText(el))).toEqual(["すべて開く", "すべて閉じる"]);
+    });
+
+    it("double-clicking the 「その他」 row adds an event directly, with no menu", async () => {
+      const r = await openGantt([]);
+      layOut(r);
+      const before = r.settings.ganttEvents.length;
+      dispatch(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, "dblclick", { clientX: 700, clientY: 50 });
+      await flush();
+      expect(menuItems()).toHaveLength(0);
+      expect(r.settings.ganttEvents.length).toBe(before + 1);
+    });
+
+    it("double-clicking an event chip edits it and does not add another event", async () => {
+      const r = await openGantt([], { settings: { ganttEvents: [{ key: "e1", title: "会議", date: dateOffset(0) }] } });
+      layOut(r);
+      const chip = byClass(r.container, "task-gantt-event-chip")[0] as FakeEl;
+      const timeline = byClass(r.container, "task-gantt-event-row")[0] as FakeEl;
+      const before = r.settings.ganttEvents.length;
+      dispatchBubbling(chip, "dblclick");
+      await flush();
+      expect(timeline.listeners["dblclick"]?.length).toBe(1);
+      expect(r.settings.ganttEvents.length).toBe(before);
+    });
+
+    it("right-clicking the 「その他」 row offers an event or a memo on that day", async () => {
+      const r = await openGantt([]);
+      layOut(r);
+      dispatch(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, "contextmenu", { clientX: 700, clientY: 50 });
+      expect(menuItems().map((el) => deepText(el))).toEqual(["この日に予定を追加", "この日にメモを追加"]);
+      expect(r.settings.ganttEvents.length).toBe(0);
+    });
+
+    it("「この日に予定を追加」 adds an event on that day", async () => {
+      const r = await openGantt([]);
+      layOut(r);
+      dispatch(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, "contextmenu", { clientX: 700, clientY: 50 });
+      dispatch(menuItem("この日に予定を追加"), "click");
+      await flush();
+      expect(r.settings.ganttEvents.length).toBe(1);
+    });
+
+    it("「この日にメモを追加」 starts a free memo draft on that day", async () => {
+      const r = await openGantt([]);
+      layOut(r);
+      dispatch(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, "contextmenu", { clientX: 700, clientY: 50 });
+      dispatch(menuItem("この日にメモを追加"), "click");
       const area = byClass(layerOf(r.container) as FakeEl, "vg-memo-edit")[0] as FakeEl;
-      area.value = "自由メモ";
+      area.value = "その他の日のメモ";
       dispatch(area, "keydown", key("Enter"));
       await flush();
       const call = r.memos.create.mock.calls[0]?.[0];
       expect(call.task).toBeUndefined();
-      expect(call.text).toBe("自由メモ");
+      expect(call.text).toBe("その他の日のメモ");
+      expect(call.date).toBe(dateFromClientXForTest(r, 700));
     });
 
-    it("right-clicking the 「その他」 row still adds an event directly, with no menu", async () => {
-      const r = await openGantt([]);
+    it("without memos the 「その他」 row menu has only the event", async () => {
+      const r = await openGantt([], { withMemos: false });
       layOut(r);
-      const before = r.settings.ganttEvents.length;
       dispatch(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, "contextmenu", { clientX: 700, clientY: 50 });
-      await flush();
-      expect(menuItems()).toHaveLength(0);
-      expect(r.settings.ganttEvents.length).toBe(before + 1);
+      expect(menuItems().map((el) => deepText(el))).toEqual(["この日に予定を追加"]);
     });
 
     it("Esc and empty text create no note", async () => {
