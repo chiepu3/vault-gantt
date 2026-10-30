@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.13.0 (2026-10-30)
+
+### 新機能
+
+- Ganttにフローティング吹き出しメモを追加 ([#78](https://github.com/chiepu3/vault-gantt/pull/78))
+
 ## v0.12.0 (2026-10-29)
 
 ### 新機能
