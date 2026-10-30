@@ -12,6 +12,8 @@ import { SettingsPersistence } from "./app/settings-persistence";
 import { canonical } from "./app/operations/runtime";
 import { Notice, Plugin, TFile, moment, Platform, requestUrl } from "obsidian";
 import type { App } from "obsidian";
+import { createSelfUpdater, reloadPlugin } from "./ui/updater-section";
+import { getBuildInfo } from "./build-info";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
 import { Logger } from "./core/logger";
@@ -872,7 +874,48 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
     // timer start failures are logged by the caller's rejection handler
     if (!this.unloading) this.startGanttSyncTimer();
+    if (this.settings.checkUpdateOnStartup) void this.checkForUpdates(false);
     void this.offerNoteFormatConversion().catch((error: unknown) => this.logger.error("TaskWorkbenchPlugin", "legacy note check failed", error));
+  }
+
+  private updateNotice: Notice | null = null;
+
+  /**
+   * Looks for a newer release (the built-in updater's main build) and offers to install it from a Notice.
+   * Start-up checks (manual=false) stay silent when up to date or offline; a version-label click (manual=true) always answers.
+   */
+  async checkForUpdates(manual: boolean): Promise<void> {
+    try {
+      const current = getBuildInfo(this.manifest.version).version;
+      const update = await createSelfUpdater(this.app, this).checkForUpdate(current);
+      if (this.unloading) return;
+      if (!update) { if (manual) new Notice(`Vault Gantt は最新です（v${current}）。`); return; }
+      this.updateNotice?.hide();
+      const fragment = document.createDocumentFragment();
+      fragment.append(`Vault Gantt の新しいバージョン v${update.version} があります（現在 v${current}）。 `);
+      const button = document.createElement("button");
+      button.textContent = "更新する";
+      fragment.append(button);
+      const notice = (this.updateNotice = new Notice(fragment, 0));
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        void (async () => {
+          try {
+            new Notice(`v${update.version} をダウンロードしています...`);
+            await createSelfUpdater(this.app, this).install(update.target);
+            notice.hide();
+            new Notice(`v${update.version} をインストールしました。再読み込みします。`);
+            await reloadPlugin(this.app, this.manifest.id);
+          } catch (error) {
+            button.disabled = false;
+            new Notice(`更新に失敗しました: ${error instanceof Error ? error.message : String(error)}`, 8000);
+          }
+        })();
+      });
+    } catch (error) {
+      this.logger.debug("TaskWorkbenchPlugin", "update check failed", error);
+      if (manual) new Notice("新しいバージョンを確認できませんでした。ネットワークを確認してください。");
+    }
   }
 
   private legacyNotice: Notice | null = null;
@@ -2160,6 +2203,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       openAIChat: (): Promise<void> => this.openAIChatConfigured(),
       // The toolbar's 「同期」 button calls this plugin's manual sync method.
       syncReadonlyGanttNow: (): Promise<void> => this.syncReadonlyGanttNow(),
+      checkForUpdates: (): Promise<void> => this.checkForUpdates(true),
       undoLastAction: (): Promise<void> => this.undoLastAction(),
       redoLastAction: (): Promise<void> => this.redoLastAction(),
       // Supply the toolbar's version-info span. releaseNotes is an optional

@@ -69,6 +69,7 @@ export const DEFAULT_SETTINGS: TaskWorkbenchSettings = {
   ganttZoom: 28,
   aiChatPlacement: "right",
   aiChatAutoOpen: true,
+  checkUpdateOnStartup: true,
   ganttSyncEnabled: false,
   ganttSyncUrl: "",
   ganttSyncIntervalMinutes: 5,

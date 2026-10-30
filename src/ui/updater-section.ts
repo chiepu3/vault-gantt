@@ -6,17 +6,16 @@ import { SelfUpdater, targetLabel, type UpdateTarget } from "../app/self-update"
 interface PluginHost { plugins: { disablePlugin(id: string): Promise<void>; enablePlugin(id: string): Promise<void> } }
 
 /** Reloads this plugin so the freshly written main.js is used. The current instance is torn down by disablePlugin. */
-async function reloadPlugin(app: App, id: string): Promise<void> {
+export async function reloadPlugin(app: App, id: string): Promise<void> {
   const host = (app as unknown as PluginHost).plugins;
   await host.disablePlugin(id);
   await host.enablePlugin(id);
 }
 
-/** "アップデート" settings block: pick a built branch, install it, reload, or roll back. Self-contained so it can sit in any settings tab. */
-export function renderUpdaterSection(containerEl: HTMLElement, app: App, plugin: Plugin): void {
+/** Updater wired to Obsidian's HTTP and the plugin folder. */
+export function createSelfUpdater(app: App, plugin: Plugin): SelfUpdater {
   const adapter = app.vault.adapter;
-  const dir = plugin.manifest.dir ?? `${app.vault.configDir}/plugins/${plugin.manifest.id}`;
-  const updater = new SelfUpdater({
+  return new SelfUpdater({
     http: async (url) => {
       const res = await requestUrl({ url, throw: false });
       return { status: res.status, arrayBuffer: res.arrayBuffer };
@@ -27,8 +26,13 @@ export function renderUpdaterSection(containerEl: HTMLElement, app: App, plugin:
       readBinary: (p) => adapter.readBinary(p),
       writeBinary: (p, d) => adapter.writeBinary(p, d),
     },
-    pluginDir: dir,
+    pluginDir: plugin.manifest.dir ?? `${app.vault.configDir}/plugins/${plugin.manifest.id}`,
   });
+}
+
+/** "アップデート" settings block: pick a built branch, install it, reload, or roll back. Self-contained so it can sit in any settings tab. */
+export function renderUpdaterSection(containerEl: HTMLElement, app: App, plugin: Plugin): void {
+  const updater = createSelfUpdater(app, plugin);
   const build = getBuildInfo(plugin.manifest.version);
   let targets: UpdateTarget[] = [];
   let selected = "";

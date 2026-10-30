@@ -345,6 +345,7 @@ function makeHostHarness(
   const undoLastAction = vi.fn(async () => undefined);
   const redoLastAction = vi.fn(async () => undefined);
   const host: TaskGanttViewHost = {
+    checkForUpdates: vi.fn(async () => undefined),
 
     logger: { warn: vi.fn(), error: vi.fn() } as unknown as Logger,
 
