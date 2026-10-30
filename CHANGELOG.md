@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.16.0 (2026-10-30)
+
+### 新機能
+
+- AIチャットからマイルストーンを読み書きできるようにする ([#77](https://github.com/chiepu3/vault-gantt/pull/77))
+
 ## v0.15.0 (2026-10-30)
 
 ### 新機能
