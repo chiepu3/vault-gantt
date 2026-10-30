@@ -74,6 +74,18 @@ export function sortTargets(targets: UpdateTarget[]): UpdateTarget[] {
   );
 }
 
+/** Compares dotted numeric versions; >0 when `a` is newer than `b`. Non-numeric parts count as 0. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0), pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+export interface AvailableUpdate { target: UpdateTarget; version: string }
+
 export class SelfUpdater {
   private readonly siteBase: string;
   private readonly sha256Hex: (data: ArrayBuffer) => Promise<string>;
@@ -108,6 +120,15 @@ export class SelfUpdater {
       });
     }
     return sortTargets(targets);
+  }
+
+  /** The released (main) build when it is newer than `currentVersion`, otherwise null. Throws on network errors. */
+  async checkForUpdate(currentVersion: string): Promise<AvailableUpdate | null> {
+    const main = (await this.listTargets()).find((t) => t.kind === "main");
+    if (!main) return null;
+    const meta = decodeJson(await this.get(`${this.siteBase}/b/${main.slug}/plugin/meta.json?t=${Date.now()}`)) as Partial<PluginMeta>;
+    const version = String(meta.version ?? "");
+    return version && compareVersions(version, currentVersion) > 0 ? { target: main, version } : null;
   }
 
   /** Downloads, verifies and installs `target`. Existing files are copied to `.backup/` first and restored if writing fails. */

@@ -152,12 +152,12 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.agentToolsEnabled).toBe(false);
   });
 
-  it("DEFAULT_SETTINGS has exactly 37 keys", () => {
+  it("DEFAULT_SETTINGS has exactly 38 keys", () => {
     const keys = Object.keys(DEFAULT_SETTINGS);
-    expect(keys.length).toBe(37);
+    expect(keys.length).toBe(38);
   });
 
-  it("DEFAULT_SETTINGS has all 37 required keys", () => {
+  it("DEFAULT_SETTINGS has all 38 required keys", () => {
     const required = [
       // Task storage settings.
       "taskFolder",
@@ -206,10 +206,11 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
       "incrementalGanttRender",
       "compactRowsToViewport",
       "agentToolsEnabled",
+      "checkUpdateOnStartup",
     ];
 
     // Verify we have exactly 32 required keys
-    expect(required.length).toBe(37);
+    expect(required.length).toBe(38);
 
     for (const key of required) {
       expect(key in DEFAULT_SETTINGS).toBe(true);

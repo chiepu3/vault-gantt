@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { BACKUP_DIR, SelfUpdater, sortTargets, type UpdateAdapter, type UpdateTarget } from "../../src/app/self-update";
+import { BACKUP_DIR, SelfUpdater, compareVersions, sortTargets, type UpdateAdapter, type UpdateTarget } from "../../src/app/self-update";
 
 const enc = (s: string): ArrayBuffer => new TextEncoder().encode(s).buffer as ArrayBuffer;
 const sha = async (d: ArrayBuffer): Promise<string> => createHash("sha256").update(Buffer.from(d)).digest("hex");
@@ -85,5 +85,26 @@ describe("SelfUpdater", () => {
   it("sortTargets orders by kind then newest commit", () => {
     const mk = (branch: string, kind: UpdateTarget["kind"], commitTime: string): UpdateTarget => ({ branch, slug: branch, sha: "", kind, pr: null, commitTime });
     expect(sortTargets([mk("a", "pr", "2"), mk("b", "pr", "3"), mk("m", "main", "1")]).map((t) => t.branch)).toEqual(["m", "b", "a"]);
+  });
+});
+
+describe("checkForUpdate", () => {
+  const site = (version: string) => async (url: string) => {
+    const u = url.replace("https://site", "").split("?")[0];
+    const enc2 = (o: unknown) => new TextEncoder().encode(JSON.stringify(o)).buffer as ArrayBuffer;
+    if (u === "/targets.json") return { status: 200, arrayBuffer: enc2({ targets: [{ branch: "main", slug: "main", sha: "1", kind: "main", status: "success", plugin: true }] }) };
+    if (u === "/b/main/plugin/meta.json") return { status: 200, arrayBuffer: enc2({ version, sha: "1", files: {} }) };
+    return { status: 404, arrayBuffer: new ArrayBuffer(0) };
+  };
+  const make = (version: string) => new SelfUpdater({ http: site(version), adapter: memoryAdapter({}).adapter, pluginDir: "p", siteBase: "https://site" });
+
+  it("compares versions numerically", () => {
+    expect(compareVersions("0.10.0", "0.9.9")).toBeGreaterThan(0);
+    expect(compareVersions("1.0", "1.0.0")).toBe(0);
+  });
+  it("returns the main build only when it is newer", async () => {
+    expect((await make("0.9.1").checkForUpdate("0.9.0"))?.version).toBe("0.9.1");
+    expect(await make("0.9.0").checkForUpdate("0.9.0")).toBeNull();
+    expect(await make("0.8.0").checkForUpdate("0.9.0")).toBeNull();
   });
 });

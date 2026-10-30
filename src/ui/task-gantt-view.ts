@@ -504,6 +504,8 @@ export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
 
 
   syncReadonlyGanttNow(): Promise<void>;
+  /** Version label click: look for a newer release and offer to install it. */
+  checkForUpdates(): Promise<void>;
 
   /** Undo/redo toolbar actions are coordinated by the plugin so both views refresh. */
   undoLastAction(): Promise<void>;
@@ -2645,7 +2647,8 @@ export class TaskGanttView extends ItemView {
     versionInfo.classList.add("task-gantt-version-info");
     const build = getBuildInfo(this.host.manifest.version);
     versionInfo.textContent = formatBuildLabel(build);
-    versionInfo.title = `Vault Gantt ${formatBuildLabel(build)}\nbuilt ${build.builtAt}`;
+    versionInfo.title = `Vault Gantt ${formatBuildLabel(build)}\nbuilt ${build.builtAt}\nクリックで新しいバージョンを確認`;
+    versionInfo.addEventListener("click", () => { void this.host.checkForUpdates(); });
     this.toolbarEl.appendChild(versionInfo);
   }
 
