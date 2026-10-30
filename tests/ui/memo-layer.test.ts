@@ -22,7 +22,7 @@ interface Rig {
   settings: TaskWorkbenchSettings;
   entries: MemoEntry[];
   points: Map<string, MemoPoint>;
-  fns: { readText: any; saveText: any; moveAnchor: any; saveLayout: any; openMenu: any; dropTargetAt: any; dragHint: any; dotDragging: any };
+  fns: { readText: any; saveText: any; moveAnchor: any; saveLayout: any; recordLayout: any; openMenu: any; dropTargetAt: any; dragHint: any; dotDragging: any };
 }
 
 function rig(entries: MemoEntry[], points: Record<string, MemoPoint> = {}, settingsOverrides: Partial<TaskWorkbenchSettings> = {}): Rig {
@@ -49,6 +49,7 @@ function rig(entries: MemoEntry[], points: Record<string, MemoPoint> = {}, setti
         : null),
     dragHint: vi.fn(),
     dotDragging: vi.fn(),
+    recordLayout: vi.fn(),
   };
   const ctx: MemoLayerContext = {
     wrap: wrap as unknown as HTMLElement,
@@ -294,6 +295,7 @@ describe("MemoLayer", () => {
       dispatch(fakeWindow, "pointerup");
       expect(r.settings.ganttMemoLayout["m-aaaaaa"]).toEqual({ open: true, dx: 50, dy: -50, w: 220 });
       expect(r.fns.saveLayout).toHaveBeenCalledTimes(1);
+      expect(r.fns.recordLayout).toHaveBeenCalledWith("メモ移動", "m-aaaaaa", { open: true, dx: 10, dy: -80, w: 220 }, { open: true, dx: 50, dy: -50, w: 220 });
       expect(fakeWindow.listeners["pointermove"]).toHaveLength(0);
     });
 
@@ -304,6 +306,7 @@ describe("MemoLayer", () => {
       dispatch(head, "pointerdown", { button: 0, clientX: 700, clientY: 200, target: head });
       dispatch(fakeWindow, "pointerup");
       expect(r.fns.saveLayout).not.toHaveBeenCalled();
+      expect(r.fns.recordLayout).not.toHaveBeenCalled();
     });
 
     it("the bottom-right handle resizes within the width limits", () => {
@@ -320,6 +323,7 @@ describe("MemoLayer", () => {
       dispatch(fakeWindow, "pointerup");
       expect(r.settings.ganttMemoLayout["m-aaaaaa"]?.w).toBe(140);
       expect(r.fns.saveLayout).toHaveBeenCalledTimes(1);
+      expect(r.fns.recordLayout).toHaveBeenCalledWith("メモのサイズ変更", "m-aaaaaa", { open: true, dx: 10, dy: -80, w: 220 }, { open: true, dx: 10, dy: -80, w: 140 });
     });
 
     it("dragging the dot moves the anchor to the target under the pointer", () => {

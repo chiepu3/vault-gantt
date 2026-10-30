@@ -1,6 +1,6 @@
 import type { Logger } from "../core/logger";
 import type { MemoMeta } from "../core/memo";
-import type { TaskWorkbenchSettings } from "../core/types";
+import type { MemoLayout, TaskWorkbenchSettings } from "../core/types";
 import type { HistoryManager } from "./history-manager";
 import { createMemo, deleteMemo, readMemoText, reanchorMemo, updateMemoText, type MemoTarget } from "./memo-service";
 import { loadMemos, type TaskCache } from "./note-store";
@@ -16,6 +16,8 @@ export interface MemoHost {
   reanchor(meta: MemoMeta, target: MemoTarget): Promise<void>;
   remove(meta: MemoMeta): Promise<void>;
   openNote(meta: MemoMeta): Promise<void>;
+  /** Records a bubble move or resize for undo/redo; the settings are already updated. */
+  recordLayout(label: string, id: string, before: MemoLayout | null, after: MemoLayout): void;
   /** Persists the open/closed and placement state (settings only; nothing is invalidated). */
   saveLayout(): void;
 }
@@ -42,6 +44,7 @@ export function createMemoHost(deps: MemoHostDeps): MemoHost {
     reanchor: (meta, target) => deps.coordinate(() => reanchorMemo(deps.vault(), meta, target, history, cache)),
     remove: (meta) => deps.coordinate(() => deleteMemo(deps.vault(), meta, history, cache)),
     openNote: (meta) => deps.openFile(meta.path),
+    recordLayout: (label, id, before, after) => history.push({ label, files: [], memoLayout: { id, before, after } }),
     saveLayout: () => { void deps.saveSettings().catch((error: unknown) => logger.error("MemoHost", "failed to save memo layout", error)); },
   };
 }
