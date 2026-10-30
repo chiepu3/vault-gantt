@@ -242,3 +242,36 @@ describe("live chart ghosts", () => {
     expect(notes).not.toMatch(/Gantt順|順序|ganttOrder/); expect(notes).not.toMatch(/\d+ → \d+/);
   });
 });
+
+describe("PreviewGanttLayer memo proposals", () => {
+  const memoPreview = (previewId: string, memoId: string, before: any, after: any, conversationId = "conversation-1"): any => ({
+    ...SETTINGS_PREVIEW, previewId, origin: { kind: "chat", conversationId }, projection: null,
+    entries: [{ actionId: `${previewId}:0`, entity: { kind: "memo", memoId }, displayName: "メモ", effects: [{ kind: "memo", before, after }] }],
+  });
+  const state = (text: string, date = DATE) => ({ text, taskId: CHILD_ID, taskName: "レビュー", date });
+
+  it("marks add, change and delete from a preview that has no projection, and scrolls to the memo's date", () => {
+    const port = new FakePreviewPort([memoPreview("m-add", "m-aaaaaa", null, state("新規")), memoPreview("m-del", "m-bbbbbb", state("消す"), null)]);
+    const layer = new PreviewGanttLayer(port);
+    expect(layer.memoProposals()).toEqual([]);
+    port.focus("m-add");
+    expect(layer.active).toBe(true);
+    // The other pending proposal of the same conversation is shown with the focused one.
+    expect(layer.memoProposals().map((item) => [item.memoId, item.mark])).toEqual([["m-aaaaaa", "追加"], ["m-bbbbbb", "削除"]]);
+    expect(layer.focusTarget()).toEqual({ taskId: CHILD_ID, date: DATE });
+    port.previews.set("m-edit", memoPreview("m-edit", "m-cccccc", state("前"), state("後")));
+    port.focus("m-edit");
+    expect(layer.memoProposals().find((item) => item.memoId === "m-cccccc")).toMatchObject({ mark: "変更", state: { text: "後" } });
+    layer.dispose();
+  });
+
+  it("shows nothing once the proposal is saved (the notes are real then) or when it belongs to another conversation", () => {
+    const port = new FakePreviewPort([memoPreview("m-add", "m-aaaaaa", null, state("新規")), memoPreview("m-other", "m-dddddd", null, state("別"), "conversation-other")]);
+    const layer = new PreviewGanttLayer(port);
+    port.focus("m-add");
+    expect(layer.memoProposals().map((item) => item.memoId)).toEqual(["m-aaaaaa"]);
+    port.outcomes.set("m-add", { previewId: "m-add", status: "success", actions: [], actualProjection: null } as any); port.emit();
+    expect(layer.memoProposals()).toEqual([]);
+    layer.dispose();
+  });
+});

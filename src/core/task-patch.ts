@@ -15,6 +15,7 @@ import {
   calculateAutoPriority,
   changedFields,
 } from "./utils";
+import { earliestMilestoneDate, withDueDate } from "./milestones";
 
 
 export function normalizeWorkloadMap(value?: unknown): WorkloadMap {
@@ -138,6 +139,7 @@ export function normalizeTaskPatch(
     "ganttOrder",
     "currentStatus",
     "notes",
+    "milestones",
   ]);
 
   const subtaskWritableFields = new Set([
@@ -158,6 +160,7 @@ export function normalizeTaskPatch(
     "workloadPlan",
     "workloadActual",
     "ganttMarkers",
+    "disabled",
   ]);
 
   const writableFields =
@@ -242,9 +245,9 @@ export function normalizeTaskPatch(
         throw new Error(`invalid status: ${String(value)}`);
       }
       result.statusLabel = normalized as StatusLabel;
-    } else if (key === "completed" || key === "ganttEnabled") {
+    } else if (key === "completed" || key === "ganttEnabled" || key === "disabled") {
       // coerce via !!
-      result[key as "completed" | "ganttEnabled"] = !!value;
+      result[key as "completed" | "ganttEnabled" | "disabled"] = !!value;
     } else if (key === "priority") {
       // normalizePriority, never throws
       result.priority = normalizePriority(
@@ -280,6 +283,8 @@ export function normalizeTaskPatch(
     } else if (key === "ganttMarkers") {
       // normalizeMarkers, may throw
       result.ganttMarkers = normalizeMarkers(value);
+    } else if (key === "milestones") {
+      result.milestones = normalizeMarkers(value);
     }
   }
 
@@ -323,6 +328,21 @@ export function normalizeTaskPatch(
 }
 
 
+/**
+ * `milestones` is the truth for a parent that has any; `dueDate` mirrors the earliest one. A plain `dueDate` write
+ * (workbench date field, AI tools, older callers) moves or creates the earliest milestone instead.
+ */
+function syncMilestonesAndDue(target: TaskRow, patch: TaskPatch): void {
+  if (patch.milestones !== undefined) {
+    target.milestones = patch.milestones.length ? patch.milestones : undefined;
+    target.dueDate = earliestMilestoneDate(patch.milestones) ?? "";
+  } else if (patch.dueDate !== undefined) {
+    const next = withDueDate(target.milestones ?? [], patch.dueDate);
+    target.milestones = next.length ? next : undefined;
+    target.dueDate = earliestMilestoneDate(next) ?? "";
+  }
+}
+
 export interface ApplyPatchResult {
   parent: TaskRow;
   changed: string[];
@@ -352,6 +372,8 @@ export function applyPatchToRow(
       (target as unknown as Record<string, unknown>)[key] = value;
     }
   }
+
+  if (target.kind === "parent") syncMilestonesAndDue(target, normalizedPatch);
 
   // displayName/title sync (if either provided, set both to same value)
   if (

@@ -10,6 +10,14 @@ import { DEFAULT_SETTINGS } from "../../src/core/constants";
 
 describe("task-patch.ts", () => {
   describe("normalizeTaskPatch", () => {
+    it("normalizes disabled as a boolean, for subtasks only, without touching status/completed", () => {
+      expect(normalizeTaskPatch({ disabled: true }, "subtask")).toEqual({ disabled: true });
+      expect(normalizeTaskPatch({ disabled: false }, "subtask")).toEqual({ disabled: false });
+      expect(normalizeTaskPatch({ disabled: 1 }, "subtask")).toEqual({ disabled: true });
+      expect(() => normalizeTaskPatch({ disabled: true }, "parent")).toThrow("field is not writable for parent: disabled");
+      expect(normalizeTaskPatch({ completed: true, disabled: true }, "subtask")).toMatchObject({ completed: true, statusLabel: "done", disabled: true });
+    });
+
     it("normalizeTaskPatch throws 'patch must be an object' for non-object", () => {
       expect(() => normalizeTaskPatch("not an object", "parent")).toThrow(
         "patch must be an object"

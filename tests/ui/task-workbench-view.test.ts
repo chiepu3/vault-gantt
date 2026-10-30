@@ -2557,3 +2557,68 @@ describe("TaskWorkbenchView virtual scrolling", () => {
     expect(probes[0].attributes["aria-hidden"]).toBe("true");
   });
 });
+
+describe("TaskWorkbenchView memo chip", () => {
+  beforeEach(() => {
+    const doc = createFakeDocument();
+    Object.assign(doc, { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("window", makeFakeEl("window"));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const memoMeta = (id: string, extra: Record<string, unknown> = {}) => ({ id, path: `tasks/_memos/2026-10-01 ${id}の一行目.md`, created: "2026-10-01", updated: "2026-10-01", ...extra });
+  function memoHost(metas: ReturnType<typeof memoMeta>[]) {
+    return { load: vi.fn(async () => metas), setOpen: vi.fn(async () => undefined), reveal: vi.fn(async () => undefined) };
+  }
+  const popoverOf = (): FakeEl | undefined => byClass((document as any).body as FakeEl, "twb-memo-popover")[0];
+
+  it("shows no chip without a memo host (nothing else in the header changes)", async () => {
+    const { container } = await openView([makeParent()]);
+    expect(byClass(headerOf(container), "task-workbench-memos")).toHaveLength(0);
+  });
+
+  it("shows the memo count after the other buttons", async () => {
+    const memos = memoHost([memoMeta("m-aaaaaa"), memoMeta("m-bbbbbb")]);
+    const { container } = await openView([makeParent()], {}, { memos });
+    const chip = byClass(headerOf(container), "task-workbench-memos")[0];
+    expect(chip.textContent).toBe("メモ 2");
+    const right = byClass(headerOf(container), "task-workbench-toolbar-right")[0];
+    expect(right.children[right.children.length - 1]).toBe(chip);
+  });
+
+  it("opens a read-only list; the toggle and 「Ganttで表示」 call the host, and nothing can be edited", async () => {
+    const memos = memoHost([memoMeta("m-aaaaaa"), memoMeta("m-bbbbbb")]);
+    const { container } = await openView([makeParent()], { ganttMemoLayout: { "m-bbbbbb": { open: false, dx: 0, dy: 0, w: 220 } } }, { memos });
+    dispatch(byClass(headerOf(container), "task-workbench-memos")[0], "click");
+    const popover = popoverOf() as FakeEl;
+    expect(popover).toBeDefined();
+    const toggles = byClass(popover, "twb-memo-popover-toggle");
+    expect(toggles.map((toggle) => toggle.textContent)).toEqual(["閉じる", "開く"]);
+    expect(byTag(popover, "textarea")).toHaveLength(0);
+    expect(byTag(popover, "input")).toHaveLength(0);
+    expect(byClass(popover, "twb-memo-popover-headline").map((node) => node.textContent)).toEqual(["m-aaaaaaの一行目", "m-bbbbbbの一行目"]);
+    dispatch(toggles[0], "click");
+    expect(memos.setOpen).toHaveBeenCalledWith(["m-aaaaaa"], false);
+    expect(byClass(popover, "twb-memo-popover-toggle")[0].textContent).toBe("開く");
+    dispatch(byClass(popover, "twb-memo-popover-reveal")[1], "click");
+    expect(memos.reveal).toHaveBeenCalledWith("m-bbbbbb");
+    expect(popoverOf()).toBeUndefined();
+  });
+
+  it("すべて閉じる asks for every memo at once, and the chip toggles the list", async () => {
+    const memos = memoHost([memoMeta("m-aaaaaa")]);
+    const { container } = await openView([makeParent()], {}, { memos });
+    const chip = byClass(headerOf(container), "task-workbench-memos")[0];
+    dispatch(chip, "click");
+    dispatch(byClass(popoverOf() as FakeEl, "twb-memo-popover-bulk-button")[1], "click");
+    expect(memos.setOpen).toHaveBeenCalledWith(["*"], false);
+    dispatch(chip, "click");
+    expect(popoverOf()).toBeUndefined();
+    dispatch(chip, "click");
+    expect(popoverOf()).toBeDefined();
+  });
+});

@@ -20,9 +20,10 @@ export function period(parent: TaskRow) {
   const ends = children.map((row) => row.plannedEndDate).filter((date): date is string => !!date).sort();
   return { start: starts[0] ?? null, end: ends.at(-1) ?? null };
 }
-export function progress(parent: TaskRow): number { const children = [...parent.subtasks?.values() ?? []]; return children.length ? children.filter((child) => child.completed).length / children.length : 0; }
+/** Share of completed subtasks; 一時無効 subtasks are left out of both counts. */
+export function progress(parent: TaskRow): number { const children = [...parent.subtasks?.values() ?? []].filter((child) => !child.disabled); return children.length ? children.filter((child) => child.completed).length / children.length : 0; }
 export function aggregates(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[], today: string): DailyAggregateV1[] {
-  const children = parents.flatMap((parent) => [...parent.subtasks?.values() ?? []]);
+  const children = parents.flatMap((parent) => [...parent.subtasks?.values() ?? []].filter((child) => !child.disabled));
   const holidays = holidaySet(settings);
   const all = [...children, ...settings.ganttEvents], weeklyHours = new Map<number, number>();
   const weekly = (dayOfWeek: number) => {
@@ -55,7 +56,7 @@ function appearance(tags: readonly string[], parentTags: readonly string[], sett
 export function ganttState(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[], today: string): GanttStateV1 {
   return {
     parents: parents.map((parent) => ({ id: parent.id, name: parent.displayName, enabled: parent.ganttEnabled, order: parent.ganttOrder ?? 999999, tags: [...parent.tags], period: period(parent), progress: progress(parent), effectivePriority: getEffectivePriority(parent, settings.autoPriorityEnabled), appearance: appearance(parent.tags, [], settings, true),
-      children: [...parent.subtasks?.values() ?? []].map((child) => ({ id: child.id, parentId: parent.id, name: child.displayName, status: child.statusLabel, completed: child.completed, tags: [...child.tags], period: { start: child.plannedStartDate || null, end: child.plannedEndDate || null }, due: child.dueDate || null,
+      children: [...parent.subtasks?.values() ?? []].map((child) => ({ id: child.id, parentId: parent.id, name: child.displayName, status: child.statusLabel, completed: child.completed, disabled: child.disabled === true, tags: [...child.tags], period: { start: child.plannedStartDate || null, end: child.plannedEndDate || null }, due: child.dueDate || null,
         markers: (child.ganttMarkers ?? []).map((marker) => ({ ...marker, tags: [...marker.tags ?? []] })), hours: hours(child), effectivePriority: getEffectivePriority(child, settings.autoPriorityEnabled), appearance: appearance(child.tags, parent.tags, settings, false) })) })),
     serviceState: { lastAutoPriorityUpdate: settings.lastAutoPriorityUpdate, ganttNationalHolidaysUpdatedAt: settings.ganttNationalHolidaysUpdatedAt, ganttNationalHolidays: [...settings.ganttNationalHolidays], ganttHolidays: [...settings.ganttHolidays] },
     events: settings.ganttEvents.map((event) => ({ key: event.key, title: event.title, date: event.date, hours: hours(event) })), weekly: structuredClone(settings.weeklyWorkSchedules), daily: [], tagDefinitions: structuredClone(settings.ganttTags), settings: publicSettings(settings),
@@ -87,6 +88,7 @@ export function taskEffects(before: TaskRow | undefined, after: TaskRow | undefi
 export function taskPublicState(row: TaskRow): Record<string, import("../contracts/context").Json> {
   return Object.fromEntries(Object.keys(taskPatchInputSchema.shape).map((key) => [key,
     key === "ganttMarkers" ? (row.ganttMarkers ?? []).map((marker) => ({ key: marker.key, title: marker.title, date: marker.date, tags: marker.tags ?? [] }))
+      : key === "disabled" ? row.disabled === true
       : key === "workloadPlan" || key === "workloadActual" ? { ...row[key] ?? {} } : structuredClone(row[key as keyof TaskRow] ?? "")])) as Record<string, import("../contracts/context").Json>;
 }
 export function project(snapshot: TaskSnapshot, afterParents: readonly TaskRow[], afterSettings: TaskWorkbenchSettings, entries: readonly PreviewEntry[]): GanttProjectionV1 | null {

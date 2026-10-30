@@ -30,7 +30,8 @@ export class TaskFinderModal extends Modal {
   constructor(
     app: App,
     private readonly navigation: TaskItemOpener,
-    private readonly items: TaskRow[]
+    private readonly items: TaskRow[],
+    private readonly options: { placeholder?: string; metaOf?: (item: TaskRow) => string | undefined } = {}
   ) {
     super(app);
     // the dialog receives the full flattened task list
@@ -43,7 +44,7 @@ export class TaskFinderModal extends Modal {
 
     const input = document.createElement("input");
     input.type = "search";
-    input.placeholder = "タスクを検索...";
+    input.placeholder = this.options.placeholder ?? "タスクを検索...";
     input.addEventListener("input", () => {
       this.setQuery(input.value);
     });
@@ -151,7 +152,7 @@ export class TaskFinderModal extends Modal {
       // "子/親 • [ステータス] • [期限日 or 期限なし] • [ファイルパス]"
       const metaEl = document.createElement("div");
       metaEl.className = "task-workbench-finder-meta";
-      metaEl.textContent = suggestionMeta(item);
+      metaEl.textContent = this.options.metaOf?.(item) ?? suggestionMeta(item);
       row.appendChild(titleEl);
       row.appendChild(metaEl);
       if (index === this.selectedIndex) {

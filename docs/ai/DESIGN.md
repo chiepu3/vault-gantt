@@ -197,6 +197,19 @@
 
 `ganttWorkloadMaxHours / ganttWorkloadDailyCapacityHours / agentToolsEnabled` は型・既定設定にあるが、現行UI・操作APIに変更入口がない。`lastAutoPriorityUpdate`、公式休日更新時刻等はサービス管理情報。これらを既存のユーザー操作として水増しせず、将来の設定schemaでは利用者編集項目と管理項目を分離する。
 
+### 3.5.1 フローティング吹き出しメモ（N01〜N06、6種類）
+
+根拠: `memo-service.ts`, `memo-handlers.ts`, `memo-layer.ts`。メモは `<taskFolder>/_memos/` の1メモ1ノート。ノートは付け先（`task`・`at`・`date`）と本文だけを持ち、開閉・位置・幅は設定の表示状態（`ganttMemoLayout`）で、提案の鮮度に影響しない。取得結果の位置は実日付で返し、保存形式の `at` は出さない。本文全体をN02に入れる（後から別操作で足さない）。
+
+| ID | 名前・意味／入口 | 入力 | 現行の制約・検証 | Undo | AI | Preview |
+| --- | --- | --- | --- | --- | --- | --- |
+| N01 | メモの一覧取得 | from?, to?, taskId?, query?, includeClosed?, limit? | 日付は付け先の実日付、閉じたメモは includeClosed のときだけ。revision はノートのbytes | ― | 〇 | ―、Gantt吹き出し |
+| N02 | メモ追加 | text, taskId?, date?, open? | taskId省略=その他。子タスクは期間内の日付のみ。open:false は閉じたピンとして追加 | 〇（ノート作成） | 〇 | メモ効果、Ganttに破線の吹き出し |
+| N03 | メモ本文の変更 | memoId, text, expectedRevision | 本文全体を置換、updatedを更新 | 〇 | 〇 | メモ効果、Ganttに破線の吹き出し |
+| N04 | メモの付け替え | memoId, taskId?, date?, expectedRevision | taskId の "" はその他。省略は現在の付け先を保持 | 〇 | 〇 | メモ効果、Ganttに破線の吹き出し |
+| N05 | メモ削除 | memoId, expectedRevision | ノートをゴミ箱へ。履歴から戻せる | 〇 | 〇 | メモ効果、Ganttに薄い破線の吹き出し |
+| N06 | メモを開く・閉じる | memoIds（["*"]=すべて）, open | 表示状態のみ。承認不要 | ― | 〇 | ―、Gantt |
+
 ### 3.6 表示・履歴・診断（V01〜V23、23種類）
 
 根拠: `NavigationService`, Workbench/Gantt、埋め込み、`HistoryManager`, `Logger`。データ変更でない操作にもBで結果表示を設けるが、読み取りに「変更承認」を強制しない。

@@ -8,10 +8,11 @@ import { EVENT_WEEKLY_OPERATION_IDS } from "./operations/event-weekly-handlers";
 import { SETTINGS_OPERATION_IDS } from "./operations/settings-handlers";
 import { DAILY_OPERATION_IDS } from "./operations/daily-handlers";
 import { INTEGRATION_OPERATION_IDS } from "./operations/integration-handlers";
+import { MEMO_OPERATION_IDS } from "./operations/memo-handlers";
 import { VIEW_OPERATION_IDS } from "./operations/view-handlers";
 import { CONTROL_OPERATION_IDS } from "./operations/control-handlers";
 export const UNIMPLEMENTED_OPERATION_REASONS: Partial<Record<OperationId, string>> = {};
-export const IMPLEMENTED_OPERATION_IDS = new Set<OperationId>(([...TASK_OPERATION_IDS, ...SCHEDULE_OPERATION_IDS, ...MARKER_WORKLOAD_OPERATION_IDS, ...EVENT_WEEKLY_OPERATION_IDS, ...SETTINGS_OPERATION_IDS, ...DAILY_OPERATION_IDS, ...INTEGRATION_OPERATION_IDS, ...VIEW_OPERATION_IDS, ...CONTROL_OPERATION_IDS, "T30", "S05", "Q07", "Q08"] as OperationId[]).filter((id) => !(id in UNIMPLEMENTED_OPERATION_REASONS)));
+export const IMPLEMENTED_OPERATION_IDS = new Set<OperationId>(([...TASK_OPERATION_IDS, ...SCHEDULE_OPERATION_IDS, ...MARKER_WORKLOAD_OPERATION_IDS, ...EVENT_WEEKLY_OPERATION_IDS, ...SETTINGS_OPERATION_IDS, ...DAILY_OPERATION_IDS, ...INTEGRATION_OPERATION_IDS, ...VIEW_OPERATION_IDS, ...MEMO_OPERATION_IDS, ...CONTROL_OPERATION_IDS, "T30", "S05", "Q07", "Q08"] as OperationId[]).filter((id) => !(id in UNIMPLEMENTED_OPERATION_REASONS)));
 export function operationDefinition<K extends OperationId>(id: K): OperationDefinition<K> {
   const [classification, previewKinds, capabilities] = OPERATION_CONTRACTS[id];
   return { id, classification, previewKinds, capabilities, requestPolicy: (DIRECT_UI_ONLY_OPERATION_IDS as readonly string[]).includes(id) ? "direct-ui-only" : "capabilities", inputSchema: operationInputSchemas[id] as unknown as OperationDefinition<K>["inputSchema"], outputSchema: operationOutputSchemas[id], description: operationDescription(id) };

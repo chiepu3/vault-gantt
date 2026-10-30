@@ -2,6 +2,9 @@ import { operationInputSchemas, type ViewOperationId, type OperationInputMap } f
 import type { OperationRequestResultV1 } from "../contracts/preview";
 import type { PreviewUiHostPorts, ViewStateV1 } from "../contracts/ports";
 import { NotePreservationError } from "../core/note-v2";
+import { getMilestones, newMilestoneKey } from "../core/milestones";
+import { openMilestonePopover } from "./milestone-popover";
+import { TextInputModal } from "./modals";
 import { ItemView, moment, Notice, setIcon } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 
@@ -37,8 +40,11 @@ import {
 } from "../app/workbench-virtual";
 import type { VirtualRange } from "../app/workbench-virtual";
 import { TaskFinderModal } from "./task-finder-modal";
+import { openMemoPopover } from "./memo-popover";
+import { resolveMemoAnchor } from "../app/memo-anchor";
+import { memoIsOpen, memoTitleFromPath, type MemoMeta } from "../core/memo";
 import { registerHistoryHotkeys } from "./history-hotkeys";
-import { appendTagChips } from "./tag-chip";
+import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 
 // 200ms keeps rapid typing from rebuilding the full table on every key while
 // still making the filter feel live once the user pauses.
@@ -91,6 +97,12 @@ export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
   undoLastAction(): Promise<void>;
   redoLastAction(): Promise<void>;
   addSubtaskInteractively?(row: TaskRow, onCreated: () => void): Promise<void>;
+  /** Floating memos: a read-only list here, with open/close and a jump to the Gantt. Absent = no chip. */
+  memos?: {
+    load(): Promise<MemoMeta[]>;
+    setOpen(ids: readonly string[], open: boolean): Promise<void>;
+    reveal(id: string): Promise<void>;
+  };
 }
 
 
@@ -207,6 +219,10 @@ export class TaskWorkbenchView extends ItemView {
   private lastWrapWidth = 0;
 
   private resizeObserver?: ResizeObserver;
+
+  private closeMilestonePopover?: () => void;
+  private closeMemoPopover?: () => void;
+  private memoMetas: MemoMeta[] = [];
 
   private resetScrollOnRender = false;
 
@@ -390,6 +406,8 @@ export class TaskWorkbenchView extends ItemView {
     this.unregisterHistoryHotkeys?.(); this.unregisterHistoryHotkeys = undefined;
     this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
+    this.closeMilestonePopover?.();
+    this.closeMemoPopover?.();
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
     if (this.fillTimer !== undefined) {
@@ -434,6 +452,10 @@ export class TaskWorkbenchView extends ItemView {
     }
 
     this.tasks = tasks;
+    if (this.host.memos) {
+      try { this.memoMetas = await this.host.memos.load(); }
+      catch (error) { this.host.logger.error("TaskWorkbenchView", "failed to load memos", error); }
+    }
   }
 
 
@@ -633,6 +655,34 @@ export class TaskWorkbenchView extends ItemView {
         this.openTaskFinder();
       })
     );
+
+    if (this.host.memos) {
+      const chip = this.buildButton(`メモ ${this.memoMetas.length}`, "task-workbench-memos", () => { this.toggleMemoPopover(chip); });
+      chip.title = "Ganttの吹き出しメモ";
+      right.appendChild(chip);
+    }
+  }
+
+  /** The memo list under the chip: open/close and 「Ganttで表示」 only; editing stays on the Gantt. */
+  private toggleMemoPopover(anchor: HTMLElement): void {
+    const memos = this.host.memos;
+    if (!memos) return;
+    if (this.closeMemoPopover) { this.closeMemoPopover(); return; }
+    const rows = new Map<string, TaskRow>();
+    for (const task of this.tasks) {
+      rows.set(task.id, task);
+      for (const subtask of task.subtasks?.values() ?? []) rows.set(subtask.id, subtask);
+    }
+    const items = this.memoMetas.map((meta) => {
+      const anchorInfo = resolveMemoAnchor(meta, rows);
+      return { id: meta.id, headline: memoTitleFromPath(meta.path), where: `${anchorInfo.kind === "free" ? "その他" : anchorInfo.taskName ?? ""} · ${anchorInfo.date}`, open: memoIsOpen(this.host.settings.ganttMemoLayout, meta.id) };
+    });
+    const close = openMemoPopover({
+      anchor, items, onClose: () => { this.closeMemoPopover = undefined; },
+      onToggle: (ids, open) => memos.setOpen(ids, open).catch((error: unknown) => { this.host.logger.error("TaskWorkbenchView", "failed to toggle memos", error); }),
+      onReveal: (id) => memos.reveal(id).catch((error: unknown) => { this.host.logger.error("TaskWorkbenchView", "failed to reveal memo", error); }),
+    });
+    this.closeMemoPopover = close;
   }
 
   /**
@@ -1223,6 +1273,7 @@ export class TaskWorkbenchView extends ItemView {
       row.title,
       row.completed,
       row.dueDate,
+      row.milestones,
       row.priority,
       row.priorityMode,
       row.statusLabel,
@@ -1295,6 +1346,10 @@ export class TaskWorkbenchView extends ItemView {
         break;
       case "open":
         void this.host.openTaskItem(row);
+        break;
+      case "milestone":
+      case "milestone-add":
+        this.openMilestoneEditor(row, el, value === "milestone" ? el.dataset.key ?? "" : null);
         break;
       case "add":
         this.addSubtaskForRow(row);
@@ -1541,6 +1596,11 @@ export class TaskWorkbenchView extends ItemView {
       td.appendChild(textWrap);
     }
 
+    if (row.kind === "parent") {
+      const strip = this.buildMilestoneStrip(row);
+      if (strip) td.appendChild(strip);
+    }
+
     // collapsed parents append 「他N件」 after the name;
 
 
@@ -1552,6 +1612,93 @@ export class TaskWorkbenchView extends ItemView {
     }
 
     return td;
+  }
+
+  /** The parent's milestones as chips under its name, plus a chip to add one. Null when it has none. */
+  private buildMilestoneStrip(row: TaskRow): HTMLElement | null {
+    const milestones = getMilestones(row);
+    if (milestones.length === 0) {
+      return null;
+    }
+    const strip = document.createElement("div");
+    strip.classList.add("twb-milestones");
+    for (const milestone of milestones) {
+      const chip = document.createElement("button");
+      chip.classList.add("twb-milestone");
+      const days = dueDaysFromToday(milestone.date, moment().startOf("day"));
+      if (days !== null && days < 0) {
+        chip.classList.add("is-overdue");
+      } else if (days === 0) {
+        chip.classList.add("is-today");
+      }
+      chip.dataset.twbAct = "milestone";
+      chip.dataset.key = milestone.key;
+      chip.title = `${milestone.title} ${milestone.date}`;
+      const frameColor = this.host.settings.ganttFeatureTagsEnabled
+        ? [...(milestone.tags ?? []), ...row.tags]
+            .map((tag) => findGanttTagDefinition(this.host.settings, tag)?.color ?? "")
+            .find((color) => color !== "") ?? ""
+        : "";
+      if (frameColor !== "") {
+        setStyleVar(chip, "--vg-milestone-color", frameColor);
+      }
+      const star = document.createElement("span");
+      star.classList.add("twb-milestone-star");
+      star.textContent = "★";
+      chip.appendChild(star);
+      const name = document.createElement("span");
+      name.classList.add("twb-milestone-name");
+      name.textContent = milestone.title;
+      chip.appendChild(name);
+      const date = document.createElement("span");
+      date.classList.add("twb-milestone-date");
+      date.textContent = `${Number(milestone.date.slice(5, 7))}/${Number(milestone.date.slice(8, 10))}`;
+      chip.appendChild(date);
+      if (this.host.settings.ganttFeatureTagsEnabled && milestone.tags?.length) {
+        appendTagChips(chip, milestone.tags.slice(0, 1), this.host.settings);
+      }
+      strip.appendChild(chip);
+    }
+    const add = document.createElement("button");
+    add.classList.add("twb-milestone", "twb-milestone-add");
+    add.dataset.twbAct = "milestone-add";
+    add.textContent = "＋";
+    add.title = "マイルストーンを追加";
+    strip.appendChild(add);
+    return strip;
+  }
+
+  /** Opens the milestone popover for `key`, or, with null, asks for the name of a new milestone dated today. */
+  private openMilestoneEditor(row: TaskRow, anchor: HTMLElement, key: string | null): void {
+    this.closeMilestonePopover?.();
+    const current = getMilestones(row);
+    if (key === null) {
+      // Named like a new subtask (Enter confirms); the date is moved by dragging it in the gantt.
+      new TextInputModal(this.app, "新規マイルストーン", "マイルストーン名", "", (value) => {
+        const title = value.trim();
+        if (title === "") {
+          return;
+        }
+        const date = moment().format("YYYY-MM-DD");
+        void this.savePatch(row, { milestones: [...current, { key: newMilestoneKey(title, current), title, date }] });
+      }).open();
+      return;
+    }
+    const milestone = current.find((m) => m.key === key);
+    if (!milestone) {
+      return;
+    }
+    this.closeMilestonePopover = openMilestonePopover({
+      anchor,
+      settings: this.host.settings,
+      milestone,
+      onSave: ({ title, tags }) => {
+        void this.savePatch(row, {
+          milestones: current.map((m) => (m.key === milestone.key ? { ...m, title, tags } : m)),
+        });
+      },
+      onDelete: () => void this.savePatch(row, { milestones: current.filter((m) => m.key !== milestone.key) }),
+    });
   }
 
   /**

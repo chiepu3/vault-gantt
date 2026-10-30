@@ -1,4 +1,5 @@
 import type { HistoryPort, HistoryChangeV1, HistoryEntryUndoStateV1 } from "../contracts/ports";
+import type { MemoLayout } from "../core/types";
 import type { VaultAdapter } from "./task-operations";
 
 /**
@@ -30,11 +31,27 @@ export interface HistoryOrderChange {
   after: string[];
 }
 
+/** One floating memo's bubble placement (kept in plugin settings, not in the note); null = no stored layout (auto-placed). */
+export interface HistoryMemoLayoutChange {
+  id: string;
+  before: MemoLayout | null;
+  after: MemoLayout | null;
+}
+
 export interface HistoryEntry {
   label: string;
   files: HistoryFileChange[];
   order?: HistoryOrderChange;
+  memoLayout?: HistoryMemoLayoutChange;
 }
+
+/** Access to the stored memo bubble layouts, supplied by the plugin. */
+export interface MemoLayoutStore {
+  get(id: string): MemoLayout | null;
+  set(id: string, layout: MemoLayout | null): Promise<void>;
+}
+
+const sameLayout = (a: MemoLayout | null | undefined, b: MemoLayout | null | undefined): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /** Access to the stored Gantt parent order, supplied by the plugin. */
 export interface ParentOrderStore {
@@ -70,6 +87,7 @@ interface StoredEntry {
   label: string;
   files: StoredFileChange[];
   order?: HistoryOrderChange;
+  memoLayout?: HistoryMemoLayoutChange;
 }
 const MIN_COMPACT_LENGTH = 2048;
 function compactChange(change: HistoryFileChange): StoredFileChange {
@@ -123,6 +141,8 @@ export class HistoryManager implements HistoryPort {
   private vaultReader?: () => VaultAdapter;
   private orderStore?: ParentOrderStore;
   attachOrderStore(store: ParentOrderStore): void { this.orderStore = store; }
+  private memoLayoutStore?: MemoLayoutStore;
+  attachMemoLayoutStore(store: MemoLayoutStore): void { this.memoLayoutStore = store; }
   attachVault(reader: () => VaultAdapter): void { this.vaultReader = reader; void this.refreshEligibility(); }
   subscribe(listener: (change: HistoryChangeV1) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   inspectUndo(entryId: string): HistoryEntryUndoStateV1 {
@@ -158,6 +178,7 @@ export class HistoryManager implements HistoryPort {
     const entry = this.undoStack.at(-1), vault = this.vaultReader!();
     let conflict = false;
     if (entry?.order && !(this.orderStore && sameOrder(this.orderStore.get(), entry.order.after))) conflict = true;
+    if (entry?.memoLayout && !(this.memoLayoutStore && sameLayout(this.memoLayoutStore.get(entry.memoLayout.id), entry.memoLayout.after))) conflict = true;
     if (entry) for (const change of entry.files) {
       try {
         const file = vault.getFileByPath(change.afterPath ?? change.path);
@@ -189,7 +210,8 @@ export class HistoryManager implements HistoryPort {
   push(entry: HistoryEntry): void {
     const files = entry.files.filter((file) => file.before !== file.after);
     const order = entry.order && !sameOrder(entry.order.before, entry.order.after) ? entry.order : undefined;
-    if (files.length === 0 && !order) {
+    const memoLayout = entry.memoLayout && !sameLayout(entry.memoLayout.before, entry.memoLayout.after) ? entry.memoLayout : undefined;
+    if (files.length === 0 && !order && !memoLayout) {
       return;
     }
 
@@ -197,6 +219,7 @@ export class HistoryManager implements HistoryPort {
       label: entry.label,
       files: files.map(compactChange),
       ...(order ? { order: { before: [...order.before], after: [...order.after] } } : {}),
+      ...(memoLayout ? { memoLayout: structuredClone(memoLayout) } : {}),
     };
 
     if (this.operationDepth > 0) {
@@ -271,7 +294,7 @@ export class HistoryManager implements HistoryPort {
   inspectTransition(direction: "undo" | "redo"): { historyRevision: string; busy: boolean; entry: HistoryEntry | null } {
     const stack = direction === "undo" ? this.undoStack : this.redoStack;
     const entry = stack[stack.length - 1];
-    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map(materialize), ...(entry.order ? { order: { before: [...entry.order.before], after: [...entry.order.after] } } : {}) } : null };
+    return { historyRevision: `history-${this.revision}`, busy: this.operationDepth > 0 || this.checking, entry: entry ? { label: entry.label, files: entry.files.map(materialize), ...(entry.order ? { order: { before: [...entry.order.before], after: [...entry.order.after] } } : {}), ...(entry.memoLayout ? { memoLayout: structuredClone(entry.memoLayout) } : {}) } : null };
   }
 
   undo(vault: HistoryVault): Promise<HistoryOpResult> {
@@ -386,6 +409,10 @@ export class HistoryManager implements HistoryPort {
     if (orderChange && !(this.orderStore && sameOrder(this.orderStore.get(), orderChange[expectField]))) {
       conflictingPaths.push("Gantt並び順");
     }
+    const layoutChange = entry.memoLayout;
+    if (layoutChange && !(this.memoLayoutStore && sameLayout(this.memoLayoutStore.get(layoutChange.id), layoutChange[expectField]))) {
+      conflictingPaths.push("メモの配置");
+    }
 
     // "before" is the state the entry started from (undo goes there); moves are expressed from the current location.
     const undoing = targetField === "before";
@@ -425,6 +452,7 @@ export class HistoryManager implements HistoryPort {
     // updates from touching notes whose text this step has not restored yet.
     const done: Array<() => Promise<void>> = [];
     let orderApplied = false;
+    let layoutApplied = false;
     let failedPath: string | undefined;
     const needs = <K extends "process" | "create" | "rename" | "trash">(method: K): NonNullable<HistoryVault[K]> => {
       const fn = vault[method];
@@ -436,6 +464,11 @@ export class HistoryManager implements HistoryPort {
         failedPath = "Gantt並び順";
         await this.orderStore!.set([...orderChange[targetField]]);
         orderApplied = true;
+      }
+      if (layoutChange) {
+        failedPath = "メモの配置";
+        await this.memoLayoutStore!.set(layoutChange.id, layoutChange[targetField]);
+        layoutApplied = true;
       }
       for (const prepared of preparedFiles) {
         failedPath = prepared.from;
@@ -466,6 +499,18 @@ export class HistoryManager implements HistoryPort {
         done.push(async () => { await needs("rename")(prepared.to, prepared.from); });
       }
     } catch (error: unknown) {
+      if (layoutApplied && layoutChange) {
+        try {
+          await this.memoLayoutStore!.set(layoutChange.id, layoutChange[expectField]);
+        } catch (compensationError: unknown) {
+          this.clear();
+          return {
+            kind: "invalidated",
+            label: entry.label,
+            reason: `履歴の補償に失敗しました（メモの配置）: ${this.getErrorMessage(compensationError)}`,
+          };
+        }
+      }
       if (orderApplied && orderChange) {
         try {
           await this.orderStore!.set([...orderChange[expectField]]);

@@ -75,6 +75,7 @@ body {
 .vg-chip { display: inline-flex; align-items: center; gap: var(--vg-space-1); height: 18px; padding: 0 var(--vg-space-2); font-size: var(--vg-font-xs); font-weight: var(--vg-weight-medium); line-height: 1; white-space: nowrap; color: var(--vg-color-muted); background: var(--background-primary); border: var(--vg-border); border-radius: var(--vg-radius-pill); }
 .vg-chip.is-tag { color: var(--vg-chip-color, var(--vg-color-muted)); border-color: currentColor; }
 .vg-chip.is-done { color: var(--vg-color-success); }
+.task-gantt-popover-disabled-chip { color: var(--text-muted); border-style: dashed; border-color: var(--text-muted); }
 
 /* Shared compact button (24px) for small surfaces such as menus and popovers. */
 .vg-btn-sm { height: 24px; padding: 0 var(--vg-space-3); font-size: var(--vg-font-s); border-radius: var(--vg-radius-s); cursor: pointer; }
@@ -226,7 +227,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
    .task-gantt-drag-tooltip, which is appended directly to the container. */
 .task-gantt-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; }
 
-.task-gantt-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.task-gantt-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; }
 
 .task-gantt-toolbar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--vg-space-3); padding: 6px 8px; border-bottom: var(--vg-border); }
 
@@ -400,6 +401,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-bar.is-completed { background-color: color-mix(in srgb, var(--text-muted) 38%, var(--background-primary)); }
 .task-gantt-bar.is-tag-colored-completed { background-image: linear-gradient(color-mix(in srgb, var(--background-primary) 55%, transparent), color-mix(in srgb, var(--background-primary) 55%, transparent)); filter: saturate(.6); }
 .task-gantt-bar.is-completed .task-gantt-bar-title { color: var(--text-normal); }
+/* 一時無効: faded fill + diagonal stripes + dashed border (clearly unlike the flat grey of Done); also over tag-coloured bars. */
+.task-gantt-bar.is-disabled { border-style: dashed; background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--background-primary) 45%, transparent) 0 4px, transparent 4px 8px), linear-gradient(color-mix(in srgb, var(--background-primary) 55%, transparent), color-mix(in srgb, var(--background-primary) 55%, transparent)); }
+.task-gantt-bar.is-disabled .task-gantt-bar-title { color: var(--text-normal); }
 .task-gantt-bar-title { font-weight: 500; display: block; width: calc(100% - 14px); max-width: 100%; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vg-font-m); line-height: 24px; color: var(--text-on-accent); cursor: text; }
 /* Sticky label: a bar scrolled under the left name column keeps its title start visible (320px column + 6px).
    Not position: sticky (one compositor layer per title made every layout and scroll frame expensive): gantt-sticky-titles.ts
@@ -434,6 +438,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 /* must match EXTERNAL_LABEL_ROW_HEIGHT (src/app/gantt-constants.ts) */
 .task-gantt-external-label { position: absolute; z-index: 1; display: flex; align-items: center; gap: var(--vg-space-1); height: 22px; padding: 0 var(--vg-space-1) 0 7px; border: 1px solid transparent; border-radius: var(--vg-radius-m); background: var(--background-primary); box-shadow: var(--vg-shadow-flat); white-space: nowrap; overflow: hidden; text-overflow: clip; font-size: var(--vg-font-s); font-weight: var(--vg-weight-strong); color: var(--text-normal); cursor: text; }
 .task-gantt-external-label.is-completed { color: var(--text-muted); }
+.task-gantt-external-label.is-disabled { color: var(--text-muted); border-style: dashed; }
 
 /* The badge border follows the inline tag colour via
    currentColor; the badge color itself stays inline. */
@@ -671,8 +676,9 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .task-gantt-popover-status-select, .task-gantt-popover-due-input { display: block; width: 100%; min-width: 0; min-height: 28px; padding: 4px 6px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); }
 .task-gantt-popover-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--vg-space-3); margin-top: 12px; padding-top: 8px; border-top: var(--vg-border); }
 .task-gantt-popover-open-note { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; }
-.task-gantt-popover-open-note:hover { background: var(--background-modifier-hover); }
-.task-gantt-popover-open-note:focus-visible, .task-gantt-popover-toggle-completed:focus-visible, .task-gantt-popover-status-select:focus-visible, .task-gantt-popover-due-input:focus-visible, .task-gantt-popover-current-value textarea:focus-visible, .task-gantt-popover-current-status:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.task-gantt-popover-toggle-disabled { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; }
+.task-gantt-popover-open-note:hover, .task-gantt-popover-toggle-disabled:hover { background: var(--background-modifier-hover); }
+.task-gantt-popover-open-note:focus-visible, .task-gantt-popover-toggle-completed:focus-visible, .task-gantt-popover-toggle-disabled:focus-visible, .task-gantt-popover-status-select:focus-visible, .task-gantt-popover-due-input:focus-visible, .task-gantt-popover-current-value textarea:focus-visible, .task-gantt-popover-current-status:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .task-gantt-popover-toggle-completed:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
 .task-gantt-popover-toggle-completed { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 10px; font: inherit; color: var(--text-normal); background: var(--background-secondary); border: var(--vg-border); border-radius: var(--vg-radius-s); cursor: pointer; color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
 
@@ -946,6 +952,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-after { display: flex; gap: 6px; align-items: baseline; min-width: 0; color: var(--text-normal); font-weight: var(--font-semibold); }
 .vg-pv-side { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .vg-pv-value { min-width: 0; }
+.vg-pv-value.is-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-row.is-removed .vg-pv-after .vg-pv-value, .vg-pv-chip.is-removed { text-decoration: line-through; }
 .vg-pv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-text.is-multiline { display: block; max-height: 8em; overflow: auto; padding: 2px 6px; border-inline-start: 2px solid var(--background-modifier-border); }
@@ -1085,3 +1092,73 @@ button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(
 .vg-ai-model-row .setting-item-name { overflow-wrap: anywhere; }
 .vg-ai-model-empty { padding: 8px 0; }
 .vg-settings-ai input[type="search"] { min-width: 0; flex: 1 1 12em; }
+
+/* Parent milestones: under the name in the workbench, in the bottom band of the gantt row. */
+.twb-milestones { display: flex; flex-wrap: wrap; gap: var(--vg-space-1); margin-top: var(--vg-space-1); }
+.twb-milestone { display: inline-flex; align-items: center; gap: 3px; height: auto; padding: 0 var(--vg-space-2); border: var(--vg-border-width) solid var(--vg-border-danger); border-radius: var(--vg-radius-pill); background: var(--vg-tint-danger); box-shadow: none; color: var(--text-normal); font-size: var(--vg-font-xs); line-height: 18px; cursor: pointer; }
+.twb-milestone:hover { filter: brightness(1.08); }
+.twb-milestone-star { color: var(--text-warning); font-size: var(--vg-font-s); }
+.twb-milestone-date { color: var(--text-muted); }
+.twb-milestone.is-overdue .twb-milestone-date { color: var(--vg-color-danger); font-weight: var(--vg-weight-strong); }
+.twb-milestone.is-today .twb-milestone-date { color: var(--text-warning); font-weight: var(--vg-weight-strong); }
+.task-gantt-milestone[style*="--vg-milestone-color"], .twb-milestone[style*="--vg-milestone-color"] { border-color: var(--vg-milestone-color); background: color-mix(in srgb, var(--vg-milestone-color) 22%, var(--background-primary)); }
+.twb-milestone-add { border-style: dashed; background: transparent; color: var(--text-muted); }
+.twb-milestone .task-workbench-tag-chip { height: 14px; padding: 0 var(--vg-space-1); font-size: var(--vg-font-micro); }
+.twb-milestone-popover { position: fixed; z-index: var(--layer-popover, 40); display: flex; flex-direction: column; gap: var(--vg-space-3); width: 260px; padding: var(--vg-space-4); border: var(--vg-border-width) solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary); box-shadow: var(--shadow-s); }
+.twb-milestone-popover-field { display: flex; flex-direction: column; gap: var(--vg-space-1); }
+.twb-milestone-popover-field label { color: var(--vg-color-muted); font-size: var(--vg-font-s); }
+.twb-milestone-popover-field input { width: 100%; }
+.twb-milestone-popover-tags { display: flex; flex-wrap: wrap; gap: var(--vg-space-1); }
+.twb-milestone-popover-tag { cursor: pointer; opacity: 0.55; }
+.twb-milestone-popover-tag.is-selected { opacity: 1; box-shadow: 0 0 0 1.5px var(--interactive-accent); }
+.twb-milestone-popover-buttons { display: flex; justify-content: flex-end; gap: var(--vg-space-2); }
+.twb-memo-popover { position: fixed; z-index: var(--layer-popover, 40); display: flex; flex-direction: column; gap: var(--vg-space-3); width: 340px; max-width: calc(100vw - 16px); max-height: 60vh; padding: var(--vg-space-4); border: var(--vg-border-width) solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary); box-shadow: var(--shadow-s); }
+.twb-memo-popover-head { display: flex; align-items: center; justify-content: space-between; gap: var(--vg-space-3); }
+.twb-memo-popover-title { font-weight: var(--font-semibold); }
+.twb-memo-popover-bulk { display: flex; gap: var(--vg-space-2); }
+.twb-memo-popover-list { display: flex; flex-direction: column; gap: var(--vg-space-2); overflow-y: auto; }
+.twb-memo-popover-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--vg-space-2); }
+.twb-memo-popover-row.is-closed .twb-memo-popover-text { opacity: 0.6; }
+.twb-memo-popover-text { min-width: 0; }
+.twb-memo-popover-headline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.twb-memo-popover-where, .twb-memo-popover-empty { color: var(--vg-color-muted); font-size: var(--vg-font-s); }
+
+/* Floating memos: one layer over the chart (the last child of the scroll container). It scrolls with the chart;
+   only memos' own boxes take pointer events. A closed memo is a pin. */
+.vg-memo-layer { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; }
+.vg-memo-layer > .vg-memo-group { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.vg-memo-group > * { pointer-events: auto; }
+.vg-memo-group.is-dot-dragging > * { pointer-events: none; }
+.vg-memo-group { --memo-edge: color-mix(in srgb, var(--color-yellow) 70%, var(--text-muted)); --memo-fill: color-mix(in srgb, var(--color-yellow) 13%, var(--background-primary)); }
+.vg-memo-group.is-ai { --memo-edge: var(--interactive-accent); }
+
+.vg-memo-tail { position: absolute; height: 0; border-top: 1.6px solid var(--memo-edge); transform-origin: 0 0; pointer-events: none; }
+.vg-memo-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--memo-edge); box-shadow: 0 0 0 2px var(--background-primary); cursor: move; }
+.vg-memo-dot.is-dragging { box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--memo-edge); }
+
+.vg-memo { position: absolute; display: flex; flex-direction: column; min-width: 140px; max-width: 480px; min-height: 48px; border: 1px solid var(--memo-edge); border-radius: var(--radius-m); background: var(--memo-fill); box-shadow: var(--vg-shadow-raised); color: var(--text-normal); font-size: var(--vg-font-s, 12px); line-height: 1.45; overflow: hidden; }
+.vg-memo.is-dragging { box-shadow: var(--shadow-s); opacity: 0.96; }
+.vg-memo-head { display: flex; align-items: center; gap: 4px; height: 22px; padding: 0 2px 0 7px; border-bottom: 1px solid color-mix(in srgb, var(--memo-edge) 35%, transparent); color: var(--text-muted); font-size: var(--vg-font-xs, 11px); cursor: grab; user-select: none; flex: none; }
+.vg-memo.is-dragging .vg-memo-head { cursor: grabbing; }
+.vg-memo-head svg { width: 12px; height: 12px; flex: none; }
+.vg-memo-where { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vg-memo-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 18px; padding: 0; border: 0; border-radius: var(--radius-s); background: transparent; box-shadow: none; color: var(--text-muted); cursor: pointer; }
+.vg-memo-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.vg-memo-text { padding: 5px 9px 7px; max-height: 240px; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; flex: 1 1 auto; cursor: text; }
+.vg-memo-edit { flex: 1 1 auto; min-height: 60px; overflow: hidden; margin: 0; padding: 5px 9px 7px; border: 0; border-radius: 0; background: var(--background-primary); color: var(--text-normal); font: inherit; line-height: inherit; resize: none; box-shadow: inset 0 0 0 2px var(--interactive-accent); }
+.vg-memo-edit:focus { outline: none; }
+.vg-memo-resize { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--memo-edge) 50%, var(--memo-edge) 58%, transparent 58%, transparent 72%, var(--memo-edge) 72%, var(--memo-edge) 80%, transparent 80%); }
+.vg-memo-group:hover .vg-memo, .vg-memo-group:focus-within .vg-memo, .vg-memo.is-dragging { z-index: 1; }
+
+/* AI proposal: dashed accent frame and a mark, like the preview phantoms; a deletion is faded. */
+.vg-memo.is-ai { border-style: dashed; border-width: 1.5px; background: color-mix(in srgb, var(--interactive-accent) 7%, var(--background-primary)); }
+.vg-memo.is-ai.is-deleted { opacity: 0.55; }
+.vg-memo.is-ai.is-deleted .vg-memo-text { text-decoration: line-through; }
+.vg-memo-mark { flex: none; padding: 0 6px; border-radius: var(--radius-s); background: var(--interactive-accent); color: var(--text-on-accent); font-size: 10px; font-weight: 600; line-height: 16px; }
+
+/* Closed: only a small pin at the anchor. */
+.vg-memo-pin { position: absolute; display: inline-flex; align-items: center; gap: 2px; height: 18px; padding: 0 5px 0 4px; margin: -9px 0 0 -9px; border: 1px solid var(--memo-edge); border-radius: 9px 9px 9px 2px; background: var(--memo-fill); box-shadow: var(--vg-shadow-flat); color: color-mix(in srgb, var(--memo-edge) 70%, var(--text-normal)); cursor: pointer; }
+.vg-memo-pin svg { width: 11px; height: 11px; }
+.vg-memo-pin:hover { box-shadow: var(--vg-shadow-raised); }
+
+.task-gantt-memos.is-off { opacity: 0.6; }

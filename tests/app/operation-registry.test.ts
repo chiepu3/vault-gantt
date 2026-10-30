@@ -271,3 +271,33 @@ describe("plan same-file grouping", () => {
     expect((await a.registry.get(child2.id)).currentStatus).toBe("status4");
   });
 });
+
+describe("parent milestones through the UI save path", () => {
+  it("adds, renames, re-tags and removes milestones and keeps due on the earliest one", async () => {
+    const a = setup();
+    const row = await createTask(a.vault, a.settings, "親タスク");
+    await a.registry.updateFromUI([{ row, patch: { dueDate: "2026-11-01" } }]);
+    let saved = await a.registry.get(row.id);
+    expect(saved.dueDate).toBe("2026-11-01");
+
+    await a.registry.updateFromUI([{ row: saved, patch: { milestones: [
+      { key: "due", title: "期限", date: "2026-11-01" },
+      { key: "β版", title: "β版", date: "2026-10-20", tags: ["開発"] },
+    ] } }]);
+    saved = await a.registry.get(row.id);
+    expect(saved.dueDate).toBe("2026-10-20");
+    expect(saved.milestones?.map((m) => [m.title, m.date, m.tags ?? []])).toEqual([
+      ["期限", "2026-11-01", []],
+      ["β版", "2026-10-20", ["開発"]],
+    ]);
+    const note = a.vault.getFileContentById(row.id)!;
+    expect(note).toContain("milestones:");
+    expect(note).toMatch(/due: ["']?2026-10-20/);
+
+    await a.registry.updateFromUI([{ row: saved, patch: { milestones: [] } }]);
+    saved = await a.registry.get(row.id);
+    expect(saved.milestones).toBeUndefined();
+    expect(saved.dueDate ?? "").toBe("");
+    expect(a.vault.getFileContentById(row.id)!).not.toContain("milestones:");
+  });
+});
