@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.16.1 (2026-10-30)
+
+### 修正
+
+- 直前の保存と重なってUI操作の保存が競合で止まる問題を直す ([#86](https://github.com/chiepu3/vault-gantt/pull/86))
+
 ## v0.16.0 (2026-10-30)
 
 ### 新機能
