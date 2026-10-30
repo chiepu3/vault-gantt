@@ -6404,9 +6404,11 @@ export class TaskGanttView extends ItemView {
     const el = this.dragTooltipEl;
     el.textContent = text;
     el.classList.add("is-visible");
-    // Place the tooltip right of the cursor and clamp its top to 8px.
-    el.style.left = `${clientX + 8}px`;
-    el.style.top = `${Math.max(8, clientY - 8)}px`;
+    // Place the tooltip right of the cursor and clamp its top to 8px. It is absolute inside the container, so client
+    // coordinates are made relative to the container first (a left sidebar or a split would shift it otherwise).
+    const origin = el.parentElement?.getBoundingClientRect();
+    el.style.left = `${clientX - (origin?.left ?? 0) + 8}px`;
+    el.style.top = `${Math.max(8, clientY - (origin?.top ?? 0) - 8)}px`;
   }
 
   /** hides the tooltip and clears its content. */
