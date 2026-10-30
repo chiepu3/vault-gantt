@@ -121,6 +121,15 @@ export class ChatSession {
     }
     this.emit();
   }
+  /** Replaces the initial empty conversation with saved ones; the saved active one (or a fresh one) becomes active. */
+  restore(saved: readonly Conversation[], activeId?: string): void {
+    if (!saved.length || this.conversations.some((conversation) => conversation.messages.length)) return;
+    for (const conversation of saved) for (const message of conversation.messages) settleParts(message);
+    this.conversations.splice(0, this.conversations.length, ...saved);
+    this.counter = Math.max(this.counter, ...saved.map((conversation) => Number(conversation.id) || 0));
+    const active = saved.find((conversation) => conversation.id === activeId);
+    if (active) { this.active = active; this.emit(); } else this.newConversation();
+  }
   get connected(): boolean { return !this.config.connectionError && this.provider.connected(this.config); }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private emit(): void { for (const listener of this.listeners) listener(); }
@@ -158,7 +167,7 @@ export class ChatSession {
     if (conversation.messages.length >= 100) { conversation.error = "会話の上限です。新しい会話を開始してください。"; this.emit(); return; }
     const controller = new AbortController(); this.controller = controller; this.owners.set(conversation, controller);
     conversation.status = "running"; conversation.error = ""; conversation.draft = ""; conversation.completion = undefined;
-    conversation.title = text.trim().slice(0, 32);
+    if (!conversation.messages.length) conversation.title = text.trim().replace(/\s+/g, " ").slice(0, 32);
     conversation.messages.push({ role: "user", text, proposals: [], parts: [{ type: "text", id: "text:0", text }] });
     const assistant: ChatMessage = { role: "assistant", text: "", proposals: [], parts: [] };
     conversation.messages.push(assistant);

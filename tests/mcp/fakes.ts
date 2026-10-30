@@ -30,7 +30,7 @@ export function createFakeMcp(capabilities?: readonly Capability[]) {
     },
     async read<K extends ReadOperationId>(id: K, input: OperationInputMap[K], context: RequestContext): Promise<OperationOutputMap[K]> {
       contexts.push(context); calls.read(id, input, context);
-      return (id === "D01" ? READ_FIXTURES.daily : READ_FIXTURES.tasks) as unknown as OperationOutputMap[K];
+      return (id === "D01" ? READ_FIXTURES.daily : id === "N01" ? READ_FIXTURES.memos : READ_FIXTURES.tasks) as unknown as OperationOutputMap[K];
     },
     async propose<K extends WriteOperationId>(id: K, input: OperationInputMap[K], context: RequestContext) {
       contexts.push(context); calls.propose(id, input, context);

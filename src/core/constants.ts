@@ -67,6 +67,8 @@ export const DEFAULT_SETTINGS: TaskWorkbenchSettings = {
 
   // Gantt Display/Sync
   ganttZoom: 28,
+  aiChatPlacement: "right",
+  aiChatAutoOpen: true,
   ganttSyncEnabled: false,
   ganttSyncUrl: "",
   ganttSyncIntervalMinutes: 5,
@@ -110,6 +112,10 @@ export const DEFAULT_SETTINGS: TaskWorkbenchSettings = {
     },
   ],
 
+
+  // Floating memos
+  ganttMemosVisible: true,
+  ganttMemoLayout: {},
 
   // Rendering/Integration
   ganttFeatureSyncEnabled: true,

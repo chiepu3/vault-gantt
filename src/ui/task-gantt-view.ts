@@ -6,11 +6,15 @@ import { NotePreservationError } from "../core/note-v2";
 import type { ScheduleGhostStore } from "../app/schedule-ghost";
 import { renderGhost, renderPointGhosts } from "./ghost-layer";
 import type { PreviewPort } from "../contracts/ports";
-import { PreviewGanttLayer } from "./preview-gantt-layer";
+import { PreviewGanttLayer, type MemoProposal } from "./preview-gantt-layer";
 import { displayedHours, eventWorkloadKey, hoursChangeText, type CellChange, type DailyChange, type HlState, type PhantomBar } from "./preview-highlights";
 import { SubtaskAddConflictError } from "../app/task-operations";
 import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
+import { MemoLayer, type MemoDropTarget, type MemoEntry, type MemoPoint } from "./memo-layer";
+import type { MemoHost } from "../app/memo-controller";
+import { resolveMemoAnchor, type MemoAnchor } from "../app/memo-anchor";
+import type { MemoMeta } from "../core/memo";
 
 import type { Logger } from "../core/logger";
 
@@ -35,6 +39,7 @@ import {
 } from "../core/constants";
 import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 import { makeUniqueMarkerKey, todayStr } from "../core/utils";
+import { getMilestones, newMilestoneKey } from "../core/milestones";
 import { normalizeWorkloadMap } from "../core/task-patch";
 import {
   addDays,
@@ -45,6 +50,9 @@ import {
   collectWorkloadEntriesForDate,
   compareWorkloadEntries,
   computeRowHeight,
+  layoutMilestoneTiers,
+  milestoneBandHeight,
+  MILESTONE_TIER_HEIGHT,
   computeLaneWindow,
   laneWindowCoversViewport,
   filterSubtasksInWindow,
@@ -258,7 +266,7 @@ interface DailyTodoPopoverRow {
   item: DailyTodoItem | null;
   rowEl: HTMLElement;
   checkEl: HTMLInputElement;
-  inputEl: HTMLInputElement;
+  inputEl: HTMLTextAreaElement;
 }
 
 interface DailyTodoPopoverState {
@@ -332,6 +340,8 @@ export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
   /** Opens the note holding the ToDo, scrolled to its line. */
   openDailyTodoItem(item: DailyTodoItem): Promise<void>;
   saveSettings(): Promise<void>;
+  /** Floating memos. Absent = no memo UI is drawn. */
+  memos?: MemoHost;
 
 
 
@@ -482,6 +492,9 @@ export interface TaskGanttViewHost extends Partial<PreviewUiHostPorts> {
  * opposite direction (Gantt → Workbench instead of Workbench → Gantt).
  */
   activateView(): Promise<void>;
+
+  /** Opens the AI chat where the settings say (right sidebar by default). */
+  openAIChat?(): Promise<void>;
 
 
 
@@ -635,6 +648,8 @@ const MIN_BAR_WIDTH_PX = 8;
 // handles. Width-gating at render time keeps narrow bars uncluttered without
 // relying on CSS width-attribute selectors.
 const BAR_TAG_BADGE_MIN_WIDTH_PX = 72;
+// Badge margin plus the gap before it, counted off the title's room.
+const BAR_TAG_BADGE_GAP_PX = 10;
 
 // Compare the bar's inner width with half the estimated title width.
 const BAR_INNER_PADDING_PX = 14;
@@ -642,15 +657,25 @@ const BAR_INNER_PADDING_PX = 14;
 // edge and its rendered box never exceeds 340px (text + tag badge combined).
 const EXTERNAL_LABEL_GAP_PX = 8;
 const EXTERNAL_LABEL_MAX_WIDTH_PX = 340;
-// gap (px) below the deadline-marker band (mirrors the DEADLINE
-// addition inside computeRowHeight).
-const DEADLINE_MARKER_GAP_PX = 6;
+// width (px) of a milestone's ★, date and padding, before its name is added at ~12px per character
+const MILESTONE_FULL_LABEL_PX = 70;
+
+interface PlacedMilestone {
+  milestone: GanttMarker;
+  left: number;
+  tier: number;
+  full: boolean;
+  /** true when it counts toward the row's height (it is within the lane window) */
+  sizing: boolean;
+}
 // at most four tag chips in the LEFT column.
 const MAX_TAG_CHIPS = 4;
 
 // Center the 24px bar vertically within the 44px lane band, leaving 10px
 // above and below.
 const BAR_VERTICAL_INSET_PX = (LANE_BASE_HEIGHT - BAR_HEIGHT) / 2;
+/** Where a memo anchored to a whole row (a parent, or the 「その他」 row) points, from the row top. */
+const MEMO_ROW_ANCHOR_Y_PX = 8;
 
 
 // event-row height = Math.max(44, 12 + rows × 24).
@@ -1436,6 +1461,7 @@ export class TaskGanttView extends ItemView {
       this.previewLayer = new PreviewGanttLayer(this.host.previewPort);
       this.unsubscribePreview = this.previewLayer.subscribe(() => {
         this.clearGhostLayer();
+        this.buildMemoEntries();
         this.renderChart();
         this.revealPreviewTarget();
         this.fadeInHighlights();
@@ -1465,6 +1491,7 @@ export class TaskGanttView extends ItemView {
     // Row heights change when the lane window moves; we restore scrollTop ourselves.
     this.wrapEl.style.overflowAnchor = "none";
     container.appendChild(this.wrapEl);
+    this.memoLayer = this.createMemoLayer();
     // scroll handler drives range auto-extension + floating month.
     this.wrapEl.addEventListener("scroll", () => {
       this.onScroll();
@@ -1585,6 +1612,7 @@ export class TaskGanttView extends ItemView {
     this.clearGhostLayer();
     this.activeContextMenu?.hide();
     this.activeContextMenu = undefined;
+    this.memoLayer?.dispose(); this.memoLayer = undefined;
 
 
     this.tagFilterMenuEl?.remove();
@@ -1612,9 +1640,9 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadDaySummaryPopover();
   }
 
-  /** Hover popovers stay closed while the Daily ToDo editor or a context menu is open. */
+  /** Hover popovers stay closed while the Daily ToDo editor or a context menu is open, or a memo dot is being dragged. */
   private hoverPopoversBlocked(): boolean {
-    return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined;
+    return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined || this.memoDragging;
   }
 
   /** Row elements are keyed by the parent note's path; tasks are known by id. */
@@ -1670,7 +1698,7 @@ export class TaskGanttView extends ItemView {
   private revealPreviewTarget(): void {
     const layer = this.previewLayer;
     if (!layer?.active) { this.scrolledToPreviewId = undefined; return; }
-    if (this.scrolledToPreviewId === layer.previewId || !layer.highlights) return;
+    if (this.scrolledToPreviewId === layer.previewId || (!layer.highlights && !layer.memoProposals().length)) return;
     this.scrolledToPreviewId = layer.previewId;
     const { taskId, date } = layer.focusTarget();
     if (date) {
@@ -1753,7 +1781,8 @@ export class TaskGanttView extends ItemView {
 
     const renderStartedAt = Date.now();
 
-    await Promise.all([this.refreshTasks(), this.refreshDailyTodoSummaries()]);
+    await Promise.all([this.refreshTasks(), this.refreshDailyTodoSummaries(), this.refreshMemoMetas()]);
+    this.buildMemoEntries();
     this.renderChart();
     if (opts?.fromHost) this.hostRefreshes++;
 
@@ -1873,6 +1902,7 @@ export class TaskGanttView extends ItemView {
     this.syncStickyHeaderHeight();
     this.populateNearRows();
     this.updateStickyTitles();
+    this.placeMemos();
   }
 
   /** Builds one row's deferred timeline contents (no-op once built). */
@@ -1955,6 +1985,7 @@ export class TaskGanttView extends ItemView {
     const scrollLeft = this.wrapEl.scrollLeft, scrollTop = this.wrapEl.scrollTop;
     this.wrapEl.empty();
     this.pendingRowFills.clear();
+    this.memoRowGeometry.clear();
 
     // header, then the fixed rows — rendered even when
     // the parent list turns out empty below.
@@ -2162,6 +2193,338 @@ export class TaskGanttView extends ItemView {
   }
 
 
+  // Floating memos
+  //
+  // The memo layer (memo-layer.ts) owns the bubbles. This side loads the memo notes, resolves where each one sits,
+  // and answers where an anchor is on the chart from geometry recorded while rows were built, so a memo never
+  // causes a row to be built or rebuilt.
+
+  private memoLayer: MemoLayer | undefined;
+  private memoMetas: MemoMeta[] = [];
+  private memoEntries: MemoEntry[] = [];
+  private readonly memoRows = new Map<string, TaskRow>();
+  private memoButtonEl: HTMLButtonElement | undefined;
+  /** A memo's anchor dot is being dragged across the chart. */
+  private memoDragging = false;
+  /** Where each parent row is and the center of each of its bars (px from the row top); `shown` is set while a tag filter hides some bars. */
+  private readonly memoRowGeometry = new Map<string, { rowEl: HTMLElement; bars: Map<string, number>; shown?: Set<string> }>();
+
+  private createMemoLayer(): MemoLayer | undefined {
+    const memos = this.host.memos;
+    if (!memos) return undefined;
+    return new MemoLayer({
+      wrap: this.wrapEl,
+      settings: () => this.host.settings,
+      entries: () => this.memoEntries,
+      pointOf: (entry) => this.memoPoint(entry),
+      leftWidth: PARENT_COL_WIDTH,
+      contentSize: () => this.memoContentSize(),
+      dropTargetAt: (_entry, clientX, clientY) => this.memoDropTargetAt(clientX, clientY),
+      dotDragging: (active) => this.setMemoDragging(active),
+      dragHint: (label, clientX, clientY) => { if (label === null) this.hideDragTooltip(); else this.showDragTooltip(label, clientX, clientY); },
+      readText: (meta) => memos.readText(meta),
+      saveText: async (meta, text) => {
+        try {
+          await memos.updateText(meta, text);
+        } catch (err) {
+          this.host.logger.error("TaskGanttView", "failed to save memo text", err);
+          new Notice("メモを保存できませんでした。詳細は console を確認してください。");
+          throw err;
+        }
+        await this.refreshMemoMetas();
+        this.buildMemoEntries();
+        const saved = this.memoMetas.find((candidate) => candidate.id === meta.id);
+        if (saved) this.memoLayer?.rememberText(saved, text);
+        this.placeMemos();
+      },
+      moveAnchor: (entry, target) => this.runMemoWrite("メモを移動できませんでした", (host) => entry.meta ? host.reanchor(entry.meta, { task: this.memoTaskOf(target.anchor), date: target.anchor.date }) : Promise.resolve()),
+      saveLayout: () => memos.saveLayout(),
+      recordLayout: (label, id, before, after) => memos.recordLayout(label, id, before, after),
+      openMenu: (evt, entry) => this.openMemoMenu(evt, entry),
+    });
+  }
+
+  /** The scroll content's size without the memo layer: the date axis is known, the bottom is the last row's edge. */
+  private memoContentSize(): { width: number; height: number } {
+    const wrap = this.wrapEl, layer = this.memoLayer?.element;
+    let last = wrap.lastElementChild as HTMLElement | null;
+    if (last && last === layer) last = last.previousElementSibling as HTMLElement | null;
+    const bottom = last ? last.offsetTop + last.offsetHeight : 0;
+    return {
+      width: Math.max(wrap.clientWidth, PARENT_COL_WIDTH + this.dates.length * this.dayWidth),
+      height: Math.max(wrap.clientHeight, bottom),
+    };
+  }
+
+  private async refreshMemoMetas(): Promise<void> {
+    const memos = this.host.memos;
+    if (!memos) return;
+    try {
+      this.memoMetas = await memos.load();
+    } catch (err) {
+      this.host.logger.error("TaskGanttView", "failed to load memos", err);
+    }
+  }
+
+  /** Resolves every memo against the current rows. Cheap: no I/O. */
+  private buildMemoEntries(): void {
+    if (!this.host.memos) return;
+    this.memoRows.clear();
+    for (const row of this.tasks) {
+      this.memoRows.set(row.id, row);
+      for (const subtask of row.subtasks?.values() ?? []) this.memoRows.set(subtask.id, subtask);
+    }
+    const stored = this.memoMetas.map((meta) => {
+      const anchor = resolveMemoAnchor(meta, this.memoRows);
+      return { id: meta.id, meta, anchor, where: this.memoWhere(anchor) };
+    });
+    // An AI proposal replaces the stored bubble it changes or deletes, and adds the ones it creates.
+    const proposals = new Map((this.previewLayer?.memoProposals() ?? []).map((proposal) => [proposal.memoId, proposal]));
+    this.memoEntries = [
+      ...stored.map((entry) => {
+        const proposal = proposals.get(entry.id);
+        return proposal ? this.memoProposalEntry(proposal, entry.meta) : entry;
+      }),
+      ...[...proposals.values()].filter((proposal) => proposal.mark === "追加").map((proposal) => this.memoProposalEntry(proposal)),
+    ];
+    this.updateMemoButton();
+  }
+
+  private memoProposalEntry(proposal: MemoProposal, meta?: MemoMeta): MemoEntry {
+    const { state } = proposal, row = state.taskId ? this.memoRows.get(state.taskId) : undefined;
+    const anchor: MemoAnchor = row
+      ? { kind: row.kind === "parent" ? "parent" : "subtask", taskId: row.id, taskName: state.taskName, parentId: row.kind === "parent" ? row.id : row.parentId, date: state.date }
+      : { kind: "free", date: state.date };
+    return { id: proposal.memoId, ...(meta ? { meta } : {}), anchor, where: this.memoWhere(anchor), text: state.text, proposal: proposal.mark };
+  }
+
+  private memoWhere(anchor: MemoAnchor): string {
+    if (anchor.kind !== "free") return anchor.taskName ?? "";
+    return anchor.orphan ? `その他 · ${anchor.date}（元のタスクなし）` : `その他 · ${anchor.date}`;
+  }
+
+  /** Re-reads the memo notes and redraws the layer only (the chart is not rendered). Used after memo edits and external note changes. */
+  async reloadMemos(): Promise<void> {
+    if (!this.host.memos) return;
+    await this.refreshMemoMetas();
+    this.buildMemoEntries();
+    this.placeMemos();
+  }
+
+  /** Scrolls to a memo's day and row (the bubble itself is opened by the caller through the layout state). */
+  async revealMemo(id: string): Promise<void> {
+    if (!this.host.memos) return;
+    await this.reloadMemos();
+    const entry = this.memoEntries.find((candidate) => candidate.id === id);
+    if (!entry) return;
+    const { date } = entry.anchor;
+    if (!this.dates.includes(date)) { this.rangeStart = addDays(date, -14); this.rangeDays = Math.max(this.rangeDays, 90); this.renderChart(); }
+    this.scrollToDate(date, INITIAL_SCROLL_OFFSET_PX + 180);
+    const row = entry.anchor.kind === "free" ? this.eventRowEl : this.memoRowGeometry.get(entry.anchor.parentId ?? "")?.rowEl;
+    if (row) this.wrapEl.scrollTop = Math.max(0, row.offsetTop - 160);
+    this.placeMemos();
+  }
+
+  private placeMemos(): void {
+    if (!this.memoLayer || this.wrapEl.offsetParent === null) return;
+    this.memoLayer.place();
+  }
+
+  private recordMemoRow(
+    parent: TaskRow,
+    rowEl: HTMLElement,
+    renders: ParentRowBarRender[],
+    laneOffsets: number[],
+    topRowCounts: number[],
+    shown: TaskRow[] | undefined
+  ): void {
+    if (!this.host.memos) return;
+    const bars = new Map<string, number>();
+    for (const { bar } of renders) {
+      bars.set(bar.task.id, laneOffsets[bar.lane] + topRowCounts[bar.lane] * EXTERNAL_LABEL_ROW_HEIGHT + LANE_BASE_HEIGHT / 2);
+    }
+    this.memoRowGeometry.set(parent.id, { rowEl, bars, shown: shown && new Set(shown.map((task) => task.id)) });
+  }
+
+  /** The anchor in scroll-content px, or null when the memo is not on the chart (filtered out, no bar, outside the drawn days). */
+  private memoPoint(entry: MemoEntry): MemoPoint | null {
+    const { anchor } = entry;
+    const index = diffDays(this.rangeStart, anchor.date);
+    if (index < 0 || index >= this.dates.length) return null;
+    const x = PARENT_COL_WIDTH + index * this.dayWidth + this.dayWidth / 2;
+    if (anchor.kind === "free") {
+      // The その他 row's middle; with that row turned off, the top of the first parent row.
+      const row = this.eventRowEl;
+      if (row && row.isConnected) return { x, y: row.offsetTop + row.offsetHeight / 2 };
+      const first = this.memoRowGeometry.values().next().value?.rowEl;
+      return first && first.isConnected ? { x, y: first.offsetTop + MEMO_ROW_ANCHOR_Y_PX } : null;
+    }
+    const geometry = anchor.parentId ? this.memoRowGeometry.get(anchor.parentId) : undefined;
+    if (!geometry || !geometry.rowEl.isConnected) return null;
+    const top = geometry.rowEl.offsetTop;
+    if (anchor.kind === "parent") return { x, y: top + MEMO_ROW_ANCHOR_Y_PX };
+    if (anchor.unplaced || !anchor.taskId || (geometry.shown && !geometry.shown.has(anchor.taskId))) return null;
+    // A bar outside the lane window has no lane yet; its memo sits at the first lane until the window follows.
+    return { x, y: top + (geometry.bars.get(anchor.taskId) ?? LANE_BASE_HEIGHT / 2) };
+  }
+
+  /** The day under a pointer x, within the drawn days. */
+  private dateAtClientX(clientX: number): string {
+    const date = dateFromClientX(clientX, this.wrapEl.getBoundingClientRect().left, this.wrapEl.scrollLeft, this.dayWidth, this.rangeStart);
+    const last = this.dates[this.dates.length - 1];
+    return last && date > last ? last : date;
+  }
+
+  /**
+   * What a dragged memo dot would attach to at the pointer: a subtask bar (any parent's, the day held within the bar),
+   * the empty timeline of a parent row, or the 「その他」 row. Anywhere else (header, name column, outside) is no target.
+   */
+  private memoDropTargetAt(clientX: number, clientY: number): MemoDropTarget | null {
+    // The dragged memo has pointer-events off, so the first element is the chart surface itself.
+    const top = document.elementsFromPoint?.(clientX, clientY)[0] as HTMLElement | undefined;
+    const up = (el: HTMLElement | null | undefined, cls: string): HTMLElement | null => {
+      for (let node = el ?? null; node; node = node.parentElement ?? (node.parentNode as HTMLElement | null)) if (node.classList?.contains(cls)) return node;
+      return null;
+    };
+    const date = this.dateAtClientX(clientX);
+    const label = (name: string, day: string): string => `${name} · ${Number(day.slice(5, 7))}/${Number(day.slice(8, 10))}`;
+    const bar = up(top, "task-gantt-bar");
+    const barTask = bar?.dataset.taskId ? this.memoRows.get(bar.dataset.taskId) : undefined;
+    if (barTask && barTask.kind === "subtask") {
+      const range = this.barRangeOf(barTask);
+      if (!range) return null;
+      const day = date < range.start ? range.start : date > range.end ? range.end : date;
+      const name = barTask.displayName || barTask.title;
+      return { anchor: { kind: "subtask", taskId: barTask.id, taskName: name, parentId: barTask.parentId, date: day }, label: label(name, day) };
+    }
+    const parentTask = this.memoRows.get(up(top, "task-gantt-parent-timeline")?.dataset.parentId ?? "");
+    if (parentTask && parentTask.kind === "parent") {
+      const name = parentTask.displayName || parentTask.title;
+      return { anchor: { kind: "parent", taskId: parentTask.id, taskName: name, parentId: parentTask.id, date }, label: label(name, date) };
+    }
+    if (up(top, "task-gantt-event-row")) return { anchor: { kind: "free", date }, label: label("その他", date) };
+    return null;
+  }
+
+  private barRangeOf(task: TaskRow | undefined): { start: string; end: string } | null {
+    const start = task?.plannedStartDate;
+    if (!task || !start) return null;
+    return { start, end: task.plannedEndDate && task.plannedEndDate >= start ? task.plannedEndDate : start };
+  }
+
+  private memoTaskOf(anchor: MemoAnchor): TaskRow | undefined {
+    return anchor.taskId ? this.memoRows.get(anchor.taskId) : undefined;
+  }
+
+  private setMemoDragging(active: boolean): void {
+    this.memoDragging = active;
+    if (active) this.closeHoverPopovers();
+    else this.armRichPopoverSuppress();
+  }
+
+  /** Runs one memo write; a failure is reported, and the layer is redrawn from the notes either way. */
+  private async runMemoWrite(failure: string, write: (memos: MemoHost) => Promise<unknown>): Promise<void> {
+    const memos = this.host.memos;
+    if (!memos) return;
+    try {
+      await write(memos);
+    } catch (err) {
+      this.host.logger.error("TaskGanttView", failure, err);
+      new Notice(`${failure}。詳細は console を確認してください。`);
+    }
+    await this.reloadMemos();
+  }
+
+  /** Opens a new memo for editing at `date` on `task`'s bar or row (no task = the 「その他」 row). Nothing is written until the text is confirmed. */
+  private beginMemo(task: TaskRow | undefined, date: string): void {
+    const memos = this.host.memos, layer = this.memoLayer;
+    if (!memos || !layer) return;
+    const settings = this.host.settings;
+    if (!settings.ganttMemosVisible) {
+      settings.ganttMemosVisible = true;
+      memos.saveLayout();
+      this.updateMemoButton();
+    }
+    const name = task ? task.displayName || task.title : undefined;
+    const anchor: MemoAnchor = !task
+      ? { kind: "free", date }
+      : task.kind === "parent"
+        ? { kind: "parent", taskId: task.id, taskName: name, parentId: task.id, date }
+        : { kind: "subtask", taskId: task.id, taskName: name, parentId: task.parentId, date };
+    layer.beginDraft({ id: "draft", anchor, where: this.memoWhere(anchor), text: "" }, async (text) => {
+      try {
+        const created = await memos.create({ task, date, text });
+        await this.refreshMemoMetas();
+        this.buildMemoEntries();
+        return this.memoMetas.find((meta) => meta.id === created.id) ?? created;
+      } catch (err) {
+        this.host.logger.error("TaskGanttView", "failed to create memo", err);
+        new Notice("メモを追加できませんでした。詳細は console を確認してください。");
+        return null;
+      }
+    });
+  }
+
+  private openMemoMenu(evt: MouseEvent, entry: MemoEntry): void {
+    const meta = entry.meta, memos = this.host.memos;
+    if (!meta || !memos) return;
+    const menu = new Menu();
+    this.activateContextMenu(menu);
+    menu.addItem((item) => {
+      item.setTitle("ノートを開く");
+      item.onClick(() => { void memos.openNote(meta); });
+    });
+    menu.addSeparator();
+    // No confirmation: the deletion is in the undo history.
+    menu.addItem((item) => {
+      item.setTitle("削除");
+      item.onClick(() => { void this.runMemoWrite("メモを削除できませんでした", () => memos.remove(meta)); });
+    });
+    menu.showAtMouseEvent(evt);
+  }
+
+  /** 「メモ n」: click shows or hides every memo; right-click opens or closes them all. */
+  private renderMemoButton(): void {
+    this.memoButtonEl = undefined;
+    if (!this.host.memos) return;
+    const button = document.createElement("button");
+    button.classList.add("task-gantt-memos");
+    button.addEventListener("click", () => {
+      const settings = this.host.settings;
+      settings.ganttMemosVisible = !settings.ganttMemosVisible;
+      this.host.memos?.saveLayout();
+      this.updateMemoButton();
+      this.placeMemos();
+    });
+    button.addEventListener("contextmenu", (evt: MouseEvent) => {
+      evt.preventDefault();
+      const menu = new Menu();
+      this.activateContextMenu(menu);
+      menu.addItem((item) => { item.setTitle("すべて開く"); item.onClick(() => this.setAllMemosOpen(true)); });
+      menu.addItem((item) => { item.setTitle("すべて閉じる"); item.onClick(() => this.setAllMemosOpen(false)); });
+      menu.showAtMouseEvent(evt);
+    });
+    this.toolbarEl.appendChild(button);
+    this.memoButtonEl = button;
+    this.updateMemoButton();
+  }
+
+  private updateMemoButton(): void {
+    const button = this.memoButtonEl;
+    if (!button) return;
+    const visible = this.host.settings.ganttMemosVisible !== false;
+    button.textContent = `メモ ${this.memoMetas.length}`;
+    button.classList.toggle("is-off", !visible);
+    button.title = visible ? "メモを隠す（右クリック: すべて開く / 閉じる）" : "メモを表示（右クリック: すべて開く / 閉じる）";
+  }
+
+  private setAllMemosOpen(open: boolean): void {
+    this.host.settings.ganttMemosVisible = true;
+    this.memoLayer?.setAllOpen(open);
+    this.updateMemoButton();
+  }
+
+
   // Toolbar (zoom controls + floating month)
 
 
@@ -2191,6 +2554,17 @@ export class TaskGanttView extends ItemView {
       void this.host.activateView();
     });
     this.toolbarEl.appendChild(workbenchButton);
+
+    if (this.host.openAIChat) {
+      const aiButton = document.createElement("button");
+      aiButton.classList.add("task-gantt-ai");
+      aiButton.textContent = "AI";
+      aiButton.title = "AIチャットを開く";
+      aiButton.addEventListener("click", () => { void this.host.openAIChat?.(); });
+      this.toolbarEl.appendChild(aiButton);
+    }
+
+    this.renderMemoButton();
 
     // 「今日へ」 — extends the range to include
     // today, re-renders, then (next frame, so the fresh content has layout)
@@ -2746,7 +3120,7 @@ export class TaskGanttView extends ItemView {
       parts.push(`#${parent.file.path}`);
       if (parent.subtasks === undefined) continue;
       for (const subtask of parent.subtasks.values()) {
-        parts.push(subtask.id, subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
+        parts.push(subtask.id, subtask.disabled ? "x" : "", subtask.plannedStartDate ?? "", subtask.plannedEndDate ?? "", mapKey(subtask.workloadPlan), mapKey(subtask.workloadActual));
       }
     }
     return parts.join("\u0001");
@@ -2766,7 +3140,8 @@ export class TaskGanttView extends ItemView {
     // exactly 0, and parents/subtasks are still visited in the old order, so every date's sum is bit-identical.
     for (const parent of parents) {
       for (const subtask of parent.subtasks?.values() ?? []) {
-        if (!hasPlannedDates(subtask)) continue;
+        // 一時無効 subtasks are shown on the Gantt but never counted.
+        if (subtask.disabled || !hasPlannedDates(subtask)) continue;
         const start = subtask.plannedStartDate;
         const end = subtask.plannedEndDate;
         const add = (values: Record<string, number> | undefined, into: number[]): void => {
@@ -3380,7 +3755,7 @@ export class TaskGanttView extends ItemView {
     left.appendChild(title);
     const subtitle = document.createElement("div");
     subtitle.classList.add("task-gantt-fixed-subtitle");
-    subtitle.textContent = "右クリックで追加 / ドラッグで移動";
+    subtitle.textContent = "ダブルクリックで追加 / ドラッグで移動";
     left.appendChild(subtitle);
 
     const timeline = document.createElement("div");
@@ -3406,20 +3781,33 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(bg);
     });
 
-    // A right-click on the event timeline is the direct add gesture; event
-    // chips stop propagation and use their own delete menu instead.
+    // A double-click on the event timeline adds an event; a right-click offers an event or a memo on that day.
+    // Event chips stop propagation and use their own handlers instead.
+    const dayAtPointer = (evt: MouseEvent): string => dateFromClientX(
+      evt.clientX,
+      this.wrapEl.getBoundingClientRect().left,
+      this.wrapEl.scrollLeft,
+      this.dayWidth,
+      this.rangeStart
+    );
+    const addEventAt = (date: string): void => {
+      addGanttEvent(this.host.settings, "", date);
+      void this.host.saveSettings().then(() => this.render());
+    };
+    timeline.addEventListener("dblclick", (evt: MouseEvent) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      addEventAt(dayAtPointer(evt));
+    });
     timeline.addEventListener("contextmenu", (evt: MouseEvent) => {
       evt.preventDefault();
       evt.stopPropagation();
-      const date = dateFromClientX(
-        evt.clientX,
-        this.wrapEl.getBoundingClientRect().left,
-        this.wrapEl.scrollLeft,
-        this.dayWidth,
-        this.rangeStart
-      );
-      addGanttEvent(this.host.settings, "", date);
-      void this.host.saveSettings().then(() => this.render());
+      const date = dayAtPointer(evt);
+      const menu = new Menu();
+      this.activateContextMenu(menu);
+      menu.addItem((item) => { item.setTitle("この日に予定を追加"); item.onClick(() => addEventAt(date)); });
+      if (this.host.memos) menu.addItem((item) => { item.setTitle("この日にメモを追加"); item.onClick(() => this.beginMemo(undefined, date)); });
+      menu.showAtMouseEvent(evt);
     });
 
     for (const placed of packedEvents) {
@@ -3512,7 +3900,9 @@ export class TaskGanttView extends ItemView {
       // code in a real browser (verified via CDP-trusted input in the E2E
       // harness); the bar/marker surfaces work because their dblclick
       // listeners sit on the same element pointerdown is wired to.
-      chip.addEventListener("dblclick", () => {
+      chip.addEventListener("dblclick", (evt: MouseEvent) => {
+        // The timeline's own double-click adds an event.
+        evt.stopPropagation();
         this.startInlineEdit({
           hostEl: label,
           initialValue: placed.event.title || "新しいタスク",
@@ -3936,8 +4326,9 @@ export class TaskGanttView extends ItemView {
     checkEl.checked = item?.completed ?? false;
     rowEl.appendChild(checkEl);
 
-    const inputEl = document.createElement("input");
-    inputEl.type = "text";
+    // A one-row textarea that grows with its content, so a long ToDo wraps and can be read in full.
+    const inputEl = document.createElement("textarea");
+    inputEl.rows = 1;
     inputEl.classList.add("task-gantt-daily-todo-input", "vg-input-sm");
     inputEl.placeholder = "ToDoを入力";
     inputEl.value = item?.text ?? "";
@@ -3963,10 +4354,23 @@ export class TaskGanttView extends ItemView {
     };
     checkEl.addEventListener("change", save);
     inputEl.addEventListener("change", save);
+    const fit = (): void => {
+      if (!inputEl.style) return;
+      inputEl.style.height = "auto";
+      if (inputEl.scrollHeight > 0) inputEl.style.height = `${inputEl.scrollHeight}px`;
+    };
+    inputEl.addEventListener("input", fit);
+    // Enter commits (as the single-line input did); IME confirmation keeps its own Enter.
+    inputEl.addEventListener("keydown", (evt: KeyboardEvent) => {
+      if (evt.key !== "Enter" || evt.isComposing) return;
+      evt.preventDefault();
+      inputEl.blur();
+    });
     moreButton.addEventListener("click", (evt: MouseEvent) => {
       this.openDailyTodoRowMenu(state, row, evt);
     });
 
+    requestAnimationFrame(fit);
     if (focus) {
       inputEl.focus();
     }
@@ -4566,9 +4970,20 @@ export class TaskGanttView extends ItemView {
       // inner width is less than half the estimated title width. Written in
       // the equivalent form below so a title can remain in-bar until it is
       // substantially wider than the readable space, in the narrow layout.
+      // The tag badge sits inside the bar when it fits, taking its share of the
+      // width, so the title only gets what is left after the badge.
+      const primaryBadgeTag = getPrimaryGanttTagDefinition(
+        this.host.settings,
+        bar.task.tags
+      );
+      const badgeInsideWidth =
+        primaryBadgeTag !== undefined && width >= BAR_TAG_BADGE_MIN_WIDTH_PX
+          ? Math.min(estimateTextWidth(primaryBadgeTag.name), width * 0.46) +
+            BAR_TAG_BADGE_GAP_PX
+          : 0;
       const readableInsideWidth = Math.max(
         0,
-        width - BAR_INNER_PADDING_PX
+        width - BAR_INNER_PADDING_PX - badgeInsideWidth
       );
       const needsLabel =
         labelText.length > 0 &&
@@ -4578,10 +4993,6 @@ export class TaskGanttView extends ItemView {
       // rendered and could place labels that overlap after the badge is added.
       // The badge represents only a tag directly on the bar; parent tags may
       // color the bar but do not supply a badge name.
-      const primaryBadgeTag = getPrimaryGanttTagDefinition(
-        this.host.settings,
-        bar.task.tags
-      );
       const packedLabelText =
         primaryBadgeTag !== undefined
           ? `${labelText} ${primaryBadgeTag.name}`
@@ -4652,13 +5063,18 @@ export class TaskGanttView extends ItemView {
     }
     const laneOffsets = computeLaneOffsets(laneHeights);
 
-    const hasDeadlineMarker = Boolean(parent.dueDate);
+    // Milestones stack in tiers like events; only those near the lane window size the row, as for subtasks.
+    const milestoneLayout = this.layoutParentMilestones(parent, baseDate, dayWidth, dates.length);
+    const milestoneTierCount =
+      milestoneLayout.length === 0
+        ? 0
+        : Math.max(1, milestoneLayout.reduce((n, m) => (m.sizing ? Math.max(n, m.tier + 1) : n), 0));
     const baseRowHeight = computeRowHeight(
       laneCount,
       topRowCounts,
       bottomRowCounts,
       markerRowCounts,
-      hasDeadlineMarker
+      milestoneTierCount
     );
     // Preview-only bars for rows the chart does not hold right now get their own strip below the lanes.
     const phantomLanes = this.layoutPhantomBars(parent.id);
@@ -4668,6 +5084,7 @@ export class TaskGanttView extends ItemView {
     const row = document.createElement("div");
     row.classList.add("task-gantt-parent-row");
     row.style.height = `${rowHeight}px`;
+    this.recordMemoRow(parent, row, renders, laneOffsets, topRowCounts, this.activeTagFilter.size === 0 ? undefined : visibleSubtasks);
     // The exact size of the row while the browser skips its off-screen contents (content-visibility: auto).
     setStyleVar(row, "contain-intrinsic-size", `${PARENT_COL_WIDTH + dates.length * dayWidth}px ${rowHeight}px`);
 
@@ -4682,6 +5099,7 @@ export class TaskGanttView extends ItemView {
     // timeline are built when the row nears the viewport, so a rebuild only pays for what can be seen.
     const timeline = document.createElement("div");
     timeline.classList.add("task-gantt-parent-timeline");
+    timeline.dataset.parentId = parent.id;
     timeline.style.width = `${dates.length * dayWidth}px`;
     timeline.style.height = `${rowHeight}px`;
     row.appendChild(timeline);
@@ -4700,7 +5118,8 @@ export class TaskGanttView extends ItemView {
         markerRowCounts,
         laneOffsets,
         rowHeight,
-        hasDeadlineMarker,
+        milestoneLayout,
+        milestoneTierCount,
         phantomLanes,
         stickyBars
       );
@@ -4839,6 +5258,32 @@ export class TaskGanttView extends ItemView {
  * — overflow is the CSS layer's job. Runs when the row is populated (see
  * populateNearRows), not when its shell is built.
  */
+  /**
+   * Places a parent's in-range milestones in tiers. Only those whose label reaches the lane window are packed and
+   * size the row (`sizing`); the rest sit on tier 0 and re-pack once scrolling brings them into the window.
+   */
+  private layoutParentMilestones(parent: TaskRow, baseDate: string, dayWidth: number, dayCount: number): PlacedMilestone[] {
+    const milestones = getMilestones(parent);
+    if (milestones.length === 0) return [];
+    const timelineWidth = dayCount * dayWidth;
+    const win = this.laneWindow;
+    const winLeft = win ? diffDays(baseDate, win.start) * dayWidth : -Infinity;
+    const winRight = win ? (diffDays(baseDate, win.end) + 1) * dayWidth : Infinity;
+    const placed: PlacedMilestone[] = [];
+    const sizing: { milestone: GanttMarker; left: number; width: number }[] = [];
+    for (const milestone of milestones) {
+      const left = diffDays(baseDate, milestone.date) * dayWidth;
+      if (left < 0 || left > timelineWidth) continue; // not rendered when its date is outside the visible range
+      const width = MILESTONE_FULL_LABEL_PX + milestone.title.length * 12;
+      if (left + width >= winLeft && left <= winRight) sizing.push({ milestone, left, width });
+      else placed.push({ milestone, left, tier: 0, full: true, sizing: false });
+    }
+    layoutMilestoneTiers(sizing).forEach((slot, i) => {
+      placed.push({ ...sizing[i], tier: slot.tier, full: slot.fits, sizing: true });
+    });
+    return placed.sort((a, b) => a.left - b.left);
+  }
+
   private renderParentTimeline(
     timeline: HTMLElement,
     parent: TaskRow,
@@ -4852,7 +5297,8 @@ export class TaskGanttView extends ItemView {
     markerRowCounts: number[],
     laneOffsets: number[],
     rowHeight: number,
-    hasDeadlineMarker: boolean,
+    milestoneLayout: PlacedMilestone[],
+    milestoneTierCount: number,
     phantomLanes: PhantomLayout = { laneCount: 0, bars: [] },
     stickyBars: { el: HTMLElement; title: HTMLElement | undefined; left: number; width: number }[] = []
   ): void {
@@ -4910,7 +5356,9 @@ export class TaskGanttView extends ItemView {
       // Render the bar centered in its base band.
       const barEl = document.createElement("div");
       barEl.classList.add("task-gantt-bar");
+      barEl.dataset.taskId = bar.task.id;
       if (bar.task.completed) barEl.classList.add("is-completed");
+      if (bar.task.disabled) barEl.classList.add("is-disabled");
       const barMark = this.previewLayer?.rowState(bar.task.id);
       if (barMark) barEl.classList.add("vg-hl-bar", `is-${barMark}`);
       const ownTagColor =
@@ -4951,7 +5399,10 @@ export class TaskGanttView extends ItemView {
       );
       // Option (b): only add the badge when the measured bar width can fit it
       // beside the title and resize handles; very narrow bars stay readable.
+      // A bar whose title is shown in a callout leaves its tag to the callout,
+      // so the tag is not displayed twice.
       if (
+        !needsLabel &&
         width >= BAR_TAG_BADGE_MIN_WIDTH_PX &&
         primaryBadgeTag !== undefined
       ) {
@@ -5263,54 +5714,75 @@ export class TaskGanttView extends ItemView {
       timeline.appendChild(node);
     }
 
-    // Render the due-date marker in the row's bottom band. It is shown only
-    // when the due date is within the visible timeline and includes a star,
-    // the "期限" label, and the formatted date.
-    if (hasDeadlineMarker && parent.dueDate) {
-      const deadlineLeft = diffDays(baseDate, parent.dueDate) * dayWidth;
-      const timelineWidth = dates.length * dayWidth;
-      if (deadlineLeft >= 0 && deadlineLeft <= timelineWidth) {
-        // The marker is not rendered when its date is outside the visible range.
+    // Milestones sit in the row's bottom band: ★ + name + M/D (+ primary tag), stacked in tiers when their labels
+    // would collide. One that fits no tier (too many at once) shows its ★ and date only (name stays in the tooltip).
+    if (milestoneLayout.length > 0) {
+      const bandTop = rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - milestoneBandHeight(milestoneTierCount);
+      milestoneLayout.forEach(({ milestone, left, tier, full }) => {
         const deadline = document.createElement("div");
-        deadline.classList.add("task-gantt-deadline-marker");
-        deadline.style.left = `${deadlineLeft}px`;
-        deadline.style.top = `${
-          rowHeight - phantomLanes.laneCount * PHANTOM_LANE_HEIGHT_PX - MARKER_ROW_HEIGHT - DEADLINE_MARKER_GAP_PX
-        }px`;
-        // ★ + "期限" label + M/D date.
+        deadline.classList.add("task-gantt-deadline-marker", "task-gantt-milestone");
+        deadline.style.left = `${left}px`;
+        deadline.style.top = `${bandTop + tier * MILESTONE_TIER_HEIGHT}px`;
+        deadline.title = `${milestone.title} ${milestone.date}`;
+        // The frame takes the milestone's tag color (else the parent's), like a subtask's callout frame.
+        const frameColor = this.host.settings.ganttFeatureTagsEnabled
+          ? getPrimaryGanttTagDefinition(this.host.settings, milestone.tags ?? [])?.color ||
+            getPrimaryGanttTagDefinition(this.host.settings, parent.tags)?.color ||
+            ""
+          : "";
+        if (frameColor !== "") {
+          setStyleVar(deadline, "--vg-milestone-color", frameColor);
+        }
 
         const deadlineStar = document.createElement("span");
         deadlineStar.classList.add("task-gantt-deadline-marker-star");
         deadlineStar.textContent = "★";
         deadline.appendChild(deadlineStar);
-        // Explicit space text nodes (not just CSS margin) so textContent/
-        // copied text still reads "★ 期限 8/25" instead of "★期限8/25".
+        // Explicit space text nodes (not just CSS margin) so copied text reads "★ 期限 8/25".
         deadline.appendChild(document.createTextNode(" "));
 
-        const deadlineLabel = document.createElement("span");
-        deadlineLabel.classList.add("task-gantt-deadline-marker-label");
-        deadlineLabel.textContent = "期限";
-        deadline.appendChild(deadlineLabel);
-        deadline.appendChild(document.createTextNode(" "));
+        if (full) {
+          const deadlineLabel = document.createElement("span");
+          deadlineLabel.classList.add("task-gantt-deadline-marker-label");
+          deadlineLabel.textContent = milestone.title;
+          deadline.appendChild(deadlineLabel);
+          deadline.appendChild(document.createTextNode(" "));
+        }
 
         const deadlineDate = document.createElement("span");
         deadlineDate.classList.add("task-gantt-deadline-marker-date");
-        deadlineDate.textContent = this.formatMonthDay(parent.dueDate);
+        deadlineDate.textContent = this.formatMonthDay(milestone.date);
         deadline.appendChild(deadlineDate);
 
-        // parent due-date drag starts only on the ★ (deadline
-        // marker) element.
+        if (full && this.host.settings.ganttFeatureTagsEnabled) {
+          const primaryTag = getPrimaryGanttTagDefinition(this.host.settings, milestone.tags ?? []);
+          if (primaryTag !== undefined) {
+            const badge = document.createElement("span");
+            badge.classList.add("task-gantt-marker-tag", "vg-chip", "is-tag");
+            badge.textContent = primaryTag.name;
+            if (primaryTag.color) {
+              setStyleVar(badge, "--vg-chip-color", primaryTag.color);
+            }
+            deadline.appendChild(badge);
+          }
+        }
+
+        // Dragging starts on the milestone itself; a double-click renames, like a marker.
         deadline.addEventListener("pointerdown", (evt: PointerEvent) => {
-          this.onParentDuePointerDown(evt, deadline, parent);
+          this.onParentDuePointerDown(evt, deadline, parent, milestone);
         });
-        // right-click menu — 「期限を削除」/「ノートを
-        // 開く」, same real obsidian.Menu + activeContextMenu dedupe idiom
-        // as openParentContextMenu/openMarkerContextMenu.
+        deadline.addEventListener("dblclick", () => {
+          this.startInlineEdit({
+            hostEl: deadline,
+            initialValue: milestone.title,
+            onCommit: (value) => this.saveMilestoneTitleEdit(parent, milestone.key, value),
+          });
+        });
         deadline.addEventListener("contextmenu", (evt: MouseEvent) => {
-          this.openDeadlineMarkerContextMenu(evt, parent);
+          this.openDeadlineMarkerContextMenu(evt, parent, milestone);
         });
         timeline.appendChild(deadline);
-      }
+      });
     }
 
   }
@@ -5406,6 +5878,7 @@ export class TaskGanttView extends ItemView {
     const label = document.createElement("div");
     label.classList.add("task-gantt-external-label");
     if (bar.task.completed) label.classList.add("is-completed");
+    if (bar.task.disabled) label.classList.add("is-disabled");
     if (barTagColor !== "") {
       label.classList.add("is-tagged");
       label.style.borderColor = barTagColor;
@@ -5477,6 +5950,7 @@ export class TaskGanttView extends ItemView {
  * the visible position stable after prepending 60 days.
  */
   private onScroll(): void {
+    this.memoLayer?.onScroll();
     this.populateNearRows();
     this.updateStickyTitles();
     this.scheduleLaneRelayout();
@@ -5564,7 +6038,12 @@ export class TaskGanttView extends ItemView {
     const all = parent.subtasks ? Array.from(parent.subtasks.values()) : [];
     const inside = new Set(filterSubtasksInWindow(all, win.start, win.end));
     const excluded = all.filter((task) => !inside.has(task)).map((task) => task.id);
-    return excluded.length === 0 ? base : `${base}|x:${excluded.join(",")}`;
+    // Milestones size the row only inside the window, so the ones outside it belong to the fingerprint too.
+    const outside = getMilestones(parent)
+      .filter((m) => m.date < win.start || m.date > win.end)
+      .map((m) => m.key);
+    const tail = outside.length === 0 ? "" : `|m:${outside.join(",")}`;
+    return excluded.length === 0 ? `${base}${tail}` : `${base}|x:${excluded.join(",")}${tail}`;
   }
 
   /**
@@ -5901,7 +6380,8 @@ export class TaskGanttView extends ItemView {
   private onParentDuePointerDown(
     evt: PointerEvent,
     deadlineEl: HTMLElement,
-    parent: TaskRow
+    parent: TaskRow,
+    milestone: GanttMarker
   ): void {
     if (evt.button !== 0) {
       return;
@@ -5909,7 +6389,7 @@ export class TaskGanttView extends ItemView {
     evt.preventDefault();
     evt.stopPropagation();
     deadlineEl.setPointerCapture(evt.pointerId);
-    this.runParentDueDrag(parent, deadlineEl, evt.clientX, evt.pointerId);
+    this.runParentDueDrag(parent, milestone, deadlineEl, evt.clientX, evt.pointerId);
   }
 
 
@@ -5925,9 +6405,11 @@ export class TaskGanttView extends ItemView {
     const el = this.dragTooltipEl;
     el.textContent = text;
     el.classList.add("is-visible");
-    // Place the tooltip right of the cursor and clamp its top to 8px.
-    el.style.left = `${clientX + 8}px`;
-    el.style.top = `${Math.max(8, clientY - 8)}px`;
+    // Place the tooltip right of the cursor and clamp its top to 8px. It is absolute inside the container, so client
+    // coordinates are made relative to the container first (a left sidebar or a split would shift it otherwise).
+    const origin = el.parentElement?.getBoundingClientRect();
+    el.style.left = `${clientX - (origin?.left ?? 0) + 8}px`;
+    el.style.top = `${Math.max(8, clientY - (origin?.top ?? 0) - 8)}px`;
   }
 
   /** hides the tooltip and clears its content. */
@@ -6578,11 +7060,12 @@ export class TaskGanttView extends ItemView {
 
   private runParentDueDrag(
     parent: TaskRow,
+    milestone: GanttMarker,
     deadlineEl: HTMLElement,
     startClientX: number,
     pointerId: number
   ): void {
-    const originalDue = parent.dueDate ?? "";
+    const originalDue = milestone.date;
     const dayWidth = this.dayWidth;
     const holidaySet = this.holidaySet;
     const originalLeft = parseFloat(deadlineEl.style.left || "0");
@@ -6659,7 +7142,7 @@ export class TaskGanttView extends ItemView {
       }
       void this.saveTaskPatch(
         parent,
-        { dueDate: newDue },
+        { milestones: this.replaceMilestone(parent, milestone.key, { date: newDue }) },
         { checkWorkload: false }
       ); // saveTaskPatch's unconditional render covers this.
     };
@@ -6685,24 +7168,33 @@ export class TaskGanttView extends ItemView {
 
   private openDeadlineMarkerContextMenu(
     evt: MouseEvent,
-    parent: TaskRow
+    parent: TaskRow,
+    milestone: GanttMarker
   ): void {
     evt.preventDefault();
     evt.stopPropagation();
+    this.armRichPopoverSuppress(MENU_POPOVER_SUPPRESS_MS);
+    this.closeRichPopover();
 
     const menu = new Menu();
     this.activateContextMenu(menu);
 
     menu.addItem((item) => {
-      item.setTitle("期限を削除");
+      item.setTitle("名前を変更");
       item.onClick(() => {
-        void this.saveTaskPatch(
-          parent,
-          { dueDate: "" },
-          { checkWorkload: false }
-        );
+        this.renameMilestoneInteractively(parent, milestone);
       });
     });
+
+    menu.addSeparator();
+
+    this.addTagToggleItems(menu, milestone.tags ?? [], (nextTags) => {
+      void this.savePopoverPatch(parent, {
+        milestones: this.replaceMilestone(parent, milestone.key, { tags: nextTags }),
+      });
+    });
+
+    menu.addSeparator();
 
     menu.addItem((item) => {
       item.setTitle("ノートを開く");
@@ -6711,34 +7203,63 @@ export class TaskGanttView extends ItemView {
       });
     });
 
+    menu.addItem((item) => {
+      item.setTitle("削除");
+      item.setWarning(true);
+      item.onClick(() => {
+        void this.savePopoverPatch(parent, {
+          milestones: getMilestones(parent).filter((m) => m.key !== milestone.key),
+        });
+      });
+    });
+
     menu.showAtMouseEvent(evt);
   }
 
+  /** The parent's milestones with one of them changed; the patch value for `milestones`. */
+  private replaceMilestone(
+    parent: TaskRow,
+    key: string,
+    change: Partial<Pick<GanttMarker, "title" | "date" | "tags">>
+  ): GanttMarker[] {
+    return getMilestones(parent).map((m) => (m.key === key ? { ...m, ...change } : m));
+  }
+
+  private async saveMilestoneTitleEdit(
+    parent: TaskRow,
+    key: string,
+    value: string
+  ): Promise<void> {
+    const title = value.trim();
+    if (title === "") {
+      return;
+    }
+    await this.saveItem(parent, { milestones: this.replaceMilestone(parent, key, { title }) });
+    await this.render();
+  }
+
+  private renameMilestoneInteractively(parent: TaskRow, milestone: GanttMarker): void {
+    this.host.openTextPrompt("マイルストーン名を変更", "マイルストーン名", milestone.title, (value) => {
+      void this.saveMilestoneTitleEdit(parent, milestone.key, value);
+    });
+  }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  /** Asks for a name, like a new subtask, and adds a milestone on `date`. The date then moves by dragging only. */
+  private addMilestoneInteractively(parent: TaskRow, date: string): void {
+    this.host.openTextPrompt("新規マイルストーン", "マイルストーン名", "", (value) => {
+      const title = value.trim();
+      if (title === "") {
+        return;
+      }
+      const current = getMilestones(parent);
+      void this.saveTaskPatch(
+        parent,
+        { milestones: [...current, { key: newMilestoneKey(title, current), title, date }] },
+        { checkWorkload: false }
+      );
+    });
+  }
 
 
   private openEmptyCellMenu(
@@ -6768,6 +7289,13 @@ export class TaskGanttView extends ItemView {
         );
       });
     });
+
+    if (this.host.memos) {
+      menu.addItem((item) => {
+        item.setTitle("この日にメモを追加");
+        item.onClick(() => this.beginMemo(parent, date));
+      });
+    }
 
     menu.addSeparator();
 
@@ -6806,28 +7334,11 @@ export class TaskGanttView extends ItemView {
 
 
     menu.addItem((item) => {
-      item.setTitle(`親タスク期限を ${clickedDate} に設定`);
+      item.setTitle(`マイルストーンを ${clickedDate} に追加`);
       item.onClick(() => {
-        void this.saveTaskPatch(
-          parent,
-          { dueDate: clickedDate },
-          { checkWorkload: false }
-        );
+        this.addMilestoneInteractively(parent, clickedDate);
       });
     });
-    if (parent.dueDate) {
-      // only shown when a due date is already set.
-      menu.addItem((item) => {
-        item.setTitle("親タスク期限を削除");
-        item.onClick(() => {
-          void this.saveTaskPatch(
-            parent,
-            { dueDate: "" },
-            { checkWorkload: false }
-          );
-        });
-      });
-    }
 
     menu.addSeparator();
 
@@ -8587,6 +9098,18 @@ export class TaskGanttView extends ItemView {
     return button;
   }
 
+  /** 一時無効 toggle: saves only `disabled`, never touching status/completed. */
+  private buildDisabledToggleButton(task: TaskRow): HTMLElement {
+    const button = document.createElement("button");
+    button.classList.add("task-gantt-popover-toggle-disabled");
+    button.textContent = task.disabled ? "有効に戻す" : "一時無効にする";
+    this.bindRichPopoverInteraction(button);
+    button.addEventListener("click", () => {
+      void this.savePopoverPatch(task, { disabled: !task.disabled });
+    });
+    return button;
+  }
+
   /**
  *
  *
@@ -8634,6 +9157,14 @@ export class TaskGanttView extends ItemView {
       ? "完了"
       : this.statusDisplayLabel(task.statusLabel);
     chips.appendChild(statusChip);
+
+    // 一時無効 is independent of the status, so it gets its own chip next to it.
+    if (task.disabled) {
+      const disabledChip = document.createElement("span");
+      disabledChip.classList.add("task-gantt-popover-disabled-chip", "vg-chip");
+      disabledChip.textContent = "無効中";
+      chips.appendChild(disabledChip);
+    }
 
     // priority chip only when the task HAS a priority.
 
@@ -8716,6 +9247,7 @@ export class TaskGanttView extends ItemView {
     actions.classList.add("task-gantt-popover-actions");
     actions.appendChild(this.buildOpenNoteButton(task));
     actions.appendChild(this.buildCompletedToggleButton(task));
+    actions.appendChild(this.buildDisabledToggleButton(task));
     root.appendChild(actions);
   }
 
@@ -9419,6 +9951,13 @@ export class TaskGanttView extends ItemView {
       });
     });
 
+    menu.addItem((item) => {
+      item.setTitle(task.disabled ? "有効に戻す" : "一時無効にする");
+      item.onClick(() => {
+        void this.savePopoverPatch(task, { disabled: !task.disabled });
+      });
+    });
+
 
     // Adds a marker within the bar's own date range.
     menu.addItem((item) => {
@@ -9427,6 +9966,16 @@ export class TaskGanttView extends ItemView {
         void this.addMarkerAtClick(task, bar, evt.clientX, barEl);
       });
     });
+
+    if (this.host.memos) {
+      menu.addItem((item) => {
+        item.setTitle("メモを追加");
+        item.onClick(() => {
+          const date = this.dateAtClientX(evt.clientX);
+          this.beginMemo(task, date < bar.start ? bar.start : date > bar.end ? bar.end : date);
+        });
+      });
+    }
 
     menu.addSeparator();
 

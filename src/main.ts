@@ -15,6 +15,8 @@ import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
 import { Logger } from "./core/logger";
+import { isMemoPath, normalizeMemoLayout, setMemosOpen } from "./core/memo";
+import { createMemoHost } from "./app/memo-controller";
 
 import {
   DailyTodoItem,
@@ -61,7 +63,7 @@ import {
   deleteSubtaskTaskItem,
   loadTasks,
 } from "./app/task-operations";
-import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
+import { isUnderRoot, loadMemos, taskRoot, type TaskCache } from "./app/note-store";
 import { setNoteNotifier } from "./app/note-changes";
 import { findLegacyNotes, planMigration, runMigration } from "./app/migration-v1";
 import { MigrationModal } from "./ui/migration-modal";
@@ -75,6 +77,7 @@ import { HistoryManager } from "./app/history-manager";
 import { OperationRegistry } from "./app/operation-registry";
 import { ScheduleGhostStore } from "./app/schedule-ghost";
 import { ChatSession } from "./ai/chat-session";
+import { CHAT_HISTORY_FILE, restoreChatHistory, serializeChatHistory } from "./ai/chat-history";
 import { SdkChatProvider } from "./ai/sdk-provider";
 import { aiKeyOriginError, aiSecretId, connectionOrigin, defaultAiStore, listModels, newAiProfileId, normalizeAiProfile, normalizeAiSettings, normalizeAiStore, toConnectionConfig, uniqueStrings, type AiProfile, type AiSettingsPatch, type AiStore, type ModelListResult } from "./ai/connection-settings";
 import { AgentView, VIEW_TYPE_AI_CHAT } from "./ui/agent-view";
@@ -406,6 +409,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
       restartSync: () => this.startGanttSyncTimer(false),
       requestApproval: async (previewId) => { await this.uiPort.requestApproval(previewId); },
+      setMemosOpen: (ids, open) => this.setMemosOpenState(ids, open),
+      memosChanged: async (paths) => { for (const path of paths) this.taskCache.delete(path); await this.reloadOpenMemos(); },
       invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   }
@@ -434,6 +439,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       finder.open(); finder.setQuery((args as OperationInputMap["V03"]).query ?? "");
     } else if (id === "V04") await this.navigation.openTaskItem?.(await this.operationService.get((args as OperationInputMap["V04"]).taskId));
     else if (id === "V05") await this.runOpenDailyTodoCommand((args as OperationInputMap["V05"]).date);
+    else if (id === "N06") { const target = args as OperationInputMap["N06"]; await this.setMemosOpenState(target.memoIds, target.open); }
     else if (id === "V06") await this.openAIChat((args as OperationInputMap["V06"]).position ?? "tab");
     else if (id === "D08") {
       const file = this.app.vault.getFileByPath((args as OperationInputMap["D08"]).path);
@@ -577,6 +583,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    // Memo view state may have been edited by hand.
+    this.settings.ganttMemosVisible = this.settings.ganttMemosVisible !== false;
+    this.settings.ganttMemoLayout = normalizeMemoLayout(this.settings.ganttMemoLayout);
     this.aiStore = normalizeAiStore(ai);
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
@@ -729,8 +738,20 @@ export default class TaskWorkbenchPlugin extends Plugin {
       set: async (order) => { const candidate = structuredClone(this.settings); candidate.ganttParentOrder = order; await this.settingsWriter().persist(candidate, ["ganttParentOrder"]); },
     });
 
+    this.historyManager.attachMemoLayoutStore({
+      get: (id) => this.settings.ganttMemoLayout[id] ?? null,
+      set: async (id, layout) => {
+        const candidate = structuredClone(this.settings);
+        const next = { ...candidate.ganttMemoLayout };
+        if (layout) next[id] = layout; else delete next[id];
+        candidate.ganttMemoLayout = next;
+        await this.settingsWriter().persist(candidate, ["ganttMemoLayout"]);
+      },
+    });
+
     this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === aiSecretId(this.aiSettings.id) ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
+    await this.restoreChatHistory();
     this.registerView(VIEW_TYPE_AI_CHAT, (leaf) => new AgentView(leaf, {
       session: this.chatSession,
       previewPorts: this.previewUiPorts("chat"),
@@ -802,8 +823,15 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
       // Frontmatter comes from the metadataCache: drop what it re-indexed and redraw once it settles.
       let indexed = false, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      // A memo note changing redraws only the memo layers; the chart itself is not rebuilt.
+      let memoTimer: ReturnType<typeof setTimeout> | undefined;
+      const refreshMemosSoon = () => { if (memoTimer) clearTimeout(memoTimer); memoTimer = setTimeout(() => { memoTimer = undefined; if (!this.unloading) void this.reloadOpenMemos(); }, 200); };
       const refreshSoon = () => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { refreshTimer = undefined; if (!this.unloading) void this.refreshOpenViews(); }, 300); };
-      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (!ownWrites.has(file.path)) refreshSoon(); }));
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (ownWrites.has(file.path)) return; if (isMemoPath(file.path, this.settings)) refreshMemosSoon(); else refreshSoon(); }));
+      const memoFileChanged = (file: { path: string }) => { if (isMemoPath(file.path, this.settings) && !ownWrites.has(file.path)) refreshMemosSoon(); };
+      this.registerEvent(this.app.vault.on("create", memoFileChanged));
+      this.registerEvent(this.app.vault.on("delete", memoFileChanged));
+      this.registerEvent(this.app.vault.on("rename", memoFileChanged));
       this.registerEvent(this.app.metadataCache.on("resolved", () => { if (indexed) return; indexed = true; this.taskCache.clear(); refreshSoon(); }));
     }
     this.registerCommands();
@@ -835,6 +863,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
 
   private async runDeferredStartup(): Promise<void> {
     if (this.unloading) return;
+    void this.ensureAIChatOpen().catch((err) => this.logger.error("TaskWorkbenchPlugin", "AI chat auto-open failed", err));
     try { await this.configureMcp(); } catch { new Notice("MCPを起動できませんでした。ポートと設定を確認してください。"); }
     // fire-and-forget background holiday refresh.
     // The caller never awaits or catches: an unexpected rejection surfaces as
@@ -897,6 +926,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.refreshOpenViews();
   }
 
+  /** Opens the AI chat in its configured place at start-up unless it is already open (e.g. restored from the saved layout). */
+  private async ensureAIChatOpen(): Promise<void> {
+    if (this.unloading || !this.settings.aiChatAutoOpen || this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_CHAT).length) return;
+    const place = this.settings.aiChatPlacement;
+    const leaf = place === "left" ? this.app.workspace.getLeftLeaf(false) : place === "tab" ? this.app.workspace.getLeaf("tab") : this.app.workspace.getRightLeaf(false);
+    if (leaf) await leaf.setViewState({ type: VIEW_TYPE_AI_CHAT, active: false });
+  }
+
+  /** Opens (or focuses) the AI chat where the settings say. */
+  openAIChatConfigured(): Promise<void> { return this.openAIChat(this.settings.aiChatPlacement); }
+
   async openAIChat(position: "tab" | "left" | "right" = "tab"): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_AI_CHAT)[0];
     const leaf = existing ?? (position === "left" ? this.app.workspace.getLeftLeaf(false) : position === "right" ? this.app.workspace.getRightLeaf(false) : this.app.workspace.getLeaf("tab"));
@@ -905,14 +945,39 @@ export default class TaskWorkbenchPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  private chatHistoryPath(): string { return `${this.app.vault.configDir}/${CHAT_HISTORY_FILE}`; }
+  private chatHistoryTimer?: ReturnType<typeof setTimeout>;
+  private chatHistoryWrite: Promise<void> = Promise.resolve();
+  /** Conversations live in the vault config folder, not in the plugin folder, so updates and restarts keep them. */
+  private async restoreChatHistory(): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter, path = this.chatHistoryPath();
+      if (await adapter.exists(path)) {
+        const { conversations, activeId } = restoreChatHistory(JSON.parse(await adapter.read(path)));
+        this.chatSession.restore(conversations, activeId);
+      }
+    } catch { /* A missing or corrupt history starts empty; it is rewritten on the next change. */ }
+    this.chatSession.subscribe(() => {
+      if (this.unloading) return;
+      clearTimeout(this.chatHistoryTimer);
+      this.chatHistoryTimer = setTimeout(() => this.saveChatHistory(), 1000);
+    });
+  }
+  private saveChatHistory(): void {
+    clearTimeout(this.chatHistoryTimer);
+    const session = this.chatSession;
+    if (!session) return;
+    const body = JSON.stringify(serializeChatHistory(session.conversations, session.active?.id));
+    this.chatHistoryWrite = this.chatHistoryWrite.then(() => this.app.vault.adapter.write(this.chatHistoryPath(), body)).catch(() => undefined);
+  }
+
   onunload(): void {
     this.unloading = true;
+    this.saveChatHistory();
     void this.queueMcp(async () => { await this.mcpServer?.stop(); this.mcpServer = undefined; }).catch(() => { /* Shutdown still releases the listener. */ });
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_APPROVAL);
     this.chatSession?.dispose();
     this.operationService.dispose();
     this.scheduleGhosts.clear();
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_CHAT);
     // stop the Gantt sync timer; with a null handle
     // clearInterval is not called. Global clearInterval is used instead of
     // window.clearInterval — identical in the Obsidian renderer where
@@ -924,9 +989,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.ganttSyncIntervalId = null;
     }
 
-    // removing leaves of an already closed view is a no-op
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TASK_WORKBENCH);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TASK_GANTT);
+    // Views are deliberately NOT detached here: Obsidian saves the layout after onunload, so
+    // detaching would drop the user's tabs and sidebar panes on every update or reload.
 
     // Obsidian automatically removes registered commands, ribbon icons,
     // processors, and views on unload.
@@ -1114,6 +1178,27 @@ export default class TaskWorkbenchPlugin extends Plugin {
         new Notice(`やり直し履歴を破棄しました: ${result.reason}`);
         return;
     }
+  }
+
+  /** Opens or closes memo bubbles (["*"] = every memo). View state only: saved without touching pending AI previews. */
+  private async setMemosOpenState(ids: readonly string[], open: boolean): Promise<void> {
+    const all = ids.includes("*") ? (await loadMemos(this.vaultAdapter(), this.settings, this.taskCache, this.logger)).map((memo) => memo.id) : [];
+    this.settings.ganttMemoLayout = setMemosOpen(this.settings.ganttMemoLayout, all, ids, open);
+    await this.settingsWriter().save();
+    await this.reloadOpenMemos();
+  }
+
+  /** 「Ganttで表示」 from the Workbench: shows and opens the memo, then brings the Gantt to it. */
+  private async revealMemo(id: string): Promise<void> {
+    this.settings.ganttMemosVisible = true;
+    await this.setMemosOpenState([id], true);
+    await this.navigation.activateGanttView();
+    await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { revealMemo?: (memoId: string) => Promise<void> } | null)?.revealMemo?.(id)));
+  }
+
+  /** Redraws the memo layer of every open Gantt view (no chart render). */
+  private async reloadOpenMemos(): Promise<void> {
+    await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { reloadMemos?: () => Promise<void> } | null)?.reloadMemos?.()));
   }
 
   private async refreshOpenViews(): Promise<void> {
@@ -1838,6 +1923,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
       openTaskItem: async (row: TaskRow): Promise<void> => {
         await this.navigation.openTaskItem?.(row);
       },
+      memos: {
+        load: () => loadMemos(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        setOpen: (ids, open) => this.setMemosOpenState(ids, open),
+        reveal: (id) => this.revealMemo(id),
+      },
       createTaskInteractively: async (onCreated: () => void) => {
 
         // "create-new-task-note" command (runCreateTaskCommand), with the
@@ -1928,6 +2018,13 @@ export default class TaskWorkbenchPlugin extends Plugin {
       openDailyTodoItem: (item: DailyTodoItem): Promise<void> =>
         openDailyTodoFile(item, this.app.vault, this.app.workspace),
       saveSettings: (): Promise<void> => this.saveSettings(),
+      memos: createMemoHost({
+        vault: () => this.vaultAdapter(), settings: () => this.settings, history: this.historyManager, cache: this.taskCache, logger: this.logger,
+        coordinate: (run) => this.operations.coordinate(run),
+        openFile: async (path) => { const file = this.app.vault.getFileByPath(path); if (file) await this.app.workspace.getLeaf(false).openFile(file); },
+        // View state only: a layout drag must not invalidate pending AI previews.
+        saveSettings: () => this.settingsWriter().save(),
+      }),
       // single drag/edit save, same path as the Workbench's
       // own updateTaskItem wrapper above.
       updateTaskItem: (row: TaskRow, patch: TaskPatch) =>
@@ -2060,6 +2157,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       activateView: async (): Promise<void> => {
         await this.navigation.activateView();
       },
+      openAIChat: (): Promise<void> => this.openAIChatConfigured(),
       // The toolbar's 「同期」 button calls this plugin's manual sync method.
       syncReadonlyGanttNow: (): Promise<void> => this.syncReadonlyGanttNow(),
       undoLastAction: (): Promise<void> => this.undoLastAction(),

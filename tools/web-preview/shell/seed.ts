@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { stringifyYaml } from "obsidian";
 import { buildNewNote } from "@app/core/note-v2";
+import { buildMemoNote, memoFileStem, type MemoMeta } from "@app/core/memo";
 import { FAKE_ORIGIN } from "./fake-llm";
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -11,10 +12,10 @@ const plus = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); 
 const range = (a: number, b: number, h: number) => { const o: Record<string, number> = {}; for (let i = a; i <= b; i++) { const d = new Date(); d.setDate(d.getDate() + i); if (d.getDay() % 6) o[iso(d)] = h; } return o; };
 
 interface Sub { key: string; title: string; from: number; to: number; status?: string; tags?: string[]; plan?: number; actual?: [number, number, number]; markers?: Array<[string, string, number]>; note?: string; status_text?: string; due?: number }
-interface Parent { name: string; tags: string[]; due?: number; prio: number; created: number; gantt?: boolean; completed?: boolean; status?: string; subs: Sub[]; current?: string; notes?: string }
+interface Parent { name: string; tags: string[]; due?: number; milestones?: Array<[string, number, string[]?]>; prio: number; created: number; gantt?: boolean; completed?: boolean; status?: string; subs: Sub[]; current?: string; notes?: string }
 
 const PARENTS: Parent[] = [
-  { name: "新機能リリース準備", tags: ["開発"], due: 14, prio: 4, created: -12, current: "仕様はレビュー済み。実装を進めつつ、デザイン確認の日程を調整中。", notes: "リリース判定は来週後半。", subs: [
+  { name: "新機能リリース準備", tags: ["開発"], due: 14, milestones: [["仕様確定", 5], ["β版公開", 14, ["開発"]], ["正式リリース", 24]], prio: 4, created: -12, current: "仕様はレビュー済み。実装を進めつつ、デザイン確認の日程を調整中。", notes: "リリース判定は来週後半。", subs: [
     { key: "spec", title: "仕様書レビュー", from: -8, to: -4, status: "done", plan: 3, actual: [-8, -4, 3] },
     { key: "impl", title: "実装", from: -3, to: 6, status: "in_progress", tags: ["開発"], plan: 5, actual: [-3, 0, 4.5], markers: [["m1", "中間レビュー", 2]], status_text: "API層まで完了。画面は着手前。" },
     { key: "design", title: "デザイン確認", from: 1, to: 3, status: "active", tags: ["デザイン"], plan: 2 },
@@ -45,6 +46,14 @@ const PARENTS: Parent[] = [
   { name: "採用面接の日程調整", tags: [], due: 6, prio: 2, created: -2, gantt: false, subs: [] },
 ];
 
+/** Floating memos: `at` counts days from the subtask's start, `date` is the day for parent and その他 rows. The last one is kept closed (see ganttMemoLayout below). */
+const MEMOS: Array<{ id: string; text: string; anchor: Pick<MemoMeta, "taskId" | "at"> & { date?: number } }> = [
+  { id: "m-sd0001", text: "API層の認可まわりを木曜までに確認\n・トークンの期限\n・権限チェックの抜け", anchor: { taskId: "s-sd0001", at: 2 } },
+  { id: "m-sd0002", text: "先方のデザイナーは午後のみ対応可。日程は午後に寄せる。", anchor: { taskId: "s-sd0002", at: 1 } },
+  { id: "m-sd0003", text: "判定会議の資料は前日までに共有する", anchor: { taskId: "t-sd0000", date: 5 } },
+  { id: "m-sd0004", text: "全社会議の前に月次の数字を見直す", anchor: { date: 2 } },
+];
+
 /** v2 notes: one parent note and one note per subtask (in a folder named like the parent). */
 function toNotes(p: Parent, idx: number): { files: Record<string, string>; parentId: string; subIds: string[] } {
   const t = today();
@@ -66,7 +75,9 @@ function toNotes(p: Parent, idx: number): { files: Record<string, string>; paren
     subs.set(id, row); subIds.push(id);
     files[path] = buildNewNote(row as any, stringifyYaml, { parentLink: `[[${stem}]]` });
   });
-  const parent = { ...common, kind: "parent", id: parentId, file: { path: parentPath }, title: p.name, displayName: p.name, statusLabel: p.status ?? "in_progress", completed: !!p.completed, dueDate: p.due !== undefined ? plus(p.due) : undefined,
+  // Named milestones win over `due`, which then mirrors the earliest one (same rule as the plugin's note reader).
+  const milestones = p.milestones?.map(([title, offset, tags]) => ({ key: title, title, date: plus(offset), tags }));
+  const parent = { ...common, kind: "parent", id: parentId, file: { path: parentPath }, title: p.name, displayName: p.name, statusLabel: p.status ?? "in_progress", completed: !!p.completed, milestones, dueDate: milestones ? milestones.map((m) => m.date).sort()[0] : p.due !== undefined ? plus(p.due) : undefined,
     priority: p.prio, priorityMode: "manual", tags: p.tags, ganttEnabled: p.gantt ?? true, currentStatus: p.current ?? "", notes: p.notes ?? "", subtasks: subs };
   files[parentPath] = buildNewNote(parent as any, stringifyYaml);
   return { files, parentId, subIds };
@@ -76,6 +87,11 @@ export function makeSeed(): { files: Record<string, string>; data: any; secrets:
   const files: Record<string, string> = {};
   const subtaskOrder: Record<string, string[]> = {}, ganttParentOrder: string[] = [];
   PARENTS.forEach((p, i) => { const n = toNotes(p, i); Object.assign(files, n.files); ganttParentOrder.push(n.parentId); if (n.subIds.length) subtaskOrder[n.parentId] = n.subIds; });
+  for (const memo of MEMOS) {
+    const created = plus(-1), date = memo.anchor.date !== undefined ? plus(memo.anchor.date) : undefined;
+    const fields = { id: memo.id, ...(memo.anchor.taskId ? { taskId: memo.anchor.taskId } : {}), ...(memo.anchor.at !== undefined ? { at: memo.anchor.at } : {}), ...(date ? { date } : {}), created, updated: created };
+    files[`tasks/_memos/${memoFileStem(memo.text, created)}.md`] = buildMemoNote(fields, memo.text, stringifyYaml);
+  }
   const t = new Date(), ymd = (d: Date) => ({ y: d.getFullYear(), m: String(d.getMonth() + 1).padStart(2, "0"), d: String(d.getDate()).padStart(2, "0") });
   for (const off of [-2, -1, 0, 1, 2]) {
     const d = new Date(t); d.setDate(d.getDate() + off); const { y, m, d: dd } = ymd(d);
@@ -93,6 +109,7 @@ export function makeSeed(): { files: Record<string, string>; data: any; secrets:
     ganttEvents: [{ key: "ev1", title: "全社会議", date: plus(3) }, { key: "ev2", title: "リリース", date: plus(14), workloadPlan: { [plus(14)]: 2 } }],
     weeklyWorkSchedules: [{ key: "w1", title: "定例会議", dayOfWeek: 1, minutesPerWeek: 60 }, { key: "w2", title: "1on1", dayOfWeek: 3, minutesPerWeek: 30 }],
     dailyTodoTargetSourceKey: "main",
+    ganttMemoLayout: { "m-sd0004": { open: false, dx: 28, dy: -70, w: 220 } },
     ai: { preset: "custom", baseUrl: FAKE_ORIGIN + "/v1", model: "fake-model", useApiKey: true, apiKeyOrigin: FAKE_ORIGIN },
   };
   return { files, data, secrets: { "vault-gantt-ai-api-key": "sk-preview-dummy-key" } };

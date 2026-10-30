@@ -1,3 +1,4 @@
+import { getMilestones } from "../core/milestones";
 import { z } from "zod";
 import type { TaskPatch, TaskRow, TaskUpdateCommand, TaskUpdateResult, TaskWorkbenchSettings } from "../core/types";
 import { applyPatchToRow } from "../core/task-patch";
@@ -27,10 +28,12 @@ export const patchSchema = schedule.extend({
   displayName: singleLine.optional(), title: singleLine.optional(), statusLabel: z.enum(["active", "in_progress", "waiting", "hold", "done"]).optional(),
   createdAt: date.optional(), updatedAt: date.optional(), priority: z.number().min(0).max(5).optional(),
   priorityMode: z.enum(["auto", "manual"]).optional(), tags: z.array(tag).max(100).optional(),
-  completed: z.boolean().optional(), ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(),
+  completed: z.boolean().optional(), disabled: z.boolean().optional(), ganttEnabled: z.boolean().optional(), ganttOrder: z.number().finite().optional(),
   currentStatus: text.optional(), notes: text.optional(), workloadPlan: workload.optional(), workloadActual: workload.optional(),
   // eslint-disable-next-line no-control-regex
   ganttMarkers: z.array(z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\u0000:,[\]]+$/), title: singleLine, date, tags: z.array(tag).max(100).optional() }).strict()).max(100).optional(),
+  // eslint-disable-next-line no-control-regex
+  milestones: z.array(z.object({ key: z.string().min(1).max(200).regex(/^[^\r\n\u0000:,[\]]+$/), title: singleLine, date, tags: z.array(tag).max(100).optional() }).strict()).max(100).optional(),
 }).strict();
 const id = z.string().min(1).max(1000);
 const update = z.object({ taskId: id, patch: patchSchema, expectedRevision: z.string().optional() }).strict();
@@ -82,7 +85,11 @@ function persisted(row: TaskRow): string {
   const data = taskData(row);
   // ganttOrder is not stored in the note (see PendingOrder).
   return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).filter((key) => key !== "ganttOrder").map((key) => [key,
-    canonical(key === "ganttMarkers" ? row.ganttMarkers?.map(({ key: _key, ...marker }) => { void _key; return marker; }) : data[key])])));
+    canonical(key === "ganttMarkers" ? row.ganttMarkers?.map(({ key: _key, ...marker }) => { void _key; return marker; })
+      // A lone plain 期限 is stored as `due` only, so compare milestones as the parent shows them.
+      : key === "disabled" ? (row.kind === "subtask" && row.disabled ? true : undefined)
+      : key === "milestones" ? (row.kind === "parent" ? getMilestones(row).map(({ key: _key, ...milestone }) => { void _key; return milestone; }) : undefined)
+      : data[key])])));
 }
 /** Serializes the patched row and reads it back; what does not survive means the edit cannot be saved safely. */
 function assertRoundTrip(row: TaskRow, settings: TaskWorkbenchSettings): TaskRow {

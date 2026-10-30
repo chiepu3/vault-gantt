@@ -4,6 +4,9 @@ import { TFile } from "obsidian";
 
 export type StatusLabel = "active" | "in_progress" | "waiting" | "hold" | "done";
 
+/** View state of one floating memo (screen px relative to its anchor point; they do not scale with zoom). */
+export interface MemoLayout { open: boolean; dx: number; dy: number; w: number }
+
 export interface GanttTagDefinition {
   key: string;
   name: string;
@@ -79,11 +82,15 @@ export interface TaskRow {
   // Status and completion
   statusLabel: StatusLabel; // default is "active"
   completed: boolean;
+  /** Subtask only: 一時無効. Absent = enabled. Independent of statusLabel/completed. */
+  disabled?: boolean;
 
   // Time tracking
   createdAt: string; // YYYY-MM-DD
   updatedAt: string; // YYYY-MM-DD
-  dueDate?: string; // YYYY-MM-DD or empty/undefined
+  dueDate?: string; // YYYY-MM-DD or empty/undefined. For a parent with milestones: the earliest milestone date.
+  /** Parent only: named, taggable deadlines. Absent = the legacy single `dueDate` stands for one "期限" milestone. */
+  milestones?: GanttMarker[];
 
   // Priority
   priority: number; // constrained to [0,5]
@@ -137,6 +144,9 @@ export interface TaskPatch {
   workloadPlan?: WorkloadMap;
   workloadActual?: WorkloadMap;
   ganttMarkers?: GanttMarker[];
+  milestones?: GanttMarker[];
+  /** Subtask only: 一時無効. Still shown on the Gantt, but its plan/actual hours are not counted. */
+  disabled?: boolean;
 }
 
 
@@ -183,6 +193,9 @@ export interface TaskWorkbenchSettings {
 
   // Gantt Display/Sync
   ganttZoom: number;
+  /** Where the AI chat opens, and whether it opens by itself at start-up when it is not already open. */
+  aiChatPlacement: "right" | "left" | "tab";
+  aiChatAutoOpen: boolean;
   ganttSyncEnabled: boolean;
   ganttSyncUrl: string;
   ganttSyncIntervalMinutes: number;
@@ -215,6 +228,12 @@ export interface TaskWorkbenchSettings {
   dailyTodoSources: DailyTodoSourceConfig[];
   dailyTodoTargetSourceKey: string;
 
+
+  // Floating memos (view state only; the memo texts are notes in `<taskFolder>/_memos/`)
+  /** Whether the memo layer is shown on the Gantt. */
+  ganttMemosVisible: boolean;
+  /** Per memo id: open or closed to a pin, bubble offset from its anchor and width (screen px, not scaled by zoom). A missing entry = open, auto-placed. */
+  ganttMemoLayout: Record<string, MemoLayout>;
 
   // Rendering/Integration
   ganttFeatureSyncEnabled: boolean;

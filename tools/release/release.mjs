@@ -64,8 +64,11 @@ git("add", "package.json", "manifest.json", "versions.json", "CHANGELOG.md");
 git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
   "commit", "-m", `chore(release): v${next}`);
 git("tag", `v${next}`);
-// --atomic: either main and the tag both land or neither does, so a rejected push leaves no orphan tag.
+// Build after the bump so the attached files carry the new version; a failed build stops before anything is pushed.
+execFileSync("npm", ["ci"], { stdio: "inherit" });
+execFileSync("npm", ["run", "build"], { stdio: "inherit" });
 git("push", "--atomic", "origin", "HEAD:main", `v${next}`);
 writeFileSync(process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/release-notes.md` : "release-notes.md", notes);
 execFileSync("gh", ["release", "create", `v${next}`, "--title", `v${next}`, "--notes-file",
-  process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/release-notes.md` : "release-notes.md"], { stdio: "inherit" });
+  process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/release-notes.md` : "release-notes.md",
+  "main.js", "manifest.json", "styles.css"], { stdio: "inherit" });

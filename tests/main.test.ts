@@ -1216,18 +1216,13 @@ describe("TaskWorkbenchPlugin", () => {
       expect(clearIntervalSpy).not.toHaveBeenCalled();
     });
 
-    it("onunload detaches both view types (no-op when already closed)", async () => {
+    it("onunload keeps the views so the saved layout survives updates", async () => {
       const h = createHarness({});
       await h.plugin.onload();
 
       h.plugin.onunload();
 
-      expect(h.workspace.detachLeavesOfType).toHaveBeenCalledWith(
-        VIEW_TYPE_TASK_WORKBENCH
-      );
-      expect(h.workspace.detachLeavesOfType).toHaveBeenCalledWith(
-        VIEW_TYPE_TASK_GANTT
-      );
+      expect(h.workspace.detachLeavesOfType).not.toHaveBeenCalled();
     });
 
     it("G1 restarting the timer clears the active interval before scheduling another", async () => {

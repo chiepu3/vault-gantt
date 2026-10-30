@@ -24,6 +24,13 @@ describe("frozen catalog operation runtime", () => {
         const target = { path, line: item.line, expectedRevision: await contentRevision(content), itemFingerprint: item.itemFingerprint };
         input = id === "D07" ? { date: "2026-10-13", nextItems: [{ kind: "existing", ...target, text: "確認する", completed: true }, { kind: "new", text: "新規", completed: false }] } : { ...input, ...target };
       }
+      if (["N03", "N04", "N05"].includes(id)) {
+        // These act on an existing memo: add one first, then target it with its real id and revision.
+        const seed = await service.propose("N02", { text: "元のメモ", taskId: CHILD_ID, date: "2026-10-13" }, context); await service.humanApprovalPort.approve(seed.previewId);
+        const [item] = (await service.read("N01", {}, context)).data.items;
+        input = { ...input, memoId: item.memoId, expectedRevision: item.revision };
+        persistSettings.mockClear();
+      }
       if (id === "V20" || id === "V21") {
         const prior = await service.propose("T07", { taskId: CHILD_ID, name: "履歴準備" }, context); await service.humanApprovalPort.approve(prior.previewId);
         if (id === "V21") { const undo = await service.propose("V20", {}, context); await service.humanApprovalPort.approve(undo.previewId); }

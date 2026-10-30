@@ -15,7 +15,7 @@ import { getDailyTodoSourceForPath, extractDateFromDailyPath, parseDailyTodos } 
 import { dailyItems, checkModeled, type DailyPlan, safeDailyPath } from "./daily-handlers";
 
 export const VIEW_OPERATION_IDS = ["V01", "V02", "V03", "V04", "V05", "V06", "V07", "V08", "V09", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19", "V20", "V21", "V22", "V23"] as const;
-export type ViewRequestId = Extract<typeof VIEW_OPERATION_IDS[number], ViewOperationId> | "D08";
+export type ViewRequestId = Extract<typeof VIEW_OPERATION_IDS[number], ViewOperationId> | "D08" | "N06";
 export async function viewRequest<K extends ViewRequestId>(id: K, input: OperationInputMap[K], context: RequestContext, ui?: UiPort): Promise<OperationOutputMap[K]> {
   const args = handlerInput(id, input, context);
   if (!ui) fail("UI_UNAVAILABLE", "Obsidian UIが未接続です。");

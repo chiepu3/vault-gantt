@@ -2,6 +2,85 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.14.1 (2026-10-30)
+
+### 修正
+
+- メモの吹き出し移動・サイズ変更をUndo/Redoの対象にする ([#84](https://github.com/chiepu3/vault-gantt/pull/84))
+
+## v0.14.0 (2026-10-30)
+
+### 新機能
+
+- attach main.js/manifest.json/styles.css to GitHub Releases ([#85](https://github.com/chiepu3/vault-gantt/pull/85))
+
+## v0.13.0 (2026-10-30)
+
+### 新機能
+
+- Ganttにフローティング吹き出しメモを追加 ([#78](https://github.com/chiepu3/vault-gantt/pull/78))
+
+## v0.12.0 (2026-10-29)
+
+### 新機能
+
+- サブタスクを一時無効にできるようにする ([#82](https://github.com/chiepu3/vault-gantt/pull/82))
+
+## v0.11.3 (2026-10-29)
+
+### 修正
+
+- タグ付きサブタスクが吹き出しになりにくい問題を修正 ([#81](https://github.com/chiepu3/vault-gantt/pull/81))
+
+## v0.11.2 (2026-10-29)
+
+### 修正
+
+- 近接するマイルストーンを段に積んで名前が隠れないようにする ([#80](https://github.com/chiepu3/vault-gantt/pull/80))
+
+## v0.11.1 (2026-10-27)
+
+### 修正
+
+- マイルストーンの作成が失敗する問題を直し、追加をサブタスクと同じ操作にする ([#76](https://github.com/chiepu3/vault-gantt/pull/76))
+
+## v0.11.0 (2026-10-27)
+
+### 新機能
+
+- 親タスクに名前付きマイルストーンを複数設定できるようにする ([#75](https://github.com/chiepu3/vault-gantt/pull/75))
+
+## v0.10.1 (2026-10-20)
+
+### 修正
+
+- Daily ToDoの長い文字を折り返して全文表示 ([#72](https://github.com/chiepu3/vault-gantt/pull/72))
+
+## v0.10.0 (2026-10-19)
+
+### 新機能
+
+- AIチャットを更新後も右サイドバーに残し、起動時自動オープンとガントのAIボタンを追加 ([#71](https://github.com/chiepu3/vault-gantt/pull/71))
+
+## v0.9.1 (2026-10-19)
+
+### 修正
+
+- AIチャットの会話履歴を更新・再起動後も残す／タイトルを最初のメッセージにする ([#70](https://github.com/chiepu3/vault-gantt/pull/70))
+
+## v0.9.0 (2026-10-19)
+
+### 新機能
+
+- 毎日の作業時間（実績/想定）を7hに近づくほど赤くなる色で表示 ([#68](https://github.com/chiepu3/vault-gantt/pull/68))
+
+### 修正
+
+- OpenRouter経由のOpenAI系モデルが即座に打ち切られる問題 ([#64](https://github.com/chiepu3/vault-gantt/pull/64))
+- AIチャットの思考表示のリセットと、同じ日の複数イベント案の表示・連続適用 ([#67](https://github.com/chiepu3/vault-gantt/pull/67))
+- 定例作業を実績にも入れ、定例作業設定の入力を軽くする ([#66](https://github.com/chiepu3/vault-gantt/pull/66))
+- 「ガントを開く」向けに足した語を戻す(不要になった) ([#65](https://github.com/chiepu3/vault-gantt/pull/65))
+
 ## v0.8.1 (2026-10-18)
 
 ### 修正

@@ -27,6 +27,15 @@ describe("content-hash ContextReadPort", () => {
     expect(read.mock.calls.map(([file]) => (file as { path: string }).path)).toEqual([PARENT_PATH]);
     expect(changed.revision).not.toBe(unchanged.revision);
   });
+  it("memo view state (open, position, visibility) does not change the snapshot revision", async () => {
+    const { service, settings } = await runtimeFixture();
+    const before = await service.contextPort.snapshot();
+    settings.ganttMemoLayout = { "m-aaaaaa": { open: false, dx: 12, dy: -4, w: 200 } };
+    settings.ganttMemosVisible = false;
+    const after = await service.contextPort.snapshot();
+    expect(after.revision).toBe(before.revision);
+    expect(after.settingsRevision).toBe(before.settingsRevision);
+  });
   it("pages have no gaps/duplicates and are bound to snapshot/query/principal", async () => {
     const { service, context, vault, parent } = await runtimeFixture();
     const first = await service.contextPort.query("tasks.search", { limit: 1 }, context);
