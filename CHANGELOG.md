@@ -2,6 +2,16 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.15.0 (2026-10-30)
+
+### 新機能
+
+- notify when a new version is released and offer to update ([#74](https://github.com/chiepu3/vault-gantt/pull/74))
+
+### 修正
+
+- リリースが連続マージで競合して孤立タグを残さないようにする ([#69](https://github.com/chiepu3/vault-gantt/pull/69))
+
 ## v0.14.1 (2026-10-30)
 
 ### 修正
