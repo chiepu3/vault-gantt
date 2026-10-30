@@ -272,6 +272,32 @@ describe("plan same-file grouping", () => {
   });
 });
 
+describe("UI saves racing another write", () => {
+  it("plans once more when the note changed between plan and commit, keeping both changes", async () => {
+    const a = setup();
+    const row = await createTask(a.vault, a.settings, "Example");
+    const file = a.vault.getFileByPath(row.file.path)!;
+    // Another save of the same note lands right after the first plan read the note.
+    const plan = a.registry.plan.bind(a.registry);
+    let raced = false;
+    vi.spyOn(a.registry, "plan").mockImplementation(async (...args: Parameters<typeof plan>) => {
+      const result = await plan(...args);
+      if (!raced) { raced = true; await a.vault.modify(file, (await a.vault.read(file)).replace("## メモ", "## メモ\n他の保存")); }
+      return result;
+    });
+    await a.registry.updateFromUI([{ row, patch: { currentStatus: "確認中" } }]);
+    const text = a.vault.getFileContentById(row.id)!;
+    expect(text).toContain("確認中");
+    expect(text).toContain("他の保存");
+  });
+  it("still reports the conflict when the caller pinned a revision", async () => {
+    const a = setup();
+    const row = await createTask(a.vault, a.settings, "Example");
+    const file = a.vault.getFileByPath(row.file.path)!;
+    await a.vault.modify(file, (await a.vault.read(file)).replace("## メモ", "## メモ\n他の保存"));
+    await expect(a.registry.updateFromUI([{ row, patch: { currentStatus: "確認中" }, expectedRevision: "1:1" }])).rejects.toThrow("REVISION_CONFLICT");
+  });
+});
 describe("parent milestones through the UI save path", () => {
   it("adds, renames, re-tags and removes milestones and keeps due on the earliest one", async () => {
     const a = setup();

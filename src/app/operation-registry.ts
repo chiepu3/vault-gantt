@@ -312,8 +312,14 @@ export class OperationRegistry {
   }
   async updateFromUI(commands: TaskUpdateCommand[]): Promise<TaskUpdateResult[]> {
     if (!commands.length) return [];
-    const plan = await this.plan("update-batch", { changes: commands.map(({ row, patch, expectedRevision }) => ({ taskId: row.id, patch, expectedRevision })) });
-    const result = await this.commit(plan.previewId);
+    const changes = commands.map(({ row, patch, expectedRevision }) => ({ taskId: row.id, patch, expectedRevision }));
+    let result = await this.commit((await this.plan("update-batch", { changes })).previewId);
+    // A UI patch is re-applied to the note as it is now, so when another save of the same note landed between plan
+    // and commit (nothing written yet), planning once more is safe. Callers that pin a revision keep the conflict.
+    if (result.kind === "stale" && result.committed === 0 && changes.every((change) => !change.expectedRevision)) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      result = await this.commit((await this.plan("update-batch", { changes })).previewId);
+    }
     if (result.kind !== "success") throw new Error(result.kind === "stale" ? "REVISION_CONFLICT" : result.message);
     return result.results;
   }
