@@ -43,7 +43,7 @@ export function entityRefKey(entity: EntityRef): string {
   }
 }
 export const ENTITY_FIELDS = {
-  task: ["displayName", "title", "statusLabel", "createdAt", "updatedAt", "dueDate", "priority", "priorityMode", "tags", "completed", "disabled", "ganttEnabled", "ganttOrder", "currentStatus", "notes", "plannedStartDate", "plannedEndDate", "workloadPlan", "workloadActual", "ganttMarkers", "derivedPeriod", "progress", "effectivePriority", "children"],
+  task: ["displayName", "title", "statusLabel", "createdAt", "updatedAt", "dueDate", "priority", "priorityMode", "tags", "completed", "disabled", "ganttEnabled", "ganttOrder", "currentStatus", "notes", "plannedStartDate", "plannedEndDate", "workloadPlan", "workloadActual", "ganttMarkers", "milestones", "derivedPeriod", "progress", "effectivePriority", "children"],
   marker: ["key", "title", "date", "tags"], event: ["key", "title", "date", "workloadPlan", "workloadActual"],
   weekly: ["key", "title", "dayOfWeek", "minutesPerWeek"], "daily-todo": ["text", "completed"],
   "daily-file": ["path", "sourceKey", "templatePath"], "tag-definition": ["key", "name", "color", "order"],

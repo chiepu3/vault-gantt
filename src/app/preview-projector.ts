@@ -2,6 +2,7 @@ import { publicSettingsSchema, type PublicSettingsV1, type HoursCell, type Daily
 import { ganttProjectionSchema, type GanttStateV1, type GanttProjectionV1, type PreviewEntry, type PreviewEffect, type FieldChange, type EntityRef, entityRefKey } from "../contracts/preview";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { getEffectivePriority } from "../core/utils";
+import { getMilestones } from "../core/milestones";
 import { addDays } from "./gantt-layout";
 import { isBusinessDay } from "./gantt-drag";
 import { holidaySet } from "./gantt-actions";
@@ -89,6 +90,7 @@ export function taskPublicState(row: TaskRow): Record<string, import("../contrac
   return Object.fromEntries(Object.keys(taskPatchInputSchema.shape).map((key) => [key,
     key === "ganttMarkers" ? (row.ganttMarkers ?? []).map((marker) => ({ key: marker.key, title: marker.title, date: marker.date, tags: marker.tags ?? [] }))
       : key === "disabled" ? row.disabled === true
+      : key === "milestones" ? row.kind === "parent" ? getMilestones(row).map((milestone) => ({ key: milestone.key, title: milestone.title, date: milestone.date, tags: milestone.tags ?? [] })) : []
       : key === "workloadPlan" || key === "workloadActual" ? { ...row[key] ?? {} } : structuredClone(row[key as keyof TaskRow] ?? "")])) as Record<string, import("../contracts/context").Json>;
 }
 export function project(snapshot: TaskSnapshot, afterParents: readonly TaskRow[], afterSettings: TaskWorkbenchSettings, entries: readonly PreviewEntry[]): GanttProjectionV1 | null {

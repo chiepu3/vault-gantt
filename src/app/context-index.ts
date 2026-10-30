@@ -5,6 +5,7 @@ import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
 import { reconcileParentOrder } from "../core/parent-order";
 import { matchScore } from "../core/fuzzy-match";
 import { todayStr, getEffectivePriority, buildFileRevision } from "../core/utils";
+import { getMilestones } from "../core/milestones";
 import type { VaultAdapter } from "./task-operations";
 import { assembleTasks, isUnderRoot, readNote, taskRoot } from "./note-store";
 import type { AssembleMemo, NoteCacheEntry } from "./note-store";
@@ -31,7 +32,7 @@ export function compactTask(row: TaskRow, snapshot: Pick<TaskSnapshot, "revision
     ...(fields.includes("content") ? { content: { currentStatus: row.currentStatus, notes: row.notes, createdAt: row.createdAt || null, updatedAt: row.updatedAt || null } } : {}),
   };
   return row.kind === "parent" ? { ...common, kind: "parent", parentId: null,
-    ...(fields.includes("schedule") ? { due: row.dueDate || null, gantt: { enabled: row.ganttEnabled, order: row.ganttOrder ?? 999999 } } : {}),
+    ...(fields.includes("schedule") ? { due: row.dueDate || null, milestones: getMilestones(row).map((milestone) => ({ ...milestone, tags: [...milestone.tags ?? []] })), gantt: { enabled: row.ganttEnabled, order: row.ganttOrder ?? 999999 } } : {}),
     ...(fields.includes("derived") ? { derived: { period: period(row), progress: progress(row), effectivePriority: getEffectivePriority(row, snapshot.settings.autoPriorityEnabled) } } : {}),
     ...(fields.includes("children") ? { children: [...row.subtasks?.values() ?? []].map((child) => child.id) } : {}),
     ...(fields.includes("workload") ? { hoursTotal: hoursTotal(row) } : {}),

@@ -27,7 +27,7 @@ export interface AgentViewHost {
   /** Reverse the history entry an outcome refers to; the ports only inspect history. */
   undoEntry?(entryId: string): Promise<void> | void;
 }
-const fieldNames: Record<string, string> = { plannedStartDate: "開始日", plannedEndDate: "終了日", dueDate: "期限", notes: "メモ", displayName: "表示名", title: "名前", create: "作成" };
+const fieldNames: Record<string, string> = { plannedStartDate: "開始日", plannedEndDate: "終了日", dueDate: "期限", milestones: "マイルストーン", notes: "メモ", displayName: "表示名", title: "名前", create: "作成" };
 export function diffText(diffs: TaskDiff[]): string {
   return diffs.map((diff) => diff.name + "\n" + diff.fields.map((field) => (fieldNames[field.field] ?? field.field) + ": " + display(field.before) + " → " + display(field.after)).join("\n")).join("\n\n");
 }
