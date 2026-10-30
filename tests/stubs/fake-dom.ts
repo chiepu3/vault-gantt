@@ -81,6 +81,8 @@ export interface FakeEl {
   /** The next element in the parent's children array (null when last / parentless). */
   readonly nextSibling: FakeEl | null;
   appendChild(child: FakeEl): FakeEl;
+  append(...nodes: FakeEl[]): void;
+  replaceWith(...nodes: FakeEl[]): void;
   /**
  * Inserts `child` immediately before `ref` (appends when ref is null),
  * detaching it from any previous parent first — same move semantics as
@@ -211,9 +213,26 @@ export function makeFakeEl(tag = "div"): FakeEl {
         }
         return child;
       }
+      // Move semantics, as in the real DOM: a node that already has a parent leaves it first.
+      const previous = (child as any).parentNode as FakeEl | null;
+      if (previous) {
+        const at = previous.children.indexOf(child);
+        if (at >= 0) previous.children.splice(at, 1);
+      }
       (child as any).parentNode = el;
       el.children.push(child);
       return child;
+    },
+    append(...nodes: FakeEl[]): void {
+      for (const node of nodes) el.appendChild(node);
+    },
+    replaceWith(...nodes: FakeEl[]): void {
+      const parent = el.parentNode;
+      if (!parent) return;
+      const index = parent.children.indexOf(el);
+      el.parentNode = null;
+      for (const node of nodes) (node as any).parentNode = parent;
+      parent.children.splice(index, 1, ...nodes);
     },
     insertBefore(child: FakeEl, ref: FakeEl | null): FakeEl {
       // Move semantics: detach from the previous parent first (which may
@@ -241,6 +260,7 @@ export function makeFakeEl(tag = "div"): FakeEl {
       return child;
     },
     replaceChildren(...newChildren: FakeEl[]): void {
+      for (const child of el.children) (child as any).parentNode = null;
       el.children = [];
       for (const child of newChildren) {
         (child as any).parentNode = el;
@@ -266,6 +286,7 @@ export function makeFakeEl(tag = "div"): FakeEl {
     // the holiday-toggle scroll-preservation test stricter but broke the
     // right-extension test, so the stub leaves it unchanged.
     empty(): void {
+      for (const child of el.children) (child as any).parentNode = null;
       el.children = [];
     },
     addEventListener(type: string, cb: (event: any) => void): void {

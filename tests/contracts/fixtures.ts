@@ -44,6 +44,9 @@ export const INPUT_FIXTURES = {
   S27: { name: "リリース", target: { kind: "marker", taskId: CHILD_ID, markerKey: "確認" } },
   S28: { label: "日次", format: "[daily/]YYYY-MM-DD", creatableFromGantt: true }, S29: { ...source, label: "日次" }, S30: { ...source, momentFormat: "[daily/]YYYY-MM-DD" },
   S31: { ...source, templatePath: "" }, S32: { ...source, creatableFromGantt: true }, S33: { orderedKeys: ["main"] }, S34: source, S35: {},
+  N01: { from: DATE, to: "2026-10-31", taskId: CHILD_ID, query: "確認", includeClosed: true, limit: 50 },
+  N02: { text: "レビューの観点\n・性能\n・互換性", taskId: CHILD_ID, date: DATE, open: true }, N03: { memoId: "m-aaaaaa", text: "更新後の本文全体", expectedRevision: revision },
+  N04: { memoId: "m-aaaaaa", taskId: CHILD_ID, date: DATE, expectedRevision: revision }, N05: { memoId: "m-aaaaaa", expectedRevision: revision }, N06: { memoIds: ["m-aaaaaa"], open: false },
   V01: { position: "tab" }, V02: view, V03: { query: "レビュー" }, V04: task, V05: { date: DATE }, V06: { position: "right" },
   V07: { ...view, text: "レビュー" }, V08: { ...view, status: "active" }, V09: { ...view, sort: "dueDate", direction: "asc" },
   V10: { ...view, flatDueSort: true }, V11: { ...view, showCompleted: true }, V12: { ...view, ...parent, expanded: true },
@@ -201,8 +204,14 @@ export const EFFECT_FIXTURES = [
   { kind: "diagnostic", recording: false, outputPath: "_vault-gantt-logs/fixture.log", entryCount: 10 },
   { kind: "conversation", action: "request-approval", before: null, after: { previewId: "mcp-fixture" } },
   { kind: "service-state", fields: [{ field: "lastAutoPriorityUpdate", before: "", after: "2026-10-09", reason: "derived" }] },
+  { kind: "memo", before: null, after: { text: "レビューの観点\n・性能", taskId: CHILD_ID, taskName: "レビュー", date: DATE } },
 ] as const satisfies readonly PreviewEffect[];
 export const READ_FIXTURES = {
+  memos: {
+    schemaVersion: 1, resultKind: "read", today: "2026-10-09", timezone: "Asia/Tokyo", snapshotRevision: "snapshot-sha256:fixture", errors: [],
+    data: { kind: "memos", items: [{ memoId: "m-aaaaaa", text: "レビューの観点", open: true, revision, anchor: { kind: "subtask", taskId: CHILD_ID, taskName: "レビュー", date: DATE } }],
+      totalMatched: 1, returned: 1, truncated: false, nextCursor: null },
+  },
   tasks: {
     schemaVersion: 1, resultKind: "read", today: "2026-10-09", timezone: "Asia/Tokyo", snapshotRevision: "snapshot-sha256:fixture", errors: [],
     data: { kind: "tasks", fieldsIncluded: ["identity", "status", "schedule", "priority"],

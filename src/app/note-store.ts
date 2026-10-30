@@ -1,4 +1,5 @@
 import type { Logger } from "../core/logger";
+import { isMemoPath, parseMemoMeta, type MemoMeta } from "../core/memo";
 import { parseNote, readSections, noteKindOf, type ParsedNote } from "../core/note-v2";
 import { reconcileParentOrder } from "../core/parent-order";
 import { sortSubtasks } from "../core/subtask-order";
@@ -7,8 +8,8 @@ import { buildFileRevision, todayStr } from "../core/utils";
 import { linkTarget, type NoteVault } from "./note-vault";
 import type { VaultFile } from "./task-operations";
 
-/** One note's parse result. `taskRow` is a single note (a parent without subtasks yet, or a subtask); null = not a task note. */
-export interface NoteCacheEntry { revision: string; taskRow: TaskRow | null; parentLink?: string }
+/** One note's parse result. `taskRow` is a single note (a parent without subtasks yet, or a subtask); null = not a task note. `memo` is set for a floating memo note (those are never tasks). */
+export interface NoteCacheEntry { revision: string; taskRow: TaskRow | null; parentLink?: string; memo?: MemoMeta }
 export type TaskCache = Map<string, NoteCacheEntry>;
 
 interface Assembled { source: TaskRow; kids: TaskRow[]; order: string; row: TaskRow }
@@ -128,19 +129,11 @@ export function assembleTasks(
 }
 
 /**
- * Loads every task note under the task folder. Unchanged notes (same mtime:size) are not read or parsed
- * again, so after one edit only that note is re-read. Frontmatter comes from the metadataCache.
+ * Re-reads the notes whose cache entry is out of date (same mtime:size = unchanged). Frontmatter comes
+ * from the metadataCache; memo notes are recognised here too, so tasks and memos share one scan.
  */
-export async function loadNoteTasks(
-  vault: NoteVault,
-  settings: TaskWorkbenchSettings,
-  cache: TaskCache,
-  logger?: Logger,
-  onOrderChanged?: () => void
-): Promise<TaskRow[]> {
-  const startedAt = Date.now();
-  const root = taskRoot(settings), today = todayStr();
-  const files = vault.getFiles().filter((file) => isUnderRoot(file.path, root));
+async function refreshNotes(vault: NoteVault, settings: TaskWorkbenchSettings, cache: TaskCache, files: readonly VaultFile[], logger?: Logger): Promise<void> {
+  const today = todayStr();
   const revisions = new Map<string, string>();
   const stale = files.filter((file) => {
     const revision = noteRevision(file, settings, today);
@@ -154,12 +147,31 @@ export async function loadNoteTasks(
     try {
       const note = await readNote(vault, file, settings);
       if (note === undefined) { cache.delete(file.path); return; }
-      cache.set(file.path, { revision, taskRow: note?.row ?? null, parentLink: note?.parentLink });
+      const memo = note || !isMemoPath(file.path, settings) ? null : parseMemoMeta(file.path, vault.getFrontmatter(file));
+      cache.set(file.path, { revision, taskRow: note?.row ?? null, parentLink: note?.parentLink, ...(memo ? { memo } : {}) });
     } catch (error) {
       logger?.error("loadTasks", `Failed to read task note ${file.path}:`, error);
       cache.delete(file.path);
     }
   }));
+}
+
+/**
+ * Loads every task note under the task folder. Unchanged notes (same mtime:size) are not read or parsed
+ * again, so after one edit only that note is re-read. Frontmatter comes from the metadataCache.
+ * Memo notes found on the way are kept in the cache (see cachedMemos).
+ */
+export async function loadNoteTasks(
+  vault: NoteVault,
+  settings: TaskWorkbenchSettings,
+  cache: TaskCache,
+  logger?: Logger,
+  onOrderChanged?: () => void
+): Promise<TaskRow[]> {
+  const startedAt = Date.now();
+  const root = taskRoot(settings);
+  const files = vault.getFiles().filter((file) => isUnderRoot(file.path, root));
+  await refreshNotes(vault, settings, cache, files, logger);
   const present = new Set(files.map((file) => file.path));
   for (const path of [...cache.keys()]) if (!present.has(path)) cache.delete(path);
 
@@ -174,4 +186,30 @@ export async function loadNoteTasks(
   if (reconcileParentOrder(settings, result)) onOrderChanged?.();
   logger?.debug("loadTasks", "load completed", { durationMs: Date.now() - startedAt, fileCount: files.length, taskCount: result.length });
   return result;
+}
+
+/** The memo notes the cache knows about, in path order. A repeated id is left out (the first note keeps it). */
+export function cachedMemos(cache: TaskCache, logger?: Logger): MemoMeta[] {
+  const seen = new Set<string>();
+  const memos: MemoMeta[] = [];
+  for (const [path, entry] of [...cache].sort(([a], [b]) => a.localeCompare(b))) {
+    const memo = entry.memo;
+    if (!memo) continue;
+    if (seen.has(memo.id)) { logger?.warn("note-store", `duplicate memo id ${memo.id}: ${path} is ignored`); continue; }
+    seen.add(memo.id);
+    memos.push(memo);
+  }
+  return memos;
+}
+
+/**
+ * Refreshes only the memo notes (`<taskFolder>/_memos/`) and returns them. For redraws that follow a memo edit,
+ * where re-reading the whole task folder would be wasted work; after loadNoteTasks use cachedMemos instead.
+ */
+export async function loadMemos(vault: NoteVault, settings: TaskWorkbenchSettings, cache: TaskCache, logger?: Logger): Promise<MemoMeta[]> {
+  const files = vault.getFiles().filter((file) => isMemoPath(file.path, settings));
+  await refreshNotes(vault, settings, cache, files, logger);
+  const present = new Set(files.map((file) => file.path));
+  for (const [path, entry] of cache) if (entry.memo && !present.has(path)) cache.delete(path);
+  return cachedMemos(cache, logger).filter((memo) => present.has(memo.path));
 }

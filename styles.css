@@ -227,7 +227,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
    .task-gantt-drag-tooltip, which is appended directly to the container. */
 .task-gantt-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; }
 
-.task-gantt-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.task-gantt-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; }
 
 .task-gantt-toolbar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--vg-space-3); padding: 6px 8px; border-bottom: var(--vg-border); }
 
@@ -952,6 +952,7 @@ button.task-workbench-priority-reset { border: 0; background: transparent; box-s
 .vg-pv-after { display: flex; gap: 6px; align-items: baseline; min-width: 0; color: var(--text-normal); font-weight: var(--font-semibold); }
 .vg-pv-side { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .vg-pv-value { min-width: 0; }
+.vg-pv-value.is-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-row.is-removed .vg-pv-after .vg-pv-value, .vg-pv-chip.is-removed { text-decoration: line-through; }
 .vg-pv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vg-pv-text.is-multiline { display: block; max-height: 8em; overflow: auto; padding: 2px 6px; border-inline-start: 2px solid var(--background-modifier-border); }
@@ -1111,3 +1112,53 @@ button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(
 .twb-milestone-popover-tag { cursor: pointer; opacity: 0.55; }
 .twb-milestone-popover-tag.is-selected { opacity: 1; box-shadow: 0 0 0 1.5px var(--interactive-accent); }
 .twb-milestone-popover-buttons { display: flex; justify-content: flex-end; gap: var(--vg-space-2); }
+.twb-memo-popover { position: fixed; z-index: var(--layer-popover, 40); display: flex; flex-direction: column; gap: var(--vg-space-3); width: 340px; max-width: calc(100vw - 16px); max-height: 60vh; padding: var(--vg-space-4); border: var(--vg-border-width) solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary); box-shadow: var(--shadow-s); }
+.twb-memo-popover-head { display: flex; align-items: center; justify-content: space-between; gap: var(--vg-space-3); }
+.twb-memo-popover-title { font-weight: var(--font-semibold); }
+.twb-memo-popover-bulk { display: flex; gap: var(--vg-space-2); }
+.twb-memo-popover-list { display: flex; flex-direction: column; gap: var(--vg-space-2); overflow-y: auto; }
+.twb-memo-popover-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--vg-space-2); }
+.twb-memo-popover-row.is-closed .twb-memo-popover-text { opacity: 0.6; }
+.twb-memo-popover-text { min-width: 0; }
+.twb-memo-popover-headline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.twb-memo-popover-where, .twb-memo-popover-empty { color: var(--vg-color-muted); font-size: var(--vg-font-s); }
+
+/* Floating memos: one layer over the chart (the last child of the scroll container). It scrolls with the chart;
+   only memos' own boxes take pointer events. A closed memo is a pin. */
+.vg-memo-layer { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; }
+.vg-memo-layer > .vg-memo-group { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.vg-memo-group > * { pointer-events: auto; }
+.vg-memo-group.is-dot-dragging > * { pointer-events: none; }
+.vg-memo-group { --memo-edge: color-mix(in srgb, var(--color-yellow) 70%, var(--text-muted)); --memo-fill: color-mix(in srgb, var(--color-yellow) 13%, var(--background-primary)); }
+.vg-memo-group.is-ai { --memo-edge: var(--interactive-accent); }
+
+.vg-memo-tail { position: absolute; height: 0; border-top: 1.6px solid var(--memo-edge); transform-origin: 0 0; pointer-events: none; }
+.vg-memo-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--memo-edge); box-shadow: 0 0 0 2px var(--background-primary); cursor: move; }
+.vg-memo-dot.is-dragging { box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--memo-edge); }
+
+.vg-memo { position: absolute; display: flex; flex-direction: column; min-width: 140px; max-width: 480px; min-height: 48px; border: 1px solid var(--memo-edge); border-radius: var(--radius-m); background: var(--memo-fill); box-shadow: var(--vg-shadow-raised); color: var(--text-normal); font-size: var(--vg-font-s, 12px); line-height: 1.45; overflow: hidden; }
+.vg-memo.is-dragging { box-shadow: var(--shadow-s); opacity: 0.96; }
+.vg-memo-head { display: flex; align-items: center; gap: 4px; height: 22px; padding: 0 2px 0 7px; border-bottom: 1px solid color-mix(in srgb, var(--memo-edge) 35%, transparent); color: var(--text-muted); font-size: var(--vg-font-xs, 11px); cursor: grab; user-select: none; flex: none; }
+.vg-memo.is-dragging .vg-memo-head { cursor: grabbing; }
+.vg-memo-head svg { width: 12px; height: 12px; flex: none; }
+.vg-memo-where { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vg-memo-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 18px; padding: 0; border: 0; border-radius: var(--radius-s); background: transparent; box-shadow: none; color: var(--text-muted); cursor: pointer; }
+.vg-memo-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.vg-memo-text { padding: 5px 9px 7px; max-height: 240px; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; flex: 1 1 auto; cursor: text; }
+.vg-memo-edit { flex: 1 1 auto; min-height: 60px; overflow: hidden; margin: 0; padding: 5px 9px 7px; border: 0; border-radius: 0; background: var(--background-primary); color: var(--text-normal); font: inherit; line-height: inherit; resize: none; box-shadow: inset 0 0 0 2px var(--interactive-accent); }
+.vg-memo-edit:focus { outline: none; }
+.vg-memo-resize { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--memo-edge) 50%, var(--memo-edge) 58%, transparent 58%, transparent 72%, var(--memo-edge) 72%, var(--memo-edge) 80%, transparent 80%); }
+.vg-memo-group:hover .vg-memo, .vg-memo-group:focus-within .vg-memo, .vg-memo.is-dragging { z-index: 1; }
+
+/* AI proposal: dashed accent frame and a mark, like the preview phantoms; a deletion is faded. */
+.vg-memo.is-ai { border-style: dashed; border-width: 1.5px; background: color-mix(in srgb, var(--interactive-accent) 7%, var(--background-primary)); }
+.vg-memo.is-ai.is-deleted { opacity: 0.55; }
+.vg-memo.is-ai.is-deleted .vg-memo-text { text-decoration: line-through; }
+.vg-memo-mark { flex: none; padding: 0 6px; border-radius: var(--radius-s); background: var(--interactive-accent); color: var(--text-on-accent); font-size: 10px; font-weight: 600; line-height: 16px; }
+
+/* Closed: only a small pin at the anchor. */
+.vg-memo-pin { position: absolute; display: inline-flex; align-items: center; gap: 2px; height: 18px; padding: 0 5px 0 4px; margin: -9px 0 0 -9px; border: 1px solid var(--memo-edge); border-radius: 9px 9px 9px 2px; background: var(--memo-fill); box-shadow: var(--vg-shadow-flat); color: color-mix(in srgb, var(--memo-edge) 70%, var(--text-normal)); cursor: pointer; }
+.vg-memo-pin svg { width: 11px; height: 11px; }
+.vg-memo-pin:hover { box-shadow: var(--vg-shadow-raised); }
+
+.task-gantt-memos.is-off { opacity: 0.6; }

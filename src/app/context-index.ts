@@ -1,3 +1,4 @@
+import { memoRecords } from "./operations/memo-handlers";
 import { contextQueryInputSchemas, contextQueryOutputSchemas, publicSettingsSchema, readResultSchema, type ContextQueryId, type ContextQueryMap, type ContextQueryResult, type CompactTaskV1, type TaskFieldGroup, type ReadResultV1, type RequestContext, type TaskReadV1 } from "../contracts/context";
 import type { ContextReadPort } from "../contracts/ports";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
@@ -69,7 +70,8 @@ export class ContextIndex implements ContextReadPort {
     return path.startsWith(settings.taskFolder.replace(/\/$/, "") + "/") || !!getDailyTodoSourceForPath(path, settings);
   }
   async snapshot(): Promise<TaskSnapshot> {
-    const vault = this.vaultFactory(), settings = structuredClone(this.settings());
+    // Memo open/closed/position is view state: moving a bubble must not make a pending proposal stale.
+    const vault = this.vaultFactory(), settings = { ...structuredClone(this.settings()), ganttMemosVisible: true, ganttMemoLayout: {} };
     const today = todayStr(), timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const parseSettings = { ...settings, autoPriorityEnabled: false };
     const contents = new Map<string, string>(), revisions = new Map<string, string>(), statRevisions = new Map<string, string>(), parseFailures: string[] = [];
@@ -223,7 +225,7 @@ export class ContextIndex implements ContextReadPort {
         const args = parsed.data as ContextQueryMap["context.overview"];
         if (args.dateRange) fail("INVALID_INPUT", "overviewの日付範囲絞り込みは未実装です。tasks.searchのplannedRange/dueRangeを使用してください。", "dateRange");
         const parents = snapshot.parents.filter((parent) => !args.scope?.parentIds || args.scope.parentIds.includes(parent.id)), children = parents.flatMap((parent) => [...parent.subtasks?.values() ?? []]);
-        data = { kind: "overview", counts: { parents: parents.length, children: children.length, unplaced: children.filter((child) => !child.plannedStartDate || !child.plannedEndDate).length, completed: flatten(parents).filter((row) => row.completed).length, parseFailures: snapshot.parseFailures.length }, settings: publicSettings(snapshot.settings), capabilities: [...context.capabilities], summaryRevision: snapshot.revision };
+        data = { kind: "overview", counts: { parents: parents.length, children: children.length, unplaced: children.filter((child) => !child.plannedStartDate || !child.plannedEndDate).length, completed: flatten(parents).filter((row) => row.completed).length, parseFailures: snapshot.parseFailures.length, memos: memoRecords(snapshot).length }, settings: publicSettings(snapshot.settings), capabilities: [...context.capabilities], summaryRevision: snapshot.revision };
       } else if (id === "calendar.get") {
         const args = parsed.data as ContextQueryMap["calendar.get"];
         data = { kind: "calendar", ...args, revision: snapshot.calendarRevision, calendar: { weekends: [0, 6], manual: [...snapshot.settings.ganttManualHolidays], special: [...snapshot.settings.ganttSpecialHolidays], national: [...snapshot.settings.ganttNationalHolidays] } };

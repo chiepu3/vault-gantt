@@ -2671,7 +2671,7 @@ describe("TaskGanttView", () => {
           "task-gantt-event-left",
           "task-gantt-event-row",
           "その他",
-          "右クリックで追加 / ドラッグで移動",
+          "ダブルクリックで追加 / ドラッグで移動",
         ],
         [
           "task-gantt-daily-left",
@@ -2832,7 +2832,7 @@ describe("TaskGanttView", () => {
       });
     });
 
-    it("adds a default event on an empty timeline contextmenu", async () => {
+    it("adds a default event on an empty timeline double-click", async () => {
       const { container, h, view } = await openView([]);
       const timeline = byClass(container, "task-gantt-event-row")[0];
       const wrap = wrapOf(container);
@@ -2841,7 +2841,7 @@ describe("TaskGanttView", () => {
         Math.floor(wrap.scrollLeft / 28)
       );
 
-      const evt = dispatch(timeline, "contextmenu", { clientX: PARENT_COL_WIDTH });
+      const evt = dispatch(timeline, "dblclick", { clientX: PARENT_COL_WIDTH });
       await flush();
 
       expect(evt.__defaultPrevented).toBe(true);

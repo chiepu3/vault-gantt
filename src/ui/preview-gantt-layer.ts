@@ -3,7 +3,7 @@ import type { GanttEvent } from "../core/types";
 import type { PreviewPort } from "../contracts/ports";
 import {
   mergeProjectionPages, type GanttChildStateV1, type GanttParentStateV1, type GanttProjectionV1,
-  type OperationOutcomeV1, type OperationPreviewV1, type ProjectionPageV1,
+  type MemoStateV1, type OperationOutcomeV1, type OperationPreviewV1, type ProjectionPageV1,
 } from "../contracts/preview";
 import type { PointGhost } from "./ghost-layer";
 import { deriveHighlights, type HoursPair, type CellChange, type DailyChange, type EventChange, type Highlights, type HlState, type PhantomBar, type TotalsChange } from "./preview-highlights";
@@ -104,6 +104,15 @@ export function mergeHighlights(main: Highlights, extra: Highlights): Highlights
   return { rows, workload, totals, daily, events, phantoms, firstTaskId: main.firstTaskId ?? extra.firstTaskId, firstDate: main.firstDate ?? extra.firstDate };
 }
 
+/** A memo a pending proposal adds, changes or deletes; drawn as a dashed bubble over the chart. */
+export interface MemoProposal { readonly memoId: string; readonly mark: "追加" | "変更" | "削除"; readonly state: MemoStateV1 }
+const memoProposalsOf = (preview: OperationPreviewV1): MemoProposal[] => preview.entries.flatMap((entry) => {
+  if (entry.entity.kind !== "memo") return [];
+  const effect = entry.effects.find((item) => item.kind === "memo");
+  const state = effect?.after ?? effect?.before;
+  return effect && state ? [{ memoId: entry.entity.memoId, mark: !effect.before ? "追加" as const : !effect.after ? "削除" as const : "変更" as const, state }] : [];
+});
+
 /** Projects the one focused preview/outcome onto the Gantt. Holds only display state; never touches live rows. */
 export class PreviewGanttLayer {
   private readonly listeners = new Set<() => void>();
@@ -178,8 +187,17 @@ export class PreviewGanttLayer {
     }
     return result;
   }
+  /** Memos the focused proposal (and its pending siblings) would add, change or delete. Nothing once the proposal is saved: the notes are real then. */
+  memoProposals(): readonly MemoProposal[] {
+    const source = this.source;
+    if (!source || source.kind === "actual") return [];
+    return [source.preview, ...source.siblings].flatMap(memoProposalsOf);
+  }
   /** Where the first change is, so the Gantt can scroll to it. */
-  focusTarget(): { taskId?: string; date?: string } { return { taskId: this.marks?.firstTaskId, date: this.marks?.firstDate }; }
+  focusTarget(): { taskId?: string; date?: string } {
+    const memo = this.marks ? undefined : this.memoProposals()[0]?.state;
+    return { taskId: this.marks?.firstTaskId ?? memo?.taskId, date: this.marks?.firstDate ?? memo?.date };
+  }
   /** Changes whenever the highlighted content changes; used to invalidate cached fixed rows. */
   get markKey(): string { return this.marks ? `pv:${this.source?.key}:${this.merged?.coverage.includedCount ?? 0}` : ""; }
   private resolve(): LayerSource | undefined {
@@ -196,7 +214,7 @@ export class PreviewGanttLayer {
   private siblingsOf(focused: OperationPreviewV1): OperationPreviewV1[] {
     if (focused.status !== "pending" || focused.origin.kind !== "chat") return [];
     const conversation = focused.origin.conversationId;
-    return (this.port.list?.() ?? []).filter((other) => other.previewId !== focused.previewId && other.status === "pending" && other.origin.kind === "chat" && other.origin.conversationId === conversation && !!other.projection);
+    return (this.port.list?.() ?? []).filter((other) => other.previewId !== focused.previewId && other.status === "pending" && other.origin.kind === "chat" && other.origin.conversationId === conversation && (!!other.projection || memoProposalsOf(other).length > 0));
   }
   refresh(notify = true): void {
     this.focusNewChatPreview();
@@ -255,7 +273,7 @@ export class PreviewGanttLayer {
     for (const preview of this.port.list()) {
       if (this.seen.has(preview.previewId)) continue;
       this.seen.add(preview.previewId);
-      if (preview.status === "pending" && preview.origin.kind === "chat" && preview.projection) newest = preview;
+      if (preview.status === "pending" && preview.origin.kind === "chat" && (preview.projection || memoProposalsOf(preview).length)) newest = preview;
     }
     if (!newest) return;
     const focused = this.port.focusedPreviewId(); const current = focused ? this.port.inspect(focused) : undefined;

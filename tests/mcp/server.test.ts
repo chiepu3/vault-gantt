@@ -118,7 +118,7 @@ describe("HTTP SDK interoperability", () => {
         await client.callTool({ name: "previews.reject", arguments: { previewId } });
       }
     }
-    expect(fake.calls.read).toHaveBeenCalledTimes(3);
+    expect(fake.calls.read).toHaveBeenCalledTimes(4);
     expect(fake.calls.propose.mock.calls.length).toBeGreaterThan(80);
   }, 30_000);
   it("validates modern version, method and name header agreement using SDK", async () => {

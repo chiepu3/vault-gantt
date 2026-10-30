@@ -560,6 +560,42 @@ const LEDGER = {
     "constraints": "enabledなPeriodic Notesを優先、core Daily notesへfallback。folderをliteral化、新規sourceをappend",
     "undo": "×"
   },
+  "N01": {
+    "purpose": "吹き出しメモの一覧取得",
+    "input": "from?, to?, taskId?, query?, includeClosed?, limit?",
+    "constraints": "Ganttに浮かぶ自由記述メモを本文つきで返す。アンカーは実日付（日数オフセットは返さない）。既定は開いているメモだけで、includeClosed=trueで閉じた（ピン）メモも含める。全件を見たいときはincludeClosed=trueを指定する。cursorはなく、絞り込みで取得する",
+    "undo": "―"
+  },
+  "N02": {
+    "purpose": "吹き出しメモの追加",
+    "input": "text, taskId?, date?, open?",
+    "constraints": "textには保存したい本文の全文をそのまま入れる（要約や概要だけにしない。改行可、最大20000字）。taskId省略は「その他」行、親タスクIDは親行、子タスクIDはそのバー。dateはメモの指す日（省略時は今日。子タスクのバーの外なら期間内へ寄せる）。openがfalseなら閉じたピンとして追加",
+    "undo": "○（画面のUndo）"
+  },
+  "N03": {
+    "purpose": "吹き出しメモの本文変更",
+    "input": "memoId, text, expectedRevision?",
+    "constraints": "textは変更後の本文の全文（差分や追記分だけにしない）。N01で得たmemoIdとrevisionを使う。空文字は不可（削除はN05）",
+    "undo": "○（画面のUndo）"
+  },
+  "N04": {
+    "purpose": "吹き出しメモの付け替え・日付移動",
+    "input": "memoId, taskId?, date?, expectedRevision?",
+    "constraints": "taskIdを指定すると別タスクへ、空文字\"\"で「その他」行へ付け替える。省略はタスク維持。taskIdは親・子・空文字のどれでも、別の親の配下でもよい。dateは新しい日付（省略は現在の日付を維持し、子のバーの外なら期間内へ寄せる。子へ付ける場合に明示したdateがバーの期間外ならエラー）。本文は変えない。どちらも省略は不可",
+    "undo": "○（画面のUndo）"
+  },
+  "N05": {
+    "purpose": "吹き出しメモの削除",
+    "input": "memoId, expectedRevision?",
+    "constraints": "メモのノートをゴミ箱へ移動する。確認なしの削除ではなく、承認後に実行され、画面のUndoで戻せる",
+    "undo": "○（画面のUndo）"
+  },
+  "N06": {
+    "purpose": "吹き出しメモを開く・閉じる",
+    "input": "memoIds, open",
+    "constraints": "表示状態（開いた吹き出し／閉じたピン）だけを変え、メモの内容は変えない。memoIdsに[\"*\"]を渡すと全メモが対象。承認は不要",
+    "undo": "―"
+  },
   "V01": {
     "purpose": "Workbenchを開く",
     "input": "position/既存leaf",
@@ -783,9 +819,24 @@ const PARAMETER_DOCS: Record<string, string> = {
   plan: "日付→hoursの計画map全置換。0.5hへ丸め、0で削除、最大24h/日。", actual: "日付→hoursの実績map全置換。計画を保持。0.5hへ丸め、0で削除、最大24h/日。",
   tags: "タグ名文字列の配列全置換。[]で全解除。定義keyとは異なる。", markers: "マーカー配列全置換。[]で全削除。一意key、非空title、実在date。",
   markerKey: "markers groupで取得した実在key。同名でもkeyで識別。", minutesPerWeek: "単位minutes。非負、30分単位へ丸め。hoursではない。", dayOfWeek: "曜日整数。0=日曜、6=土曜。指定曜日には休日でも計画時間に寄与する。",
+  memoId: "N01で取得した実在のメモID（m-で始まる）。ノートのパスや本文で代用しない。",
+  memoIds: "N01で取得したメモIDの配列。[\"*\"]で全メモ。",
+  open: "true=開いた吹き出し、false=閉じたピン。メモの内容は変わらない。",
+  includeClosed: "trueで閉じた（ピン）メモも含める。既定は開いているメモだけ。",
+  from: "この日以降のアンカー日付のメモだけ（両端を含む）。", to: "この日以前のアンカー日付のメモだけ（両端を含む）。",
   cursor: "前ページの不透明cursor。同じquery・scope・principal・snapshotでのみ使用。失効時は先頭から。", limit: "取得件数。既定20、最大100。全件の返却とは限らない。",
   include: "必要なfield groupのみ取得。未取得は省略、取得した未設定値はnull、空集合は[]。", previewId: "保存前の保留提案ID。要求者が承認を偽造することはできない。",
   sourceKey: "Dailyソースの定義key。新規追加はmain固定、既存行はpathで識別。", itemFingerprint: "既存checkbox行の内容hash。行番号だけで特定しない。",
+};
+/** Memo parameters whose meaning differs from the shared documentation of the same name. */
+const MEMO_PARAMETER_DOCS: Record<string, string> = {
+  "N02.text": "メモ本文の全文。要約や概要ではなく、保存したい内容をそのまま（改行を含め）入れる。最大20000字。",
+  "N03.text": "変更後のメモ本文の全文。追記分や差分だけではなく、保存後の本文全体を入れる。最大20000字。",
+  "N02.taskId": "メモを付ける親または子のタスクID。省略は「その他」行。子は予定開始日のあるものだけ。",
+  "N04.taskId": "付け替え先のタスクID。空文字は「その他」行。省略は現在のタスクを維持。",
+  "N01.taskId": "このタスクに付いたメモだけ。親IDを指定すると、その親の子に付いたメモも含める。",
+  "N02.date": "メモが指す日（YYYY-MM-DD）。子タスクに付ける場合は、その子の期間内の日付だけ指定でき（期間外はエラー）、省略時は今日を期間内へ寄せる。",
+  "N04.date": "新しいアンカー日付（YYYY-MM-DD）。省略は現在の日付を維持。",
 };
 export function operationDescription<K extends OperationId>(id: K): OperationDefinition<K>["description"] {
   const row = LEDGER[id];
@@ -819,13 +870,16 @@ export function operationDescription<K extends OperationId>(id: K): OperationDef
   if (id === "V23") constraints.push("記録中ログのrevision・出力path・件数を固定して承認待ちにする。ログが増えたら再プレビュー。保存失敗時は記録bufferを保持する。");
   if (["Q04", "Q05", "Q06"].includes(id)) constraints.push("対象は選択中の会話に限定。送信・停止で別会話を暗黙に切り替えない。再試行は失敗応答のみ。送信と再試行はexternal capabilityも必要。");
   if (id === "T30" || id === "S05") constraints.push("service-stateで最終更新日を独立actionとして計画する。全ファイル保存が成功した後だけ管理値を保存する。自動設定OFFは再計算しない、manual優先度は保持する。");
+  if (id.startsWith("N")) constraints.push("メモはGanttに浮かぶ自由記述の吹き出しで、<タスクフォルダ>/_memos/ のノートとして保存される。タスクの備考（notes）やCurrent Statusとは別物。textには本文の全文を入れ、要約しない。開閉・位置などの表示状態はメモの内容ではない。");
+  if (id === "N06") sideEffects.push("開閉状態を設定へ保存する。メモのノートは変更しない。");
+  if (id === "N02" || id === "N03" || id === "N04" || id === "N05") sideEffects.push("Gantt上に点線のアクセント色の吹き出し（AI提案）として予告され、承認後にメモのノートが作成・更新・削除される。");
   if (id === "Q07") sideEffects.push("人間へ承認を要求するだけで、保存権限を付与しない。SDK/MCPから実承認は不可。");
-  return { purpose: row.purpose, targetKinds: id.startsWith("M") || id >= "T19" && id <= "T26" ? ["subtask"] : id.startsWith("T") ? ["parent", "subtask"] : id.startsWith("E") ? ["event"] : id.startsWith("W") ? ["weekly"] : id.startsWith("D") ? ["daily-todo", "daily-file"] : id.startsWith("S") ? ["setting", "tag-definition", "source"] : id.startsWith("V") ? ["view", "integration"] : ["conversation"],
-    parameters: Object.keys(schema.properties ?? {}).map((name) => ({ name, required: schema.required?.includes(name) ?? false, description: name === "patch" && id === "M02" ? "既存マーカーのtitle/dateのみ部分更新。省略fieldとkey/tagsは保持。" : name === "patch" && id === "W02" ? "title/dayOfWeek/minutesPerWeekだけを部分更新。省略は保持。分数は30分単位へ丸め。" : PARAMETER_DOCS[name] ?? `${name}: ${row.input}。schemaの型・範囲に従う。省略した任意値は既存値を保持する。` })),
+  return { purpose: row.purpose, targetKinds: id.startsWith("M") || id >= "T19" && id <= "T26" ? ["subtask"] : id.startsWith("T") ? ["parent", "subtask"] : id.startsWith("E") ? ["event"] : id.startsWith("W") ? ["weekly"] : id.startsWith("D") ? ["daily-todo", "daily-file"] : id.startsWith("S") ? ["setting", "tag-definition", "source"] : id.startsWith("V") ? ["view", "integration"] : id.startsWith("N") ? ["memo"] : ["conversation"],
+    parameters: Object.keys(schema.properties ?? {}).map((name) => ({ name, required: schema.required?.includes(name) ?? false, description: id.startsWith("N") && MEMO_PARAMETER_DOCS[`${id}.${name}`] ? MEMO_PARAMETER_DOCS[`${id}.${name}`] : name === "patch" && id === "M02" ? "既存マーカーのtitle/dateのみ部分更新。省略fieldとkey/tagsは保持。" : name === "patch" && id === "W02" ? "title/dayOfWeek/minutesPerWeekだけを部分更新。省略は保持。分数は30分単位へ丸め。" : PARAMETER_DOCS[name] ?? `${name}: ${row.input}。schemaの型・範囲に従う。省略した任意値は既存値を保持する。` })),
     constraints, sideEffects, clearSemantics: ["省略は保持。日付の空文字は解除、tags/markersの[]・時間mapの{}は全解除。操作固有の解除入力のみ使用する。"],
     examples: [{ input: OPERATION_EXAMPLES[id] as OperationDefinition<K>["description"]["examples"][number]["input"], explanation: `${row.purpose}の入力例。実ID/hashは事前取得の値へ置き換える。${write ? "返る提案を人間が承認するまで保存されない。" : "返る結果のscopeと省略件数を確認する。"}` }],
     errors: ["INVALID_INPUT", "KIND_MISMATCH", "NOT_FOUND", "REVISION_CONFLICT", "PLAN_EXPIRED", "PLAN_CONSUMED", "POLICY_DENIED", "PARTIAL"],
-    undo: write ? id === "V23" ? "Undo不可。診断出力は新規ファイル作成と履歴barrier。" : id.startsWith("D") ? "既存Dailyノートの変更は履歴先頭・内容一致時にUndo可。新規ファイル作成・診断出力はUndo不可、履歴barrier。" : id === "V20" || id === "V21" ? "既存Undo/Redo履歴を移動する。新しい履歴entryを追加しない。" : id === "T03" || id === "T05" || id === "T30" || id.startsWith("S") || id.startsWith("E") || id.startsWith("W") ? "Undo不可（新規親ファイル/設定保存は履歴対象外）。" : "Markdown更新はUndo対応。履歴先頭かつ現在内容一致が必要。外部編集は上書きしない。" : id === "V14" ? "Undo不可。ズームをsettingsへ保存する直接UI操作。" : OPERATION_CONTRACTS[id][0] === "read" ? "データ変更なし。" : `プラグイン履歴なし（表示/会話状態の操作）。台帳: ${row.undo}` };
+    undo: write ? id.startsWith("N") ? "メモのノートの作成・本文変更・付け替え・削除は履歴に入り、画面のUndoで戻せる（履歴先頭かつ現在内容一致が必要）。" : id === "V23" ? "Undo不可。診断出力は新規ファイル作成と履歴barrier。" : id.startsWith("D") ? "既存Dailyノートの変更は履歴先頭・内容一致時にUndo可。新規ファイル作成・診断出力はUndo不可、履歴barrier。" : id === "V20" || id === "V21" ? "既存Undo/Redo履歴を移動する。新しい履歴entryを追加しない。" : id === "T03" || id === "T05" || id === "T30" || id.startsWith("S") || id.startsWith("E") || id.startsWith("W") ? "Undo不可（新規親ファイル/設定保存は履歴対象外）。" : "Markdown更新はUndo対応。履歴先頭かつ現在内容一致が必要。外部編集は上書きしない。" : id === "V14" ? "Undo不可。ズームをsettingsへ保存する直接UI操作。" : OPERATION_CONTRACTS[id][0] === "read" ? "データ変更なし。" : `プラグイン履歴なし（表示/会話状態の操作）。台帳: ${row.undo}` };
 }
 export function fullDescription(id: OperationId): string {
   const description = operationDescription(id);

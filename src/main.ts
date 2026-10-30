@@ -15,6 +15,8 @@ import type { App } from "obsidian";
 import { DEFAULT_SETTINGS, DEFAULT_STATUSES } from "./core/constants";
 
 import { Logger } from "./core/logger";
+import { isMemoPath, normalizeMemoLayout, setMemosOpen } from "./core/memo";
+import { createMemoHost } from "./app/memo-controller";
 
 import {
   DailyTodoItem,
@@ -61,7 +63,7 @@ import {
   deleteSubtaskTaskItem,
   loadTasks,
 } from "./app/task-operations";
-import { isUnderRoot, taskRoot, type TaskCache } from "./app/note-store";
+import { isUnderRoot, loadMemos, taskRoot, type TaskCache } from "./app/note-store";
 import { setNoteNotifier } from "./app/note-changes";
 import { findLegacyNotes, planMigration, runMigration } from "./app/migration-v1";
 import { MigrationModal } from "./ui/migration-modal";
@@ -407,6 +409,8 @@ export default class TaskWorkbenchPlugin extends Plugin {
       sendExternal: async (destination, body) => { const response = await requestUrl({ url: destination, method: "POST", headers: { "content-type": "application/json" }, body }); if (response.status < 200 || response.status >= 300) throw new Error("EXTERNAL_SEND_FAILED"); },
       restartSync: () => this.startGanttSyncTimer(false),
       requestApproval: async (previewId) => { await this.uiPort.requestApproval(previewId); },
+      setMemosOpen: (ids, open) => this.setMemosOpenState(ids, open),
+      memosChanged: async (paths) => { for (const path of paths) this.taskCache.delete(path); await this.reloadOpenMemos(); },
       invalidate: async (paths) => { this.scheduleGhosts.clear(); if (paths) for (const path of paths) this.taskCache.delete(path); else this.taskCache.clear(); await this.refreshOpenViews(); },
     }, () => this.vaultAdapter(), `vault-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   }
@@ -435,6 +439,7 @@ export default class TaskWorkbenchPlugin extends Plugin {
       finder.open(); finder.setQuery((args as OperationInputMap["V03"]).query ?? "");
     } else if (id === "V04") await this.navigation.openTaskItem?.(await this.operationService.get((args as OperationInputMap["V04"]).taskId));
     else if (id === "V05") await this.runOpenDailyTodoCommand((args as OperationInputMap["V05"]).date);
+    else if (id === "N06") { const target = args as OperationInputMap["N06"]; await this.setMemosOpenState(target.memoIds, target.open); }
     else if (id === "V06") await this.openAIChat((args as OperationInputMap["V06"]).position ?? "tab");
     else if (id === "D08") {
       const file = this.app.vault.getFileByPath((args as OperationInputMap["D08"]).path);
@@ -578,6 +583,9 @@ export default class TaskWorkbenchPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const { ai, ...stored } = ((await this.loadData()) ?? {}) as Record<string, unknown>;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    // Memo view state may have been edited by hand.
+    this.settings.ganttMemosVisible = this.settings.ganttMemosVisible !== false;
+    this.settings.ganttMemoLayout = normalizeMemoLayout(this.settings.ganttMemoLayout);
     this.aiStore = normalizeAiStore(ai);
     const mcp = mcpSettingsSchema.safeParse({ ...DEFAULT_MCP_SETTINGS, ...this.settings.mcp });
     this.settings.mcp = mcp.success ? mcp.data : { ...DEFAULT_MCP_SETTINGS };
@@ -804,8 +812,15 @@ export default class TaskWorkbenchPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("rename", (file) => clear(file as TFile, "rename")));
       // Frontmatter comes from the metadataCache: drop what it re-indexed and redraw once it settles.
       let indexed = false, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      // A memo note changing redraws only the memo layers; the chart itself is not rebuilt.
+      let memoTimer: ReturnType<typeof setTimeout> | undefined;
+      const refreshMemosSoon = () => { if (memoTimer) clearTimeout(memoTimer); memoTimer = setTimeout(() => { memoTimer = undefined; if (!this.unloading) void this.reloadOpenMemos(); }, 200); };
       const refreshSoon = () => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { refreshTimer = undefined; if (!this.unloading) void this.refreshOpenViews(); }, 300); };
-      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (!ownWrites.has(file.path)) refreshSoon(); }));
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => { if (!isUnderRoot(file.path, taskRoot(this.settings))) return; this.taskCache.delete(file.path); if (ownWrites.has(file.path)) return; if (isMemoPath(file.path, this.settings)) refreshMemosSoon(); else refreshSoon(); }));
+      const memoFileChanged = (file: { path: string }) => { if (isMemoPath(file.path, this.settings) && !ownWrites.has(file.path)) refreshMemosSoon(); };
+      this.registerEvent(this.app.vault.on("create", memoFileChanged));
+      this.registerEvent(this.app.vault.on("delete", memoFileChanged));
+      this.registerEvent(this.app.vault.on("rename", memoFileChanged));
       this.registerEvent(this.app.metadataCache.on("resolved", () => { if (indexed) return; indexed = true; this.taskCache.clear(); refreshSoon(); }));
     }
     this.registerCommands();
@@ -1152,6 +1167,27 @@ export default class TaskWorkbenchPlugin extends Plugin {
         new Notice(`やり直し履歴を破棄しました: ${result.reason}`);
         return;
     }
+  }
+
+  /** Opens or closes memo bubbles (["*"] = every memo). View state only: saved without touching pending AI previews. */
+  private async setMemosOpenState(ids: readonly string[], open: boolean): Promise<void> {
+    const all = ids.includes("*") ? (await loadMemos(this.vaultAdapter(), this.settings, this.taskCache, this.logger)).map((memo) => memo.id) : [];
+    this.settings.ganttMemoLayout = setMemosOpen(this.settings.ganttMemoLayout, all, ids, open);
+    await this.settingsWriter().save();
+    await this.reloadOpenMemos();
+  }
+
+  /** 「Ganttで表示」 from the Workbench: shows and opens the memo, then brings the Gantt to it. */
+  private async revealMemo(id: string): Promise<void> {
+    this.settings.ganttMemosVisible = true;
+    await this.setMemosOpenState([id], true);
+    await this.navigation.activateGanttView();
+    await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { revealMemo?: (memoId: string) => Promise<void> } | null)?.revealMemo?.(id)));
+  }
+
+  /** Redraws the memo layer of every open Gantt view (no chart render). */
+  private async reloadOpenMemos(): Promise<void> {
+    await Promise.all(this.app.workspace.getLeavesOfType(VIEW_TYPE_TASK_GANTT).map((leaf) => (leaf.view as unknown as { reloadMemos?: () => Promise<void> } | null)?.reloadMemos?.()));
   }
 
   private async refreshOpenViews(): Promise<void> {
@@ -1876,6 +1912,11 @@ export default class TaskWorkbenchPlugin extends Plugin {
       openTaskItem: async (row: TaskRow): Promise<void> => {
         await this.navigation.openTaskItem?.(row);
       },
+      memos: {
+        load: () => loadMemos(this.vaultAdapter(), this.settings, this.taskCache, this.logger),
+        setOpen: (ids, open) => this.setMemosOpenState(ids, open),
+        reveal: (id) => this.revealMemo(id),
+      },
       createTaskInteractively: async (onCreated: () => void) => {
 
         // "create-new-task-note" command (runCreateTaskCommand), with the
@@ -1966,6 +2007,13 @@ export default class TaskWorkbenchPlugin extends Plugin {
       openDailyTodoItem: (item: DailyTodoItem): Promise<void> =>
         openDailyTodoFile(item, this.app.vault, this.app.workspace),
       saveSettings: (): Promise<void> => this.saveSettings(),
+      memos: createMemoHost({
+        vault: () => this.vaultAdapter(), settings: () => this.settings, history: this.historyManager, cache: this.taskCache, logger: this.logger,
+        coordinate: (run) => this.operations.coordinate(run),
+        openFile: async (path) => { const file = this.app.vault.getFileByPath(path); if (file) await this.app.workspace.getLeaf(false).openFile(file); },
+        // View state only: a layout drag must not invalidate pending AI previews.
+        saveSettings: () => this.settingsWriter().save(),
+      }),
       // single drag/edit save, same path as the Workbench's
       // own updateTaskItem wrapper above.
       updateTaskItem: (row: TaskRow, patch: TaskPatch) =>

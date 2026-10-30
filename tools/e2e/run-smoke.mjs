@@ -29,6 +29,7 @@ import * as workbenchEditing from "./scenarios/workbench-editing.mjs";
 import * as weeklyScheduleAndEventWorkload from "./scenarios/weekly-schedule-and-event-workload.mjs";
 import * as workloadPopupLayout from "./scenarios/workload-popup-layout.mjs";
 import * as milestones from "./scenarios/milestones.mjs";
+import * as memos from "./scenarios/memos.mjs";
 import * as subtaskDisable from "./scenarios/subtask-disable.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -107,6 +108,11 @@ async function main() {
       name: "milestones",
       prepare: async () => {},
       run: ({ cdp, vaultDir }) => milestones.run({ cdp, vaultDir }),
+    },
+    {
+      name: "memos",
+      prepare: async () => {},
+      run: ({ cdp, vaultDir }) => memos.run({ cdp, vaultDir }),
     },
     {
       name: "subtask-disable",
