@@ -4,7 +4,6 @@ import moment from "moment";
 import { Notice } from "obsidian";
 import { TaskGanttView } from "../../src/ui/task-gantt-view";
 import type { TaskGanttViewHost } from "../../src/ui/task-gantt-view";
-import { TaskFinderModal } from "../../src/ui/task-finder-modal";
 import type { MemoHost } from "../../src/app/memo-controller";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import type { MemoMeta } from "../../src/core/memo";
@@ -27,18 +26,20 @@ const key = (k: string, extra: Record<string, unknown> = {}) => ({ key: k, shift
 
 const PARENT_ID = "tasks/parent-1.md";
 
-function parentRow(subtasks: TaskRow[]): TaskRow {
+const PARENT2_ID = "tasks/parent-2.md";
+
+function parentRow(subtasks: TaskRow[], id = PARENT_ID, name = "親タスク"): TaskRow {
   return {
-    kind: "parent", id: PARENT_ID, file: { path: PARENT_ID }, title: "親タスク", displayName: "親タスク", statusLabel: "active",
+    kind: "parent", id, file: { path: id }, title: name, displayName: name, statusLabel: "active",
     completed: false, createdAt: "2026-07-01 10:00:00", updatedAt: "2026-07-02 11:00:00", priority: 2, priorityMode: "manual",
     currentStatus: "", notes: "", tags: [], ganttEnabled: true,
     subtasks: new Map(subtasks.map((sub): [string, TaskRow] => [sub.key ?? sub.id, sub])),
   } as unknown as TaskRow;
 }
 
-function subtaskRow(keyName: string, start: string, end: string): TaskRow {
+function subtaskRow(keyName: string, start: string, end: string, parentId = PARENT_ID): TaskRow {
   return {
-    kind: "subtask", id: `${PARENT_ID}::${keyName}`, key: keyName, parentId: PARENT_ID, file: { path: PARENT_ID, parentPath: PARENT_ID },
+    kind: "subtask", id: `${parentId}::${keyName}`, key: keyName, parentId, file: { path: parentId, parentPath: parentId },
     title: keyName, displayName: keyName, statusLabel: "active", completed: false, createdAt: "2026-07-01 10:00:00",
     updatedAt: "2026-07-02 11:00:00", priority: 2, priorityMode: "manual", currentStatus: "", notes: "", tags: [],
     plannedStartDate: start, plannedEndDate: end,
@@ -60,16 +61,18 @@ interface Rig {
   stored: MemoMeta[];
   sub: TaskRow;
   parent: TaskRow;
+  parent2: TaskRow;
 }
 
-async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; settings?: Record<string, unknown>; previewPort?: FakePreviewPort } = {}): Promise<Rig> {
+async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; secondParent?: boolean; settings?: Record<string, unknown>; previewPort?: FakePreviewPort } = {}): Promise<Rig> {
   const sub = subtaskRow("sub1", dateOffset(0), dateOffset(5));
   const parent = parentRow([sub]);
   const settings = { ...DEFAULT_SETTINGS, ganttTags: [], ...opts.settings } as TaskWorkbenchSettings;
   settings.ganttHolidays = [...settings.ganttHolidays]; settings.ganttManualHolidays = [...settings.ganttManualHolidays];
   settings.ganttNationalHolidays = [...settings.ganttNationalHolidays]; settings.ganttSpecialHolidays = [...settings.ganttSpecialHolidays];
   settings.ganttEvents = [...settings.ganttEvents]; settings.weeklyWorkSchedules = [...settings.weeklyWorkSchedules];
-  const loadTasks = vi.fn(async () => [parent]);
+  const parent2 = parentRow([subtaskRow("sub2", dateOffset(10), dateOffset(14), PARENT2_ID)], PARENT2_ID, "親タスク2");
+  const loadTasks = vi.fn(async () => opts.secondParent ? [parent, parent2] : [parent]);
   const saveSettings = vi.fn(async () => undefined);
   const memos = {
     load: vi.fn(async () => stored),
@@ -101,7 +104,7 @@ async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; settin
   const view = new TaskGanttView({} as any, host);
   const container = (view as any).containerEl as FakeEl;
   await view.onOpen();
-  return { view, container, host, memos, settings, loadTasks, saveSettings, stored, sub, parent };
+  return { view, container, host, memos, settings, loadTasks, saveSettings, stored, sub, parent, parent2 };
 }
 
 const wrapOf = (c: FakeEl): FakeEl => byClass(c, "task-gantt-wrap")[0] as FakeEl;
@@ -482,9 +485,9 @@ describe("Gantt floating memos", () => {
       return { r, meta };
     }
 
-    it("offers 付け替え…, ノートを開く and 削除", async () => {
+    it("offers ノートを開く and 削除, with no 付け替え…", async () => {
       await openMemo();
-      expect(menuItems().map((el) => deepText(el))).toEqual(["付け替え…", "ノートを開く", "削除"]);
+      expect(menuItems().map((el) => deepText(el))).toEqual(["ノートを開く", "削除"]);
     });
 
     it("ノートを開く opens the memo note", async () => {
@@ -502,66 +505,125 @@ describe("Gantt floating memos", () => {
       expect(byClass(r.container, "task-gantt-memos")[0]?.textContent).toBe("メモ 0");
     });
 
-    it("付け替え… opens the task finder with 「その他」 first, and reanchors to the chosen task", async () => {
-      const opened: unknown[] = [];
-      vi.spyOn(TaskFinderModal.prototype, "open").mockImplementation(function (this: TaskFinderModal) { opened.push(this); });
-      const { r, meta } = await openMemo();
-      dispatch(menuItem("付け替え…"), "click");
-      const finder: any = opened[0];
-      const items = finder.items as TaskRow[];
-      expect(items[0]?.displayName).toBe("その他");
-      expect(items.map((item) => item.displayName)).toEqual(["その他", "親タスク", "sub1"]);
-      finder.chooseItem(items[2]);
-      await flush();
-      expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: r.sub, date: dateOffset(2) });
-    });
+    describe("dragging the anchor dot", () => {
+      /** Rig with two parents, a parent memo and the wrap's geometry; `over` is what the pointer hits at drop. */
+      async function dragRig(metaExtra: Partial<MemoMeta> = { taskId: PARENT_ID, date: dateOffset(2) }) {
+        const meta = memoMeta("m-aaaaaa", metaExtra);
+        const r = await openGantt([meta], { secondParent: true });
+        layOut(r); await r.view.reloadMemos();
+        wrapOf(r.container).getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 });
+        const dot = byClass(layerOf(r.container) as FakeEl, "vg-memo-dot")[0] as FakeEl;
+        const drag = (over: FakeEl | undefined, clientX: number): void => {
+          (document as any).elementsFromPoint = () => over ? [over] : [];
+          dispatch(dot, "pointerdown", { button: 0, clientX: 700, clientY: 200 });
+          dispatch((window as any) as FakeEl, "pointermove", { clientX, clientY: 200 });
+        };
+        const drop = (): void => { dispatch((window as any) as FakeEl, "pointerup"); };
+        return { r, meta, dot, drag, drop };
+      }
+      const barOf = (r: Rig, id: string): FakeEl => byClass(r.container, "task-gantt-bar").find((el) => el.dataset.taskId === id) as FakeEl;
+      const timelineOf = (r: Rig, index: number): FakeEl => byClass(parentRows(r.container)[index] as FakeEl, "task-gantt-parent-timeline")[0] as FakeEl;
+      const tooltip = (r: Rig): FakeEl => byClass(r.container, "task-gantt-drag-tooltip")[0] as FakeEl;
 
-    it("付け替え… to 「その他」 passes no task", async () => {
-      const opened: unknown[] = [];
-      vi.spyOn(TaskFinderModal.prototype, "open").mockImplementation(function (this: TaskFinderModal) { opened.push(this); });
-      const { r, meta } = await openMemo();
-      dispatch(menuItem("付け替え…"), "click");
-      const finder: any = opened[0];
-      finder.chooseItem((finder.items as TaskRow[])[0]);
-      await flush();
-      expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: undefined, date: dateOffset(2) });
-    });
+      it("on the empty timeline of its own row, reanchors to the day on the same task", async () => {
+        const { r, meta, drag, drop } = await dragRig();
+        drag(timelineOf(r, 0), PARENT_COL_WIDTH + 20 * 28 + 5);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: r.parent, date: addDays((r.view as any).rangeStart as string, 20) });
+      });
 
-    it("holds the day inside the bar when moving a memo onto a subtask", async () => {
-      const opened: unknown[] = [];
-      vi.spyOn(TaskFinderModal.prototype, "open").mockImplementation(function (this: TaskFinderModal) { opened.push(this); });
-      const { r, meta } = await openMemo({ date: dateOffset(20) });
-      dispatch(menuItem("付け替え…"), "click");
-      const finder: any = opened[0];
-      finder.chooseItem((finder.items as TaskRow[])[2]);
-      await flush();
-      expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: r.sub, date: dateOffset(5) });
-    });
+      it("on the empty timeline of another parent row, reanchors to that parent at the day", async () => {
+        const { r, meta, drag, drop } = await dragRig();
+        drag(timelineOf(r, 1), PARENT_COL_WIDTH + 20 * 28 + 5);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: r.parent2, date: addDays((r.view as any).rangeStart as string, 20) });
+      });
 
-    it("dragging the dot reanchors to the day, on the same task", async () => {
-      const meta = memoMeta("m-aaaaaa", { taskId: PARENT_ID, date: dateOffset(2) });
-      const r = await openGantt([meta]);
-      layOut(r); await r.view.reloadMemos();
-      wrapOf(r.container).getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 });
-      const dot = byClass(layerOf(r.container) as FakeEl, "vg-memo-dot")[0] as FakeEl;
-      dispatch(dot, "pointerdown", { button: 0, clientX: 700, clientY: 200 });
-      dispatch((window as any) as FakeEl, "pointermove", { clientX: PARENT_COL_WIDTH + 20 * 28 + 5, clientY: 200 });
-      dispatch((window as any) as FakeEl, "pointerup");
-      await flush();
-      expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: r.parent, date: addDays((r.view as any).rangeStart as string, 20) });
-    });
+      it("on a subtask bar of another parent, reanchors to that subtask with the day held within the bar", async () => {
+        const { r, meta, drag, drop } = await dragRig();
+        const sub2 = r.parent2.subtasks?.get("sub2") as TaskRow;
+        drag(barOf(r, sub2.id), PARENT_COL_WIDTH + 60 * 28);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: sub2, date: dateOffset(14) });
+      });
 
-    it("a subtask memo's dot stays on the bar while dragging", async () => {
-      const meta = memoMeta("m-aaaaaa", { taskId: `${PARENT_ID}::sub1`, at: 1 });
-      const r = await openGantt([meta]);
-      layOut(r); await r.view.reloadMemos();
-      wrapOf(r.container).getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 });
-      const dot = byClass(layerOf(r.container) as FakeEl, "vg-memo-dot")[0] as FakeEl;
-      dispatch(dot, "pointerdown", { button: 0, clientX: 700, clientY: 200 });
-      dispatch((window as any) as FakeEl, "pointermove", { clientX: PARENT_COL_WIDTH + 60 * 28, clientY: 200 });
-      dispatch((window as any) as FakeEl, "pointerup");
-      await flush();
-      expect(r.memos.reanchor).toHaveBeenCalledWith(meta, { task: r.sub, date: dateOffset(5) });
+      it("a subtask memo can leave its bar for a parent row, and its bar for the 「その他」 row", async () => {
+        const { r, meta, drag, drop } = await dragRig({ taskId: `${PARENT_ID}::sub1`, at: 1 });
+        drag(timelineOf(r, 1), PARENT_COL_WIDTH + 30 * 28);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).toHaveBeenLastCalledWith(meta, { task: r.parent2, date: addDays((r.view as any).rangeStart as string, 30) });
+        drag(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, PARENT_COL_WIDTH + 12 * 28);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).toHaveBeenLastCalledWith(meta, { task: undefined, date: addDays((r.view as any).rangeStart as string, 12) });
+      });
+
+      it("a hit on a part of a row inside the timeline counts as the timeline", async () => {
+        const { r, meta, drag, drop } = await dragRig();
+        const sub2 = r.parent2.subtasks?.get("sub2") as TaskRow;
+        const inner = byClass(barOf(r, sub2.id), "task-gantt-bar-title")[0] ?? barOf(r, sub2.id);
+        drag(inner, PARENT_COL_WIDTH + 11 * 28);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).toHaveBeenCalledWith(meta, expect.objectContaining({ task: sub2 }));
+      });
+
+      it("shows what the drop will do in the drag tooltip, and hides it after", async () => {
+        const { r, drag, drop } = await dragRig();
+        const sub2 = r.parent2.subtasks?.get("sub2") as TaskRow;
+        drag(barOf(r, sub2.id), PARENT_COL_WIDTH + 11 * 28);
+        const day = dateOffset(10); // the pointer is before the bar, so the day is held at its start
+        expect(tooltip(r).classList.contains("is-visible")).toBe(true);
+        expect(tooltip(r).textContent).toBe(`sub2 · ${Number(day.slice(5, 7))}/${Number(day.slice(8, 10))}`);
+        drop();
+        expect(tooltip(r).classList.contains("is-visible")).toBe(false);
+        await flush();
+      });
+
+      it("shows 「その他」 for the event row", async () => {
+        const { r, drag, drop } = await dragRig();
+        drag(byClass(r.container, "task-gantt-event-row")[0] as FakeEl, PARENT_COL_WIDTH + 3 * 28);
+        expect(tooltip(r).textContent?.startsWith("その他 · ")).toBe(true);
+        drop();
+        await flush();
+      });
+
+      it("dropping on no target (header, name column, outside) snaps back and saves nothing", async () => {
+        const { r, dot, drag, drop } = await dragRig();
+        const before = dot.style.left;
+        drag(byClass(parentRows(r.container)[0] as FakeEl, "task-gantt-parent-left")[0] ?? (r.container as FakeEl), 20);
+        expect(tooltip(r).classList.contains("is-visible")).toBe(false);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).not.toHaveBeenCalled();
+        expect(dot.style.left).toBe(before);
+        drag(undefined, 5);
+        drop();
+        await flush();
+        expect(r.memos.reanchor).not.toHaveBeenCalled();
+      });
+
+      it("keeps hover popovers closed while the dot is dragged", async () => {
+        const { r, drag, drop } = await dragRig();
+        expect((r.view as any).hoverPopoversBlocked()).toBe(false);
+        drag(timelineOf(r, 1), PARENT_COL_WIDTH + 20 * 28);
+        expect((r.view as any).hoverPopoversBlocked()).toBe(true);
+        drop();
+        expect((r.view as any).hoverPopoversBlocked()).toBe(false);
+        await flush();
+      });
+
+      it("a plain click on the dot saves nothing", async () => {
+        const { r, dot, drop } = await dragRig();
+        dispatch(dot, "pointerdown", { button: 0, clientX: 700, clientY: 200 });
+        drop();
+        await flush();
+        expect(r.memos.reanchor).not.toHaveBeenCalled();
+      });
     });
 
     it("reports a failed delete and redraws from the notes", async () => {

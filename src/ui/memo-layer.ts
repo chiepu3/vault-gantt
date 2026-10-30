@@ -28,6 +28,9 @@ export interface MemoEntry {
 
 export interface MemoPoint { x: number; y: number }
 
+/** Where a dropped anchor dot would land: the anchor to save, and what the drag tooltip says about it. */
+export interface MemoDropTarget { anchor: MemoAnchor; label: string }
+
 export interface MemoLayerContext {
   /** The scroll container. */
   wrap: HTMLElement;
@@ -39,11 +42,15 @@ export interface MemoLayerContext {
   leftWidth: number;
   /** The scroll content's size without the layer, from what the view already knows (no layout read). Omitted: measured from the wrap's children. */
   contentSize?(): { width: number; height: number };
-  /** The day under a pointer x (clamped to the drawn range), snapped the way the entry may move; null = it cannot move there. */
-  dateAtClient(entry: MemoEntry, clientX: number): string | null;
+  /** What is under the pointer to re-anchor to (a bar, a parent row's timeline or the その他 row, with the day snapped); null = nothing there. */
+  dropTargetAt(entry: MemoEntry, clientX: number, clientY: number): MemoDropTarget | null;
+  /** A dot drag starts or ends; the chart keeps its hover popovers closed meanwhile. */
+  dotDragging(active: boolean): void;
+  /** Shows the drop label in the drag tooltip (null hides it). */
+  dragHint(label: string | null, clientX: number, clientY: number): void;
   readText(meta: MemoMeta): Promise<string>;
   saveText(meta: MemoMeta, text: string): Promise<void>;
-  moveAnchor(entry: MemoEntry, date: string): Promise<void>;
+  moveAnchor(entry: MemoEntry, target: MemoDropTarget): Promise<void>;
   /** Persists the view state (settings only; no chart render). */
   saveLayout(): void;
   openMenu(evt: MouseEvent, entry: MemoEntry): void;
@@ -581,28 +588,34 @@ export class MemoLayer {
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   }
 
-  /** Drags the anchor dot along the days; the bubble keeps its offset and follows. */
+  /** Drags the anchor dot anywhere on the chart; dropped on a bar, a parent row or the その他 row it re-anchors there. The bubble keeps its offset and follows. */
   private startDotDrag(evt: PointerEvent, node: MemoNode): void {
     if (evt.button !== 0 || !node.dot || !node.box) return;
     evt.preventDefault(); evt.stopPropagation();
-    const origin = node.pt, entry = node.entry;
+    const origin = node.pt, entry = node.entry, wrap = this.ctx.wrap;
     const size = { w: node.box.offsetWidth || node.w, h: node.box.offsetHeight || MIN_BUBBLE_HEIGHT };
-    let target: string | null = null;
+    let target: MemoDropTarget | null = null;
     node.dot.classList.add("is-dragging");
+    // The dragged memo must not catch the pointer, or the hit test would find its own dot and bubble.
+    node.group.classList.add("is-dot-dragging");
+    this.ctx.dotDragging(true);
     const move = (e: PointerEvent): void => {
-      const date = this.ctx.dateAtClient(entry, e.clientX);
-      if (!date) return;
-      const moved = this.ctx.pointOf({ ...entry, anchor: { ...entry.anchor, date } });
-      if (!moved) return;
-      target = date;
-      node.pt = { x: moved.x, y: origin.y };
+      target = this.ctx.dropTargetAt(entry, e.clientX, e.clientY);
+      const snapped = target ? this.ctx.pointOf({ ...entry, anchor: target.anchor }) : null;
+      const rect = wrap.getBoundingClientRect?.();
+      node.pt = snapped ?? { x: e.clientX - (rect?.left ?? 0) + wrap.scrollLeft, y: e.clientY - (rect?.top ?? 0) + wrap.scrollTop };
+      this.ctx.dragHint(snapped && target ? target.label : null, e.clientX, e.clientY);
       this.position(node);
       this.drawTail(node, { x: node.pt.x + node.dx, y: node.pt.y + node.dy, ...size });
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
       node.dot?.classList.remove("is-dragging");
-      if (target && target !== entry.anchor.date) void this.ctx.moveAnchor(entry, target);
+      node.group.classList.remove("is-dot-dragging");
+      this.ctx.dragHint(null, 0, 0);
+      this.ctx.dotDragging(false);
+      const from = entry.anchor, to = target?.anchor;
+      if (target && to && (to.kind !== from.kind || to.taskId !== from.taskId || to.date !== from.date)) void this.ctx.moveAnchor(entry, target);
       else { node.pt = origin; this.position(node); this.layoutTail(node); }
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);

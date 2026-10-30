@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { MemoLayer, estimateBubbleHeight, type MemoEntry, type MemoLayerContext, type MemoPoint } from "../../src/ui/memo-layer";
+import { MemoLayer, estimateBubbleHeight, type MemoDropTarget, type MemoEntry, type MemoLayerContext, type MemoPoint } from "../../src/ui/memo-layer";
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import type { MemoMeta } from "../../src/core/memo";
 import type { TaskWorkbenchSettings } from "../../src/core/types";
@@ -22,7 +22,7 @@ interface Rig {
   settings: TaskWorkbenchSettings;
   entries: MemoEntry[];
   points: Map<string, MemoPoint>;
-  fns: { readText: any; saveText: any; moveAnchor: any; saveLayout: any; openMenu: any; dateAtClient: any };
+  fns: { readText: any; saveText: any; moveAnchor: any; saveLayout: any; openMenu: any; dropTargetAt: any; dragHint: any; dotDragging: any };
 }
 
 function rig(entries: MemoEntry[], points: Record<string, MemoPoint> = {}, settingsOverrides: Partial<TaskWorkbenchSettings> = {}): Rig {
@@ -41,7 +41,14 @@ function rig(entries: MemoEntry[], points: Record<string, MemoPoint> = {}, setti
     moveAnchor: vi.fn(async () => undefined),
     saveLayout: vi.fn(),
     openMenu: vi.fn(),
-    dateAtClient: vi.fn((_e: MemoEntry, clientX: number) => (clientX > 700 ? "2026-10-08" : "2026-10-05")),
+    // x > 700: the day 10/08 of the same task; x > 300: a parent row's timeline; otherwise nothing is there.
+    dropTargetAt: vi.fn((e: MemoEntry, clientX: number, clientY: number): MemoDropTarget | null =>
+      clientX > 700 ? { anchor: { ...e.anchor, date: "2026-10-08" }, label: "タスク · 10/8" }
+        : clientY > 500 ? { anchor: { kind: "free" as const, date: "2026-10-05" }, label: "その他 · 10/5" }
+        : clientX > 300 ? { anchor: { kind: "parent" as const, taskId: "p2", parentId: "p2", date: "2026-10-05" }, label: "親2 · 10/5" }
+        : null),
+    dragHint: vi.fn(),
+    dotDragging: vi.fn(),
   };
   const ctx: MemoLayerContext = {
     wrap: wrap as unknown as HTMLElement,
@@ -315,22 +322,73 @@ describe("MemoLayer", () => {
       expect(r.fns.saveLayout).toHaveBeenCalledTimes(1);
     });
 
-    it("dragging the dot moves the anchor to the day under the pointer", () => {
+    it("dragging the dot moves the anchor to the target under the pointer", () => {
       const e = entry("m-aaaaaa");
       const r = rig([e], { "m-aaaaaa": { x: 600, y: 300 } });
       r.layer.place();
       const dot = first(byClass(r.layer.element as unknown as FakeEl, "vg-memo-dot"));
       dispatch(dot, "pointerdown", { button: 0, clientX: 600, clientY: 300 });
       dispatch(fakeWindow, "pointermove", { clientX: 760, clientY: 300 });
-      expect(r.fns.dateAtClient).toHaveBeenCalledWith(e, 760);
+      expect(r.fns.dropTargetAt).toHaveBeenCalledWith(e, 760, 300);
+      expect(r.fns.dragHint).toHaveBeenLastCalledWith("タスク · 10/8", 760, 300);
       dispatch(fakeWindow, "pointerup");
-      expect(r.fns.moveAnchor).toHaveBeenCalledWith(e, "2026-10-08");
+      expect(r.fns.moveAnchor).toHaveBeenCalledWith(e, { anchor: { ...e.anchor, date: "2026-10-08" }, label: "タスク · 10/8" });
+      expect(r.fns.dragHint).toHaveBeenLastCalledWith(null, 0, 0);
     });
 
-    it("dropping the dot on its own day moves nothing", () => {
+    it("the dot follows the snapped anchor of the target, or the raw pointer without one", () => {
+      const e = entry("m-aaaaaa");
+      const r = rig([e], { "m-aaaaaa": { x: 600, y: 300 } });
+      r.layer.place();
+      const dot = first(byClass(r.layer.element as unknown as FakeEl, "vg-memo-dot"));
+      dispatch(dot, "pointerdown", { button: 0, clientX: 600, clientY: 300 });
+      // The context answers pointOf for the would-be anchor; a target the chart cannot place falls back to the pointer.
+      r.points.set("m-aaaaaa", { x: 650, y: 120 });
+      dispatch(fakeWindow, "pointermove", { clientX: 500, clientY: 100 });
+      expect(dot.style.left).toBe("650px");
+      expect(dot.style.top).toBe("120px");
+      expect(first(boxes(r)).style.left).toBe(`${650 + 28}px`);
+      dispatch(fakeWindow, "pointermove", { clientX: 100, clientY: 100 });
+      expect(r.fns.dragHint).toHaveBeenLastCalledWith(null, 100, 100);
+      expect(dot.style.left).toBe("100px");
+      expect(dot.style.top).toBe("100px");
+      dispatch(fakeWindow, "pointerup");
+      expect(r.fns.moveAnchor).not.toHaveBeenCalled();
+    });
+
+    it("dropping the dot on no target snaps it back and saves nothing", () => {
+      const r = rig([entry("m-aaaaaa")], { "m-aaaaaa": { x: 600, y: 300 } });
+      r.layer.place();
+      const dot = first(byClass(r.layer.element as unknown as FakeEl, "vg-memo-dot"));
+      dispatch(dot, "pointerdown", { button: 0, clientX: 600, clientY: 300 });
+      dispatch(fakeWindow, "pointermove", { clientX: 100, clientY: 100 });
+      dispatch(fakeWindow, "pointerup");
+      expect(r.fns.moveAnchor).not.toHaveBeenCalled();
+      expect(dot.style.left).toBe("600px");
+      expect(dot.style.top).toBe("300px");
+    });
+
+    it("the dragged memo ignores the pointer while dragging, so the hit test sees the chart", () => {
       const r = rig([entry("m-aaaaaa")]);
       r.layer.place();
       const dot = first(byClass(r.layer.element as unknown as FakeEl, "vg-memo-dot"));
+      const group = (dot as any).parentNode as FakeEl;
+      dispatch(dot, "pointerdown", { button: 0, clientX: 600, clientY: 300 });
+      expect(group.classList.contains("is-dot-dragging")).toBe(true);
+      expect(r.fns.dotDragging).toHaveBeenLastCalledWith(true);
+      dispatch(fakeWindow, "pointerup");
+      expect(r.fns.dotDragging).toHaveBeenLastCalledWith(false);
+      expect(group.classList.contains("is-dot-dragging")).toBe(false);
+    });
+
+    it("dropping the dot on its own anchor, or a click without moving, moves nothing", () => {
+      const e = entry("m-aaaaaa");
+      const r = rig([e]);
+      r.layer.place();
+      const dot = first(byClass(r.layer.element as unknown as FakeEl, "vg-memo-dot"));
+      dispatch(dot, "pointerdown", { button: 0, clientX: 600, clientY: 300 });
+      dispatch(fakeWindow, "pointerup");
+      r.fns.dropTargetAt.mockImplementationOnce((x: MemoEntry) => ({ anchor: { ...x.anchor }, label: "同じ" }));
       dispatch(dot, "pointerdown", { button: 0, clientX: 600, clientY: 300 });
       dispatch(fakeWindow, "pointermove", { clientX: 650, clientY: 300 });
       dispatch(fakeWindow, "pointerup");

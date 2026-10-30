@@ -11,8 +11,7 @@ import { displayedHours, eventWorkloadKey, hoursChangeText, type CellChange, typ
 import { SubtaskAddConflictError } from "../app/task-operations";
 import { ItemView, Menu, Notice, moment, setIcon } from "obsidian";
 import type { MenuItem, WorkspaceLeaf } from "obsidian";
-import { MemoLayer, type MemoEntry, type MemoPoint } from "./memo-layer";
-import { TaskFinderModal } from "./task-finder-modal";
+import { MemoLayer, type MemoDropTarget, type MemoEntry, type MemoPoint } from "./memo-layer";
 import type { MemoHost } from "../app/memo-controller";
 import { resolveMemoAnchor, type MemoAnchor } from "../app/memo-anchor";
 import type { MemoMeta } from "../core/memo";
@@ -1641,9 +1640,9 @@ export class TaskGanttView extends ItemView {
     this.closeWorkloadDaySummaryPopover();
   }
 
-  /** Hover popovers stay closed while the Daily ToDo editor or a context menu is open. */
+  /** Hover popovers stay closed while the Daily ToDo editor or a context menu is open, or a memo dot is being dragged. */
   private hoverPopoversBlocked(): boolean {
-    return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined;
+    return this.dailyTodoPopoverState !== undefined || this.activeContextMenu !== undefined || this.memoDragging;
   }
 
   /** Row elements are keyed by the parent note's path; tasks are known by id. */
@@ -2205,6 +2204,8 @@ export class TaskGanttView extends ItemView {
   private memoEntries: MemoEntry[] = [];
   private readonly memoRows = new Map<string, TaskRow>();
   private memoButtonEl: HTMLButtonElement | undefined;
+  /** A memo's anchor dot is being dragged across the chart. */
+  private memoDragging = false;
   /** Where each parent row is and the center of each of its bars (px from the row top); `shown` is set while a tag filter hides some bars. */
   private readonly memoRowGeometry = new Map<string, { rowEl: HTMLElement; bars: Map<string, number>; shown?: Set<string> }>();
 
@@ -2218,7 +2219,9 @@ export class TaskGanttView extends ItemView {
       pointOf: (entry) => this.memoPoint(entry),
       leftWidth: PARENT_COL_WIDTH,
       contentSize: () => this.memoContentSize(),
-      dateAtClient: (entry, clientX) => this.memoDateAt(entry, clientX),
+      dropTargetAt: (_entry, clientX, clientY) => this.memoDropTargetAt(clientX, clientY),
+      dotDragging: (active) => this.setMemoDragging(active),
+      dragHint: (label, clientX, clientY) => { if (label === null) this.hideDragTooltip(); else this.showDragTooltip(label, clientX, clientY); },
       readText: (meta) => memos.readText(meta),
       saveText: async (meta, text) => {
         try {
@@ -2234,7 +2237,7 @@ export class TaskGanttView extends ItemView {
         if (saved) this.memoLayer?.rememberText(saved, text);
         this.placeMemos();
       },
-      moveAnchor: (entry, date) => this.runMemoWrite("メモを移動できませんでした", (host) => entry.meta ? host.reanchor(entry.meta, { task: this.memoTaskOf(entry), date }) : Promise.resolve()),
+      moveAnchor: (entry, target) => this.runMemoWrite("メモを移動できませんでした", (host) => entry.meta ? host.reanchor(entry.meta, { task: this.memoTaskOf(target.anchor), date: target.anchor.date }) : Promise.resolve()),
       saveLayout: () => memos.saveLayout(),
       openMenu: (evt, entry) => this.openMemoMenu(evt, entry),
     });
@@ -2371,13 +2374,35 @@ export class TaskGanttView extends ItemView {
     return last && date > last ? last : date;
   }
 
-  /** A subtask memo can only move along its bar; the others along any day. */
-  private memoDateAt(entry: MemoEntry, clientX: number): string | null {
+  /**
+   * What a dragged memo dot would attach to at the pointer: a subtask bar (any parent's, the day held within the bar),
+   * the empty timeline of a parent row, or the 「その他」 row. Anywhere else (header, name column, outside) is no target.
+   */
+  private memoDropTargetAt(clientX: number, clientY: number): MemoDropTarget | null {
+    // The dragged memo has pointer-events off, so the first element is the chart surface itself.
+    const top = document.elementsFromPoint?.(clientX, clientY)[0] as HTMLElement | undefined;
+    const up = (el: HTMLElement | null | undefined, cls: string): HTMLElement | null => {
+      for (let node = el ?? null; node; node = node.parentElement ?? (node.parentNode as HTMLElement | null)) if (node.classList?.contains(cls)) return node;
+      return null;
+    };
     const date = this.dateAtClientX(clientX);
-    if (entry.anchor.kind !== "subtask") return date;
-    const range = this.barRangeOf(entry.anchor.taskId ? this.memoRows.get(entry.anchor.taskId) : undefined);
-    if (!range) return null;
-    return date < range.start ? range.start : date > range.end ? range.end : date;
+    const label = (name: string, day: string): string => `${name} · ${Number(day.slice(5, 7))}/${Number(day.slice(8, 10))}`;
+    const bar = up(top, "task-gantt-bar");
+    const barTask = bar?.dataset.taskId ? this.memoRows.get(bar.dataset.taskId) : undefined;
+    if (barTask && barTask.kind === "subtask") {
+      const range = this.barRangeOf(barTask);
+      if (!range) return null;
+      const day = date < range.start ? range.start : date > range.end ? range.end : date;
+      const name = barTask.displayName || barTask.title;
+      return { anchor: { kind: "subtask", taskId: barTask.id, taskName: name, parentId: barTask.parentId, date: day }, label: label(name, day) };
+    }
+    const parentTask = this.memoRows.get(up(top, "task-gantt-parent-timeline")?.dataset.parentId ?? "");
+    if (parentTask && parentTask.kind === "parent") {
+      const name = parentTask.displayName || parentTask.title;
+      return { anchor: { kind: "parent", taskId: parentTask.id, taskName: name, parentId: parentTask.id, date }, label: label(name, date) };
+    }
+    if (up(top, "task-gantt-event-row")) return { anchor: { kind: "free", date }, label: label("その他", date) };
+    return null;
   }
 
   private barRangeOf(task: TaskRow | undefined): { start: string; end: string } | null {
@@ -2386,8 +2411,14 @@ export class TaskGanttView extends ItemView {
     return { start, end: task.plannedEndDate && task.plannedEndDate >= start ? task.plannedEndDate : start };
   }
 
-  private memoTaskOf(entry: MemoEntry): TaskRow | undefined {
-    return entry.anchor.taskId ? this.memoRows.get(entry.anchor.taskId) : undefined;
+  private memoTaskOf(anchor: MemoAnchor): TaskRow | undefined {
+    return anchor.taskId ? this.memoRows.get(anchor.taskId) : undefined;
+  }
+
+  private setMemoDragging(active: boolean): void {
+    this.memoDragging = active;
+    if (active) this.closeHoverPopovers();
+    else this.armRichPopoverSuppress();
   }
 
   /** Runs one memo write; a failure is reported, and the layer is redrawn from the notes either way. */
@@ -2439,10 +2470,6 @@ export class TaskGanttView extends ItemView {
     const menu = new Menu();
     this.activateContextMenu(menu);
     menu.addItem((item) => {
-      item.setTitle("付け替え…");
-      item.onClick(() => this.chooseMemoTarget(entry));
-    });
-    menu.addItem((item) => {
       item.setTitle("ノートを開く");
       item.onClick(() => { void memos.openNote(meta); });
     });
@@ -2453,32 +2480,6 @@ export class TaskGanttView extends ItemView {
       item.onClick(() => { void this.runMemoWrite("メモを削除できませんでした", () => memos.remove(meta)); });
     });
     menu.showAtMouseEvent(evt);
-  }
-
-  /** 「付け替え…」: the task finder, with the 「その他」 row as the first choice. */
-  private chooseMemoTarget(entry: MemoEntry): void {
-    const free = { kind: "parent", id: "", title: "その他", displayName: "その他", file: { path: "" }, statusLabel: "active", tags: [] } as unknown as TaskRow;
-    const items: TaskRow[] = [free];
-    for (const parent of this.tasks) {
-      if (parent.kind !== "parent" || parent.ganttEnabled === false) continue;
-      items.push(parent);
-      for (const subtask of parent.subtasks?.values() ?? []) if (subtask.plannedStartDate) items.push(subtask);
-    }
-    new TaskFinderModal(
-      this.app,
-      { openTaskItem: (row) => { void this.reattachMemo(entry, row === free ? undefined : row); } },
-      items,
-      { placeholder: "付け替え先を検索...", metaOf: (item) => item === free ? "ガントの「その他」行" : undefined }
-    ).open();
-  }
-
-  /** Moves the memo to `task` (undefined = 「その他」), keeping its day; on a bar the day is held within the bar. */
-  private async reattachMemo(entry: MemoEntry, task: TaskRow | undefined): Promise<void> {
-    const meta = entry.meta;
-    if (!meta) return;
-    const range = task && task.kind === "subtask" ? this.barRangeOf(task) : null;
-    const date = range ? (entry.anchor.date < range.start ? range.start : entry.anchor.date > range.end ? range.end : entry.anchor.date) : entry.anchor.date;
-    await this.runMemoWrite("メモを付け替えできませんでした", (memos) => memos.reanchor(meta, { task, date }));
   }
 
   /** 「メモ n」: click shows or hides every memo; right-click opens or closes them all. */
@@ -5085,6 +5086,7 @@ export class TaskGanttView extends ItemView {
     // timeline are built when the row nears the viewport, so a rebuild only pays for what can be seen.
     const timeline = document.createElement("div");
     timeline.classList.add("task-gantt-parent-timeline");
+    timeline.dataset.parentId = parent.id;
     timeline.style.width = `${dates.length * dayWidth}px`;
     timeline.style.height = `${rowHeight}px`;
     row.appendChild(timeline);
@@ -5341,6 +5343,7 @@ export class TaskGanttView extends ItemView {
       // Render the bar centered in its base band.
       const barEl = document.createElement("div");
       barEl.classList.add("task-gantt-bar");
+      barEl.dataset.taskId = bar.task.id;
       if (bar.task.completed) barEl.classList.add("is-completed");
       if (bar.task.disabled) barEl.classList.add("is-disabled");
       const barMark = this.previewLayer?.rowState(bar.task.id);

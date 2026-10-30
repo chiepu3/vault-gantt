@@ -1128,11 +1128,12 @@ button.vg-btn-danger-text, .setting-item button.vg-btn-danger-text { color: var(
 .vg-memo-layer { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; }
 .vg-memo-layer > .vg-memo-group { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 .vg-memo-group > * { pointer-events: auto; }
+.vg-memo-group.is-dot-dragging > * { pointer-events: none; }
 .vg-memo-group { --memo-edge: color-mix(in srgb, var(--color-yellow) 70%, var(--text-muted)); --memo-fill: color-mix(in srgb, var(--color-yellow) 13%, var(--background-primary)); }
 .vg-memo-group.is-ai { --memo-edge: var(--interactive-accent); }
 
 .vg-memo-tail { position: absolute; height: 0; border-top: 1.6px solid var(--memo-edge); transform-origin: 0 0; pointer-events: none; }
-.vg-memo-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--memo-edge); box-shadow: 0 0 0 2px var(--background-primary); cursor: ew-resize; }
+.vg-memo-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--memo-edge); box-shadow: 0 0 0 2px var(--background-primary); cursor: move; }
 .vg-memo-dot.is-dragging { box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--memo-edge); }
 
 .vg-memo { position: absolute; display: flex; flex-direction: column; min-width: 140px; max-width: 480px; min-height: 48px; border: 1px solid var(--memo-edge); border-radius: var(--radius-m); background: var(--memo-fill); box-shadow: var(--vg-shadow-raised); color: var(--text-normal); font-size: var(--vg-font-s, 12px); line-height: 1.45; overflow: hidden; }
