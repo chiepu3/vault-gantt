@@ -87,6 +87,7 @@ async function openGantt(stored: MemoMeta[], opts: { withMemos?: boolean; second
     remove: vi.fn(async (meta: MemoMeta) => { stored.splice(stored.indexOf(meta), 1); }),
     openNote: vi.fn(async () => undefined),
     saveLayout: vi.fn(),
+    recordLayout: vi.fn(),
   };
   const host = {
     logger: { warn: vi.fn(), error: vi.fn() },

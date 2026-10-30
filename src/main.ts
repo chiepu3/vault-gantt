@@ -738,6 +738,17 @@ export default class TaskWorkbenchPlugin extends Plugin {
       set: async (order) => { const candidate = structuredClone(this.settings); candidate.ganttParentOrder = order; await this.settingsWriter().persist(candidate, ["ganttParentOrder"]); },
     });
 
+    this.historyManager.attachMemoLayoutStore({
+      get: (id) => this.settings.ganttMemoLayout[id] ?? null,
+      set: async (id, layout) => {
+        const candidate = structuredClone(this.settings);
+        const next = { ...candidate.ganttMemoLayout };
+        if (layout) next[id] = layout; else delete next[id];
+        candidate.ganttMemoLayout = next;
+        await this.settingsWriter().persist(candidate, ["ganttMemoLayout"]);
+      },
+    });
+
     this.chatSession = new ChatSession(this.app.vault, this.operationService, new SdkChatProvider(this.operations, (id, endpoint) => id === aiSecretId(this.aiSettings.id) ? this.readAiApiKey(endpoint) : null, this.operationService), (result) => this.scheduleGhosts.show(result), this.operationService);
     this.applyAiConnection();
     await this.restoreChatHistory();

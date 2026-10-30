@@ -2239,6 +2239,7 @@ export class TaskGanttView extends ItemView {
       },
       moveAnchor: (entry, target) => this.runMemoWrite("メモを移動できませんでした", (host) => entry.meta ? host.reanchor(entry.meta, { task: this.memoTaskOf(target.anchor), date: target.anchor.date }) : Promise.resolve()),
       saveLayout: () => memos.saveLayout(),
+      recordLayout: (label, id, before, after) => memos.recordLayout(label, id, before, after),
       openMenu: (evt, entry) => this.openMemoMenu(evt, entry),
     });
   }

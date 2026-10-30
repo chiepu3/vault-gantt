@@ -53,6 +53,8 @@ export interface MemoLayerContext {
   moveAnchor(entry: MemoEntry, target: MemoDropTarget): Promise<void>;
   /** Persists the view state (settings only; no chart render). */
   saveLayout(): void;
+  /** Records a bubble move or resize for undo/redo (the settings are already updated). */
+  recordLayout(label: string, id: string, before: MemoLayout | null, after: MemoLayout): void;
   openMenu(evt: MouseEvent, entry: MemoEntry): void;
 }
 
@@ -562,8 +564,10 @@ export class MemoLayer {
       if (node.dx === ox && node.dy === oy) return;
       node.auto = false;
       const settings = this.ctx.settings();
-      settings.ganttMemoLayout = { ...settings.ganttMemoLayout, [node.id]: this.layoutFor(node, true) };
+      const before = settings.ganttMemoLayout[node.id] ?? null, after = this.layoutFor(node, true);
+      settings.ganttMemoLayout = { ...settings.ganttMemoLayout, [node.id]: after };
       this.ctx.saveLayout();
+      this.ctx.recordLayout("メモ移動", node.id, before, after);
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   }
@@ -582,8 +586,10 @@ export class MemoLayer {
       if (node.w === ow && !node.auto) return;
       node.auto = false;
       const settings = this.ctx.settings();
-      settings.ganttMemoLayout = { ...settings.ganttMemoLayout, [node.id]: this.layoutFor(node, true) };
+      const before = settings.ganttMemoLayout[node.id] ?? null, after = this.layoutFor(node, true);
+      settings.ganttMemoLayout = { ...settings.ganttMemoLayout, [node.id]: after };
       this.ctx.saveLayout();
+      this.ctx.recordLayout("メモのサイズ変更", node.id, before, after);
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   }
