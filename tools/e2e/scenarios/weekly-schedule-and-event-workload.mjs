@@ -6,7 +6,7 @@
 // This scenario drives the two multi-step flows that need real Obsidian input:
 // 1. open 「定例作業設定」, add/edit a live schedule, then verify the
 // Wednesday summary and its 「週次定例」 day-summary popover;
-// 2. right-click the 「その他」 row to create an event, hover its shared
+// 2. double-click the 「その他」 row to create an event, hover its shared
 // workload graph, paint a value with trusted CDP pointer input, then use
 // 「複製」 and verify the second chip and copied workload on disk.
 
@@ -26,6 +26,7 @@ import {
 } from "./drag-fixture.mjs";
 import {
   dismissTrustDialogIfPresent,
+  dblclickAt,
   dragGesture,
   hoverOnto,
   mouseDown,
@@ -234,14 +235,14 @@ export async function run({ cdp, vaultDir }) {
       return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
     })()`);
     assert(eventRow && eventRow.width > 0 && eventRow.height > 0, "event row is not visible");
-    await rightClickAt(
+    await dblclickAt(
       cdp,
       eventCell.rect.left + eventCell.rect.width / 2,
       eventRow.top + eventRow.height / 2
     );
     await cdp.waitForExpression(
       `document.querySelectorAll(".task-gantt-event-chip").length === 1`,
-      { timeoutMs: 10000, label: "event chip created by right-click" }
+      { timeoutMs: 10000, label: "event chip created by double-click" }
     );
     const eventAdded = await waitForData(
       dataPath,

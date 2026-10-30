@@ -31,3 +31,20 @@ export function generateTaskId(kind: TaskIdKind, used: Set<string>, random: () =
     }
   }
 }
+
+const MEMO_ID_PATTERN = /^m-[0-9a-z]{6}$/;
+
+export function isMemoId(value: unknown): value is string {
+  return typeof value === "string" && MEMO_ID_PATTERN.test(value);
+}
+
+/** m- plus 6 base36 characters, not present in `used` (which receives the new id). Memos share the id namespace of task notes. */
+export function generateMemoId(used: Set<string>, random: () => number = defaultRandom()): string {
+  for (;;) {
+    const id = `m-${randomBase36(6, random)}`;
+    if (!used.has(id)) {
+      used.add(id);
+      return id;
+    }
+  }
+}

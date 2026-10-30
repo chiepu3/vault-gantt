@@ -45,7 +45,7 @@ describe("effect renderers cover every contract variant", () => {
     expect(text).not.toContain("templatePath"); expect(text).not.toContain("creatableFromGantt");
   });
   it("has a renderer and a title for each effect kind", () => {
-    expect(PREVIEW_EFFECT_KINDS).toHaveLength(18);
+    expect(PREVIEW_EFFECT_KINDS).toHaveLength(19);
     expect(Object.keys(EFFECT_RENDERERS).sort()).toEqual([...PREVIEW_EFFECT_KINDS].sort());
     expect(Object.keys(EFFECT_TITLES).sort()).toEqual([...PREVIEW_EFFECT_KINDS].sort());
   });

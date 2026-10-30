@@ -13,12 +13,12 @@ import { FakeVault } from "../app/fake-vault";
 import { INPUT_FIXTURES, PREVIEW_FIXTURES, READ_FIXTURES } from "./fixtures";
 
 describe("P0 operation ledger", () => {
-  it("matches all 124 design ledger IDs with no duplicates or gaps", () => {
+  it("matches all 130 design ledger IDs with no duplicates or gaps", () => {
     const design = readFileSync(new URL("../../docs/ai/DESIGN.md", import.meta.url), "utf8");
     const ledgerSection = design.slice(design.indexOf("### 3.1"), design.indexOf("### 3.8"));
-    const ledger = [...ledgerSection.matchAll(/^\| ([TMEWDSVQ]\d{2}) \|/gm)].map((match) => match[1]);
-    expect(OPERATION_IDS).toHaveLength(124);
-    expect(new Set(OPERATION_IDS).size).toBe(124);
+    const ledger = [...ledgerSection.matchAll(/^\| ([TMEWDSNVQ]\d{2}) \|/gm)].map((match) => match[1]);
+    expect(OPERATION_IDS).toHaveLength(130);
+    expect(new Set(OPERATION_IDS).size).toBe(130);
     expect(OPERATION_IDS).toEqual(ledger);
     expect(Object.keys(operationInputSchemas)).toEqual(OPERATION_IDS);
     expect(Object.keys(operationOutputSchemas)).toEqual(OPERATION_IDS);
@@ -39,7 +39,7 @@ describe("P0 operation ledger", () => {
   });
   it("classifies hidden persistence and external side effects explicitly", () => {
     const ids = OPERATION_IDS.filter((id) => OPERATION_CONTRACTS[id][0] === "read");
-    expect(ids).toEqual(["T01", "T02", "D01"]);
+    expect(ids).toEqual(["T01", "T02", "D01", "N01"]);
     expect(OPERATION_CONTRACTS.D08[0]).toBe("view");
     expect(OPERATION_CONTRACTS.D09[0]).toBe("write");
     expect(OPERATION_CONTRACTS.V14).toEqual(["view", ["view", "settings"], ["ui"]]);
@@ -96,10 +96,10 @@ describe("P0 operation ledger", () => {
 });
 
 describe("legacy six-tool compatibility", () => {
-  it("preserves the tool names and the 19-field compatibility patch plus milestones", () => {
+  it("preserves the tool names and the 19-field compatibility patch plus milestones and disabled", () => {
     expect(Object.keys(LEGACY_OPERATION_IDS)).toEqual(Object.keys(OPERATION_MANIFEST));
     expect(Object.keys(taskPatchInputSchema.shape)).toEqual(Object.keys(patchSchema.shape));
-    expect(Object.keys(taskPatchInputSchema.shape)).toHaveLength(20);
+    expect(Object.keys(taskPatchInputSchema.shape)).toHaveLength(21);
     expect(adaptLegacyOperationInput("create", { name: "Parent" }).operationId).toBe("T03");
     expect(adaptLegacyOperationInput("create", { name: "Child", parentTaskId: "tasks/parent.md" }).operationId).toBe("T04");
   });

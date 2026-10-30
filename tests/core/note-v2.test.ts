@@ -49,6 +49,23 @@ describe("note format v2 round trip", () => {
     expect(parsed.row.ganttMarkers).toEqual([{ key: expect.any(String), title: "中間レビュー", date: "2026-10-22", tags: ["会議"] }]);
   });
 
+  it("round-trips the disabled flag: written as `disabled: true`, absent otherwise", () => {
+    const off = subtaskRow({ disabled: true });
+    expect(frontmatterOf(buildNewNote(off, stringifyYaml)).disabled).toBe(true);
+    expect(managedFrontmatter(off).disabled).toBe(true);
+    const parsed = parseNote({ path: "x.md" }, frontmatterOf(buildNewNote(off, stringifyYaml)), { currentStatus: "", notes: "" }, settings)!;
+    expect(parsed.row.disabled).toBe(true);
+    const on = subtaskRow();
+    expect(frontmatterOf(buildNewNote(on, stringifyYaml))).not.toHaveProperty("disabled");
+    expect(parseNote({ path: "x.md" }, frontmatterOf(buildNewNote(on, stringifyYaml)), { currentStatus: "", notes: "" }, settings)!.row.disabled).toBeUndefined();
+    // re-enabling deletes the key through the diff; status/completed are untouched
+    const changes = diffFrontmatter(managedFrontmatter(off), managedFrontmatter(on));
+    expect(changes).toEqual({ disabled: undefined });
+    const fm = frontmatterOf(buildNewNote(off, stringifyYaml));
+    applyFrontmatterChanges(fm, changes);
+    expect(fm).not.toHaveProperty("disabled");
+  });
+
   it("parent notes carry gantt and manual priority only", () => {
     const row: TaskRow = { ...subtaskRow(), kind: "parent", id: "t-7k3q9x", title: "社内ツール更新", displayName: "社内ツール更新", priority: 3, priorityMode: "manual", ganttEnabled: true, dependsOn: undefined, subtasks: new Map() };
     const fm = frontmatterOf(buildNewNote(row, stringifyYaml));

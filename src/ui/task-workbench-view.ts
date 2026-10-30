@@ -40,6 +40,9 @@ import {
 } from "../app/workbench-virtual";
 import type { VirtualRange } from "../app/workbench-virtual";
 import { TaskFinderModal } from "./task-finder-modal";
+import { openMemoPopover } from "./memo-popover";
+import { resolveMemoAnchor } from "../app/memo-anchor";
+import { memoIsOpen, memoTitleFromPath, type MemoMeta } from "../core/memo";
 import { registerHistoryHotkeys } from "./history-hotkeys";
 import { appendTagChips, findGanttTagDefinition, setStyleVar } from "./tag-chip";
 
@@ -94,6 +97,12 @@ export interface TaskWorkbenchViewHost extends Partial<PreviewUiHostPorts> {
   undoLastAction(): Promise<void>;
   redoLastAction(): Promise<void>;
   addSubtaskInteractively?(row: TaskRow, onCreated: () => void): Promise<void>;
+  /** Floating memos: a read-only list here, with open/close and a jump to the Gantt. Absent = no chip. */
+  memos?: {
+    load(): Promise<MemoMeta[]>;
+    setOpen(ids: readonly string[], open: boolean): Promise<void>;
+    reveal(id: string): Promise<void>;
+  };
 }
 
 
@@ -212,6 +221,8 @@ export class TaskWorkbenchView extends ItemView {
   private resizeObserver?: ResizeObserver;
 
   private closeMilestonePopover?: () => void;
+  private closeMemoPopover?: () => void;
+  private memoMetas: MemoMeta[] = [];
 
   private resetScrollOnRender = false;
 
@@ -396,6 +407,7 @@ export class TaskWorkbenchView extends ItemView {
     this.unregisterState?.(); this.unregisterState = undefined;
     this.cancelFilterRender();
     this.closeMilestonePopover?.();
+    this.closeMemoPopover?.();
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
     if (this.fillTimer !== undefined) {
@@ -440,6 +452,10 @@ export class TaskWorkbenchView extends ItemView {
     }
 
     this.tasks = tasks;
+    if (this.host.memos) {
+      try { this.memoMetas = await this.host.memos.load(); }
+      catch (error) { this.host.logger.error("TaskWorkbenchView", "failed to load memos", error); }
+    }
   }
 
 
@@ -639,6 +655,34 @@ export class TaskWorkbenchView extends ItemView {
         this.openTaskFinder();
       })
     );
+
+    if (this.host.memos) {
+      const chip = this.buildButton(`メモ ${this.memoMetas.length}`, "task-workbench-memos", () => { this.toggleMemoPopover(chip); });
+      chip.title = "Ganttの吹き出しメモ";
+      right.appendChild(chip);
+    }
+  }
+
+  /** The memo list under the chip: open/close and 「Ganttで表示」 only; editing stays on the Gantt. */
+  private toggleMemoPopover(anchor: HTMLElement): void {
+    const memos = this.host.memos;
+    if (!memos) return;
+    if (this.closeMemoPopover) { this.closeMemoPopover(); return; }
+    const rows = new Map<string, TaskRow>();
+    for (const task of this.tasks) {
+      rows.set(task.id, task);
+      for (const subtask of task.subtasks?.values() ?? []) rows.set(subtask.id, subtask);
+    }
+    const items = this.memoMetas.map((meta) => {
+      const anchorInfo = resolveMemoAnchor(meta, rows);
+      return { id: meta.id, headline: memoTitleFromPath(meta.path), where: `${anchorInfo.kind === "free" ? "その他" : anchorInfo.taskName ?? ""} · ${anchorInfo.date}`, open: memoIsOpen(this.host.settings.ganttMemoLayout, meta.id) };
+    });
+    const close = openMemoPopover({
+      anchor, items, onClose: () => { this.closeMemoPopover = undefined; },
+      onToggle: (ids, open) => memos.setOpen(ids, open).catch((error: unknown) => { this.host.logger.error("TaskWorkbenchView", "failed to toggle memos", error); }),
+      onReveal: (id) => memos.reveal(id).catch((error: unknown) => { this.host.logger.error("TaskWorkbenchView", "failed to reveal memo", error); }),
+    });
+    this.closeMemoPopover = close;
   }
 
   /**

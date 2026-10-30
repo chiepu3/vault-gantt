@@ -152,12 +152,12 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.agentToolsEnabled).toBe(false);
   });
 
-  it("DEFAULT_SETTINGS has exactly 35 keys", () => {
+  it("DEFAULT_SETTINGS has exactly 37 keys", () => {
     const keys = Object.keys(DEFAULT_SETTINGS);
-    expect(keys.length).toBe(35);
+    expect(keys.length).toBe(37);
   });
 
-  it("DEFAULT_SETTINGS has all 35 required keys", () => {
+  it("DEFAULT_SETTINGS has all 37 required keys", () => {
     const required = [
       // Task storage settings.
       "taskFolder",
@@ -198,6 +198,9 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
       "ganttFeatureDailyTodoEnabled",
       "dailyTodoSources",
       "dailyTodoTargetSourceKey",
+      // Floating memo view state.
+      "ganttMemosVisible",
+      "ganttMemoLayout",
       // Rendering and integration settings.
       "ganttFeatureSyncEnabled",
       "incrementalGanttRender",
@@ -206,7 +209,7 @@ describe("Core Constants - DEFAULT_SETTINGS", () => {
     ];
 
     // Verify we have exactly 32 required keys
-    expect(required.length).toBe(35);
+    expect(required.length).toBe(37);
 
     for (const key of required) {
       expect(key in DEFAULT_SETTINGS).toBe(true);

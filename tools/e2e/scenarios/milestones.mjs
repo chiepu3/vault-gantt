@@ -214,7 +214,37 @@ export async function run({ cdp, vaultDir }) {
   }
   details.push("OK workbench delete");
 
-  // 5. The AI chat path: read the parent's milestones the way the chat tools do, then propose + approve an update
+  // 5. Close milestones stack in tiers: add two more one and two days after the first through the gantt menu,
+  // then check each name is visible and no two pills overlap.
+  await cdp.evaluate(`app.commands.executeCommandById(${JSON.stringify(GANTT)}), true`);
+  await cdp.waitForExpression(`!!document.querySelector(".task-gantt-milestone")`, { timeoutMs: 15000, label: "gantt milestone" });
+  for (const [offsetDays, name] of [[1, "リリース準備"], [2, "公開"]]) {
+    const first = await rectOf(cdp, ".task-gantt-milestone");
+    const gantt = await rectOf(cdp, ".task-gantt-parent-row .task-gantt-bg-hit");
+    await clickAt(cdp, first.left + dayWidth * offsetDays + 4, gantt.top + 4, "right");
+    const label = await cdp.evaluate(`(() => { const el = [...document.querySelectorAll(".menu-item")].find((e) => /マイルストーンを .* に追加/.test(e.textContent)); if (!el) return null; el.setAttribute("data-e2e", "add-milestone"); return el.textContent; })()`);
+    if (!label) return fail(`no add-milestone menu for tier test (${name})`);
+    await clickAt(cdp, ...Object.values(centerOf(await rectOf(cdp, "[data-e2e=add-milestone]"))));
+    await answerPrompt(cdp, name);
+    try {
+      await waitFor(() => milestoneTitles(readNoteText(parentAbsPath)).includes(name), `${name} saved`);
+    } catch (err) {
+      return fail(`tier test add did not save (${err.message}); note:\n${readNoteText(parentAbsPath)}`);
+    }
+    await sleep(500);
+  }
+  const pills = await cdp.evaluate(`JSON.stringify([...document.querySelectorAll(".task-gantt-milestone")].map((e) => { const r = e.getBoundingClientRect(); return { text: e.textContent, hasLabel: !!e.querySelector(".task-gantt-deadline-marker-label"), l: r.left, r: r.right, t: r.top, b: r.bottom }; }))`);
+  const list = JSON.parse(pills);
+  if (list.length < 3) return fail(`expected 3+ milestones, got ${list.length}: ${pills}`);
+  if (list.some((p) => !p.hasLabel)) return fail(`a milestone lost its name: ${pills}`);
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b) return fail(`milestones overlap: ${a.text} / ${b.text}`);
+  }
+  const rowH = await cdp.evaluate(`document.querySelector(".task-gantt-parent-row").getBoundingClientRect().height`);
+  details.push(`OK stacked tiers (${list.length} pills, row ${rowH}px)`);
+
+  // 6. The AI chat path: read the parent's milestones the way the chat tools do, then propose + approve an update
   //    (operation T29 with patch.milestones). Only the language model is left out.
   {
     const result = await cdp.evaluate(`(async () => {

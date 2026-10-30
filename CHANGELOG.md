@@ -2,6 +2,42 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.14.1 (2026-10-30)
+
+### 修正
+
+- メモの吹き出し移動・サイズ変更をUndo/Redoの対象にする ([#84](https://github.com/chiepu3/vault-gantt/pull/84))
+
+## v0.14.0 (2026-10-30)
+
+### 新機能
+
+- attach main.js/manifest.json/styles.css to GitHub Releases ([#85](https://github.com/chiepu3/vault-gantt/pull/85))
+
+## v0.13.0 (2026-10-30)
+
+### 新機能
+
+- Ganttにフローティング吹き出しメモを追加 ([#78](https://github.com/chiepu3/vault-gantt/pull/78))
+
+## v0.12.0 (2026-10-29)
+
+### 新機能
+
+- サブタスクを一時無効にできるようにする ([#82](https://github.com/chiepu3/vault-gantt/pull/82))
+
+## v0.11.3 (2026-10-29)
+
+### 修正
+
+- タグ付きサブタスクが吹き出しになりにくい問題を修正 ([#81](https://github.com/chiepu3/vault-gantt/pull/81))
+
+## v0.11.2 (2026-10-29)
+
+### 修正
+
+- 近接するマイルストーンを段に積んで名前が隠れないようにする ([#80](https://github.com/chiepu3/vault-gantt/pull/80))
+
 ## v0.11.1 (2026-10-27)
 
 ### 修正

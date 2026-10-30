@@ -510,6 +510,20 @@ describe("HistoryManager", () => {
       expect((await manager.redo(vault.asVault() as never)).kind).toBe("success");
       expect(vault.getContent("task.md")).toBe(after);
     });
+    it("undoes and redoes a memo bubble move without touching any note", async () => {
+      const manager = new HistoryManager();
+      const vault = new ProcessFakeVault();
+      const layouts: Record<string, { open: boolean; dx: number; dy: number; w: number }> = { m1: { open: true, dx: 50, dy: -50, w: 220 } };
+      manager.attachMemoLayoutStore({ get: (id) => layouts[id] ?? null, set: async (id, layout) => { if (layout) layouts[id] = layout; else delete layouts[id]; } });
+      manager.push({ label: "メモ移動", files: [], memoLayout: { id: "m1", before: null, after: layouts.m1! } });
+      layouts.m1 = { open: true, dx: 1, dy: 1, w: 220 };
+      expect((await manager.undo(vault.asVault() as never)).kind).toBe("conflict");
+      layouts.m1 = { open: true, dx: 50, dy: -50, w: 220 };
+      expect((await manager.undo(vault.asVault() as never)).kind).toBe("success");
+      expect(layouts.m1).toBeUndefined();
+      expect((await manager.redo(vault.asVault() as never)).kind).toBe("success");
+      expect(layouts.m1).toEqual({ open: true, dx: 50, dy: -50, w: 220 });
+    });
     it("still detects conflicts on a compacted entry and keeps order changes", async () => {
       const manager = new HistoryManager();
       const vault = new ProcessFakeVault();
