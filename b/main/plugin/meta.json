@@ -1,0 +1,20 @@
+{
+  "branch": "main",
+  "sha": "2340ce4495e6950b7d469fdd23718af363d382d4",
+  "version": "0.16.1",
+  "builtAt": "2026-10-31T02:40:41.058Z",
+  "files": {
+    "main.js": {
+      "size": 1883208,
+      "sha256": "c523128724438270704e9a8b793d71ddd3d924a055ded286839ccd857c966d6b"
+    },
+    "manifest.json": {
+      "size": 278,
+      "sha256": "d89e71c528808eff5a40369ca6437341b1308b2ab8bd06c0a79a6ae1062cde19"
+    },
+    "styles.css": {
+      "size": 107930,
+      "sha256": "879f0fe295530c3a486cd4a545e04b26911236187a9e9c1e5243665213f8d91d"
+    }
+  }
+}
