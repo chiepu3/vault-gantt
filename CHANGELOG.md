@@ -2,6 +2,12 @@
 
 バージョンは自動で更新されます（[CONTRIBUTING.md](CONTRIBUTING.md) 参照）。
 
+## v0.16.2 (2026-11-04)
+
+### 修正
+
+- その他行のイベント時間を日ごとの作業時間合計に含める ([#87](https://github.com/chiepu3/vault-gantt/pull/87))
+
 ## v0.16.1 (2026-10-30)
 
 ### 修正
