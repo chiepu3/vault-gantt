@@ -3119,6 +3119,10 @@ export class TaskGanttView extends ItemView {
     for (const schedule of this.host.settings.weeklyWorkSchedules ?? []) {
       parts.push(`@${schedule.key}:${schedule.dayOfWeek}:${schedule.minutesPerWeek}`);
     }
+    // 「その他」 row events carry their own plan/actual hours, which count toward the day totals.
+    for (const event of getGanttEvents(this.host.settings)) {
+      parts.push(`!${event.key}`, mapKey(event.workloadPlan), mapKey(event.workloadActual));
+    }
     for (const parent of parents) {
       parts.push(`#${parent.file.path}`);
       if (parent.subtasks === undefined) continue;
@@ -3158,6 +3162,18 @@ export class TaskGanttView extends ItemView {
         add(subtask.workloadPlan, plans);
         add(subtask.workloadActual, actuals);
       }
+    }
+    // 「その他」 row events are not bound to a subtask period; every dated entry counts.
+    const addEvent = (values: Record<string, number> | undefined, into: number[]): void => {
+      if (values === undefined) return;
+      for (const date of Object.keys(values)) {
+        const index = dateIndex.get(date);
+        if (index !== undefined) into[index] += values[date] ?? 0;
+      }
+    };
+    for (const event of getGanttEvents(this.host.settings)) {
+      addEvent(event.workloadPlan, plans);
+      addEvent(event.workloadActual, actuals);
     }
     // weekly schedules match indefinitely by calendar weekday, regardless of any
     // subtask date range. They count toward the plan on every date and toward the
@@ -3532,6 +3548,11 @@ export class TaskGanttView extends ItemView {
       section.appendChild(heading);
 
       const entries = collectWorkloadEntriesForDate(date, this.tasks, mode);
+      for (const event of getGanttEvents(this.host.settings)) {
+        const hours = (mode === "plan" ? event.workloadPlan : event.workloadActual)?.[date] ?? 0;
+        if (hours > 0) entries.push({ parentName: "その他", subtaskName: event.title || "新しいタスク", hours });
+      }
+      entries.sort(compareWorkloadEntries);
 
 
       // recurring schedules count toward the plan on every date, and toward the actual up to today.

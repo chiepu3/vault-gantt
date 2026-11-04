@@ -377,6 +377,11 @@ export async function run({ cdp, vaultDir }) {
       "duplicate did not copy event workload"
     );
     await capture(cdp, `${SCENARIO_NAME}-event-duplicate`);
+
+    // The 「その他」 events (2 x paintedHours) add to the day total next to the subtask's 1h plan.
+    const eventDayCell = await scrollDateIntoView(cdp, fixture.eventDate);
+    const expectedTotal = `${1 + 2 * paintedHours}h`;
+    assert(eventDayCell.text.includes(expectedTotal), `event day summary should include events (${expectedTotal}): ${JSON.stringify(eventDayCell.text)}`);
     details.push(`event added: ${JSON.stringify(eventAdded.ganttEvents)}`);
     details.push(`event workload: ${paintedHours}h; duplicate chips: ${duplicateChips.length}`);
 
