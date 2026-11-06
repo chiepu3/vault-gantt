@@ -4,6 +4,7 @@ import { OperationRegistry, OPERATION_MANIFEST, patchSchema } from "../../src/ap
 import { DEFAULT_SETTINGS } from "../../src/core/constants";
 import { createTask, addSubtask } from "../../src/app/task-operations";
 import { HistoryManager } from "../../src/app/history-manager";
+import { getMilestones } from "../../src/core/milestones";
 import { FakeVault } from "./fake-vault";
 import { ToolAdapter } from "../../src/agent-tools/tool-adapter";
 import { Logger } from "../../src/core/logger";
@@ -332,6 +333,6 @@ describe("parent milestones through the UI save path", () => {
     await a.registry.updateFromUI([{ row, patch: { milestones: [{ key: "期限", title: "期限", date: "2026-11-20" }] } }]);
     const saved = await a.registry.get(row.id);
     expect(saved.dueDate).toBe("2026-11-20");
-    expect(saved.milestones?.map((m) => [m.title, m.date])).toEqual([["期限", "2026-11-20"]]);
+    expect(getMilestones(saved).map((m) => [m.title, m.date])).toEqual([["期限", "2026-11-20"]]);
   });
 });
