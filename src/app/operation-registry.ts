@@ -1,6 +1,6 @@
 import { getMilestones } from "../core/milestones";
 import { z } from "zod";
-import type { TaskPatch, TaskRow, TaskUpdateCommand, TaskUpdateResult, TaskWorkbenchSettings } from "../core/types";
+import type { GanttMarker, TaskPatch, TaskRow, TaskUpdateCommand, TaskUpdateResult, TaskWorkbenchSettings } from "../core/types";
 import { applyPatchToRow } from "../core/task-patch";
 import { generateTaskId } from "../core/ids";
 import { NotePreservationError } from "../core/note-v2";
@@ -80,15 +80,20 @@ function canonical(value: unknown): unknown {
   }
   return value;
 }
+/** A marker as stored: no key, and no `tags` entry when it has none (the legacy 期限 has no such entry at all). */
+function storedMarker({ key: _key, tags, ...marker }: GanttMarker): Omit<GanttMarker, "key"> {
+  void _key;
+  return tags?.length ? { ...marker, tags } : marker;
+}
 /** The stored fields of a row. Marker keys are not stored (they are derived from titles), so they are left out. */
 function persisted(row: TaskRow): string {
   const data = taskData(row);
   // ganttOrder is not stored in the note (see PendingOrder).
   return JSON.stringify(Object.fromEntries(Object.keys(patchSchema.shape).filter((key) => key !== "ganttOrder").map((key) => [key,
-    canonical(key === "ganttMarkers" ? row.ganttMarkers?.map(({ key: _key, ...marker }) => { void _key; return marker; })
+    canonical(key === "ganttMarkers" ? row.ganttMarkers?.map(storedMarker)
       // A lone plain 期限 is stored as `due` only, so compare milestones as the parent shows them.
       : key === "disabled" ? (row.kind === "subtask" && row.disabled ? true : undefined)
-      : key === "milestones" ? (row.kind === "parent" ? getMilestones(row).map(({ key: _key, ...milestone }) => { void _key; return milestone; }) : undefined)
+      : key === "milestones" ? (row.kind === "parent" ? getMilestones(row).map(storedMarker) : undefined)
       : data[key])])));
 }
 /** Serializes the patched row and reads it back; what does not survive means the edit cannot be saved safely. */
