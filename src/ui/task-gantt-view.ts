@@ -7213,6 +7213,14 @@ export class TaskGanttView extends ItemView {
       });
     });
 
+    // A memo anchored on the parent row at the milestone's day.
+    if (this.host.memos) {
+      menu.addItem((item) => {
+        item.setTitle("メモを追加");
+        item.onClick(() => this.beginMemo(parent, milestone.date));
+      });
+    }
+
     menu.addSeparator();
 
     this.addTagToggleItems(menu, milestone.tags ?? [], (nextTags) => {
@@ -10438,6 +10446,14 @@ export class TaskGanttView extends ItemView {
         void this.editMarkerInteractively(task, marker);
       });
     });
+
+    // A memo on the task's bar at the marker's day.
+    if (this.host.memos) {
+      menu.addItem((item) => {
+        item.setTitle("メモを追加");
+        item.onClick(() => this.beginMemo(task, marker.date));
+      });
+    }
 
     menu.addSeparator();
 

@@ -383,6 +383,32 @@ describe("Gantt floating memos", () => {
       expect(byClass(r.container, "task-gantt-memos")[0]?.textContent).toBe("メモ 1");
     });
 
+    it("a milestone's right-click 「メモを追加」 anchors the memo on its parent row at the milestone's day", async () => {
+      const r = await openGantt([]);
+      layOut(r);
+      const milestone = { key: "m1", title: "リリース", date: dateOffset(3) };
+      (r.view as any).openDeadlineMarkerContextMenu({ preventDefault() {}, stopPropagation() {} }, r.parent, milestone);
+      dispatch(menuItem("メモを追加"), "click");
+      const area = byClass(layerOf(r.container) as FakeEl, "vg-memo-edit")[0] as FakeEl;
+      area.value = "マイルストーンのメモ";
+      dispatch(area, "keydown", key("Enter"));
+      await flush();
+      expect(r.memos.create.mock.calls[0]?.[0]).toMatchObject({ task: r.parent, date: dateOffset(3), text: "マイルストーンのメモ" });
+    });
+
+    it("a marker's right-click 「メモを追加」 anchors the memo on its subtask bar at the marker's day", async () => {
+      const r = await openGantt([]);
+      layOut(r);
+      const marker = { key: "k1", title: "M", date: dateOffset(2) };
+      (r.view as any).openMarkerContextMenu({ preventDefault() {}, stopPropagation() {} }, r.sub, marker);
+      dispatch(menuItem("メモを追加"), "click");
+      const area = byClass(layerOf(r.container) as FakeEl, "vg-memo-edit")[0] as FakeEl;
+      area.value = "マーカーのメモ";
+      dispatch(area, "keydown", key("Enter"));
+      await flush();
+      expect(r.memos.create.mock.calls[0]?.[0]).toMatchObject({ task: r.sub, date: dateOffset(2), text: "マーカーのメモ" });
+    });
+
     it("keeps the new memo's date inside the bar", async () => {
       const r = await openGantt([]);
       layOut(r);
