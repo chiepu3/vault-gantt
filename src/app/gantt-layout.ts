@@ -1135,9 +1135,9 @@ export function layoutExternalBarLabels(
 // vertical padding (px) above the first lane and below the
 // last lane's contribution.
 const ROW_VERTICAL_PADDING = 8;
-// gap (px) added below the row content for the deadline-marker
+// gap (px) added below the row content for the deadline-marker (6px of it is breathing room under the pill)
 // band (on top of MARKER_ROW_HEIGHT itself).
-const DEADLINE_MARKER_GAP = 6;
+const DEADLINE_MARKER_GAP = 12;
 
 /**
  *

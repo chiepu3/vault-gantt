@@ -2439,7 +2439,7 @@ describe("TaskGanttView", () => {
       expect(row.style.height).toBe(
         `${computeRowHeight(1, [0], [0], [0], true)}px`
       );
-      expect(row.style.height).toBe("82px");
+      expect(row.style.height).toBe("88px");
       // Positioned in the bottom band (rowHeight - MARKER_ROW_HEIGHT - 6).
       expect(deadline.style.top).toBe(`${82 - MARKER_ROW_HEIGHT - 6}px`);
     });
