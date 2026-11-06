@@ -1,3 +1,4 @@
+import { weeklyScheduleCountsOn } from "../core/weekly-schedule";
 import { z } from "zod";
 import {
   idSchema, dateOnlySchema, timestampSchema, countSchema, statusSchema, jsonSchema, requestOriginSchema,
@@ -45,7 +46,7 @@ export function entityRefKey(entity: EntityRef): string {
 export const ENTITY_FIELDS = {
   task: ["displayName", "title", "statusLabel", "createdAt", "updatedAt", "dueDate", "priority", "priorityMode", "tags", "completed", "disabled", "ganttEnabled", "ganttOrder", "currentStatus", "notes", "plannedStartDate", "plannedEndDate", "workloadPlan", "workloadActual", "ganttMarkers", "milestones", "derivedPeriod", "progress", "effectivePriority", "children"],
   marker: ["key", "title", "date", "tags"], event: ["key", "title", "date", "workloadPlan", "workloadActual"],
-  weekly: ["key", "title", "dayOfWeek", "minutesPerWeek"], "daily-todo": ["text", "completed"],
+  weekly: ["key", "title", "dayOfWeek", "minutesPerWeek", "startDate", "endDate"], "daily-todo": ["text", "completed"],
   "daily-file": ["path", "sourceKey", "templatePath"], "tag-definition": ["key", "name", "color", "order"],
   source: ["key", "label", "format", "creatableFromGantt", "templatePath"], setting: EDITABLE_SETTING_KEYS,
   view: ["position", "filterText", "statusFilter", "sortKey", "sortDir", "flatDueSort", "showCompleted", "expanded", "tagNames", "dayWidth", "date", "offset", "mode", "targetId", "selection"],
@@ -422,7 +423,7 @@ function validateActualSnapshots(planned: GanttProjectionV1 | null, projection: 
   const totals = (state: GanttStateV1, date: string) => {
     const cells = [...state.parents.flatMap((parent) => parent.children.flatMap((child) => child.hours)), ...state.events.flatMap((event) => event.hours)].filter((cell) => cell.date === date);
     const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
-    const weeklyHours = state.weekly.filter((schedule) => schedule.dayOfWeek === weekday).reduce((sum, schedule) => sum + schedule.minutesPerWeek / 60, 0);
+    const weeklyHours = state.weekly.filter((schedule) => weeklyScheduleCountsOn(schedule, date, weekday)).reduce((sum, schedule) => sum + schedule.minutesPerWeek / 60, 0);
     // Routine (weekly) work counts toward the actual only up to the evaluated day.
     return { plan: cells.reduce((sum, cell) => sum + cell.plan, 0) + weeklyHours, actual: cells.reduce((sum, cell) => sum + cell.actual, 0) + (date <= projection.evaluatedDate ? weeklyHours : 0) };
   };

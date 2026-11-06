@@ -497,6 +497,8 @@ const WEEKLY_SCHEDULE_UPDATE_DEBOUNCE_MS = 500;
  */
 export class WeeklyWorkScheduleModal extends Modal {
   private listEl: HTMLElement | null = null;
+  /** The last rendered row's name input, focused after 追加. */
+  private lastTitleInput: HTMLInputElement | null = null;
   private readonly pendingPatches = new Map<string, Partial<WeeklyWorkSchedule>>();
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -566,6 +568,12 @@ export class WeeklyWorkScheduleModal extends Modal {
       this.flushPending();
       this.invokeCallback(() => this.callbacks.add("", 0, 30));
       this.renderRows();
+      // New rows are appended at the bottom of a scrolling list: bring the new one into view.
+      const list = this.listEl;
+      if (list) {
+        list.scrollTop = list.scrollHeight;
+        this.lastTitleInput?.focus();
+      }
     });
     buttons.appendChild(addButton);
 
@@ -616,6 +624,7 @@ export class WeeklyWorkScheduleModal extends Modal {
     titleInput.type = "text";
     titleInput.value = schedule.title;
     titleInput.setAttribute("aria-label", "作業名");
+    this.lastTitleInput = titleInput;
     titleInput.addEventListener("input", () => {
       this.queueUpdate(schedule.key, { title: titleInput.value });
       this.scheduleFlush();
@@ -670,6 +679,39 @@ export class WeeklyWorkScheduleModal extends Modal {
       this.renderRows();
     });
     row.appendChild(deleteButton);
+
+    // Optional period the schedule counts in; empty = no bound on that side.
+    const range = document.createElement("div");
+    range.className = "task-gantt-weekly-work-schedule-range";
+    const makeDate = (label: string, field: "startDate" | "endDate"): HTMLInputElement => {
+      const wrap = document.createElement("label");
+      wrap.textContent = label;
+      const input = document.createElement("input");
+      input.type = "date";
+      input.value = schedule[field] ?? "";
+      input.setAttribute("aria-label", label);
+      wrap.appendChild(input);
+      range.appendChild(wrap);
+      return input;
+    };
+    const startInput = makeDate("開始日", "startDate");
+    const endInput = makeDate("終了日", "endDate");
+    const hint = document.createElement("span");
+    hint.className = "task-gantt-weekly-work-schedule-range-hint";
+    hint.textContent = "空欄なら期間の制限なし";
+    range.appendChild(hint);
+    const commitRange = (changed: "startDate" | "endDate"): void => {
+      // An inverted period would never count; the other bound follows the one just changed.
+      if (startInput.value && endInput.value && startInput.value > endInput.value) {
+        if (changed === "startDate") endInput.value = startInput.value;
+        else startInput.value = endInput.value;
+      }
+      this.queueUpdate(schedule.key, { startDate: startInput.value, endDate: endInput.value });
+      this.flushPending();
+    };
+    startInput.addEventListener("change", () => commitRange("startDate"));
+    endInput.addEventListener("change", () => commitRange("endDate"));
+    row.appendChild(range);
 
     list.appendChild(row);
   }

@@ -65,7 +65,7 @@ const empty = z.object({}).strict();
 const memoText = z.string().max(20000).refine((value) => value.trim().length > 0, "メモ本文は空にできません");
 const memoAnchorTask = z.union([idSchema, z.literal("")]);
 const feature = z.object({ enabled: z.boolean(), expectedRevision }).strict();
-const weeklyPatch = z.object({ title: name.optional(), dayOfWeek: z.number().int().min(0).max(6).optional(), minutesPerWeek: z.number().finite().nonnegative().optional() }).strict().refine((patch) => Object.keys(patch).length > 0, "変更項目が必要");
+const weeklyPatch = z.object({ title: name.optional(), dayOfWeek: z.number().int().min(0).max(6).optional(), minutesPerWeek: z.number().finite().nonnegative().optional(), startDate: clearableDate.optional(), endDate: clearableDate.optional() }).strict().refine((patch) => Object.keys(patch).length > 0, "変更項目が必要");
 
 /** One schema per ledger ID. Domain normalization/lookup belongs to future handlers. */
 export const operationInputSchemas = {
@@ -101,7 +101,7 @@ export const operationInputSchemas = {
   E01: z.object({ title: singleLine.max(200), date: dateOnlySchema, plan: workload.optional(), actual: workload.optional() }).strict(), E02: z.object({ ...event, title: name }).strict(),
   E03: z.object({ ...event, date: dateOnlySchema }).strict(), E04: z.object(event).strict(), E05: z.object(event).strict(),
   E06: z.object({ ...event, plan: workload }).strict(), E07: z.object({ ...event, actual: workload }).strict(),
-  W01: z.object({ title: name, dayOfWeek: z.number().int().min(0).max(6), minutesPerWeek: z.number().finite().nonnegative() }).strict(),
+  W01: z.object({ title: name, dayOfWeek: z.number().int().min(0).max(6), minutesPerWeek: z.number().finite().nonnegative(), startDate: dateOnlySchema.optional(), endDate: dateOnlySchema.optional() }).strict(),
   W02: z.object({ scheduleKey: idSchema, patch: weeklyPatch, expectedRevision }).strict(), W03: z.object({ scheduleKey: idSchema, expectedRevision }).strict(),
   D01: z.object({ dateRange, sourceKeys: z.array(idSchema).optional(), cursor: idSchema.optional() }).strict(),
   D02: z.object({ date: dateOnlySchema, sourceKey: z.literal("main").optional() }).strict(),

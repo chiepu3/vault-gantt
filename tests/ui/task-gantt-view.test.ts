@@ -2199,6 +2199,9 @@ describe("TaskGanttView", () => {
       )[0];
       expect(taggedLabel.classList.contains("is-tagged")).toBe(true);
       expect(taggedLabel.style.borderColor).toBe("#123456");
+      // The leader line to the label takes the same colour.
+      const connector = byClass(timelineOf(parentRows(tagged.container)[0]), "task-gantt-external-connector")[0];
+      expect(connector.children[0].style.stroke).toBe("#123456");
     });
 
     it("keeps a title in-bar at the narrow-cell threshold boundary", async () => {
@@ -2439,7 +2442,7 @@ describe("TaskGanttView", () => {
       expect(row.style.height).toBe(
         `${computeRowHeight(1, [0], [0], [0], true)}px`
       );
-      expect(row.style.height).toBe("82px");
+      expect(row.style.height).toBe("88px");
       // Positioned in the bottom band (rowHeight - MARKER_ROW_HEIGHT - 6).
       expect(deadline.style.top).toBe(`${82 - MARKER_ROW_HEIGHT - 6}px`);
     });

@@ -48,6 +48,10 @@ export interface WeeklyWorkSchedule {
   title: string;
   dayOfWeek: number; // 0=Sunday..6=Saturday
   minutesPerWeek: number; // multiple of 30
+  /** First day (YYYY-MM-DD) the schedule counts. Absent = from the beginning. */
+  startDate?: string;
+  /** Last day (YYYY-MM-DD) the schedule counts. Absent = indefinitely. */
+  endDate?: string;
 }
 
 

@@ -1375,8 +1375,8 @@ describe("computeRowHeight", () => {
     );
   });
 
-  it("adds MARKER_ROW_HEIGHT + 6 for a deadline marker", () => {
-    expect(computeRowHeight(1, [0], [0], [0], true)).toBe(60 + 16 + 6);
+  it("adds MARKER_ROW_HEIGHT + 12 for a deadline marker", () => {
+    expect(computeRowHeight(1, [0], [0], [0], true)).toBe(60 + 16 + 12);
   });
 
   it("treats missing per-lane array entries as 0", () => {
