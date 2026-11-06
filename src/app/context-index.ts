@@ -1,3 +1,4 @@
+import { weeklyScheduleCountsOn } from "../core/weekly-schedule";
 import { memoRecords } from "./operations/memo-handlers";
 import { contextQueryInputSchemas, contextQueryOutputSchemas, publicSettingsSchema, readResultSchema, type ContextQueryId, type ContextQueryMap, type ContextQueryResult, type CompactTaskV1, type TaskFieldGroup, type ReadResultV1, type RequestContext, type TaskReadV1 } from "../contracts/context";
 import type { ContextReadPort } from "../contracts/ports";
@@ -264,7 +265,7 @@ export class ContextIndex implements ContextReadPort {
           ...(args.detail ? { contributions: [
             ...parents.flatMap((parent) => [...parent.subtasks?.values() ?? []]).map((row) => ({ kind: "task" as const, id: row.id, cells: hours(row).filter((cell) => cell.date >= from && cell.date <= to).map(mask) })),
             ...snapshot.settings.ganttEvents.map((event) => ({ kind: "event" as const, id: event.key, cells: hours(event).filter((cell) => cell.date >= from && cell.date <= to).map(mask) })),
-            ...snapshot.settings.weeklyWorkSchedules.map((weekly) => ({ kind: "weekly" as const, id: weekly.key, cells: dates.filter((date) => new Date(date + "T00:00:00Z").getUTCDay() === weekly.dayOfWeek).map((date) => mask({ date, plan: weekly.minutesPerWeek / 60, actual: date <= snapshot.today ? weekly.minutesPerWeek / 60 : 0 })) })),
+            ...snapshot.settings.weeklyWorkSchedules.map((weekly) => ({ kind: "weekly" as const, id: weekly.key, cells: dates.filter((date) => weeklyScheduleCountsOn(weekly, date, new Date(date + "T00:00:00Z").getUTCDay())).map((date) => mask({ date, plan: weekly.minutesPerWeek / 60, actual: date <= snapshot.today ? weekly.minutesPerWeek / 60 : 0 })) })),
           ] } : {}) };
       } else fail("INVALID_INPUT", "対応するcontext queryを指定してください。");
       const result = readResultSchema.parse({ ...base, data });

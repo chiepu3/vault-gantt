@@ -31,7 +31,7 @@ export const FIELD_LABELS: Record<string, string> = {
   priority: "優先度", priorityMode: "優先度の決め方", tags: "タグ", completed: "完了", disabled: "一時無効", ganttEnabled: "Ganttに表示", ganttOrder: "Ganttでの並び順",
   currentStatus: "現在の状況", notes: "メモ", plannedStartDate: "開始日", plannedEndDate: "終了日", workloadPlan: "予定時間",
   workloadActual: "実績時間", ganttMarkers: "マーカー", milestones: "マイルストーン", derivedPeriod: "親の集計期間", progress: "進捗", effectivePriority: "実効優先度", children: "子タスク",
-  key: "キー", date: "日付", dayOfWeek: "曜日", minutesPerWeek: "週あたりの分数", text: "内容", path: "ファイル", sourceKey: "ソース",
+  key: "キー", date: "日付", dayOfWeek: "曜日", minutesPerWeek: "週あたりの分数", startDate: "開始日", endDate: "終了日", text: "内容", path: "ファイル", sourceKey: "ソース",
   templatePath: "テンプレート", name: "名前", color: "色", order: "順序", label: "ラベル", format: "ファイル名形式",
   creatableFromGantt: "Ganttから作成", position: "開く場所", filterText: "検索文字", statusFilter: "状態の絞り込み", sortKey: "並び替え項目",
   sortDir: "並び替え方向", flatDueSort: "期限順の平坦表示", showCompleted: "完了を表示", expanded: "展開", tagNames: "タグの絞り込み",
@@ -404,7 +404,7 @@ export const EFFECT_RENDERERS: { [K in PreviewEffectKind]: Renderer<K> } = {
     const { before, after } = effect;
     if (!before && !after) { note(parent, "定例作業の変更はありません。"); return; }
     badge(parent, !before ? "追加" : !after ? "削除" : "変更", !before ? "create" : !after ? "delete" : "update");
-    const text = (state: typeof before) => state ? `${state.title}（毎週${WEEKDAYS[state.dayOfWeek]}曜・${state.minutesPerWeek}分）` : "なし";
+    const text = (state: typeof before) => state ? `${state.title}（毎週${WEEKDAYS[state.dayOfWeek]}曜・${state.minutesPerWeek}分${state.startDate || state.endDate ? `・${state.startDate ?? ""}〜${state.endDate ?? ""}` : ""}）` : "なし";
     beforeAfterRow(parent, "定例", (el) => { el.textContent = text(before); }, (el) => { el.textContent = text(after); }, !after ? "is-removed" : "");
     if (ctx.projection) renderAggregates(parent, ctx.projection);
   },

@@ -45,7 +45,7 @@ export function eventWeeklyPlan<K extends OperationId>(id: K, input: OperationIn
   const before = snapshot.settings.weeklyWorkSchedules.find((weekly) => weekly.key === args.scheduleKey);
   if (id !== "W01" && !before) fail("NOT_FOUND", "実在するscheduleKeyを取得してください。");
   let key = before?.key;
-  if (id === "W01") key = addWeeklyWorkSchedule(settings, args.title, args.dayOfWeek, args.minutesPerWeek).key;
+  if (id === "W01") key = addWeeklyWorkSchedule(settings, args.title, args.dayOfWeek, args.minutesPerWeek, { startDate: args.startDate, endDate: args.endDate }).key;
   if (id === "W02") updateWeeklyWorkSchedule(settings, key!, args.patch);
   if (id === "W03") deleteWeeklyWorkSchedule(settings, key!);
   const after = settings.weeklyWorkSchedules.find((weekly) => weekly.key === key);

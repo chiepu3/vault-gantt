@@ -1,3 +1,4 @@
+import { weeklyScheduleCountsOn } from "../core/weekly-schedule";
 import { publicSettingsSchema, type PublicSettingsV1, type HoursCell, type DailyAggregateV1 } from "../contracts/context";
 import { ganttProjectionSchema, type GanttStateV1, type GanttProjectionV1, type PreviewEntry, type PreviewEffect, type FieldChange, type EntityRef, entityRefKey } from "../contracts/preview";
 import type { TaskRow, TaskWorkbenchSettings } from "../core/types";
@@ -26,16 +27,15 @@ export function progress(parent: TaskRow): number { const children = [...parent.
 export function aggregates(parents: readonly TaskRow[], settings: TaskWorkbenchSettings, dates: readonly string[], today: string): DailyAggregateV1[] {
   const children = parents.flatMap((parent) => [...parent.subtasks?.values() ?? []].filter((child) => !child.disabled));
   const holidays = holidaySet(settings);
-  const all = [...children, ...settings.ganttEvents], weeklyHours = new Map<number, number>();
-  const weekly = (dayOfWeek: number) => {
-    let total = weeklyHours.get(dayOfWeek);
-    if (total === undefined) weeklyHours.set(dayOfWeek, total = settings.weeklyWorkSchedules.filter((entry) => entry.dayOfWeek === dayOfWeek).reduce((sum, entry) => sum + entry.minutesPerWeek / 60, 0));
-    return total;
+  const all = [...children, ...settings.ganttEvents];
+  const weekly = (date: string) => {
+    const dayOfWeek = new Date(date + "T00:00:00Z").getUTCDay();
+    return settings.weeklyWorkSchedules.filter((entry) => weeklyScheduleCountsOn(entry, date, dayOfWeek)).reduce((sum, entry) => sum + entry.minutesPerWeek / 60, 0);
   };
   return dates.map((date) => {
     let plan = all.reduce((total, entity) => total + (entity.workloadPlan?.[date] ?? 0), 0);
     let actual = all.reduce((total, entity) => total + (entity.workloadActual?.[date] ?? 0), 0);
-    const weeklyTotal = weekly(new Date(date + "T00:00:00Z").getUTCDay());
+    const weeklyTotal = weekly(date);
     plan += weeklyTotal;
     if (date <= today) actual += weeklyTotal; // routine work counts as actual only up to today
     const capacity = isBusinessDay(date, holidays) ? settings.ganttWorkloadDailyCapacityHours : 0;

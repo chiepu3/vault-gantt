@@ -127,7 +127,8 @@ export function addWeeklyWorkSchedule(
   settings: TaskWorkbenchSettings,
   title: string,
   dayOfWeek: number,
-  minutesPerWeek: number
+  minutesPerWeek: number,
+  range: { startDate?: string; endDate?: string } = {}
 ): WeeklyWorkSchedule {
   const schedules = ensureWeeklyWorkSchedules(settings);
   const existingKeys = new Set(schedules.map((schedule) => schedule.key));
@@ -141,6 +142,8 @@ export function addWeeklyWorkSchedule(
     title: String(title ?? ""),
     dayOfWeek,
     minutesPerWeek: normalizeWeeklyMinutes(minutesPerWeek),
+    ...(range.startDate ? { startDate: range.startDate } : {}),
+    ...(range.endDate ? { endDate: range.endDate } : {}),
   };
   schedules.push(schedule);
   return schedule;
@@ -169,6 +172,9 @@ export function updateWeeklyWorkSchedule(
     );
   }
   Object.assign(schedule, normalizedPatch);
+  // An empty date removes the bound.
+  if (!schedule.startDate) delete schedule.startDate;
+  if (!schedule.endDate) delete schedule.endDate;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { weeklyScheduleCountsOn } from "../core/weekly-schedule";
 import { operationInputSchemas, type ViewOperationId, type OperationInputMap } from "../contracts/operations";
 import { formatBuildLabel, getBuildInfo } from "../build-info";
 import type { OperationRequestResultV1 } from "../contracts/preview";
@@ -3117,7 +3118,7 @@ export class TaskGanttView extends ItemView {
     ];
     // Weekly schedules feed both plan and actual totals; AI operations persist them without going through the modal.
     for (const schedule of this.host.settings.weeklyWorkSchedules ?? []) {
-      parts.push(`@${schedule.key}:${schedule.dayOfWeek}:${schedule.minutesPerWeek}`);
+      parts.push(`@${schedule.key}:${schedule.dayOfWeek}:${schedule.minutesPerWeek}:${schedule.startDate ?? ""}:${schedule.endDate ?? ""}`);
     }
     // 「その他」 row events carry their own plan/actual hours, which count toward the day totals.
     for (const event of getGanttEvents(this.host.settings)) {
@@ -3188,7 +3189,7 @@ export class TaskGanttView extends ItemView {
         const dayOfWeek = moment(date, "YYYY-MM-DD").day();
         const countsAsActual = date <= this.todayForRender;
         for (const schedule of schedules) {
-          if (dayOfWeek !== schedule.dayOfWeek) continue;
+          if (!weeklyScheduleCountsOn(schedule, date, dayOfWeek)) continue;
           plan += schedule.minutesPerWeek / 60;
           if (countsAsActual) actual += schedule.minutesPerWeek / 60;
         }
@@ -3564,7 +3565,7 @@ export class TaskGanttView extends ItemView {
           : [];
         const dayOfWeek = moment(date, "YYYY-MM-DD").day();
         for (const schedule of schedules) {
-          if (dayOfWeek === schedule.dayOfWeek) {
+          if (weeklyScheduleCountsOn(schedule, date, dayOfWeek)) {
             entries.push({
               parentName: "週次定例",
               subtaskName: schedule.title || "無題",

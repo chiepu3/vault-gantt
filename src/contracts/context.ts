@@ -69,7 +69,7 @@ export const markerStateSchema = z.object({ key: idSchema, title: z.string().tri
 export type MarkerState = DeepReadonly<z.infer<typeof markerStateSchema>>;
 export const namedDefinitionSchema = z.object({ key: idSchema, name: z.string().max(200), color: z.string().max(200), order: z.number().finite() }).strict();
 export type NamedDefinition = DeepReadonly<z.infer<typeof namedDefinitionSchema>>;
-export const weeklyStateSchema = z.object({ key: idSchema, title: z.string().max(200), dayOfWeek: z.number().int().min(0).max(6), minutesPerWeek: z.number().int().nonnegative().multipleOf(30) }).strict();
+export const weeklyStateSchema = z.object({ key: idSchema, title: z.string().max(200), dayOfWeek: z.number().int().min(0).max(6), minutesPerWeek: z.number().int().nonnegative().multipleOf(30), startDate: dateOnlySchema.optional(), endDate: dateOnlySchema.optional() }).strict();
 export type WeeklyState = DeepReadonly<z.infer<typeof weeklyStateSchema>>;
 /** Event/weekly identity and edit revision are available without a workload query. */
 export const eventStateSchema = z.object({ key: idSchema, title: z.string().max(20000), date: dateOnlySchema, hours: z.array(hoursCellSchema) }).strict();
