@@ -5896,6 +5896,8 @@ export class TaskGanttView extends ItemView {
         `${targetX - minX},${targetY - minY}`,
       ].join(" ")
     );
+    // The leader line takes the tag colour like the label frame does.
+    if (barTagColor !== "") polyline.style.stroke = barTagColor;
     svg.appendChild(polyline);
 
     const connector = svg;
